@@ -1,22 +1,60 @@
-import mongoose from 'mongoose';
+import { Pool } from 'pg';
 
-export type DatabaseStatus = 'disconnected' | 'connected' | 'connecting' | 'disconnecting';
+import { createPgSqlClient, type SqlClient } from '../database/sql-client';
 
-const STATES: Record<number, DatabaseStatus> = {
-  0: 'disconnected',
-  1: 'connected',
-  2: 'connecting',
-  3: 'disconnecting',
-};
+/**
+ * - `disconnected` : aucune base configurée (DATABASE_URL vide) ;
+ * - `connected` : la base répond ;
+ * - `unavailable` : une base est configurée mais ne répond pas.
+ */
+export type DatabaseStatus = 'disconnected' | 'connected' | 'unavailable';
 
-export async function connectDatabase(uri: string): Promise<void> {
-  await mongoose.connect(uri);
+const HEALTH_CHECK_TIMEOUT_MS = 2_000;
+
+let pool: Pool | undefined;
+
+/** Ouvre le pool PostgreSQL et vérifie que la base répond. */
+export async function connectDatabase(url: string): Promise<SqlClient> {
+  if (pool) {
+    throw new Error('Base PostgreSQL déjà connectée');
+  }
+  const created = new Pool({ connectionString: url });
+  // Sans écouteur, l'erreur d'une connexion inactive arrêterait le processus.
+  created.on('error', (err) => {
+    console.error('Erreur PostgreSQL (connexion inactive) :', err.message);
+  });
+  try {
+    await created.query('SELECT 1');
+  } catch (err) {
+    await created.end().catch(() => undefined);
+    throw err;
+  }
+  pool = created;
+  return createPgSqlClient(created);
 }
 
 export async function disconnectDatabase(): Promise<void> {
-  await mongoose.disconnect();
+  const current = pool;
+  pool = undefined;
+  await current?.end();
 }
 
-export function getDatabaseStatus(): DatabaseStatus {
-  return STATES[mongoose.connection.readyState] ?? 'disconnected';
+export async function getDatabaseStatus(): Promise<DatabaseStatus> {
+  if (!pool) {
+    return 'disconnected';
+  }
+  try {
+    await withTimeout(pool.query('SELECT 1'), HEALTH_CHECK_TIMEOUT_MS);
+    return 'connected';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('timeout')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

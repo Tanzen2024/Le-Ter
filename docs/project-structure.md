@@ -25,6 +25,9 @@ Il n'y a **pas** de `package.json` à la racine ni de workspace npm (voir [decis
 | `Voici des critères de réussite pour chaque sprint….docx` | Plan et critères des 9 sprints |
 | `Gérer la complexité…`, `Melanger cartes`, `Pour intégrer la vérification des points…`, `Problèmes Potentiels et Solutions` (.docx) | Notes de recommandations (non normatives) |
 | `architecture.md` | Architecture technique |
+| `multi-game-architecture.md` | Architecture multi-parties (isolation par `gameId`) |
+| `game-domain.md` | Moteur du Ter : matrice des règles, modèle, règles, événements |
+| `data-architecture.md` | PostgreSQL (source de vérité, schéma, migrations) et Redis (temps réel) |
 | `project-structure.md` | Ce document |
 | `decisions.md` | Journal des décisions |
 | `TODO.md` | Points à clarifier et travaux à venir |
@@ -38,7 +41,7 @@ frontend/
 │   ├── index.tsx             Écran d'accueil provisoire
 │   ├── (auth)/               Connexion, inscription (à venir)
 │   ├── (tabs)/               Navigation principale (à venir)
-│   ├── game/                 Écrans de partie (à venir)
+│   ├── game/                 Écrans de partie (à venir : game/[gameId].tsx)
 │   └── tournament/           Écrans de tournoi (à venir)
 ├── src/
 │   ├── components/           Composants UI réutilisables
@@ -77,27 +80,65 @@ npx expo install <paquet>  # ajouter une dépendance (jamais npm install <paquet
 backend/
 ├── src/
 │   ├── app.ts                Création de l'application Express (sans écoute réseau)
-│   ├── server.ts             Point d'entrée : env, MongoDB, écoute, arrêt propre
+│   ├── server.ts             Point d'entrée : env, PostgreSQL, Redis, écoute, arrêt propre
 │   ├── config/
 │   │   ├── env.ts            Lecture et validation des variables d'environnement
-│   │   └── database.ts       Connexion/déconnexion/état MongoDB (Mongoose)
+│   │   ├── database.ts       Pool PostgreSQL : connexion, arrêt, état
+│   │   └── redis.ts          Connexions Redis (commandes + abonnements), état
 │   ├── controllers/          health.controller.ts
 │   ├── routes/               index.ts (/api), health.routes.ts (/api/health)
 │   ├── middleware/           error-handler.ts (404, 500)
-│   ├── services/             Cas d'utilisation (vide)
+│   ├── services/
+│   │   └── game/
+│   │       ├── game.service.ts          Point d'entrée unique des commandes d'une partie
+│   │       └── game-timer-registry.ts   Un timer par partie (Map<GameId, Timeout>)
 │   ├── domain/
-│   │   ├── cards/            Cartes, paquet, mélange (vide)
-│   │   ├── game/             État et déroulement d'une partie (vide)
-│   │   └── rules/            Conditions de gain, mises (vide)
-│   ├── models/               Schémas Mongoose (vide)
-│   ├── repositories/         Accès aux données (vide)
+│   │   ├── cards/
+│   │   │   ├── card.ts       Card, Suit, CardValue, CardId, composition (31 cartes)
+│   │   │   ├── deck.ts       createDeck, shuffleDeck (Fisher-Yates), dealCards
+│   │   │   └── random-source.ts   Interface RandomSource (hasard injecté)
+│   │   ├── game/
+│   │   │   ├── game-id.ts    GameId / PlayerId (types marqués), parseGameId
+│   │   │   ├── game.ts       Agrégat Game (unité d'isolation), statuts
+│   │   │   ├── game-access.ts   Contrôle d'appartenance
+│   │   │   ├── game-view.ts  Vue joueur (seul état envoyé au client, sa main seulement)
+│   │   │   ├── ter-engine.ts startGame, playCard, declareWin, flee (moteur du Ter)
+│   │   │   ├── game-events.ts   Enveloppe d'événement (gameId, version)
+│   │   │   └── game-errors.ts   Erreurs du domaine
+│   │   └── rules/
+│   │       ├── rule-set.ts          Constantes certaines + TerRuleSet (règles ambiguës)
+│   │       ├── rule-candidates.ts   Interprétations candidates (non officielles)
+│   │       ├── win-conditions.ts    Conditions de gain instantané
+│   │       ├── stake.ts             Mise : gagné simple, Kora (interface)
+│   │       └── unresolved-rule.ts   UnresolvedRuleError
+│   ├── database/
+│   │   ├── sql-client.ts     Port SqlClient (query paramétrée, transaction), adaptateur pg
+│   │   ├── migrator.ts       Migrations versionnées (transaction, verrou, empreinte)
+│   │   └── migrate.ts        CLI : npm run db:migrate
+│   ├── repositories/
+│   │   ├── game.repository.ts             Contrat (save versionné)
+│   │   ├── postgres-game.repository.ts    Implémentation PostgreSQL (UPDATE versionné)
+│   │   └── in-memory-game.repository.ts   Implémentation tests/dev (copies profondes)
 │   ├── validators/           Validation des entrées (vide)
-│   ├── websocket/            Temps réel (vide)
-│   └── utils/                Utilitaires (vide)
+│   ├── websocket/
+│   │   ├── game-rooms.ts                Noms des salles game:{gameId}, game:{gameId}:chat
+│   │   ├── game-event-publisher.ts      Port de diffusion (transport à choisir)
+│   │   ├── in-memory-game-event-hub.ts  Implémentation de référence (une instance)
+│   │   ├── pubsub-transport.ts          Port Pub/Sub + adaptateur Redis
+│   │   └── pubsub-game-event-bus.ts     Diffusion inter-instances (un canal par partie)
+│   └── utils/
+│       ├── keyed-serial-queue.ts        File de tâches par clé (par gameId)
+│       ├── logger.ts                    Logs JSON (gameId, playerId, action)
+│       └── crypto-random-source.ts      Hasard cryptographique (production)
 ├── tests/
-│   ├── unit/                 env.test.ts
-│   ├── integration/          health.test.ts (Supertest)
-│   └── fixtures/             Données de test (vide)
+│   ├── unit/                 env.test.ts, cards/ (paquet), rules/ (gains, mises),
+│   │                         game/ (moteur, file, timers, gameId, dépôt, salles)
+│   ├── integration/          health.test.ts, game/ (isolation, moteur, multi-instances),
+│   │                         database/ (dépôt PostgreSQL, migrations)
+│   └── fixtures/             service en mémoire, PGlite, courtier Pub/Sub, contrat du dépôt,
+│                             hasard déterministe, règles de test, parties
+├── migrations/               Migrations SQL versionnées (0001_create_games.sql…)
+├── docker-compose.yml        PostgreSQL + Redis locaux (développement uniquement)
 ├── .env.example              Modèle de configuration (sans secret)
 ├── eslint.config.mjs         ESLint (flat config) + typescript-eslint + prettier
 ├── .prettierrc.json / .prettierignore
@@ -114,11 +155,13 @@ Commandes (depuis `backend/`) :
 ```bash
 npm install
 cp .env.example .env       # puis adapter
+docker compose up -d       # PostgreSQL + Redis locaux (optionnel)
+npm run db:migrate         # applique backend/migrations/
 npm run dev                # tsx watch src/server.ts
 npm run typecheck          # tsc --noEmit
 npm run lint               # ESLint
 npm run format:check       # Prettier
-npm test                   # Jest + Supertest
+npm test                   # Jest + Supertest (PostgreSQL via PGlite, sans serveur)
 npm run build              # dist/
 npm start                  # node dist/server.js
 ```

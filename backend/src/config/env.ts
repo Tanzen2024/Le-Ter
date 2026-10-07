@@ -6,8 +6,10 @@ export type NodeEnv = 'development' | 'test' | 'production';
 export interface Env {
   nodeEnv: NodeEnv;
   port: number;
-  /** URI MongoDB. Absente = le serveur démarre sans base (phase de fondation). */
-  mongodbUri: string | undefined;
+  /** URL PostgreSQL (source de vérité). Absente = démarrage sans base (phase de fondation). */
+  databaseUrl: string | undefined;
+  /** URL Redis (temps réel, coordination). Absente = diffusion limitée à une instance. */
+  redisUrl: string | undefined;
 }
 
 const NODE_ENVS: readonly NodeEnv[] = ['development', 'test', 'production'];
@@ -33,7 +35,33 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error(`PORT invalide : "${source.PORT}"`);
   }
 
-  const mongodbUri = source.MONGODB_URI?.trim() || undefined;
+  const databaseUrl = optionalUrl(source.DATABASE_URL, 'DATABASE_URL', [
+    'postgres:',
+    'postgresql:',
+  ]);
+  const redisUrl = optionalUrl(source.REDIS_URL, 'REDIS_URL', ['redis:', 'rediss:']);
 
-  return { nodeEnv, port, mongodbUri };
+  return { nodeEnv, port, databaseUrl, redisUrl };
+}
+
+function optionalUrl(
+  value: string | undefined,
+  name: string,
+  protocols: readonly string[],
+): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  let protocol: string;
+  try {
+    protocol = new URL(trimmed).protocol;
+  } catch {
+    // Ne jamais recopier la valeur : elle peut contenir un mot de passe.
+    throw new Error(`${name} invalide : URL mal formée`);
+  }
+  if (!protocols.includes(protocol)) {
+    throw new Error(`${name} invalide : protocole attendu ${protocols.join(' ou ')}`);
+  }
+  return trimmed;
 }

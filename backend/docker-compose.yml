@@ -1,0 +1,39 @@
+# Infrastructure locale de DÉVELOPPEMENT uniquement (D-022, D-024).
+# Identifiants factices, ports exposés sur localhost seulement. Ne pas utiliser en production.
+#
+#   docker compose up -d
+#   DATABASE_URL=postgres://le_ter:le_ter@localhost:543/le_ter
+#   REDIS_URL=redis://localhost:6379
+#   npm run db:migrate
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: le_ter
+      POSTGRES_PASSWORD: le_ter
+      POSTGRES_DB: le_ter
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U le_ter -d le_ter']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    # Pas de persistance : Redis n'est jamais la source de vérité.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

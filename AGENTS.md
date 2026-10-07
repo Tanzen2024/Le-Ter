@@ -59,4 +59,7 @@ npm test           # Jest + Supertest
 npm run build      # compile to dist/
 ```
 
-- Configuration comes from environment variables (`backend/.env`, see `backend/.env.example`). Never commit secrets, tokens, real MongoDB URIs or Firebase/Mobile Money credentials.
+- Multi-game: many games run at the same time and each game is an isolated unit (`docs/multi-game-architecture.md`, D-011). Every game operation takes an explicit `gameId`; never add global mutable game state (`currentGame`, a single shared timer…). Mutate a game only through `GameService`, which serializes commands per `gameId`, checks membership and versions writes. Keep `tests/integration/game/multi-game-isolation.test.ts` green.
+- Persistence: PostgreSQL is the source of truth (D-022), accessed with `pg` behind the `SqlClient` port, no ORM, parameterized queries only. Schema changes are new files in `backend/migrations/` (`npm run db:migrate`); never edit an applied migration (D-026). The domain and `GameService` depend only on repository ports, never on `pg` or Redis. MongoDB is not used.
+- Redis is volatile infrastructure (real-time Pub/Sub, later presence/cache/coordination), never a source of truth: write to PostgreSQL first, and a Redis failure must never fail or corrupt a persisted command (D-024).
+- Configuration comes from environment variables (`backend/.env`, see `backend/.env.example`: `DATABASE_URL`, `REDIS_URL`). Never commit secrets, tokens, real database/Redis URLs or Firebase/Mobile Money credentials.
