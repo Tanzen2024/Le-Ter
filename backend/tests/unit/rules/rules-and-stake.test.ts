@@ -1,47 +1,40 @@
 import { cardFromId } from '../../../src/domain/cards/card';
 import { toPlayerId } from '../../../src/domain/game/game-id';
 import {
-  dealOrderBySeat,
-  dealOrderRandom,
-  fleeBeforeSecondTrick,
-  fleeIfAtMostOneCardPlayed,
+  declareBeforeFirstCard,
+  fleeBeforeFirstCardOfFirstTrick,
   mustFollowLeadColorWhenPossible,
-  playOrderFollowingDealOrder,
   sameSuit,
-} from '../../../src/domain/rules/rule-candidates';
+} from '../../../src/domain/rules/official-rules';
 import { assertValidStake, stakeTransfers } from '../../../src/domain/rules/stake';
 import { UnresolvedRuleError } from '../../../src/domain/rules/unresolved-rule';
-import { seededRandom } from '../../fixtures/random';
 
-const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(toPlayerId) as [
-  ReturnType<typeof toPlayerId>,
+const [a, b, c] = ['a', 'b', 'c'].map(toPlayerId) as [
   ReturnType<typeof toPlayerId>,
   ReturnType<typeof toPlayerId>,
   ReturnType<typeof toPlayerId>,
 ];
 
-describe('Interprétations candidates (non retenues comme règles officielles)', () => {
-  it('fuite : les deux formulations des documents divergent (R-05)', () => {
-    const secondTrickOneCard = { cardsPlayed: 1, trickNumber: 2 };
-    expect(fleeIfAtMostOneCardPlayed(secondTrickOneCard)).toBe(true);
-    expect(fleeBeforeSecondTrick(secondTrickOneCard)).toBe(false);
+describe('Règles officielles (D-035)', () => {
+  it('fuir et déclarer : seulement au tour 1, avant sa première carte', () => {
+    for (const rule of [fleeBeforeFirstCardOfFirstTrick, declareBeforeFirstCard]) {
+      expect(rule({ cardsPlayed: 0, trickNumber: 1 })).toBe(true);
+      expect(rule({ cardsPlayed: 1, trickNumber: 1 })).toBe(false);
+      expect(rule({ cardsPlayed: 1, trickNumber: 2 })).toBe(false);
+    }
   });
 
-  it("ordre de jeu : suit l'ordre de distribution à partir du meneur", () => {
-    expect(playOrderFollowingDealOrder([a, b, c, d], c)).toEqual([c, d, a, b]);
-  });
-
-  it('ordre de distribution : par siège, ou tiré au sort (permutation complète)', () => {
-    expect(dealOrderBySeat([a, b, c], seededRandom(0))).toEqual([a, b, c]);
-    expect([...dealOrderRandom([a, b, c, d], seededRandom(3))].sort()).toEqual([a, b, c, d]);
+  it('« même couleur » = même famille', () => {
+    expect(sameSuit(cardFromId('COEUR-3'), cardFromId('COEUR-10'))).toBe(true);
+    expect(sameSuit(cardFromId('COEUR-3'), cardFromId('ETOILE-3'))).toBe(false);
   });
 
   it('obligation de suivre : refuse une autre famille seulement si le joueur en possède', () => {
     const lead = cardFromId('COEUR-5');
-    const hand = (['COEUR-8', 'PIQUE-9'] as const).map((id) => cardFromId(id));
+    const hand = (['COEUR-4', 'PIQUE-9'] as const).map((id) => cardFromId(id));
     const ctx = { hand, leadCard: lead, sameColor: sameSuit };
     expect(mustFollowLeadColorWhenPossible({ ...ctx, card: cardFromId('PIQUE-9') })).toBe(false);
-    expect(mustFollowLeadColorWhenPossible({ ...ctx, card: cardFromId('COEUR-8') })).toBe(true);
+    expect(mustFollowLeadColorWhenPossible({ ...ctx, card: cardFromId('COEUR-4') })).toBe(true);
     expect(
       mustFollowLeadColorWhenPossible({
         ...ctx,

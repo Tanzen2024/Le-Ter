@@ -84,11 +84,59 @@ export class GameRuleViolationError extends Error {
   }
 }
 
-/** Démarrage refusé : la table n'est pas complète (séquence « création de partie »). */
-export class GameNotFullError extends GameRuleViolationError {
+/**
+ * Démarrage refusé : moins de 2 joueurs (R-23). La capacité maximale (2, 3 ou 4) n'est
+ * PAS une condition de démarrage.
+ */
+export class GameNotEnoughPlayersError extends GameRuleViolationError {
   constructor(gameId: GameId) {
-    super(gameId, `La partie ${gameId} n'est pas complète`);
-    this.name = 'GameNotFullError';
+    super(gameId, `La partie ${gameId} n'a pas assez de joueurs pour démarrer`);
+    this.name = 'GameNotEnoughPlayersError';
+  }
+}
+
+/**
+ * J1 (fixé à la création par la session) n'a pas rejoint la partie : il ne peut pas être
+ * servi en premier. Aucune règle ne prévoit de remplacement : démarrage refusé (D-033).
+ */
+export class FirstPlayerNotInGameError extends Error {
+  constructor(
+    readonly gameId: GameId,
+    readonly firstPlayerId: PlayerId,
+  ) {
+    super(`Le premier joueur ${firstPlayerId} n'a pas rejoint la partie ${gameId}`);
+    this.name = 'FirstPlayerNotInGameError';
+  }
+}
+
+/** Seul le créateur démarre la partie (R-23). */
+export class GameStartForbiddenError extends Error {
+  constructor(
+    readonly gameId: GameId,
+    readonly playerId: PlayerId,
+  ) {
+    super(`Le joueur ${playerId} n'est pas le créateur de la partie ${gameId}`);
+    this.name = 'GameStartForbiddenError';
+  }
+}
+
+/** Clé d'idempotence déjà utilisée par ce créateur pour une création différente. */
+export class IdempotencyKeyReuseError extends Error {
+  constructor(readonly gameId: GameId) {
+    super(`Clé d'idempotence déjà utilisée pour une autre création (partie ${gameId})`);
+    this.name = 'IdempotencyKeyReuseError';
+  }
+}
+
+/** Transition de statut interdite : waiting → in_progress → finished, sans retour. */
+export class InvalidStatusTransitionError extends Error {
+  constructor(
+    readonly gameId: GameId,
+    readonly from: string,
+    readonly to: string,
+  ) {
+    super(`Transition de statut interdite pour la partie ${gameId} : ${from} → ${to}`);
+    this.name = 'InvalidStatusTransitionError';
   }
 }
 
@@ -103,6 +151,18 @@ export class GameAlreadyStartedError extends GameRuleViolationError {
   constructor(gameId: GameId) {
     super(gameId, `La partie ${gameId} a déjà démarré`);
     this.name = 'GameAlreadyStartedError';
+  }
+}
+
+/**
+ * Le temps du tour est écoulé (D-034) : le serveur seul décide de l'expiration, à partir
+ * de l'échéance persistée. Le coup du joueur arrive trop tard ; c'est le coup automatique
+ * déclenché par TURN_TIMEOUT qui doit être joué.
+ */
+export class TurnExpiredError extends GameRuleViolationError {
+  constructor(gameId: GameId, playerId: PlayerId) {
+    super(gameId, `Le temps du tour de ${playerId} est écoulé`);
+    this.name = 'TurnExpiredError';
   }
 }
 

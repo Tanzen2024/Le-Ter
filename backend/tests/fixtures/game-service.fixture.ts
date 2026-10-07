@@ -5,8 +5,10 @@ import { InMemoryGameRepository } from '../../src/repositories/in-memory-game.re
 import { GameService, type ParticipationPolicy } from '../../src/services/game/game.service';
 import { GameTimerRegistry } from '../../src/services/game/game-timer-registry';
 import type { TerRuleSet } from '../../src/domain/rules/rule-set';
+import type { AutomaticCardSelectionStrategy } from '../../src/domain/game/automatic-card-selection';
 import { createLogger, type Logger } from '../../src/utils/logger';
 import { InMemoryGameEventHub } from '../../src/websocket/in-memory-game-event-hub';
+import { defaultTestRandom } from './random';
 
 /**
  * Politique de test sans restriction. Elle NE préjuge PAS de la règle réelle
@@ -21,6 +23,8 @@ export function createGameServiceFixture(
     participationPolicy?: ParticipationPolicy;
     rules?: TerRuleSet;
     random?: RandomSource;
+    turnDurationMs?: number;
+    autoCardSelection?: AutomaticCardSelectionStrategy;
   } = {},
 ) {
   const repository = new InMemoryGameRepository();
@@ -37,7 +41,9 @@ export function createGameServiceFixture(
     participationPolicy: options.participationPolicy ?? allowAllParticipation,
     logger,
     rules: options.rules,
-    random: options.random,
+    random: options.random ?? defaultTestRandom(),
+    turnDurationMs: options.turnDurationMs,
+    autoCardSelection: options.autoCardSelection,
   });
 
   return { service, repository, hub, timers, logLines };

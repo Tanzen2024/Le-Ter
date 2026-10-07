@@ -1,4 +1,5 @@
 import type { GameId } from '../domain/game/game-id';
+import type { SessionId } from '../domain/sessions/session';
 
 /**
  * Convention de nommage des canaux temps réel. Toute diffusion passe par ces
@@ -18,4 +19,9 @@ export function gameChatRoom(gameId: GameId): string {
  */
 export function gameEventChannel(gameId: GameId): string {
   return `le-ter:game:${gameId}:events`;
+}
+
+/** Canal inter-instances (Redis Pub/Sub) des événements d'une session (D-033). */
+export function sessionEventChannel(sessionId: SessionId): string {
+  return `le-ter:session:${sessionId}:events`;
 }

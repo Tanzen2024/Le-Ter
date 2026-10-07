@@ -51,42 +51,63 @@ describe('Isolation multi-parties', () => {
     expect(inboxB5).toEqual([]);
   });
 
-  describe('TEST 3 — timers indépendants', () => {
+  describe('TEST 3 — timers de tour indépendants (armés par le démarrage, D-034)', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());
 
+    async function startedGame(
+      service: ReturnType<typeof createGameServiceFixture>['service'],
+      creator: typeof p1,
+      other: typeof p1,
+    ) {
+      const game = await service.createGame(creator, { maxPlayers: 2 });
+      await service.joinGame(game.id, other);
+      return service.startGame(game.id, creator);
+    }
+
     it("l'expiration du timer de A ne touche pas B", async () => {
       const { service, timers } = createGameServiceFixture();
-      const gameA = await service.createGame(p1, { maxPlayers: 2 });
-      const gameB = await service.createGame(p4, { maxPlayers: 2 });
+      const gameA = await startedGame(service, p1, p2);
+      await jest.advanceTimersByTimeAsync(5_000);
+      const gameB = await startedGame(service, p4, p5);
       const inboxA = await listen(service, gameA.id, p1);
       const inboxB = await listen(service, gameB.id, p4);
-
-      await service.armTurnTimer(gameA.id, 1_000);
-      await service.armTurnTimer(gameB.id, 5_000);
       expect(timers.size).toBe(2);
 
-      await jest.advanceTimersByTimeAsync(1_000);
+      await jest.advanceTimersByTimeAsync(5_000);
 
-      expect(inboxA.map((e) => e.type)).toEqual(['game:turn_timeout']);
+      // A expire : TURN_TIMEOUT puis coup automatique (D-036) ; son timer est réarmé pour
+      // le joueur suivant. B n'est pas touchée.
+      const autoPlay = [
+        'game:turn_timeout',
+        'game:auto_card_played',
+        'game:card_played',
+        'game:turn_changed',
+      ];
+      expect(inboxA.map((e) => e.type)).toEqual(autoPlay);
+      expect(inboxA.every((e) => e.gameId === gameA.id)).toBe(true);
       expect(inboxB).toEqual([]);
-      expect(timers.has(gameA.id)).toBe(false);
+      expect(timers.has(gameA.id)).toBe(true);
       expect(timers.has(gameB.id)).toBe(true);
 
-      await jest.advanceTimersByTimeAsync(4_000);
-      expect(inboxB.map((e) => e.type)).toEqual(['game:turn_timeout']);
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(inboxB.map((e) => e.type)).toEqual(autoPlay);
+      expect(inboxB.every((e) => e.gameId === gameB.id)).toBe(true);
+      expect(inboxA).toHaveLength(autoPlay.length);
     });
 
-    it("un timer périmé (état changé depuis l'armement) est ignoré", async () => {
-      const { service } = createGameServiceFixture();
-      const game = await service.createGame(p1, { maxPlayers: 2 });
+    it("un déclenchement avant l'échéance PERSISTÉE est sans effet (le timer est réarmé)", async () => {
+      const { service, timers } = createGameServiceFixture();
+      const game = await startedGame(service, p1, p2);
       const inbox = await listen(service, game.id, p1);
 
-      await service.armTurnTimer(game.id, 1_000);
-      await service.executePlayerCommand(game.id, p1, 'TEST', {}, noopCommand);
-      await jest.advanceTimersByTimeAsync(1_000);
+      await jest.advanceTimersByTimeAsync(4_000);
+      const after = await service.handleTurnTimeout(game.id);
 
+      expect(after.version).toBe(game.version);
+      expect(after.turnTimedOutAt).toBeUndefined();
       expect(inbox.map((e) => e.type)).not.toContain('game:turn_timeout');
+      expect(timers.has(game.id)).toBe(true);
     });
   });
 
@@ -146,19 +167,23 @@ describe('Isolation multi-parties', () => {
       const { service, timers } = createGameServiceFixture();
       const gameA = await service.createGame(p1, { maxPlayers: 2 });
       const gameB = await service.createGame(p3, { maxPlayers: 2 });
-      await service.armTurnTimer(gameA.id, 1_000);
-      await service.armTurnTimer(gameB.id, 1_000);
+      await service.joinGame(gameA.id, p2);
+      await service.joinGame(gameB.id, p4);
+      await service.startGame(gameA.id, p1);
+      await service.startGame(gameB.id, p3);
+      expect(timers.size).toBe(2);
 
       const finished = await service.finishGame(gameA.id);
 
       expect(finished.status).toBe('finished');
+      expect(finished.turnDeadlineAt).toBeUndefined();
       expect(timers.has(gameA.id)).toBe(false);
       expect(timers.has(gameB.id)).toBe(true);
-      await expect(service.joinGame(gameA.id, p2)).rejects.toThrow(GameFinishedError);
+      await expect(service.joinGame(gameA.id, p5)).rejects.toThrow(GameFinishedError);
 
-      const afterB = await service.joinGame(gameB.id, p4);
-      expect(afterB.status).toBe('waiting');
-      expect(afterB.players).toHaveLength(2);
+      const afterB = await service.getGameForPlayer(gameB.id, p4);
+      expect(afterB.status).toBe('in_progress');
+      expect(afterB.turnDeadlineAt).toBeDefined();
       expect(await service.findActiveGamesForPlayer(p1)).toEqual([]);
     });
   });

@@ -1,42 +1,47 @@
 import type { Card } from '../cards/card';
-import type { RandomSource } from '../cards/random-source';
-import type { PlayerId } from '../game/game-id';
-import type { WinCondition } from './win-conditions';
 
 /**
- * Règles CERTAINES (documents concordants), codées en dur dans le moteur.
- * Voir docs/game-domain.md, matrice des règles.
+ * Règles du Ter codées en dur dans le moteur (D-035, socle de vérité). Les règles qui se
+ * jouent coup par coup sont regroupées dans un TerRuleSet (OFFICIAL_TER_RULES en
+ * production, official-rules.ts) pour rester testables isolément.
  */
-export const HAND_SIZE = 5; // spec §2.2
-export const TRICKS_PER_GAME = 5; // spec §2.4 « Le jeu se déroule en 5 tours »
-export const MAX_FLEES_PER_GAME = 1; // spec §2.5
+export const HAND_SIZE = 5; // décision 26
 
-/** Deux cartes sont-elles « de même couleur » ? Sens non tranché (R-08). */
+/**
+ * Distribution en deux passages (décisions 27-28) : chaque joueur reçoit d'abord un lot de
+ * 3 cartes, l'un après l'autre dans l'ordre antihoraire à partir de J1, puis un lot de 2
+ * cartes dans le même ordre. Total = HAND_SIZE. Aucune pioche ensuite (décisions 29-31).
+ */
+export const DEAL_PASSES: readonly number[] = [3, 2];
+export const TRICKS_PER_GAME = 5; // décision 35
+export const MAX_FLEES_PER_GAME = 1; // un seul joueur peut fuir par partie
+
+/**
+ * Le 5e tour se joue AUTOMATIQUEMENT : chaque joueur actif n'a plus qu'une carte, elle est
+ * jouée par le système dès la fin du 4e tour, sans action ni timer.
+ */
+export const AUTOMATIC_TRICK_NUMBER = 5;
+
+/** Temps maximal du joueur attendu pour jouer sa carte (D-034). */
+export const TURN_DURATION_MS = 10_000;
+
+/** Deux cartes sont-elles « de même couleur » ? Officiellement : même famille (D-035). */
 export type ColorEquivalence = (a: Card, b: Card) => boolean;
-
-/** Ordre de distribution ; le premier de la liste est le premier servi (R-17). */
-export type DealOrderPolicy = (playerIds: readonly PlayerId[], random: RandomSource) => PlayerId[];
-
-/**
- * Ordre de jeu d'un tour à partir de son meneur, parmi les joueurs encore en jeu
- * (`activeDealOrder`, dans l'ordre de distribution). Sens non défini (R-28).
- */
-export type PlayOrderPolicy = (
-  activeDealOrder: readonly PlayerId[],
-  leaderId: PlayerId,
-) => PlayerId[];
 
 export interface CardPlayContext {
   card: Card;
   hand: readonly Card[];
-  /** Première carte du tour en cours (absente si le joueur ouvre le tour). */
+  /**
+   * Première carte du tour en cours, posée par le meneur (absente s'il ouvre le tour) :
+   * c'est la carte de contrôle du DÉBUT du tour, dont la famille s'impose (décision 46).
+   */
   leadCard?: Card;
-  /** Carte qui détient le contrôle dans le tour en cours. */
+  /** Carte qui détient le contrôle à cet instant du tour. */
   controlCard?: Card;
   sameColor: ColorEquivalence;
 }
 
-/** Une carte de la main est-elle jouable ? Obligation de suivre non définie (R-03). */
+/** Une carte de la main est-elle jouable ? (décisions 46-47, 50) */
 export type CardPlayabilityPolicy = (context: CardPlayContext) => boolean;
 
 export interface PlayerProgress {
@@ -46,24 +51,16 @@ export interface PlayerProgress {
   trickNumber: number;
 }
 
-/** Le joueur peut-il déclarer une main gagnante maintenant ? (R-07) */
+/** Le joueur peut-il déclarer sa main gagnante maintenant ? */
 export type WinDeclarationWindow = (progress: PlayerProgress) => boolean;
 
-/** Le joueur peut-il encore fuir ? Deux formulations contradictoires (R-05). */
+/** Le joueur peut-il encore fuir ? */
 export type FleeEligibility = (progress: PlayerProgress) => boolean;
 
-/**
- * Jeu de règles d'une partie. Chaque champ correspond à une règle AMBIGUË des
- * documents : aucune valeur par défaut n'est fournie. Des interprétations
- * candidates existent dans rule-candidates.ts, mais choisir l'une d'elles est une
- * décision métier à consigner dans docs/decisions.md.
- */
+/** Règles coup par coup d'une partie. Production : OFFICIAL_TER_RULES. */
 export interface TerRuleSet {
   sameColor: ColorEquivalence;
-  dealOrder: DealOrderPolicy;
-  playOrder: PlayOrderPolicy;
   cardPlayability: CardPlayabilityPolicy;
   winDeclarationWindow: WinDeclarationWindow;
-  instantWinConditions: readonly WinCondition[];
   fleeEligibility: FleeEligibility;
 }

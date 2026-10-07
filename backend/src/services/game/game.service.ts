@@ -1,32 +1,48 @@
 import { randomUUID } from 'node:crypto';
 
 import type { RandomSource } from '../../domain/cards/random-source';
-import {
-  MAX_PLAYERS,
-  MIN_PLAYERS,
-  RECENT_COMMANDS_LIMIT,
-  isActive,
-  type Game,
-} from '../../domain/game/game';
+import { ALLOWED_MAX_PLAYERS, RECENT_COMMANDS_LIMIT, type Game } from '../../domain/game/game';
 import { assertPlayerInGame } from '../../domain/game/game-access';
+import { InvalidCardError } from '../../domain/cards/card';
 import {
+  GameAccessDeniedError,
   GameFinishedError,
   GameFullError,
   GameNotFoundError,
   GameNotJoinableError,
   GameVersionConflictError,
   InvalidPlayerCountError,
+  FirstPlayerNotInGameError,
+  GameRuleViolationError,
+  GameStartForbiddenError,
+  IdempotencyKeyReuseError,
   ParticipationRefusedError,
+  TurnExpiredError,
 } from '../../domain/game/game-errors';
+import {
+  LowestCardAutomaticSelectionStrategy,
+  type AutomaticCardSelectionStrategy,
+} from '../../domain/game/automatic-card-selection';
 import type { GameEvent, GameEventDraft } from '../../domain/game/game-events';
 import type { GameId, PlayerId } from '../../domain/game/game-id';
 import { toPlayerView, type PlayerGameView } from '../../domain/game/game-view';
 import * as engine from '../../domain/game/ter-engine';
-import type { TerRuleSet } from '../../domain/rules/rule-set';
+import { OFFICIAL_TER_RULES } from '../../domain/rules/official-rules';
+import { TURN_DURATION_MS, type TerRuleSet } from '../../domain/rules/rule-set';
+import {
+  NotASessionMemberError,
+  SessionGameInProgressError,
+  type SessionId,
+} from '../../domain/sessions/session';
 import { assertValidStake } from '../../domain/rules/stake';
 import { UnresolvedRuleError } from '../../domain/rules/unresolved-rule';
 import { cryptoRandomSource } from '../../utils/crypto-random-source';
-import type { GameRepository } from '../../repositories/game.repository';
+import {
+  DuplicateCreationKeyError,
+  type GameRepository,
+  type TurnDeadline,
+} from '../../repositories/game.repository';
+import { BackgroundTasks } from '../../utils/background-tasks';
 import { KeyedSerialQueue } from '../../utils/keyed-serial-queue';
 import type { Logger } from '../../utils/logger';
 import type {
@@ -45,12 +61,37 @@ export interface ParticipationPolicy {
   canJoin(playerId: PlayerId, game: Game): Promise<boolean>;
 }
 
+/** Paramètres de création (R-23 : maxPlayers ∈ {2, 3, 4}). */
+export interface CreateGameOptions {
+  maxPlayers: number;
+  stakeAmount?: number;
+  /** Clé d'idempotence (en-tête Idempotency-Key). */
+  creationKey?: string;
+  /** Session de la partie (D-033) ; fournie par SessionService. */
+  sessionId?: SessionId;
+  /** J1 déterminé par la session (D-033). Par défaut : le créateur. */
+  firstPlayerId?: PlayerId;
+  /** Place du créateur à la table de la session. */
+  creatorTablePosition?: number;
+}
+
+/**
+ * Place d'un joueur ACTIF dans une session (D-033), ou null s'il n'en est pas membre
+ * actif. Port implémenté par le dépôt des sessions ; GameService ne connaît pas les
+ * sessions au-delà de cette question.
+ */
+export interface SessionSeatLookup {
+  activeSeat(sessionId: SessionId, playerId: PlayerId): Promise<number | null>;
+}
+
 /** Métadonnées de toute commande client. */
 export interface CommandMeta {
   /** Identifiant unique généré par le client : une double soumission est ignorée. */
   commandId?: string;
   /** Version de la partie connue du client : refus si l'état a changé entre-temps. */
   expectedVersion?: number;
+  /** Requête HTTP d'origine, pour relier les logs de la commande à la requête. */
+  requestId?: string;
 }
 
 export type { GameEventDraft };
@@ -78,14 +119,22 @@ export interface GameServiceDependencies {
   participationPolicy: ParticipationPolicy;
   logger: Logger;
   clock?: () => Date;
-  /**
-   * Règles du Ter. Plusieurs d'entre elles sont ambiguës (docs/TODO.md) : aucun jeu
-   * de règles de production n'existe encore. Sans lui, les commandes de jeu sont refusées.
-   */
+  /** Règles coup par coup. Par défaut : OFFICIAL_TER_RULES (D-035, socle de vérité). */
   rules?: TerRuleSet;
   /** Hasard du mélange. Par défaut : générateur cryptographique. */
   random?: RandomSource;
+  /** Obligatoire pour les parties rattachées à une session (D-033). */
+  sessionSeats?: SessionSeatLookup;
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034). */
+  turnDurationMs?: number;
+  /**
+   * Choix de la carte jouée automatiquement après TURN_TIMEOUT (tours 1 à 4). Par défaut :
+   * règle officielle D-036 (LowestCardAutomaticSelectionStrategy).
+   */
+  autoCardSelection?: AutomaticCardSelectionStrategy;
 }
+
+export type GameFinishedListener = (game: Game) => void;
 
 /**
  * Point d'entrée unique de toute modification d'une partie.
@@ -101,51 +150,185 @@ export interface GameServiceDependencies {
 export class GameService {
   private readonly queue = new KeyedSerialQueue<GameId>();
   private readonly clock: () => Date;
+  private readonly finishedListeners: GameFinishedListener[] = [];
+  private readonly background = new BackgroundTasks();
 
   constructor(private readonly deps: GameServiceDependencies) {
     this.clock = deps.clock ?? (() => new Date());
   }
 
+  /**
+   * Être prévenu, APRÈS enregistrement, de chaque partie qui se termine (SessionService
+   * ouvre alors la ronde Poursuivre/Quitter). Une erreur de l'écouteur ne remonte jamais.
+   */
+  onGameFinished(listener: GameFinishedListener): void {
+    this.finishedListeners.push(listener);
+  }
+
+  private get turnDurationMs(): number {
+    return this.deps.turnDurationMs ?? TURN_DURATION_MS;
+  }
+
+  /** Crée une partie (sans clé d'idempotence). Voir `createGameIdempotent`. */
   async createGame(
     creatorId: PlayerId,
-    options: { maxPlayers: number; stakeAmount?: number },
+    options: CreateGameOptions,
+    meta: Pick<CommandMeta, 'requestId'> = {},
   ): Promise<Game> {
-    const { maxPlayers, stakeAmount } = options;
-    if (!Number.isInteger(maxPlayers) || maxPlayers < MIN_PLAYERS || maxPlayers > MAX_PLAYERS) {
+    return (await this.createGameIdempotent(creatorId, options, meta)).game;
+  }
+
+  /**
+   * Crée une partie dont `creatorId` est le premier joueur (D-031).
+   *
+   * - Capacité : 2, 3 ou 4 joueurs (R-23), c'est un maximum.
+   * - R-18 : refusé si le créateur est déjà membre d'une partie active (garanti en base).
+   * - Idempotence : une `creationKey` déjà utilisée par ce créateur renvoie la partie
+   *   existante (`replayed: true`) au lieu d'en créer une seconde, y compris si deux
+   *   requêtes identiques arrivent en même temps. Réutiliser la clé pour une création
+   *   différente est refusé (IdempotencyKeyReuseError).
+   */
+  async createGameIdempotent(
+    creatorId: PlayerId,
+    options: CreateGameOptions,
+    meta: Pick<CommandMeta, 'requestId'> = {},
+  ): Promise<{ game: Game; replayed: boolean }> {
+    const log = this.deps.logger.child({
+      playerId: creatorId,
+      action: 'CREATE_GAME',
+      requestId: meta.requestId,
+    });
+    try {
+      return await this.create(creatorId, options, log);
+    } catch (err) {
+      logRejection(log, {}, err);
+      throw err;
+    }
+  }
+
+  private async create(
+    creatorId: PlayerId,
+    options: CreateGameOptions,
+    log: Logger,
+  ): Promise<{ game: Game; replayed: boolean }> {
+    // Requête rejouée : la partie existe déjà, on la renvoie (avant le contrôle R-18,
+    // qui refuserait sinon : le créateur est justement membre de cette partie).
+    const replayed = await this.findCreationReplay(creatorId, options, log);
+    if (replayed) {
+      return { game: replayed, replayed: true };
+    }
+    let game: Game;
+    try {
+      game = await this.prepareNewGame(creatorId, options);
+      await this.deps.repository.insert(game);
+    } catch (err) {
+      // Même clé envoyée en même temps : l'autre requête a créé la partie (clé déjà prise,
+      // ou R-18 parce que le créateur est déjà dans cette partie). On la renvoie.
+      if (err instanceof DuplicateCreationKeyError || err instanceof ParticipationRefusedError) {
+        const existing = await this.findCreationReplay(creatorId, options, log);
+        if (existing) {
+          return { game: existing, replayed: true };
+        }
+      }
+      throw err;
+    }
+    this.announceCreated(game, log);
+    return { game, replayed: false };
+  }
+
+  /**
+   * Partie déjà créée par ce joueur avec cette clé d'idempotence (D-031), ou undefined.
+   * La même clé pour d'autres paramètres → IdempotencyKeyReuseError.
+   */
+  async findCreationReplay(
+    creatorId: PlayerId,
+    options: CreateGameOptions,
+    log: Logger = this.deps.logger,
+  ): Promise<Game | undefined> {
+    if (!options.creationKey) {
+      return undefined;
+    }
+    const existing = await this.deps.repository.findByCreationKey(creatorId, options.creationKey);
+    if (!existing) {
+      return undefined;
+    }
+    if (
+      existing.maxPlayers !== options.maxPlayers ||
+      existing.stakeAmount !== options.stakeAmount ||
+      (options.sessionId !== undefined && existing.sessionId !== options.sessionId)
+    ) {
+      throw new IdempotencyKeyReuseError(existing.id);
+    }
+    log.info('game creation replayed', { gameId: existing.id, version: existing.version });
+    return existing;
+  }
+
+  /**
+   * Construit une partie NEUVE (non enregistrée) : capacité 2/3/4 (R-23), mise valide,
+   * créateur premier membre, J1 (D-033), et contrôle R-18 préalable. Utilisée par
+   * `createGame` et par SessionService, qui l'enregistre avec sa session en une transaction.
+   */
+  async prepareNewGame(creatorId: PlayerId, options: CreateGameOptions): Promise<Game> {
+    const { maxPlayers, stakeAmount, creationKey, sessionId, creatorTablePosition } = options;
+    if (!(ALLOWED_MAX_PLAYERS as readonly number[]).includes(maxPlayers)) {
       throw new InvalidPlayerCountError(maxPlayers);
     }
     if (stakeAmount !== undefined) {
       assertValidStake(stakeAmount);
     }
-
     const now = this.clock();
     const game: Game = {
       id: this.deps.repository.nextId(),
+      ...(sessionId && { sessionId }),
+      firstPlayerId: options.firstPlayerId ?? creatorId,
       version: 1,
       status: 'waiting',
       creatorId,
       maxPlayers,
       ...(stakeAmount !== undefined && { stakeAmount }),
       // Le créateur est ajouté à la partie (diagramme « création de partie »).
-      players: [{ playerId: creatorId, seat: 0, joinedAt: now }],
+      players: [
+        {
+          playerId: creatorId,
+          seat: 0,
+          ...(creatorTablePosition !== undefined && { tablePosition: creatorTablePosition }),
+          joinedAt: now,
+        },
+      ],
       createdAt: now,
       updatedAt: now,
       recentCommandIds: [],
+      ...(creationKey && { creationKey }),
     };
-
     if (!(await this.deps.participationPolicy.canJoin(creatorId, structuredClone(game)))) {
       throw new ParticipationRefusedError(game.id, creatorId);
     }
+    return game;
+  }
 
-    await this.deps.repository.insert(game);
-    this.publish(game, [{ type: 'game:created', payload: { maxPlayers } }], creatorId);
-    this.deps.logger.info('game created', {
+  /** Diffuse `game:created` d'une partie qui vient d'être ENREGISTRÉE. */
+  announceCreated(game: Game, log: Logger = this.deps.logger): void {
+    this.publish(
+      game,
+      [
+        {
+          type: 'game:created',
+          payload: {
+            maxPlayers: game.maxPlayers,
+            ...(game.sessionId && { sessionId: game.sessionId }),
+            firstPlayerId: game.firstPlayerId,
+          },
+        },
+      ],
+      game.creatorId,
+    );
+    log.info('game created', {
       gameId: game.id,
-      playerId: creatorId,
+      sessionId: game.sessionId,
+      playerId: game.creatorId,
       action: 'CREATE_GAME',
       version: game.version,
     });
-    return game;
   }
 
   joinGame(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}): Promise<Game> {
@@ -165,7 +348,25 @@ export class GameService {
       if (!(await this.deps.participationPolicy.canJoin(playerId, structuredClone(game)))) {
         throw new ParticipationRefusedError(gameId, playerId);
       }
-      game.players.push({ playerId, seat: game.players.length, joinedAt: now });
+      // D-033 : seul un joueur actif de la session entre dans sa partie ; il y garde sa
+      // place de session (ordre antihoraire). Revérifié en base dans la transaction.
+      let tablePosition: number | undefined;
+      if (game.sessionId) {
+        if (!this.deps.sessionSeats) {
+          throw new Error('GameService : sessionSeats requis pour une partie de session');
+        }
+        const seat = await this.deps.sessionSeats.activeSeat(game.sessionId, playerId);
+        if (seat === null) {
+          throw new NotASessionMemberError(game.sessionId, playerId);
+        }
+        tablePosition = seat;
+      }
+      game.players.push({
+        playerId,
+        seat: game.players.length,
+        ...(tablePosition !== undefined && { tablePosition }),
+        joinedAt: now,
+      });
       return [{ type: 'game:player_joined', payload: { playerId, seat: game.players.length - 1 } }];
     });
   }
@@ -199,31 +400,239 @@ export class GameService {
   // --- Commandes du moteur de jeu -------------------------------------------
 
   /**
-   * Distribue les cartes et démarre la partie (table complète). Commande système :
-   * qui déclenche le démarrage (automatique ou créateur) reste à définir (R-23).
+   * Démarre la partie (R-23) : waiting → in_progress, une seule fois.
+   *
+   * - Seul le créateur démarre ; `actorId` vient du JWT (jamais du client).
+   * - Au moins 2 joueurs ; la capacité maximale n'est pas une condition.
+   * - Atomicité : file par partie sur une instance, version optimiste entre instances.
+   *   Deux démarrages simultanés produisent une seule transition et un seul `game:started` ;
+   *   l'autre reçoit GameAlreadyStartedError ou GameVersionConflictError.
+   * - La distribution (5 cartes en deux passages 3 + 2, sens antihoraire depuis J1), J1
+   *   et le contrôle initial sont fixés dans la même transition (D-032) : jamais de partie
+   *   in_progress aux mains incomplètes.
    */
-  startGame(gameId: GameId): Promise<Game> {
-    return this.mutate(gameId, 'START_GAME', undefined, {}, (game, { now }) =>
-      engine.startGame(game, { rules: this.requireRules(), random: this.random, now }),
+  startGame(gameId: GameId, actorId: PlayerId, meta: CommandMeta = {}): Promise<Game> {
+    return this.mutate(
+      gameId,
+      'START_GAME',
+      actorId,
+      meta,
+      (game, { now }) => {
+        if (game.creatorId !== actorId) {
+          throw new GameStartForbiddenError(gameId, actorId);
+        }
+        // Distribution, J1, contrôle et ordre du tour dans la même transition (D-032,
+        // D-033). Les règles encore ouvertes (R-03, R-08…) ne concernent que les coups.
+        return engine.startGame(game, {
+          rules: this.rules,
+          random: this.random,
+          now,
+          turnDurationMs: this.turnDurationMs,
+        });
+      },
+      true,
     );
   }
 
+  /**
+   * Coup d'un joueur. Le timer de tour fait autorité (D-034) : après l'échéance persistée
+   * (ou une fois TURN_TIMEOUT constaté), le coup du joueur attendu est refusé
+   * (TurnExpiredError) ; c'est au coup automatique de jouer.
+   */
   playCard(gameId: GameId, playerId: PlayerId, cardId: unknown, meta: CommandMeta = {}) {
-    return this.executePlayerCommand(gameId, playerId, 'PLAY_CARD', meta, (game, { now }) =>
-      engine.playCard(game, playerId, cardId, { rules: this.requireRules(), now }),
-    );
+    return this.executePlayerCommand(gameId, playerId, 'PLAY_CARD', meta, (game, { now }) => {
+      assertTurnNotExpired(game, playerId, now);
+      return engine.playCard(game, playerId, cardId, this.engineContext(now));
+    });
   }
 
   declareWin(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}) {
     return this.executePlayerCommand(gameId, playerId, 'DECLARE_WIN', meta, (game, { now }) =>
-      engine.declareWin(game, playerId, { rules: this.requireRules(), now }),
+      engine.declareWin(game, playerId, this.engineContext(now)),
     );
   }
 
   flee(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}) {
     return this.executePlayerCommand(gameId, playerId, 'FLEE', meta, (game, { now }) =>
-      engine.flee(game, playerId, { rules: this.requireRules(), now }),
+      engine.flee(game, playerId, this.engineContext(now)),
     );
+  }
+
+  // --- Timer de tour (D-034) --------------------------------------------------
+
+  /**
+   * TURN_TIMEOUT : commande système déclenchée par le timer de la partie (ou par la reprise
+   * après redémarrage). Elle passe par la file de la partie et relit l'état : elle n'a
+   * d'effet que si un tour est en cours, non encore expiré, ET que son échéance PERSISTÉE
+   * est atteinte. Deux déclenchements (deux timers, deux instances) n'en produisent qu'un :
+   * le second voit `turnTimedOutAt` déjà posé (ou perd sur la version). Puis le coup
+   * automatique est tenté.
+   *
+   * Le timeout ne fait ni quitter, ni éliminer, ni fermer quoi que ce soit.
+   */
+  async handleTurnTimeout(gameId: GameId): Promise<Game> {
+    // Une autre instance a écrit entre-temps (version) : on relit et on réévalue. Au pire,
+    // l'expiration a déjà été constatée ailleurs et cette commande devient sans effet.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.applyTurnTimeout(gameId);
+      } catch (err) {
+        if (!(err instanceof GameVersionConflictError) || attempt >= 3) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private async applyTurnTimeout(gameId: GameId): Promise<Game> {
+    let timedOutNow = false;
+    const game = await this.mutate(gameId, 'TURN_TIMEOUT', undefined, {}, (g, { now }) => {
+      const playerId = g.play?.nextPlayerId;
+      if (g.status !== 'in_progress' || !playerId || !g.turnDeadlineAt || g.turnTimedOutAt) {
+        return null;
+      }
+      if (now.getTime() < g.turnDeadlineAt.getTime()) {
+        return null; // Déclenchement anticipé : le timer est réarmé ci-dessous.
+      }
+      g.turnTimedOutAt = now;
+      timedOutNow = true;
+      return [
+        {
+          type: 'game:turn_timeout',
+          payload: {
+            playerId,
+            trickNumber: g.play?.trickNumber,
+            turnDeadlineAt: g.turnDeadlineAt.toISOString(),
+          },
+        },
+      ];
+    });
+    this.syncTurnTimer(game);
+    // Seul le déclenchement qui a constaté l'expiration enchaîne le coup automatique ; un
+    // doublon (autre timer, autre instance) s'arrête là.
+    if (timedOutNow && game.status === 'in_progress' && game.turnTimedOutAt) {
+      this.deps.logger.warn('TURN_TIMEOUT', {
+        gameId,
+        sessionId: game.sessionId,
+        playerId: game.play?.nextPlayerId,
+        version: game.version,
+        deadline: game.turnDeadlineAt?.toISOString(),
+        timeout: game.turnTimedOutAt.toISOString(),
+      });
+      return this.playAutomatically(game);
+    }
+    return game;
+  }
+
+  /** Reprise d'un coup automatique en attente (tour expiré avant un redémarrage). */
+  async retryAutomaticPlay(gameId: GameId): Promise<Game> {
+    const game = await this.load(gameId);
+    return game.status === 'in_progress' && game.turnTimedOutAt
+      ? this.playAutomatically(game)
+      : game;
+  }
+
+  /**
+   * Coup automatique après TURN_TIMEOUT. La carte est choisie par la stratégie (D-036 :
+   * plus petite carte de la famille du contrôle, sinon de la main), puis jouée par le MÊME
+   * chemin qu'un coup manuel : file de la partie, moteur (mêmes règles), version,
+   * enregistrement, puis événements. `commandId` déterministe par tour : idempotent.
+   */
+  private async playAutomatically(game: Game): Promise<Game> {
+    const play = game.play;
+    const playerId = play?.nextPlayerId;
+    if (!play || !playerId) {
+      return game;
+    }
+    const log = this.deps.logger.child({
+      gameId: game.id,
+      sessionId: game.sessionId,
+      playerId,
+      action: 'AUTO_CARD_PLAY',
+    });
+    let cardId: string;
+    try {
+      cardId = (this.deps.autoCardSelection ?? officialAutoCardSelection).selectCard({
+        gameId: game.id,
+        playerId,
+        hand: [...(play.hands[playerId] ?? [])],
+        trickNumber: play.trickNumber,
+        currentTrick: structuredClone(play.currentTrick),
+        controllerId: play.control.playerId,
+        ...(play.currentTrick[0] && { leadCardId: play.currentTrick[0].cardId }),
+        ...(play.control.cardId && { controlCardId: play.control.cardId }),
+      });
+    } catch (err) {
+      log.error('AUTO_CARD_PLAY strategy failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return game;
+    }
+    const commandId = `auto-play:${game.id}:${play.trickNumber}:${play.currentTrick.length}`;
+    try {
+      const after = await this.mutate(
+        game.id,
+        'AUTO_CARD_PLAY',
+        undefined,
+        { commandId },
+        (g, { now }) => {
+          // Le tour n'est plus celui qui a expiré (déjà joué ailleurs) : rien à faire.
+          if (
+            g.status !== 'in_progress' ||
+            !g.turnTimedOutAt ||
+            g.play?.nextPlayerId !== playerId
+          ) {
+            return null;
+          }
+          const trickNumber = g.play.trickNumber;
+          const events = engine.playCard(g, playerId, cardId, this.engineContext(now));
+          return [{ type: 'game:auto_card_played', payload: { playerId, trickNumber } }, ...events];
+        },
+      );
+      log.info('AUTO_CARD_PLAY', { commandId, version: after.version });
+      return after;
+    } catch (err) {
+      // Refus des règles ou concurrence : l'état reste celui du tour expiré.
+      log.warn('AUTO_CARD_PLAY rejected', {
+        commandId,
+        errorName: err instanceof Error ? err.name : typeof err,
+      });
+      return this.load(game.id);
+    }
+  }
+
+  /** Échéances de tour persistées (parties en cours), pour reconstruire les timers. */
+  findTurnDeadlines(): Promise<TurnDeadline[]> {
+    return this.deps.repository.findTurnDeadlines();
+  }
+
+  /**
+   * Arme (ou annule) le timer en mémoire de la partie d'après son échéance PERSISTÉE.
+   * Échéance déjà dépassée : déclenchement immédiat. Utilisé après chaque commande et à
+   * la reconstruction des timers après un redémarrage.
+   */
+  syncTurnTimer(game: Pick<Game, 'id' | 'status' | 'turnDeadlineAt' | 'turnTimedOutAt'>): void {
+    if (game.status !== 'in_progress' || !game.turnDeadlineAt || game.turnTimedOutAt) {
+      this.deps.timers.cancel(game.id);
+      return;
+    }
+    const delay = game.turnDeadlineAt.getTime() - this.clock().getTime();
+    this.deps.timers.schedule(game.id, delay, () => {
+      this.background.run(() =>
+        this.handleTurnTimeout(game.id).catch((err: unknown) => {
+          this.deps.logger.error('turn timeout failed', {
+            gameId: game.id,
+            action: 'TURN_TIMEOUT',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }),
+      );
+    });
+  }
+
+  /** Attend la fin des commandes déclenchées par les timers (arrêt du serveur, tests). */
+  idle(): Promise<void> {
+    return this.background.idle();
   }
 
   /**
@@ -237,51 +646,111 @@ export class GameService {
       }
       g.status = 'finished';
       g.finishedAt = now;
-      g.turnDeadlineAt = undefined;
+      g.endReason = 'ADMIN_STOP';
+      engine.clearTurn(g);
       if (g.play) {
         g.play.nextPlayerId = undefined;
       }
-      return [{ type: 'game:finished' }];
+      return [{ type: 'game:finished', payload: { endReason: 'ADMIN_STOP' } }];
     });
   }
 
+  // --- Reprise immédiate après égalité de priorité (D-035, décisions 17 et 23) ---------
+
+  /** Partie telle qu'enregistrée (lecture interne pour SessionService). */
+  findGame(gameId: GameId): Promise<Game | null> {
+    return this.deps.repository.findById(gameId);
+  }
+
   /**
-   * Arme le timer de tour de cette partie. La durée est fournie par l'appelant
-   * (règle à clarifier, R-06). À l'expiration, l'événement passe par la file
-   * de la partie et n'a d'effet que si l'état n'a pas changé depuis l'armement.
+   * Construit, sans rien enregistrer, la partie qui REJOUE une partie annulée pour égalité
+   * de priorité : même session, même J1, mêmes joueurs présents à leurs sièges, nouveau
+   * mélange des 31 cartes, nouvelle distribution et nouvelle analyse des mains. Pure et
+   * synchrone : SessionService l'appelle sous le verrou de la session. La partie renvoyée
+   * est déjà démarrée (ou déjà terminée si la nouvelle donne finit elle-même la partie).
    */
-  async armTurnTimer(gameId: GameId, delayMs: number): Promise<Game> {
-    const game = await this.mutate(gameId, 'ARM_TURN_TIMER', undefined, {}, (g, { now }) => {
-      if (!isActive(g)) {
-        throw new GameFinishedError(gameId);
-      }
-      g.turnDeadlineAt = new Date(now.getTime() + delayMs);
-      return [];
+  buildReplayGame(
+    previous: Game,
+    playerIds: readonly PlayerId[],
+    now: Date,
+  ): { game: Game; events: GameEventDraft[] } {
+    const players = previous.players
+      .filter((p) => playerIds.includes(p.playerId))
+      .map((p, seat) => ({
+        playerId: p.playerId,
+        seat,
+        ...(p.tablePosition !== undefined && { tablePosition: p.tablePosition }),
+        joinedAt: now,
+      }));
+    const game: Game = {
+      id: this.deps.repository.nextId(),
+      ...(previous.sessionId && { sessionId: previous.sessionId }),
+      firstPlayerId: previous.firstPlayerId,
+      version: 1,
+      status: 'waiting',
+      creatorId: previous.creatorId,
+      maxPlayers: previous.maxPlayers,
+      ...(previous.stakeAmount !== undefined && { stakeAmount: previous.stakeAmount }),
+      players,
+      createdAt: now,
+      updatedAt: now,
+      recentCommandIds: [],
+      replayOfGameId: previous.id,
+    };
+    const events = engine.startGame(game, {
+      rules: this.rules,
+      random: this.random,
+      now,
+      turnDurationMs: this.turnDurationMs,
     });
-    const armedVersion = game.version;
-    this.deps.timers.schedule(gameId, delayMs, () => {
-      this.onTurnTimeout(gameId, armedVersion).catch((err: unknown) => {
-        this.deps.logger.error('turn timeout failed', {
-          gameId,
-          action: 'TURN_TIMEOUT',
-          error: String(err),
-        });
-      });
+    return {
+      game,
+      events: [
+        {
+          type: 'game:created',
+          payload: {
+            maxPlayers: game.maxPlayers,
+            ...(game.sessionId && { sessionId: game.sessionId }),
+            firstPlayerId: game.firstPlayerId,
+            replayOfGameId: previous.id,
+          },
+        },
+        ...events,
+      ],
+    };
+  }
+
+  /**
+   * Après l'enregistrement d'une partie rejouée : diffusion de ses événements, timer du
+   * premier tour, et notification si la nouvelle donne termine déjà la partie (nouvelle
+   * égalité → nouvelle reprise ; victoire automatique → Poursuivre/Quitter).
+   */
+  announceInserted(game: Game, events: GameEventDraft[]): void {
+    this.publish(game, events, undefined);
+    this.syncTurnTimer(game);
+    this.deps.logger.info('GAME_REPLAYED', {
+      gameId: game.id,
+      sessionId: game.sessionId,
+      replayOfGameId: game.replayOfGameId,
+      version: game.version,
+      status: game.status,
     });
-    return game;
+    if (game.status === 'finished') {
+      this.notifyFinished(game);
+    }
   }
 
   /** État d'une partie vu par un de ses joueurs (lecture, reconnexion). */
   async getGameForPlayer(gameId: GameId, playerId: PlayerId): Promise<PlayerGameView> {
     const game = await this.load(gameId);
     assertPlayerInGame(game, playerId);
-    return toPlayerView(game, playerId);
+    return toPlayerView(game, playerId, this.rules);
   }
 
   /** Parties actives d'un joueur, pour le reprendre là où il en était après une reconnexion. */
   async findActiveGamesForPlayer(playerId: PlayerId): Promise<PlayerGameView[]> {
     const games = await this.deps.repository.findActiveByPlayer(playerId);
-    return games.map((g) => toPlayerView(g, playerId));
+    return games.map((g) => toPlayerView(g, playerId, this.rules));
   }
 
   /**
@@ -298,18 +767,6 @@ export class GameService {
     return this.deps.subscriber.subscribe(gameId, playerId, listener);
   }
 
-  private async onTurnTimeout(gameId: GameId, armedVersion: number): Promise<void> {
-    await this.mutate(gameId, 'TURN_TIMEOUT', undefined, {}, (g) => {
-      // Timer périmé : l'état a évolué depuis l'armement, ou la partie est finie.
-      if (g.version !== armedVersion || !isActive(g)) {
-        return null;
-      }
-      g.turnDeadlineAt = undefined;
-      // La conséquence (tour passé ou carte jouée automatiquement) reste à définir (R-06).
-      return [{ type: 'game:turn_timeout' }];
-    });
-  }
-
   private mutate(
     gameId: GameId,
     action: string,
@@ -319,60 +776,105 @@ export class GameService {
     requireMember = false,
   ): Promise<Game> {
     return this.queue.run(gameId, async () => {
-      const log = this.deps.logger.child({ gameId, playerId: actorId, action });
-      const current = await this.load(gameId);
-
-      // Contrôle d'accès en premier, sur l'état réel : même une commande
-      // dupliquée ou périmée d'un non-membre est refusée.
-      if (requireMember) {
-        if (!actorId) {
-          throw new Error(`Commande ${action} sans acteur`);
-        }
-        assertPlayerInGame(current, actorId);
+      const log = this.deps.logger.child({
+        gameId,
+        playerId: actorId,
+        action,
+        requestId: meta.requestId,
+      });
+      try {
+        return await this.apply(gameId, action, actorId, meta, handler, requireMember, log);
+      } catch (err) {
+        logRejection(log, meta, err);
+        throw err;
       }
-
-      if (meta.commandId && current.recentCommandIds.includes(meta.commandId)) {
-        log.info('duplicate command ignored', { commandId: meta.commandId });
-        return current;
-      }
-      if (meta.expectedVersion !== undefined && meta.expectedVersion !== current.version) {
-        throw new GameVersionConflictError(gameId, meta.expectedVersion, current.version);
-      }
-
-      const next = structuredClone(current);
-      const now = this.clock();
-      const drafts = await handler(next, { actorId, now });
-      if (drafts === null) {
-        return current;
-      }
-
-      next.version = current.version + 1;
-      next.updatedAt = now;
-      if (meta.commandId) {
-        next.recentCommandIds = [...next.recentCommandIds, meta.commandId].slice(
-          -RECENT_COMMANDS_LIMIT,
-        );
-      }
-
-      await this.deps.repository.save(next, current.version);
-      if (next.status === 'finished') {
-        this.deps.timers.cancel(gameId); // Une partie terminée ne garde aucun timer.
-      }
-      this.publish(next, drafts, actorId);
-      log.info('game command applied', { version: next.version, commandId: meta.commandId });
-      return next;
     });
+  }
+
+  /** Cycle d'une commande, exécuté dans la file de la partie. */
+  private async apply(
+    gameId: GameId,
+    action: string,
+    actorId: PlayerId | undefined,
+    meta: CommandMeta,
+    handler: GameCommandHandler,
+    requireMember: boolean,
+    log: Logger,
+  ): Promise<Game> {
+    const current = await this.load(gameId);
+
+    // Contrôle d'accès en premier, sur l'état réel : même une commande
+    // dupliquée ou périmée d'un non-membre est refusée.
+    if (requireMember) {
+      if (!actorId) {
+        throw new Error(`Commande ${action} sans acteur`);
+      }
+      assertPlayerInGame(current, actorId);
+    }
+
+    if (meta.commandId && current.recentCommandIds.includes(meta.commandId)) {
+      log.info('duplicate command ignored', { commandId: meta.commandId });
+      return current;
+    }
+    if (meta.expectedVersion !== undefined && meta.expectedVersion !== current.version) {
+      throw new GameVersionConflictError(gameId, meta.expectedVersion, current.version);
+    }
+
+    const next = structuredClone(current);
+    const now = this.clock();
+    const drafts = await handler(next, { actorId, now });
+    if (drafts === null) {
+      return current;
+    }
+
+    next.version = current.version + 1;
+    next.updatedAt = now;
+    if (meta.commandId) {
+      next.recentCommandIds = [...next.recentCommandIds, meta.commandId].slice(
+        -RECENT_COMMANDS_LIMIT,
+      );
+    }
+
+    await this.deps.repository.save(next, current.version);
+    // À partir d'ici la commande est enregistrée : plus rien ne doit la faire échouer.
+    // Timer de tour : réarmé sur la nouvelle échéance, annulé si la partie est finie.
+    this.syncTurnTimer(next);
+    this.publish(next, drafts, actorId);
+    log.info('game command applied', {
+      sessionId: next.sessionId,
+      version: next.version,
+      commandId: meta.commandId,
+      ...(next.turnDeadlineAt && { deadline: next.turnDeadlineAt.toISOString() }),
+    });
+    if (current.status !== 'finished' && next.status === 'finished') {
+      this.notifyFinished(next);
+    }
+    return next;
+  }
+
+  private notifyFinished(game: Game): void {
+    for (const listener of this.finishedListeners) {
+      try {
+        listener(structuredClone(game));
+      } catch (err) {
+        this.deps.logger.error('game finished listener failed', {
+          gameId: game.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  private engineContext(now: Date): engine.EngineContext {
+    return { rules: this.rules, now, turnDurationMs: this.turnDurationMs };
+  }
+
+  private get rules(): TerRuleSet {
+    return this.deps.rules ?? OFFICIAL_TER_RULES;
   }
 
   private get random(): RandomSource {
     return this.deps.random ?? cryptoRandomSource;
-  }
-
-  private requireRules(): TerRuleSet {
-    if (!this.deps.rules) {
-      throw new UnresolvedRuleError('RULESET', 'aucun jeu de règles du Ter configuré');
-    }
-    return this.deps.rules;
   }
 
   private async load(gameId: GameId): Promise<Game> {
@@ -383,23 +885,94 @@ export class GameService {
     return game;
   }
 
+  /**
+   * Diffuse les événements d'une commande DÉJÀ enregistrée. Une erreur de diffusion
+   * (abonné défaillant, transport) est journalisée mais ne remonte jamais : le client
+   * rattrape l'état grâce à la version (D-024).
+   */
   private publish(game: Game, drafts: GameEventDraft[], actorId: PlayerId | undefined): void {
-    for (const draft of drafts) {
+    drafts.forEach((draft, sequence) => {
       const event: GameEvent = {
         eventId: randomUUID(),
         gameId: game.id,
         version: game.version,
+        sequence,
         type: draft.type,
         occurredAt: game.updatedAt.toISOString(),
         actorId,
         // Copie : un abonné ne peut pas modifier l'état de la partie via un événement.
         payload: structuredClone(draft.payload ?? {}),
       };
-      if (draft.recipientId) {
-        this.deps.publisher.publishToPlayer(draft.recipientId, event);
-      } else {
-        this.deps.publisher.publishToGame(event);
+      try {
+        if (draft.recipientId) {
+          this.deps.publisher.publishToPlayer(draft.recipientId, event);
+        } else {
+          this.deps.publisher.publishToGame(event);
+        }
+      } catch (err) {
+        this.deps.logger.error('game event publish failed', {
+          gameId: game.id,
+          version: game.version,
+          type: event.type,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-    }
+    });
+  }
+}
+
+/**
+ * Refus attendus (règle du jeu, accès, concurrence, entrée invalide) : `warn`, sans
+ * recopier le message, qui peut nommer une carte. Tout le reste est une panne : `error`.
+ */
+const EXPECTED_REJECTIONS: readonly (abstract new (...args: never[]) => Error)[] = [
+  GameRuleViolationError,
+  GameNotFoundError,
+  GameAccessDeniedError,
+  GameVersionConflictError,
+  GameFullError,
+  GameNotJoinableError,
+  GameFinishedError,
+  ParticipationRefusedError,
+  GameStartForbiddenError,
+  IdempotencyKeyReuseError,
+  InvalidPlayerCountError,
+  InvalidCardError,
+  UnresolvedRuleError,
+  FirstPlayerNotInGameError,
+  NotASessionMemberError,
+  SessionGameInProgressError,
+];
+
+/** Coup automatique officiel après TURN_TIMEOUT (D-036). */
+const officialAutoCardSelection = new LowestCardAutomaticSelectionStrategy();
+
+/** Le joueur attendu ne joue plus après l'échéance persistée (D-034). */
+function assertTurnNotExpired(game: Game, playerId: PlayerId, now: Date): void {
+  if (game.status !== 'in_progress' || game.play?.nextPlayerId !== playerId) {
+    return; // Les autres refus (pas son tour, pas démarrée…) relèvent du moteur.
+  }
+  if (
+    game.turnTimedOutAt ||
+    (game.turnDeadlineAt && now.getTime() >= game.turnDeadlineAt.getTime())
+  ) {
+    throw new TurnExpiredError(game.id, playerId);
+  }
+}
+
+function logRejection(log: Logger, meta: CommandMeta, err: unknown): void {
+  const expected = EXPECTED_REJECTIONS.some((type) => err instanceof type);
+  const context = {
+    commandId: meta.commandId,
+    expectedVersion: meta.expectedVersion,
+    errorName: err instanceof Error ? err.name : typeof err,
+  };
+  if (expected) {
+    log.warn('game command rejected', context);
+  } else {
+    log.error('game command rejected', {
+      ...context,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }

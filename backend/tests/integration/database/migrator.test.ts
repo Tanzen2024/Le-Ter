@@ -1,9 +1,12 @@
 import { PGlite } from '@electric-sql/pglite';
 
 import { loadMigrations, runMigrations, type Migration } from '../../../src/database/migrator';
-import { pgliteSqlClient } from '../../fixtures/pglite';
+import { PGLITE_TIMEOUT_MS, pgliteSqlClient } from '../../fixtures/pglite';
 
 const migration = (name: string, sql: string): Migration => ({ name, sql, checksum: `sum-${sql}` });
+
+// Chaque test démarre une base PGlite neuve (voir PGLITE_TIMEOUT_MS).
+jest.setTimeout(PGLITE_TIMEOUT_MS);
 
 describe('runMigrations', () => {
   let db: PGlite;
@@ -25,7 +28,17 @@ describe('runMigrations', () => {
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' ORDER BY table_name`,
     );
-    expect(rows.map((r) => r.table_name)).toEqual(['game_players', 'games', 'schema_migrations']);
+    expect(rows.map((r) => r.table_name)).toEqual([
+      'game_players',
+      'games',
+      'refresh_tokens',
+      'schema_migrations',
+      'session_decision_rounds',
+      'session_decisions',
+      'session_players',
+      'sessions',
+      'users',
+    ]);
   });
 
   it("n'applique que les nouvelles migrations, dans l'ordre", async () => {

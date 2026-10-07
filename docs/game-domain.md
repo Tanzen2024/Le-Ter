@@ -1,9 +1,10 @@
 # Domaine du jeu — moteur du Ter
 
 > Statut : moteur implémenté dans `backend/src/domain/` (octobre 2026).
-> Règle absolue : **aucune règle métier n'est inventée**. Les règles certaines sont codées ;
-> les règles ambiguës sont des **politiques injectées sans valeur par défaut** ; les situations
-> que les documents ne couvrent pas lèvent `UnresolvedRuleError` au lieu d'être devinées.
+> Règle absolue : **aucune règle métier n'est inventée**. Le **socle de vérité** (D-035, 52
+> décisions validées et leurs précisions) fait foi ; il est codé dans `OFFICIAL_TER_RULES`, le
+> moteur et `win-conditions.ts`. Les situations qu'il ne couvre pas lèvent `UnresolvedRuleError`
+> au lieu d'être devinées.
 
 ## 1. Matrice des règles
 
@@ -23,46 +24,50 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 | Figures (valet, dame, roi, as) | Spec §2.1 (absentes) | Aucune | CONFIRMÉ | Valeurs 3 à 10 uniquement |
 | Mélange | Note « Melanger cartes » | Fisher-Yates | CONFIRMÉ (recommandation) | `shuffleDeck` + `RandomSource` |
 | Nombre de joueurs | Spec §1 | 2, 3 ou 4 | CONFIRMÉ | `MIN_PLAYERS`, `MAX_PLAYERS` |
-| Démarrage | Séquence « création de partie » | Quand la table est complète (« en attente de (max−1) joueurs ») | CONFIRMÉ | `startGame` exige `players = maxPlayers` |
-| Qui déclenche le démarrage | — | Automatique ou créateur ? | NON DÉFINI (R-23) | Commande système `startGame` |
-| Distribution | Spec §2.2 | 5 cartes par joueur | CONFIRMÉ | `HAND_SIZE`, `dealCards` |
-| Mode de distribution | — | Une à une ou par paquets | Choix technique | Une à une (équivalent sur un paquet mélangé) |
-| Cartes restantes (talon) | — | 21, 16 ou 11 cartes : usage ? | NON DÉFINI (R-26) | Conservées dans `stock`, inutilisées, jamais exposées |
+| Démarrage | Décision R-23 (D-031) | Au moins 2 joueurs ; la capacité (2, 3 ou 4) est un maximum, pas une condition. Remplace l'ancienne lecture « table complète » | TRANCHÉ | `assertCanStart` |
+| Qui déclenche le démarrage | Décision R-23 (D-031) | Le créateur seul | TRANCHÉ | `GameService.startGame(gameId, actorId)` |
+| Distribution au démarrage | Décision C.2 (D-032) | Faite à chaque démarrage, dans la même transition | TRANCHÉ | `startGame` |
+| Distribution | Spec §2.2 | 5 cartes par joueur | CONFIRMÉ | `HAND_SIZE`, `dealInPasses` |
+| Mode de distribution | Décision C.2 (D-032) | Passage 1 : un lot de 3 cartes par joueur, l'un après l'autre ; passage 2 : un lot de 2, même ordre. Jamais carte par carte | TRANCHÉ | `DEAL_PASSES = [3, 2]`, `dealInPasses` |
+| Cartes restantes | Décision C.2 (D-032) | Ni pioche, ni accessibles, jamais utilisées ; aucun remplacement après un coup | TRANCHÉ (R-26) | `stock`, jamais exposé |
 | Premier joueur | Spec §2.2 | Le premier servi commence et a le contrôle | CONFIRMÉ | `control = dealOrder[0]` |
-| Choix du premier servi / donneur | Spec §2.2 | Non dit (rotation ?) | NON DÉFINI (R-17) | `DealOrderPolicy` |
+| Ordre de distribution | Décision C.3 (D-033) | Sens ANTIHORAIRE à partir de J1, identique aux deux passages | TRANCHÉ | `tableOrder` : places de session, `rotateFrom(J1)` |
+| Qui est J1 (premier servi) | Décision C.3 (D-033) | 1re partie : créateur de la session ; ensuite gagnant de la dernière partie terminée s'il est présent, sinon le suivant actif (antihoraire) | TRANCHÉ | `determineFirstPlayer`, `games.first_player_id` |
 | Nombre de tours | Spec §2.4, séquence | 5 tours | CONFIRMÉ | `TRICKS_PER_GAME` |
-| Contenu d'un tour | 5 cartes, 5 tours, séquence (une carte par itération) | Chaque joueur en jeu joue une carte | DÉDUIT (R-29) | `advance` |
+| Contenu d'un tour | Décision 36 (D-035) | Chaque joueur actif joue exactement une carte ; les fuyards sont ignorés | TRANCHÉ (R-29) | `advance` |
 | Manches | — | Aucune notion de manche au-dessus de la partie | Constat | Pas de modèle « Round » |
-| Meneur des tours 2 à 5 | §2.4 : référence = carte du contrôleur | Le contrôleur ouvre le tour | DÉDUIT (R-27) | `openTrick` |
-| Ordre de jeu dans un tour | — | Sens ? | NON DÉFINI (R-28) | `PlayOrderPolicy` |
-| Prise de contrôle | Spec §2.4 | Carte **supérieure** et **de même couleur** que celle du contrôleur | CONFIRMÉ | `applyControl` |
-| Sens de « couleur » | Spec §2.1, §2.4, §4 | Famille ou rouge/noir ? (couleur des étoiles inconnue) | AMBIGU (R-08) | `ColorEquivalence` |
-| Obligation de suivre | — | Non dite | NON DÉFINI (R-03) | `CardPlayabilityPolicy` |
+| Meneur des tours 2 à 5 | Décisions 38, 43 (D-035) | Le joueur qui a le contrôle à la fin du tour précédent ouvre le tour | TRANCHÉ (R-27) | `openTrick` |
+| Ordre de jeu dans un tour | Décisions 39-40 (D-035) | Antihoraire depuis le meneur (ex. J3 → J4 → J1 → J2), fuyards exclus | TRANCHÉ (R-28) | `openTrick` → `rotateFrom` |
+| Prise de contrôle | Décisions 41, 51-52 (D-035) | Seule une carte de la famille de la carte de contrôle du DÉBUT du tour (celle du meneur) et de valeur supérieure prend le contrôle ; en fin de tour, la plus haute carte de cette famille l'emporte (cartes des fuyards ignorées) ; sinon le contrôleur garde le contrôle ; il ne rejoue pas dans le tour | TRANCHÉ | `applyControl`, `trickController` |
+| Sens de « couleur » | Décisions 44-45 (D-035) | Même FAMILLE : ♥, ♠, ♣, ⭐ | TRANCHÉ (R-08) | `sameSuit` (`official-rules.ts`) |
+| Obligation de suivre | Décisions 46-47, 50 (D-035) | Qui possède la famille de la carte du meneur DOIT la jouer (même inférieure) ; sinon n'importe quelle carte. Le meneur est libre | TRANCHÉ (R-03) | `mustFollowLeadColorWhenPossible`, `playableCards` |
 | « Carte non jouable » | Scénario §5 | Le serveur vérifie et refuse | CONFIRMÉ | `CardNotPlayableError` |
-| Fin normale | Spec §1 + séquence | Celui qui a le contrôle à l'issue du 5e tour gagne | CONFIRMÉ | `CONTROL_AFTER_LAST_TRICK` |
+| Fin normale | Décision 35 (D-035) | Exactement 5 tours ; le 5e est joué AUTOMATIQUEMENT (chaque joueur actif a une seule carte) ; le contrôleur final gagne, sans confirmation | TRANCHÉ | `playLastTrickAutomatically`, `CONTROL_AFTER_LAST_TRICK` |
 | Visibilité | Spec §2.3 | Sa main seulement ; cartes jouées publiques | CONFIRMÉ | `toPlayerView`, `game:hand_dealt` privé |
 | Révélation en cas de gain instantané | Spec §2.3 | Toutes les mains sont révélées | CONFIRMÉ | `result.revealedHands` |
-| Déclaration de victoire | Séquence + scénario §6 | Le joueur la demande, le serveur vérifie | CONFIRMÉ | `declareWin` |
+| Égalité de priorité des mains instantanées | Décisions 17, 23 (D-035) | Aucun gagnant ; reprise immédiate dans une NOUVELLE partie de la même session, sans Poursuivre/Quitter : mêmes joueurs, mêmes sièges, même J1, nouveau mélange, répétée tant que l'égalité se reproduit | TRANCHÉ | `INSTANT_WIN_TIE`, `SessionService.ensureReplay`, `games.replay_of_game_id` |
+| Victoire instantanée | D-035 | Analyse SERVEUR des 5 cartes initiales de chaque joueur dès la distribution. Une seule main gagnante : bouton « Gagner instantanément » (facultatif). Plusieurs, meilleur rang unique : victoire automatique. Même meilleur rang : égalité, reprise immédiate. Toujours une victoire SIMPLE | TRANCHÉ (R-07, R-31) | `startGame`, `declareWin`, `resolveInstantWins` |
 | Main non gagnante | Séquence | Message, la partie continue | CONFIRMÉ | `NotAWinningHandError`, état inchangé |
-| Moment de la déclaration | — | Avant de jouer ? À tout moment ? | NON DÉFINI (R-07) | `WinDeclarationWindow` |
-| Trois 3 | Spec §4 | 3 cartes de valeur 3 | CONFIRMÉ | `threeThrees` |
-| Quatre de même valeur | Spec §4 | 4 cartes de même valeur (impossible pour 10) | CONFIRMÉ | `fourOfAValue` |
-| Cinq de même couleur | Spec §4 | 5 cartes de même couleur | CONFIRMÉ, « couleur » AMBIGU | `fiveSameColor(sameColor)` |
-| Somme | Spec §4 : ≤ 21 ; note `checkWinCondition` : ≥ 30 | Seuil et sens | CONTRADICTOIRE (R-01) | `sumThreshold({operator, threshold})`, sans valeur par défaut |
-| 7 + 7 + 4 + 3 | Spec §4 | Ne décrit que 4 cartes sur 5 | AMBIGU (R-04) | `twoSevensFourThree()` lève `UnresolvedRuleError` |
-| Trois + deux | Spec §4 | 3 d'une valeur + 2 d'une autre | CONFIRMÉ | `threeAndTwo` |
-| Trois 7 | Spec §4 | 3 cartes de valeur 7 | CONFIRMÉ | `threeSevens` |
-| Plusieurs conditions remplies | — | Laquelle afficher ? | NON DÉFINI (R-31) | Toutes listées dans `instantWinConditions` |
-| Fuite autorisée | Spec §2.5 : « pas joué plus d'une carte » ; séquence : « avant le 2e tour » | Deux formulations | CONTRADICTOIRE (R-05) | `FleeEligibility` |
+| Moment de la déclaration | D-035 | Tour 1, avant la première carte du joueur ; droit perdu ensuite | TRANCHÉ (R-07) | `declareBeforeFirstCard` |
+| Rang 6 : trois 3 | D-035 | 3 cartes de valeur 3 | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Rang 4 : quatre de même valeur | D-035 | 4 cartes de même valeur | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Rang 3 : cinq de même famille | D-035 | 5 cartes de la même famille | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Rang 2 : somme | D-035 | Somme des 5 cartes initiales ≤ 21 (la lecture « ≥ 30 » est écartée) | TRANCHÉ (R-01) | `INSTANT_WIN_CONDITIONS` |
+| 7 + 7 + 4 + 3 | D-035 | Ne fait pas partie des six combinaisons du socle | ÉCARTÉ (R-04) | Supprimé |
+| Rang 5 : trois + deux | D-035 | 3 cartes d'une valeur + 2 d'une autre | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Rang 1 : trois 7 | D-035 | 3 cartes de valeur 7, quelle que soit la famille | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Plusieurs combinaisons dans une main | D-035 | Le meilleur rang (le plus petit) est retenu | TRANCHÉ (R-31) | `bestInstantWin` |
+| Fuite autorisée | D-035 | Tour 1 seulement, avant la première carte du joueur ; le bouton disparaît ensuite | TRANCHÉ (R-05) | `fleeBeforeFirstCardOfFirstTrick` |
 | Fuites par partie | Spec §2.5 | Une au maximum | CONFIRMÉ | `MAX_FLEES_PER_GAME` |
-| Après une fuite | Séquence | La partie continue sans ce joueur | CONFIRMÉ | Le joueur est sauté |
-| Fuite du contrôleur, ou partie réduite à 1 joueur | — | Non dit | NON DÉFINI (R-30) | `UnresolvedRuleError` |
+| Après une fuite | D-035 | Le fuyard est inactif pour la partie (jamais rejoué, ses cartes jamais jouées), reste dans la session à son siège, joue la partie suivante ; sa main gagnante ne compte plus | TRANCHÉ | Joueur sauté, `instantWins` retiré |
+| Fuite du contrôleur | D-035 | Autorisée ; le joueur actif suivant (antihoraire) mène le tour (déduit des décisions 37-38) | TRANCHÉ (R-30, 1re partie) | `flee` |
+| Fuite qui laisserait un seul joueur (partie à 2) | — | Non dit | NON DÉFINI (R-30, 2e partie) | `UnresolvedRuleError` (501) |
 | Gagné simple | Spec §5.1 | Chaque perdant verse la mise | CONFIRMÉ | `stakeTransfers('SIMPLE', …)` |
 | Kora / Double Kora | Spec §5.2-5.3 | Déclencheur inconnu ; 200 / 300 pour une mise de 100 | AMBIGU (R-02) | `PayoutKind`, `KoraDetector` sans implémentation |
 | Le fuyard paie-t-il ? | — | Non dit | NON DÉFINI (R-05) | `fledPlayerIds` séparé dans le résultat |
 | Prélèvement du Katika | Spec §9 | « Pourcentage minimal » non chiffré | AMBIGU (R-09) | Non modélisé |
 | Unité de la mise | Spec §5 (FCFA) ; maquette (jetons) | FCFA ou jetons | AMBIGU (R-13) | `stakeAmount` entier, sans unité |
-| Minuteur | Scénario §5 ; séquence | Durée et effet | AMBIGU (R-06) | Registre par partie, effet non codé |
+| Minuteur | D-034 | 10 s par tour (tours 1 à 4) ; TURN_TIMEOUT puis coup automatique ; le 5e tour n'a pas de timer | TRANCHÉ (R-06), choix de la carte : voir D-036 | `handleTurnTimeout`, `AutomaticCardSelectionStrategy` |
 | Tournoi, jetons | Spec §14-15 | — | Hors périmètre | Non modélisé |
 
 ## 2. Modèle
@@ -79,8 +84,11 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 
 - `createDeck()` : les 31 cartes, dans l'ordre.
 - `shuffleDeck(cards, random)` : Fisher-Yates. Renvoie un nouveau tableau.
-- `dealCards(deck, dealOrder, handSize)` : distribue une carte à la fois, renvoie
-  `{ hands, stock }`. Si les cartes ne suffisent pas, `NotEnoughCardsError`.
+- `dealInPasses(deck, dealOrder, passes)` : distribution par lots (D-032). Pour chaque
+  passage, chaque joueur, dans l'ordre, reçoit d'un bloc `passes[i]` cartes du dessus du
+  paquet. Renvoie `{ hands, stock, sequence }`. Si les cartes ne suffisent pas,
+  `NotEnoughCardsError`.
+- `dealSequence(dealOrder, passes)` : la séquence publique des lots, sans aucune carte.
 - Hasard : interface `RandomSource`. En production, `cryptoRandomSource` (`crypto.randomInt`,
   sans biais), puisque de l'argent réel est en jeu. Dans les tests, des sources déterministes
   (`tests/fixtures/random.ts`), sans dépendance externe.
@@ -90,7 +98,8 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 - **User** : le compte. Il n'est pas modélisé dans le moteur, seulement référencé par `PlayerId`.
 - **PlayerInGame** (`players[]` d'une partie) : `{ playerId, seat, joinedAt, fledAt? }`. C'est la
   participation à **une** partie. Un même utilisateur a un `PlayerInGame` distinct par partie.
-  Le modèle autorise plusieurs participations ; la politique qui le permet ou non est R-18.
+  Plusieurs participations historiques sont possibles, mais une seule partie active à la fois
+  (R-18, D-031).
 
 ### Game (`domain/game/game.ts`)
 
@@ -107,7 +116,8 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 | `play.nextPlayerId` | Joueur attendu (scénario §5 : « joueur actif ») |
 | `result?` | Gagnant, méthode, conditions, mains révélées (§17, §2.3) |
 
-Cycle de vie : `waiting → in_progress → finished`. Il n'y a pas de statut `starting`, car la
+Cycle de vie : `waiting → in_progress → finished`, monotone (`isForwardTransition`, et garde
+SQL dans `PostgresGameRepository.save`). Il n'y a pas de statut `starting`, car la
 distribution est atomique. Il n'y a pas non plus de `cancelled`, `blocked` ni `suspended` : leurs
 effets ne sont pas définis (R-23, R-25).
 
@@ -140,9 +150,9 @@ produit un nouvel état et des événements.
 - `domain/game/ter-engine.ts` : `startGame`, `playCard`, `declareWin`, `flee`. Ce sont des
   fonctions déterministes (hasard et horloge injectés) qui modifient une **copie de travail**
   fournie par `GameService` et renvoient des `GameEventDraft`.
-- `domain/rules/rule-set.ts` : les constantes certaines (`HAND_SIZE`, `TRICKS_PER_GAME`,
-  `MAX_FLEES_PER_GAME`) et l'interface `TerRuleSet`, une politique par règle ambiguë :
-  `sameColor`, `dealOrder`, `playOrder`, `cardPlayability`, `winDeclarationWindow`,
+- `domain/rules/rule-set.ts` : les constantes certaines (`HAND_SIZE`, `DEAL_PASSES`,
+  `TRICKS_PER_GAME`, `MAX_FLEES_PER_GAME`) et l'interface `TerRuleSet`, une politique par
+  règle ambiguë : `sameColor`, `cardPlayability`, `winDeclarationWindow`,
   `instantWinConditions` et `fleeEligibility`.
 - `domain/rules/rule-candidates.ts` : des interprétations **candidates** pour chaque politique.
   Aucune n'est officielle ni utilisée par défaut.
@@ -175,16 +185,35 @@ Une commande refusée ne modifie rien : la copie de travail est jetée.
 
 | Événement | Diffusion | Charge utile |
 |---|---|---|
-| `game:started` | `game:{gameId}` | `dealOrder`, `controllerId`, `trickNumber`, `nextPlayerId` (aucune carte) |
-| `game:hand_dealt` | **privé**, au seul joueur concerné, dans cette partie | `cards` |
+| `game:started` | `game:{gameId}` | `dealOrder`, `firstPlayerId`, `controllerId`, `trickNumber`, `nextPlayerId`, `dealSequence` (lots, aucune carte), `turnStartedAt`, `turnDeadlineAt` |
+| `game:hand_dealt` | **privé**, au seul joueur concerné, dans cette partie | `cards`, `batches` (lot de 3, lot de 2) |
 | `game:card_played` | `game:{gameId}` | `playerId`, `cardId`, `trickNumber`, `tookControl`, `controllerId` |
 | `game:trick_completed` | `game:{gameId}` | `trickNumber`, `controllerId`, `plays` |
-| `game:turn_changed` | `game:{gameId}` | `trickNumber`, `nextPlayerId` |
+| `game:turn_changed` | `game:{gameId}` | `trickNumber`, `nextPlayerId`, `turnStartedAt`, `turnDeadlineAt` (10 s, D-034) |
+| `game:control_changed` | `game:{gameId}` | `controllerId`, `cardId`, `trickNumber` (prise de contrôle) |
+| `game:turn_timeout` | `game:{gameId}` | `playerId`, `trickNumber`, `turnDeadlineAt` — échéance constatée par le serveur |
+| `game:auto_card_played` | `game:{gameId}` | `playerId`, `trickNumber` ; suivi du `game:card_played` du coup automatique |
 | `game:player_fled` | `game:{gameId}` | `playerId` |
 | `game:finished` | `game:{gameId}` | `result` (mains révélées seulement en cas de gain instantané) |
 
 Les charges utiles sont copiées au moment de la diffusion : un abonné ne peut pas modifier
 l'état d'une partie.
+
+### Timer de tour et coup automatique (D-034, D-036)
+
+- Chaque nouveau joueur attendu reçoit `turnStartedAt` et `turnDeadlineAt` = début + 10 s
+  (`TURN_DURATION_MS`), fixés par le moteur et persistés avec la partie.
+- Après l'échéance, son coup est refusé (`TurnExpiredError`, 409 `TURN_EXPIRED`) ;
+  `GameService.handleTurnTimeout` enregistre `turnTimedOutAt` (TURN_TIMEOUT), une seule fois.
+- Le coup automatique passe par `AutomaticCardSelectionStrategy` puis par `engine.playCard`,
+  exactement comme un coup manuel. Stratégie officielle (D-036,
+  `LowestCardAutomaticSelectionStrategy`) : l'ouvreur du tour joue la plus petite carte de
+  sa main ; un joueur suivant qui possède la famille de la carte d'ouverture joue la plus
+  petite de cette famille, sinon la plus petite de sa main. Déterministe. Égalité de valeur
+  entre familles : départage technique PROVISOIRE, non validé par le métier
+  (`PROVISIONAL_TIE_BREAK_ORDER`, ordre de `SUITS`, TODO R-06). Le 5e tour n'utilise
+  pas de stratégie (carte unique jouée par le moteur). Le timeout ne fait ni fuir, ni
+  éliminer, ni terminer.
 
 ## 5. Isolation multi-parties
 

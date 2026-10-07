@@ -1,13 +1,17 @@
 import { GameVersionConflictError } from '../../../src/domain/game/game-errors';
 import type { GameEvent } from '../../../src/domain/game/game-events';
-import { PostgresGameRepository } from '../../../src/repositories/postgres-game.repository';
-import { GameService } from '../../../src/services/game/game.service';
 import { GameTimerRegistry } from '../../../src/services/game/game-timer-registry';
 import { silentLogger } from '../../../src/utils/logger';
 import { PubSubGameEventBus } from '../../../src/websocket/pubsub-game-event-bus';
-import { allowAllParticipation, player } from '../../fixtures/game-service.fixture';
+import { allowAllParticipation } from '../../fixtures/game-service.fixture';
+import { createSessionGameInstance } from '../../fixtures/session-games';
 import { flushPubSub, InMemoryPubSubBroker } from '../../fixtures/in-memory-pubsub';
-import { createMigratedDatabase, type TestDatabase } from '../../fixtures/pglite';
+import {
+  createMigratedDatabase,
+  PGLITE_TIMEOUT_MS,
+  type TestDatabase,
+} from '../../fixtures/pglite';
+import { seedUsers, testPlayerId } from '../../fixtures/users';
 
 /**
  * Architecture cible : plusieurs instances du backend, PostgreSQL comme source
@@ -18,38 +22,39 @@ let database: TestDatabase;
 let broker: InMemoryPubSubBroker;
 const timers: GameTimerRegistry[] = [];
 
-function startInstance(): GameService {
+function startInstance() {
   const bus = new PubSubGameEventBus(broker.connect(), silentLogger);
   const registry = new GameTimerRegistry();
   timers.push(registry);
-  return new GameService({
-    repository: new PostgresGameRepository(database.sql),
+  // Parcours réel (D-033) : créer ouvre une session, rejoindre passe par la session.
+  return createSessionGameInstance(database.sql, {
     publisher: bus,
     subscriber: bus,
     timers: registry,
-    participationPolicy: allowAllParticipation,
-    logger: silentLogger,
+    participationPolicy: () => allowAllParticipation,
   });
 }
 
 beforeAll(async () => {
   database = await createMigratedDatabase();
-});
+}, PGLITE_TIMEOUT_MS);
 afterAll(async () => {
   await database.close();
 });
-beforeEach(() => {
+beforeEach(async () => {
   broker = new InMemoryPubSubBroker();
+  // Les joueurs sont des comptes existants (clés étrangères vers users, migration 0003).
+  await seedUsers(database.sql, ['alice', 'bob', 'carol', 'dave']);
 });
 afterEach(async () => {
   timers.splice(0).forEach((t) => t.cancelAll());
   await database.reset();
 });
 
-const alice = player('alice');
-const bob = player('bob');
-const carol = player('carol');
-const dave = player('dave');
+const alice = testPlayerId('alice');
+const bob = testPlayerId('bob');
+const carol = testPlayerId('carol');
+const dave = testPlayerId('dave');
 
 describe('Plusieurs instances (PostgreSQL + Pub/Sub)', () => {
   it("une commande traitée par l'instance 1 est diffusée aux joueurs connectés à l'instance 2", async () => {

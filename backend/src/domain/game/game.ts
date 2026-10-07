@@ -1,5 +1,6 @@
 import type { CardId } from '../cards/card';
-import type { WinConditionId } from '../rules/win-conditions';
+import type { SessionId } from '../sessions/session';
+import type { InstantWinRank, WinConditionId } from '../rules/win-conditions';
 import type { GameId, PlayerId } from './game-id';
 
 /**
@@ -13,6 +14,13 @@ export type GameStatus = 'waiting' | 'in_progress' | 'finished';
 
 /** Nombre de joueurs autorisé par la spécification fonctionnelle (§1). */
 export const MIN_PLAYERS = 2;
+
+/**
+ * Capacités autorisées à la création (R-23) : 2, 3 ou 4 joueurs, rien d'autre.
+ * La capacité est un MAXIMUM ; le démarrage exige seulement MIN_PLAYERS_TO_START.
+ */
+export const ALLOWED_MAX_PLAYERS = [2, 3, 4] as const;
+export const MIN_PLAYERS_TO_START = 2;
 export const MAX_PLAYERS = 4;
 
 /** Nombre d'identifiants de commande conservés pour l'idempotence. */
@@ -26,8 +34,13 @@ export const RECENT_COMMANDS_LIMIT = 50;
 export interface PlayerInGame {
   /** Identifiant du compte utilisateur. */
   playerId: PlayerId;
-  /** Position à la table, attribuée dans l'ordre d'arrivée. */
+  /** Rang d'arrivée dans CETTE partie (0, 1, 2…). */
   seat: number;
+  /**
+   * Place du joueur à la table de la session au moment où il a rejoint la partie
+   * (D-033). Fixe l'ordre antihoraire de la partie ; absente hors session (tests).
+   */
+  tablePosition?: number;
   joinedAt: Date;
   /** Présent si le joueur a fui la partie (spec §2.5). */
   fledAt?: Date;
@@ -69,7 +82,7 @@ export interface TerPlay {
   dealOrder: PlayerId[];
   /** Main de chaque joueur (clé = playerId). Secrète : jamais envoyée aux autres joueurs. */
   hands: Record<string, CardId[]>;
-  /** Cartes non distribuées. Usage non défini (R-26). */
+  /** Cartes non distribuées : ni pioche, ni accessibles, jamais utilisées (D-032, R-26). */
   stock: CardId[];
   /** Tour en cours, de 1 à 5. */
   trickNumber: number;
@@ -81,19 +94,45 @@ export interface TerPlay {
   control: Control;
   /** Joueur attendu ; absent quand la partie est terminée. */
   nextPlayerId?: PlayerId;
+  /**
+   * Analyse SERVEUR des 5 cartes initiales (D-035), faite à la distribution : meilleure
+   * combinaison de chaque joueur dont la main est gagnante. SECRÈTE (elle renseigne sur
+   * une main) : seul le joueur concerné en voit sa propre ligne. Retirée si le joueur fuit.
+   */
+  instantWins?: Record<string, { rank: InstantWinRank; combination: WinConditionId }>;
 }
 
 export type GameEndMethod =
-  /** Gain instantané déclaré et vérifié (spec §4). */
+  /** Victoire instantanée, déclarée ou automatique (D-035). Toujours SIMPLE. */
   | 'INSTANT_WIN'
-  /** Contrôle conservé à l'issue du 5e tour (spec §1, séquence « déroulement »). */
+  /** Contrôle détenu à l'issue du 5e tour : victoire automatique (décisions 35, 52). */
   | 'CONTROL_AFTER_LAST_TRICK';
+
+/**
+ * Raison de la fin d'une partie (colonne `games.end_reason`) :
+ * - les deux méthodes de victoire ;
+ * - INSTANT_WIN_TIE : plusieurs mains gagnantes au même meilleur rang, aucun gagnant, la
+ *   partie est immédiatement rejouée dans une NOUVELLE partie de la session ;
+ * - ADMIN_STOP : arrêt administratif, sans résultat de jeu.
+ */
+export type GameEndReason = GameEndMethod | 'INSTANT_WIN_TIE' | 'ADMIN_STOP';
+
+/** Type de victoire. Une victoire instantanée est toujours SIMPLE (jamais Kora). */
+export type VictoryType = 'SIMPLE';
 
 export interface GameResult {
   winnerId: PlayerId;
   method: GameEndMethod;
-  /** Conditions satisfaites en cas de gain instantané (aucune priorité définie). */
-  instantWinConditions?: WinConditionId[];
+  /** Victoire instantanée : rang et combinaison retenus (meilleur rang de la main). */
+  instantWinRank?: InstantWinRank;
+  instantWinCombination?: WinConditionId;
+  /** Victoire instantanée attribuée automatiquement par le serveur (rangs différents). */
+  automatic?: boolean;
+  /**
+   * SIMPLE pour une victoire instantanée. Absent pour une victoire en fin de 5e tour : les
+   * types Kora / Double Kora ne sont pas définis (R-02), rien n'est inventé.
+   */
+  victoryType?: VictoryType;
   /** Toutes les mains, révélées en cas de gain instantané (spec §2.3). */
   revealedHands?: Record<string, CardId[]>;
   /** Joueurs encore en jeu autres que le gagnant. */
@@ -108,6 +147,16 @@ export interface GameResult {
  */
 export interface Game {
   id: GameId;
+  /**
+   * Session à laquelle appartient la partie (D-033). Toujours présente en base
+   * (`games.session_id NOT NULL`) ; absente seulement pour des parties de test isolées.
+   */
+  sessionId?: SessionId;
+  /**
+   * J1, fixé à la création par la session (D-033) : premier servi, premier à jouer,
+   * contrôle initial. Première partie d'une session : son créateur.
+   */
+  firstPlayerId: PlayerId;
   /** Incrémentée à chaque changement d'état validé (concurrence optimiste). */
   version: number;
   status: GameStatus;
@@ -118,16 +167,45 @@ export interface Game {
   players: PlayerInGame[];
   /** Présent dès que la partie a démarré. */
   play?: TerPlay;
-  /** Présent quand la partie s'est terminée par le jeu (absent si arrêtée par le système). */
+  /** Présent quand la partie s'est terminée par une victoire. */
   result?: GameResult;
+  /** Raison de la fin, présente dès que la partie est terminée. */
+  endReason?: GameEndReason;
+  /** Égalité de priorité des mains instantanées (endReason = INSTANT_WIN_TIE). */
+  instantWinTie?: { rank: InstantWinRank; playerIds: PlayerId[] };
+  /** Partie rejouée après une égalité : la partie annulée qu'elle remplace (décision 17). */
+  replayOfGameId?: GameId;
   createdAt: Date;
   updatedAt: Date;
   startedAt?: Date;
   finishedAt?: Date;
-  /** Échéance du tour en cours, persistée pour réarmer le timer après un redémarrage. */
+  /**
+   * Timer de tour (D-034, SERVER-AUTHORITATIVE) : début et échéance du tour du joueur
+   * attendu (`play.nextPlayerId`), persistés pour reconstruire le timer après un
+   * redémarrage. Remis à zéro à chaque changement de joueur attendu.
+   */
+  turnStartedAt?: Date;
   turnDeadlineAt?: Date;
+  /**
+   * Échéance constatée par le serveur (TURN_TIMEOUT) : le joueur attendu ne peut plus
+   * jouer lui-même ; le coup automatique (AutomaticCardSelectionStrategy, non définie)
+   * reste à jouer. Absent tant que le tour n'a pas expiré.
+   */
+  turnTimedOutAt?: Date;
   /** Derniers commandId traités, pour ignorer les doubles soumissions. */
   recentCommandIds: string[];
+  /**
+   * Clé d'idempotence de la création (en-tête Idempotency-Key), unique par créateur.
+   * Rejouer la même clé renvoie cette partie au lieu d'en créer une seconde.
+   */
+  creationKey?: string;
+}
+
+const STATUS_ORDER: readonly GameStatus[] = ['waiting', 'in_progress', 'finished'];
+
+/** Le cycle de vie est monotone : waiting → in_progress → finished, jamais de retour. */
+export function isForwardTransition(from: GameStatus, to: GameStatus): boolean {
+  return STATUS_ORDER.indexOf(to) >= STATUS_ORDER.indexOf(from);
 }
 
 export function isActive(game: Game): boolean {

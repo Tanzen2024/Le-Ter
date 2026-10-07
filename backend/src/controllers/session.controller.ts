@@ -1,0 +1,152 @@
+import type { Request, Response } from 'express';
+
+import { toPlayerView } from '../domain/game/game-view';
+import { withServerTime } from './server-time';
+import { pendingDecisions, seatMap, type SessionId } from '../domain/sessions/session';
+import { playerIdOf } from '../domain/users/user';
+import { getAuth } from '../middleware/require-auth';
+import { getRequestId } from '../middleware/request-id';
+import type { SessionService, SessionSnapshot } from '../services/sessions/session.service';
+import {
+  parseCreateGameInput,
+  parseIdempotencyKey,
+  parseNextGameInput,
+  parseSessionDecisionInput,
+} from '../validators/game.validators';
+
+/**
+ * Contrôleurs minces des sessions (D-033) : forme de la requête, identité issue du JWT,
+ * appel de SessionService, vue publique (aucune carte, aucune donnée de compte).
+ */
+export function createSessionController(sessions: SessionService) {
+  return {
+    /** Nouvelle session + sa première partie (le créateur est J1). */
+    async create(req: Request, res: Response): Promise<void> {
+      const playerId = currentPlayer(res);
+      const creationKey = parseIdempotencyKey(req.get('idempotency-key'));
+      const { session, game, replayed } = await sessions.createSession(
+        playerId,
+        { ...parseCreateGameInput(req.body), creationKey },
+        { requestId: getRequestId(res) },
+      );
+      if (replayed) {
+        res.setHeader('Idempotent-Replayed', 'true');
+      }
+      res.status(201).json({
+        session: toSessionView({ session, lastGame: null }),
+        game: withServerTime(toPlayerView(game, playerId)),
+      });
+    },
+
+    async listMine(_req: Request, res: Response): Promise<void> {
+      const mine = await sessions.findActiveSessions(currentPlayer(res));
+      res.json({ sessions: mine.map((session) => toSessionView({ session, lastGame: null })) });
+    },
+
+    async get(_req: Request, res: Response): Promise<void> {
+      res.json({
+        session: toSessionView(await sessions.getSession(sessionIdOf(res), currentPlayer(res))),
+      });
+    },
+
+    async join(_req: Request, res: Response): Promise<void> {
+      const playerId = currentPlayer(res);
+      await sessions.joinSession(sessionIdOf(res), playerId, { requestId: getRequestId(res) });
+      res.json({ session: toSessionView(await sessions.getSession(sessionIdOf(res), playerId)) });
+    },
+
+    async leave(_req: Request, res: Response): Promise<void> {
+      const playerId = currentPlayer(res);
+      await sessions.leaveSession(sessionIdOf(res), playerId, { requestId: getRequestId(res) });
+      res.json({ session: toSessionView(await sessions.getSession(sessionIdOf(res), playerId)) });
+    },
+
+    /** Poursuivre / Quitter entre deux parties (D-034). */
+    async decide(req: Request, res: Response): Promise<void> {
+      const playerId = currentPlayer(res);
+      const { choice } = parseSessionDecisionInput(req.body);
+      await sessions.decide(sessionIdOf(res), playerId, choice, { requestId: getRequestId(res) });
+      res.json({ session: toSessionView(await sessions.getSession(sessionIdOf(res), playerId)) });
+    },
+
+    async listGames(_req: Request, res: Response): Promise<void> {
+      res.json({ games: await sessions.listGames(sessionIdOf(res), currentPlayer(res)) });
+    },
+
+    /** Partie suivante de la session (J1 calculé par le serveur). */
+    async createGame(req: Request, res: Response): Promise<void> {
+      const playerId = currentPlayer(res);
+      const creationKey = parseIdempotencyKey(req.get('idempotency-key'));
+      const { game, replayed } = await sessions.createNextGame(
+        sessionIdOf(res),
+        playerId,
+        { ...parseNextGameInput(req.body), creationKey },
+        { requestId: getRequestId(res) },
+      );
+      if (replayed) {
+        res.setHeader('Idempotent-Replayed', 'true');
+      }
+      res.status(201).json({ game: withServerTime(toPlayerView(game, playerId)) });
+    },
+  };
+}
+
+/**
+ * Vue d'une session (D-034) : sièges FIXES (0 … maxPlayers-1, sens antihoraire) avec leur
+ * occupant ou `null` (siège vacant), historique des joueurs, partie courante, ronde de
+ * décision. `serverNow` permet au client d'afficher un compte à rebours fidèle à l'heure du
+ * serveur ; il ne décide jamais d'une expiration.
+ */
+export function toSessionView({ session, lastGame }: SessionSnapshot) {
+  const round = session.round;
+  return {
+    sessionId: session.id,
+    version: session.version,
+    status: session.status,
+    creatorId: session.creatorId,
+    maxPlayers: session.maxPlayers,
+    seats: seatMap(session).map((playerId, seat) => ({ seat, playerId: playerId ?? null })),
+    players: [...session.players]
+      .sort((a, b) => Number(b.active) - Number(a.active) || a.seat - b.seat)
+      .map((p) => ({
+        playerId: p.playerId,
+        seat: p.seat,
+        active: p.active,
+        joinedAt: p.joinedAt,
+        ...(p.leftAt && { leftAt: p.leftAt }),
+      })),
+    currentGame:
+      lastGame && lastGame.status !== 'finished'
+        ? { gameId: lastGame.gameId, status: lastGame.status, playerIds: lastGame.playerIds }
+        : null,
+    decision: round
+      ? {
+          gameId: round.gameId,
+          deadlineAt: round.deadlineAt,
+          open: !round.resolvedAt,
+          ...(round.resolvedAt && { resolvedAt: round.resolvedAt }),
+          decisions: Object.entries(round.decisions).map(([playerId, d]) => ({
+            playerId,
+            choice: d.choice,
+            decidedAt: d.decidedAt,
+          })),
+          pendingPlayerIds: pendingDecisions(session),
+        }
+      : null,
+    createdAt: session.createdAt,
+    ...(session.closedAt && { closedAt: session.closedAt }),
+    serverNow: new Date(),
+  };
+}
+
+function currentPlayer(res: Response) {
+  return playerIdOf(getAuth(res).userId);
+}
+
+function sessionIdOf(res: Response): SessionId {
+  const { sessionId } = res.locals;
+  if (!sessionId) {
+    throw new Error('sessionId absent : route sans paramètre :sessionId validé');
+  }
+  return sessionId;
+}

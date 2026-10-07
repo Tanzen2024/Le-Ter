@@ -14,7 +14,16 @@ export type GameEventType =
   | 'game:turn_changed'
   | 'game:player_fled'
   | 'game:finished'
-  | 'game:turn_timeout';
+  /** Prise de contrôle (carte supérieure de même couleur, spec §2.4). */
+  | 'game:control_changed'
+  /** Échéance du tour dépassée, constatée par le serveur (TURN_TIMEOUT, D-034). */
+  | 'game:turn_timeout'
+  /** Carte jouée automatiquement après TURN_TIMEOUT (stratégie à spécifier, D-034). */
+  | 'game:auto_card_played'
+  /** Égalité de priorité des mains instantanées : partie annulée, rejouée aussitôt (D-035). */
+  | 'game:instant_win_tie'
+  /** Début du 5e tour automatique : l'unique carte de chaque joueur est jouée (D-035). */
+  | 'game:last_trick_automatic';
 
 /**
  * Enveloppe commune à tous les événements. Le `gameId` est obligatoire :
@@ -23,8 +32,18 @@ export type GameEventType =
 export interface GameEvent<TPayload = Record<string, unknown>> {
   eventId: string;
   gameId: GameId;
-  /** Version de la partie après l'événement : le client ignore toute version déjà vue. */
+  /**
+   * Version de la partie après la commande qui a produit l'événement. Une commande
+   * peut produire plusieurs événements : ils partagent alors la même version.
+   */
   version: number;
+  /**
+   * Rang de l'événement parmi ceux de sa commande (0, 1, 2…). Le client applique un
+   * événement si (version, sequence) dépasse le dernier couple appliqué, et relit
+   * l'état si `version` dépasse sa version + 1. Les événements privés gardent leur
+   * rang global : un joueur peut donc voir des rangs non contigus.
+   */
+  sequence: number;
   type: GameEventType;
   occurredAt: string;
   /** Joueur à l'origine de l'événement, absent pour une action système (timer…). */

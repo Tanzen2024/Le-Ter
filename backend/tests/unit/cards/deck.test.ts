@@ -9,10 +9,11 @@ import {
 import {
   NotEnoughCardsError,
   createDeck,
-  dealCards,
+  dealInPasses,
+  dealSequence,
   shuffleDeck,
 } from '../../../src/domain/cards/deck';
-import { identityRandom, scriptedRandom, seededRandom } from '../../fixtures/random';
+import { scriptedRandom, seededRandom } from '../../fixtures/random';
 
 const EXPECTED_CARDS: CardId[] = [
   'COEUR-3',
@@ -129,35 +130,68 @@ describe('Mélange de Fisher-Yates', () => {
   });
 });
 
-describe('Distribution (spec §2.2 : 5 cartes par joueur)', () => {
+describe('Distribution en deux passages (D-032 : 3 puis 2 cartes par joueur)', () => {
+  const PASSES = [3, 2];
+
   it.each([
     [2, 21],
     [3, 16],
     [4, 11],
-  ])('à %i joueurs : 5 cartes chacun, %i au talon, ni doublon ni perte', (count, stockSize) => {
-    const players = ['p1', 'p2', 'p3', 'p4'].slice(0, count);
+  ])('à %i joueurs : 5 cartes chacun, %i non distribuées, ni doublon ni perte', (count, rest) => {
+    const players = ['J1', 'J2', 'J3', 'J4'].slice(0, count);
     const deck = shuffleDeck(createDeck(), seededRandom(count));
-    const { hands, stock } = dealCards(deck, players, 5);
+    const { hands, stock } = dealInPasses(deck, players, PASSES);
 
     for (const p of players) {
       expect(hands[p]).toHaveLength(5);
     }
-    expect(stock).toHaveLength(stockSize);
+    expect(stock).toHaveLength(rest);
     const all = [...Object.values<CardId[]>(hands).flat(), ...stock];
     expect(new Set(all).size).toBe(31);
     expect([...all].sort()).toEqual([...deck].sort());
   });
 
-  it("sert une carte à la fois, en commençant par le premier de l'ordre de distribution", () => {
-    const deck = shuffleDeck(createDeck(), identityRandom);
-    const { hands } = dealCards(deck, ['p1', 'p2'], 5);
+  it.each([2, 3, 4])(
+    'à %i joueurs : passage 1 = un lot de 3 par joueur, puis passage 2 = un lot de 2, même ordre (antihoraire)',
+    (count) => {
+      const players = ['J1', 'J2', 'J3', 'J4'].slice(0, count);
+      const { sequence } = dealInPasses(createDeck(), players, PASSES);
 
-    expect(hands.p1).toEqual(['COEUR-3', 'COEUR-5', 'COEUR-7', 'COEUR-9', 'PIQUE-3']);
-    expect(hands.p2).toEqual(['COEUR-4', 'COEUR-6', 'COEUR-8', 'COEUR-10', 'PIQUE-4']);
+      expect(sequence).toEqual([
+        ...players.map((playerId) => ({ pass: 1, playerId, count: 3 })),
+        ...players.map((playerId) => ({ pass: 2, playerId, count: 2 })),
+      ]);
+    },
+  );
+
+  it('chaque lot est un bloc contigu du paquet : J1←3, J2←3, J3←3, J4←3, puis J1←2… (4 joueurs)', () => {
+    const deck = createDeck(); // ordre connu : COEUR-3…10, PIQUE-3…9, TREFLE-3…10, ETOILE-3…10
+    const { hands, stock } = dealInPasses(deck, ['J1', 'J2', 'J3', 'J4'], PASSES);
+
+    // Passage 1 : cartes 0-2, 3-5, 6-8, 9-11 ; passage 2 : 12-13, 14-15, 16-17, 18-19.
+    expect(hands.J1).toEqual([...deck.slice(0, 3), ...deck.slice(12, 14)]);
+    expect(hands.J2).toEqual([...deck.slice(3, 6), ...deck.slice(14, 16)]);
+    expect(hands.J3).toEqual([...deck.slice(6, 9), ...deck.slice(16, 18)]);
+    expect(hands.J4).toEqual([...deck.slice(9, 12), ...deck.slice(18, 20)]);
+    expect(stock).toEqual(deck.slice(20));
+    // Ce n'est PAS une distribution carte par carte (J1←1, J2←1…).
+    expect(hands.J1?.slice(0, 2)).toEqual(['COEUR-3', 'COEUR-4']);
+  });
+
+  it('à 2 joueurs, exemple complet : J1←3, J2←3, J1←2, J2←2', () => {
+    const { hands } = dealInPasses(createDeck(), ['J1', 'J2'], PASSES);
+    expect(hands.J1).toEqual(['COEUR-3', 'COEUR-4', 'COEUR-5', 'COEUR-9', 'COEUR-10']);
+    expect(hands.J2).toEqual(['COEUR-6', 'COEUR-7', 'COEUR-8', 'PIQUE-3', 'PIQUE-4']);
+  });
+
+  it('dealSequence ne contient aucune carte', () => {
+    expect(JSON.stringify(dealSequence(['J1', 'J2', 'J3'], PASSES))).not.toMatch(
+      /COEUR|PIQUE|TREFLE|ETOILE/,
+    );
   });
 
   it('refuse une distribution impossible', () => {
-    expect(() => dealCards(createDeck(), ['a', 'b', 'c', 'd', 'e', 'f', 'g'], 5)).toThrow(
+    expect(() => dealInPasses(createDeck(), ['a', 'b', 'c', 'd', 'e', 'f', 'g'], PASSES)).toThrow(
       NotEnoughCardsError,
     );
   });

@@ -1,6 +1,5 @@
 import { GameAccessDeniedError, NotYourTurnError } from '../../../src/domain/game/game-errors';
 import type { GameEvent } from '../../../src/domain/game/game-events';
-import { UnresolvedRuleError } from '../../../src/domain/rules/unresolved-rule';
 import { createGameServiceFixture, player } from '../../fixtures/game-service.fixture';
 import { identityRandom, seededRandom } from '../../fixtures/random';
 import { testRules } from '../../fixtures/rules';
@@ -20,17 +19,27 @@ async function twoStartedGames() {
   await service.joinGame(gameA.id, p2);
   const gameB = await service.createGame(p3, { maxPlayers: 2, stakeAmount: 500 });
   await service.joinGame(gameB.id, p4);
-  await service.startGame(gameA.id);
-  await service.startGame(gameB.id);
+  await service.startGame(gameA.id, p1);
+  await service.startGame(gameB.id, p3);
   return { ...fixture, gameA, gameB };
 }
 
 describe('Moteur via GameService', () => {
-  it('refuse toute commande de jeu tant que les règles ne sont pas configurées', async () => {
+  // D-032 : la distribution est une règle certaine, faite au démarrage même sans jeu de
+  // règles. Les actions restent refusées (ordre du tour R-28 et autres règles ouvertes).
+  it('sans règles injectées : les règles OFFICIELLES (D-035) s’appliquent', async () => {
     const { service } = createGameServiceFixture();
     const game = await service.createGame(p1, { maxPlayers: 2 });
     await service.joinGame(game.id, p2);
-    await expect(service.startGame(game.id)).rejects.toThrow(UnresolvedRuleError);
+
+    const started = await service.startGame(game.id, p1);
+    expect(started.status).toBe('in_progress');
+    expect(Object.values(started.play!.hands).map((h) => h.length)).toEqual([5, 5]);
+    expect(started.play!.control.playerId).toBe(p1);
+    expect(started.play!.trickOrder).toEqual([p1, p2]); // R-28 (D-033) : antihoraire
+    const card = started.play!.hands[p1]![0]!;
+    const after = await service.playCard(game.id, p1, card); // le meneur joue librement
+    expect(after.play?.currentTrick).toEqual([{ playerId: p1, cardId: card }]);
   });
 
   it('joue une partie et incrémente la version à chaque commande validée', async () => {
@@ -47,9 +56,10 @@ describe('Moteur via GameService', () => {
     const { service, gameA } = await twoStartedGames();
     const view = await service.getGameForPlayer(gameA.id, p1);
 
-    expect(view.play?.myHand).toEqual(['COEUR-3', 'COEUR-5', 'COEUR-7', 'COEUR-9', 'PIQUE-3']);
+    // Distribution en deux passages (D-032) : p1←3, p2←3, p1←2, p2←2.
+    expect(view.play?.myHand).toEqual(['COEUR-3', 'COEUR-4', 'COEUR-5', 'COEUR-9', 'COEUR-10']);
     expect(view.play?.handCounts).toEqual({ [p1]: 5, [p2]: 5 });
-    expect(JSON.stringify(view)).not.toContain('COEUR-4'); // carte de p2
+    expect(JSON.stringify(view)).not.toContain('COEUR-6'); // carte de p2
     expect(view.play).not.toHaveProperty('hands');
     expect(view.play).not.toHaveProperty('stock');
   });
@@ -73,7 +83,7 @@ describe('Moteur via GameService', () => {
       await service.subscribe(gameId, id, (e) => events.push(e));
     }
 
-    await service.startGame(gameA.id);
+    await service.startGame(gameA.id, p1);
 
     const handsOf = (id: string) => inbox.get(id)!.filter((e) => e.type === 'game:hand_dealt');
     expect(handsOf(p1)).toHaveLength(1);
@@ -90,7 +100,7 @@ describe('Moteur — isolation multi-parties', () => {
     const snapshotB = await repository.findById(gameB.id);
 
     await service.playCard(gameA.id, p1, 'COEUR-3');
-    await service.playCard(gameA.id, p2, 'COEUR-4');
+    await service.playCard(gameA.id, p2, 'COEUR-6');
 
     expect(await repository.findById(gameB.id)).toEqual(snapshotB);
     expect((await repository.findById(gameA.id))?.play?.trickNumber).toBe(2);
@@ -133,20 +143,19 @@ describe('Moteur — isolation multi-parties', () => {
     jest.useFakeTimers();
     try {
       const { service, timers, gameA, gameB } = await twoStartedGames();
-      await service.armTurnTimer(gameA.id, 60_000);
-      await service.armTurnTimer(gameB.id, 60_000);
+      // Les timers de tour sont armés par le démarrage (D-034).
+      expect(timers.has(gameA.id) && timers.has(gameB.id)).toBe(true);
 
+      // p2 prend le contrôle au 1er tour et le garde jusqu'au 5e (mains de D-032).
       const moves = [
         [p1, 'COEUR-3'],
-        [p2, 'COEUR-4'],
-        [p2, 'PIQUE-4'],
-        [p1, 'PIQUE-3'],
         [p2, 'COEUR-6'],
-        [p1, 'COEUR-7'],
-        [p1, 'COEUR-5'],
-        [p2, 'COEUR-8'],
-        [p2, 'COEUR-10'],
+        [p2, 'PIQUE-3'],
         [p1, 'COEUR-9'],
+        [p2, 'PIQUE-4'],
+        [p1, 'COEUR-10'],
+        [p2, 'COEUR-7'],
+        [p1, 'COEUR-4'],
       ] as const;
       for (const [id, card] of moves) {
         await service.playCard(gameA.id, id, card);
@@ -182,7 +191,7 @@ describe('Moteur — concurrence dans une partie', () => {
     const { service, gameA } = await twoStartedGames();
 
     const [first, second] = await Promise.allSettled([
-      service.playCard(gameA.id, p2, 'COEUR-4'), // arrive en premier, mais ce n'est pas son tour
+      service.playCard(gameA.id, p2, 'COEUR-6'), // arrive en premier, mais ce n'est pas son tour
       service.playCard(gameA.id, p1, 'COEUR-3'),
     ]);
 
@@ -230,7 +239,7 @@ describe('Moteur — copies profondes', () => {
 
     await service.playCard(gameA.id, p1, 'COEUR-3');
     // Émet game:trick_completed, dont la charge utile contient `plays`.
-    const returned = await service.playCard(gameA.id, p2, 'COEUR-4');
+    const returned = await service.playCard(gameA.id, p2, 'COEUR-6');
 
     expect(returned.play?.completedTricks[0]?.plays).toHaveLength(2);
     expect((await repository.findById(gameA.id))?.play?.completedTricks[0]?.plays).toHaveLength(2);

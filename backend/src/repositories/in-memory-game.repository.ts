@@ -1,7 +1,15 @@
-import { isActive, type Game } from '../domain/game/game';
-import { GameNotFoundError, GameVersionConflictError } from '../domain/game/game-errors';
+import { isActive, isForwardTransition, type Game } from '../domain/game/game';
+import {
+  GameNotFoundError,
+  GameVersionConflictError,
+  InvalidStatusTransitionError,
+} from '../domain/game/game-errors';
 import { newGameId, type GameId, type PlayerId } from '../domain/game/game-id';
-import type { GameRepository } from './game.repository';
+import {
+  DuplicateCreationKeyError,
+  type GameRepository,
+  type TurnDeadline,
+} from './game.repository';
 
 /**
  * Implémentation en mémoire, pour les tests et le développement sans PostgreSQL.
@@ -24,6 +32,9 @@ export class InMemoryGameRepository implements GameRepository {
     if (this.games.has(game.id)) {
       throw new Error(`Partie déjà existante : ${game.id}`);
     }
+    if (game.creationKey && (await this.findByCreationKey(game.creatorId, game.creationKey))) {
+      throw new DuplicateCreationKeyError(game.creatorId, game.creationKey);
+    }
     this.games.set(game.id, structuredClone(game));
   }
 
@@ -35,6 +46,9 @@ export class InMemoryGameRepository implements GameRepository {
     if (stored.version !== expectedVersion) {
       throw new GameVersionConflictError(game.id, expectedVersion, stored.version);
     }
+    if (!isForwardTransition(stored.status, game.status)) {
+      throw new InvalidStatusTransitionError(game.id, stored.status, game.status);
+    }
     this.games.set(game.id, structuredClone(game));
   }
 
@@ -42,5 +56,24 @@ export class InMemoryGameRepository implements GameRepository {
     return [...this.games.values()]
       .filter((g) => isActive(g) && g.players.some((p) => p.playerId === playerId))
       .map((g) => structuredClone(g));
+  }
+
+  /** R-18 n'est pas garantie ici en concurrence : c'est l'index PostgreSQL qui la garantit. */
+  async findByCreationKey(creatorId: PlayerId, creationKey: string): Promise<Game | null> {
+    const game = [...this.games.values()].find(
+      (g) => g.creatorId === creatorId && g.creationKey === creationKey,
+    );
+    return game ? structuredClone(game) : null;
+  }
+
+  async findTurnDeadlines(): Promise<TurnDeadline[]> {
+    return [...this.games.values()]
+      .filter((g) => g.status === 'in_progress' && g.turnDeadlineAt)
+      .map((g) => ({
+        gameId: g.id,
+        deadlineAt: g.turnDeadlineAt as Date,
+        timedOut: Boolean(g.turnTimedOutAt),
+      }))
+      .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
   }
 }

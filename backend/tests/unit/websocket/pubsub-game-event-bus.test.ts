@@ -15,6 +15,7 @@ function event(gameId: GameId, version = 2): GameEvent {
     eventId: `evt-${gameId}-${version}`,
     gameId,
     version,
+    sequence: 0,
     type: 'game:player_joined',
     occurredAt: '2026-10-07T10:00:00.000Z',
     payload: {},
@@ -126,6 +127,42 @@ describe('PubSubGameEventBus', () => {
         message: expect.stringContaining('publish'),
       }),
     );
+  });
+
+  it("Redis en panne pendant l'abonnement : le canal est réabonné au retour de Redis", async () => {
+    const broker = new InMemoryPubSubBroker();
+    const options = { resubscribeDelayMs: 5 };
+    const instance1 = new PubSubGameEventBus(broker.connect(), silentLogger, options);
+    const instance2 = new PubSubGameEventBus(broker.connect(), silentLogger, options);
+    const received = jest.fn();
+
+    broker.down = true;
+    instance2.subscribe(A, alice, received);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    broker.down = false;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    instance1.publishToGame(event(A));
+    await flushPubSub();
+    expect(received).toHaveBeenCalledWith(event(A));
+    expect(broker.subscriberCount(gameEventChannel(A))).toBe(1);
+  });
+
+  it("n'essaie plus de s'abonner quand le dernier abonné local est parti", async () => {
+    const broker = new InMemoryPubSubBroker();
+    const bus = new PubSubGameEventBus(broker.connect(), silentLogger, {
+      resubscribeDelayMs: 5,
+    });
+
+    broker.down = true;
+    const off = bus.subscribe(A, alice, jest.fn());
+    await flushPubSub();
+    off();
+    broker.down = false;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(broker.subscriberCount(gameEventChannel(A))).toBe(0);
+    expect(bus.channelCount).toBe(0);
   });
 
   it("un abonné qui lève une erreur n'interrompt pas la réception", async () => {

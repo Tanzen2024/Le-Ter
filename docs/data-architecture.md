@@ -72,15 +72,16 @@ Game Engine (domain/) → GameService → GameRepository (port) → PostgresGame
 - Configuration : `DATABASE_URL` (`backend/.env`). Pool ouvert au démarrage, vérifié par
   `SELECT 1`. `/api/health` → `database` : `disconnected` | `connected` | `unavailable`.
 
-### 3.2 Schéma actuel (migration `0001_create_games.sql`, D-025)
+### 3.2 Schéma actuel (migrations `0001` à `0003`, D-025, D-029)
 
 ```
 games                                      game_players
 ├── id               uuid PK               ├── game_id   uuid FK → games (CASCADE)
-├── version          integer ≥ 1           ├── player_id text      (FK users plus tard)
+├── version          integer ≥ 1           ├── player_id uuid FK → users
+│                                          ├── active    boolean (statut ≠ finished)
 ├── status           waiting|in_progress|  ├── seat      smallint 0..3, unique par partie
 │                    finished              ├── joined_at timestamptz
-├── creator_id       text                  └── fled_at   timestamptz
+├── creator_id       uuid FK → users       └── fled_at   timestamptz
 ├── max_players      smallint 2..4         PK (game_id, player_id)
 ├── stake_amount     bigint ≥ 0 (unité : R-13)
 ├── state            jsonb  { play?, result?, recentCommandIds }
@@ -88,12 +89,77 @@ games                                      game_players
 └── turn_deadline_at timestamptz
 ```
 
+Comptes et sessions (`0002`, D-029, détail dans [authentication.md](authentication.md)) :
+
+```
+users                                      refresh_tokens
+├── id             uuid PK                 ├── id             uuid PK
+├── first_name, last_name  text            ├── user_id        uuid FK → users (CASCADE)
+├── email          text unique (minusc.)   ├── session_id     uuid  (= sid du JWT)
+├── username       text unique (casse ign.)├── token_hash     text unique (SHA-256)
+├── phone          text unique (E.164)     ├── created_at, expires_at
+├── phone_verified boolean                 ├── revoked_at, revoked_reason
+├── password_hash  text (bcrypt)           └── UNIQUE (user_id) WHERE revoked_at IS NULL
+├── role 'user' · status active|disabled       → une seule session active (R-32)
+└── created_at, updated_at
+```
+
+Sessions (`0005`, D-033) :
+
+```
+sessions                                   session_players
+├── id          uuid PK                    ├── session_id uuid FK → sessions (CASCADE)
+├── version     integer ≥ 1                ├── player_id  uuid FK → users
+├── status      open | closed              ├── seat       integer (ordre ANTIHORAIRE), unique
+├── creator_id  uuid FK → users            ├── active, joined_at, left_at
+└── created_at, updated_at, closed_at      └── PK (session_id, player_id)
+
+games      + session_id (NOT NULL, FK), first_player_id (NOT NULL, J1), winner_id
+game_players + table_position (place de session copiée : ordre figé dans l'historique)
+```
+
+Capacité, sièges, décisions et timers (`0006`, D-034) :
+
+```
+sessions        + max_players smallint 2|3|4, NOT NULL, IMMUABLE (trigger)
+session_players   seat = siège FIXE 0..max_players-1 ; unique parmi les PRÉSENTS seulement
+                  (siège vacant réutilisable) ; trigger : seat < max_players
+
+session_decision_rounds                    session_decisions
+├── game_id     uuid PK FK → games         ├── game_id    uuid FK → rounds (CASCADE)
+├── session_id  uuid FK → sessions         ├── player_id  uuid FK → users
+├── opened_at   timestamptz (= fin partie) ├── choice     continue | leave | auto_leave
+├── deadline_at timestamptz (+ 10 s)       ├── decided_at timestamptz
+└── resolved_at timestamptz                └── PK (game_id, player_id)
+
+games      + turn_started_at, active_player_id (FK users), turn_timed_out_at
+             CHECK : échéance ⇒ début, échéance > début
+```
+
+Fin de partie et reprise (`0007`, D-035) :
+
+```
+games      + end_reason  INSTANT_WIN | CONTROL_AFTER_LAST_TRICK | INSTANT_WIN_TIE | ADMIN_STOP
+                         présent ssi status = finished ; gagnant ssi victoire (CHECK)
+           + replay_of_game_id uuid FK → games : partie annulée pour égalité qu'elle rejoue
+```
+
 | Index | Usage |
 |---|---|
 | `games (id)` (clé primaire) | Accès par `gameId` |
+| `games (session_id) WHERE status <> 'finished'`, **unique** | Une seule partie active par session (D-033) |
+| `games (session_id, finished_at DESC) WHERE status = 'finished'` | Dernière partie terminée (J1) |
 | `games (status, created_at DESC)` | Lobby |
 | `game_players (player_id)` | Parties actives d'un joueur (reconnexion) |
-| `games (turn_deadline_at)` partiel, `status = 'in_progress'` | Réarmement des timers au redémarrage |
+| `game_players (player_id) WHERE active`, **unique** | R-18 : une seule partie active par joueur, même en concurrence (0004) |
+| `games (creator_id, creation_key)`, **unique** | Idempotence de la création (`Idempotency-Key`, 0004) |
+| `games (turn_deadline_at)` partiel, `status = 'in_progress'` | Réarmement des timers de tour au redémarrage |
+| `games (turn_timed_out_at)` partiel, `status = 'in_progress'` | Coups automatiques en attente (reprise) |
+| `session_players (session_id, seat) WHERE active`, **unique** | Un joueur présent par siège ; sièges vacants réutilisables (0006) |
+| `session_players (player_id) WHERE active`, **unique** | Une seule session active par joueur, même en concurrence (0006) |
+| `session_decision_rounds (session_id) WHERE resolved_at IS NULL`, **unique** | Au plus une ronde de décision ouverte par session |
+| `session_decision_rounds (deadline_at) WHERE resolved_at IS NULL` | Réarmement des timers de décision au redémarrage |
+| `games (replay_of_game_id)` partiel, **unique** | Une partie annulée pour égalité n'est rejouée qu'une fois (0007) |
 
 Pourquoi `state` en JSONB : l'état de jeu (paquet, mains, plis, contrôle) est petit, borné,
 propre à une partie, et toujours lu et écrit d'un bloc. Les joueurs, eux, seront reliés aux
@@ -125,7 +191,7 @@ Cela vaut **entre instances** : aucune écriture n'est perdue, même sans verrou
 
 | Domaine | Tables pressenties | Bloqué par |
 |---|---|---|
-| Comptes | `users`, sessions, appareils | R-10, R-15 ; T-04 (modèle de données) |
+| Comptes | ~~`users`, sessions~~ : faits (D-029). Appareils : à définir | — |
 | Finance | portefeuilles, transactions, paiements Mobile Money | R-02, R-05, R-09, R-13, R-16 ; T-07 (conformité) |
 | Tournois | tournois, inscriptions, jetons, classements, récompenses | R-11, R-13 |
 | Audit | journal append-only des événements de partie et des opérations financières | — (à concevoir) |

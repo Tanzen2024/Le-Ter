@@ -185,6 +185,7 @@ Serveur temps réel
   "eventId": "uuid",
   "gameId": "6703…a1",
   "version": 7,
+  "sequence": 0,
   "type": "game:player_joined",
   "occurredAt": "2026-10-07T10:00:00.000Z",
   "actorId": "user456",
@@ -198,8 +199,18 @@ Types émis aujourd'hui : `game:created`, `game:player_joined`, `game:started`,
 [game-domain.md](game-domain.md) §4. `game:player_left` viendra avec R-19. Il n'y a pas de
 `game:round_changed` : les documents ne définissent pas de manche (D-021).
 
-`version` permet au client d'ignorer un événement déjà appliqué, et de détecter un trou
-(version reçue supérieure à sa version + 1). Dans ce cas, il relit l'état complet.
+`version` est la version de la partie **après la commande** qui a produit l'événement. Une
+commande produit souvent plusieurs événements (`game:card_played` puis `game:turn_changed`,
+`game:trick_completed`, `game:finished`…) : ils partagent la même `version` et sont
+ordonnés par `sequence` (0, 1, 2…, D-027). Le client :
+
+- applique un événement si le couple `(version, sequence)` dépasse le dernier couple appliqué,
+  et l'ignore sinon (doublon, événement déjà couvert par un état relu) ;
+- relit l'état complet si `version` dépasse sa version + 1 (trou).
+
+Un événement privé garde son rang global : un joueur peut voir `sequence` 0 puis 2. Ce
+n'est pas un trou. Ignorer « toute version déjà vue » serait faux : cela perdrait le
+deuxième événement de chaque commande.
 
 ### 5.3 Commandes client
 
@@ -221,38 +232,110 @@ L'utilisateur est identifié par le token de la connexion, **jamais** par un cha
 | Reprise après redémarrage du serveur | Les parties sont relues depuis PostgreSQL et les timers réarmés à partir de `turnDeadlineAt` (à implémenter avec le timer réel) |
 
 Ce que le système fait pendant l'absence du joueur (attendre, passer le tour, jouer à
-sa place) dépend de R-06 et R-24.
+sa place) dépend de R-24 ; aujourd'hui le timer de 10 s s'applique et, à l'échéance, le
+serveur joue à sa place (D-036).
 
-## 6. Timers (D-015)
+## 6. Timers (D-015, D-034)
 
-- `GameTimerRegistry` : `Map<GameId, Timeout>`, **un timer au plus par partie**.
-  Il n'existe aucun `let currentGameTimer`.
-- **Création** : `armTurnTimer(gameId, delayMs)`. La durée vient de l'appelant, car elle
-  n'est pas encore définie (R-06). L'échéance est persistée dans `turnDeadlineAt`.
-- **Réarmement** : armer à nouveau remplace le timer de **cette** partie seulement.
-- **Expiration** : la callback ne modifie rien directement. Elle soumet une commande
-  `TURN_TIMEOUT` dans la **file de la partie**, avec la version au moment de l'armement.
-  Si la partie a évolué entre-temps (le joueur a joué), la version diffère et le timer
-  périmé est ignoré. Cela élimine la course « le joueur joue au moment où le temps expire ».
-- **Destruction** : `finishGame` annule le timer de la partie. `cancelAll` sert à
-  l'arrêt du serveur.
-- **Pause** : aucune pause aujourd'hui. Une pause pendant une déconnexion dépend de R-24.
-- **Reconnexion d'un joueur** : elle ne touche pas au timer, qui appartient à la partie
-  et non à la connexion.
-- **Redémarrage** : réarmement à partir de `turnDeadlineAt`. Un index sur ce champ
-  permettra de retrouver les échéances en cours.
+Deux timers distincts, tous deux **SERVER-AUTHORITATIVE** et **persistés** :
 
-## 7. API REST (conventions, non implémentée)
+| | Timer A — décision Poursuivre/Quitter | Timer B — tour de jeu |
+|---|---|---|
+| Durée | 10 s après la fin d'une partie | 10 s pour le joueur attendu |
+| Échéance persistée | `session_decision_rounds.deadline_at` | `games.turn_deadline_at` (+ `turn_started_at`, `active_player_id`) |
+| Clé du timer | `sessionId` (`SessionTimerRegistry`) | `gameId` (`GameTimerRegistry`) |
+| Commande déclenchée | `SessionService.syncSession` | `GameService.handleTurnTimeout` |
+| Effet | AUTO_LEAVE des joueurs sans réponse | TURN_TIMEOUT puis coup automatique (D-036) |
+| Événements | `session:auto_leave`, `session:player_left`, `session:decision_closed` | `game:turn_timeout`, `game:auto_card_played` |
+
+- **Un seul système de timers** : `KeyedTimerRegistry<K>`, un timer au plus par clé ; armer,
+  réarmer ou annuler le timer de A n'a aucun effet sur B. Aucun timer global.
+- Le timer en mémoire n'est qu'une **copie** de l'échéance PostgreSQL. Il ne modifie rien
+  lui-même : il déclenche une commande métier qui relit l'état (file de la partie et version,
+  ou verrou de la session) et vérifie elle-même l'échéance. Un déclenchement anticipé, en
+  double, ou sur un tour déjà joué est sans effet.
+- **Course « le joueur joue au moment où le temps expire »** : le coup et le timeout
+  s'affrontent sur la version de la partie ; un seul gagne. Après l'échéance, un coup manuel
+  est refusé (`TURN_EXPIRED`).
+- **Redémarrage** : `DeadlineSupervisor.start()` reconstruit les timers depuis PostgreSQL
+  (échéance future → timer réarmé ; échéance passée → traitée immédiatement ; coup
+  automatique en attente → repris), puis balaie toutes les 5 s les échéances dépassées.
+  Plusieurs instances peuvent traiter la même échéance : un seul effet (idempotence).
+- **Coup automatique** : `AutomaticCardSelectionStrategy` (port) ; en production
+  `LowestCardAutomaticSelectionStrategy` (D-036) : plus petite carte de la famille du
+  contrôle si le joueur en possède, sinon plus petite carte de sa main. La carte est jouée
+  par le même chemin qu'un coup manuel ; `commandId` déterministe par tour.
+- **Pause** : aucune. Une pause pendant une déconnexion dépend de R-24.
+
+## 7. API REST (implémentée, D-030)
 
 | Méthode | Route | Accès | Rôle |
 |---|---|---|---|
 | `POST` | `/api/games` | authentifié | Créer une partie (le créateur y est ajouté) |
-| `GET` | `/api/games` | authentifié | Lobby : résumé **public** des parties ouvertes (montant, créateur, statut, remplissage) |
+| `GET` | `/api/games` | authentifié | Lobby : **non implémenté** (visibilité et parties privées : R-22) |
 | `GET` | `/api/games/me/active` | authentifié | Parties actives du joueur (reconnexion) |
 | `GET` | `/api/games/:gameId` | membre | Vue joueur de la partie (état + version) |
 | `POST` | `/api/games/:gameId/join` | authentifié | Rejoindre |
-| `POST` | `/api/games/:gameId/leave` | membre | Quitter (règles à définir : R-19, fuite R-05) |
-| `POST` | `/api/games/:gameId/actions` | membre | Commande de jeu (même format que `game:command`) |
+| `POST` | `/api/games/:gameId/leave` | membre | Quitter : **non implémenté** (R-19, fuite R-05) |
+| `POST` | `/api/games/:gameId/actions` | membre | Commande de jeu : `PLAY_CARD`, `DECLARE_WIN`, `FLEE` |
+
+**Sessions (D-033, D-034)** : `POST /api/sessions` (`{ maxPlayers: 2|3|4 }`, immuable ;
+Idempotency-Key ; session + 1re partie), `GET /api/sessions/me/active` (au plus une session),
+`GET /api/sessions/:sessionId` (membres actuels ou anciens ; vue : `maxPlayers`, `seats`
+avec occupant ou `null`, `currentGame`, `decision`, `serverNow`),
+`POST /api/sessions/:sessionId/join` (premier siège vacant), `POST /api/sessions/:sessionId/leave`
+(siège vacant ; le dernier départ ferme la session),
+`POST /api/sessions/:sessionId/decision` (`{ choice: 'continue' | 'leave' }`, ronde de 10 s),
+`GET /api/sessions/:sessionId/games` (historique, sans carte),
+`POST /api/sessions/:sessionId/games` (Idempotency-Key ; partie suivante à la capacité de la
+session, J1 calculé par le serveur). `POST /api/games` ouvre une session dont la partie est la
+première. Rejoindre une partie exige d'être membre actif de sa session. Codes :
+`SESSION_NOT_FOUND` (404), `NOT_A_SESSION_MEMBER` (403), `SESSION_CLOSED`, `SESSION_FULL`,
+`ALREADY_IN_SESSION`, `SESSION_GAME_IN_PROGRESS`, `SESSION_DECISION_IN_PROGRESS`,
+`NO_DECISION_PENDING`, `SESSION_MAX_PLAYERS_IMMUTABLE`, `PLAYER_IN_ACTIVE_GAME`,
+`FIRST_PLAYER_UNDETERMINED`, `FIRST_PLAYER_NOT_IN_GAME`, `TURN_EXPIRED` (409).
+
+La vue de partie expose aussi `activePlayerId`, `turnStartedAt`, `turnDeadlineAt`,
+`turnTimedOutAt` et `serverNow` : le client affiche le compte à rebours, le serveur seul
+décide de l'expiration (D-034). Depuis D-035 : `myActions` (`canPlayCard`,
+`playableCardIds`, `canFlee`, `canDeclareInstantWin`), `myInstantWin` (sa propre main
+gagnante seulement), `play.trickOrder`, `endReason`, `instantWinTie`, `replayOfGameId`. Le
+client n'affiche que les actions permises par le serveur ; il ne décide ni de la légalité
+d'une carte, ni du contrôle, ni du gagnant, ni de la reprise.
+
+**Fin de partie et reprise (D-035)** : `endReason` ∈ `INSTANT_WIN`,
+`CONTROL_AFTER_LAST_TRICK` (5e tour joué automatiquement), `INSTANT_WIN_TIE` (égalité de
+priorité : la session crée aussitôt une nouvelle partie, `replayOfGameId`, même J1, sans
+Poursuivre/Quitter), `ADMIN_STOP`. Événements : `game:instant_win_tie`,
+`game:last_trick_automatic`, `game:control_changed`.
+
+`POST /api/games/:gameId/start` (D-031) : créateur seul, au moins 2 joueurs, partie en
+attente. Corps facultatif `{ commandId }` (un renvoi avec le même commandId est idempotent).
+
+`POST /api/games` exige l'en-tête **`Idempotency-Key`** (8 à 128 caractères, un UUID par
+intention de création). Rejouer la même clé renvoie la même partie (`201`, en-tête
+`Idempotent-Replayed: true`) ; la même clé pour une création différente → 422.
+
+Corps d'une action (`commandId` obligatoire, UUID créé par le client pour l'idempotence) :
+
+```json
+{ "commandId": "uuid", "expectedVersion": 7, "type": "PLAY_CARD", "payload": { "cardId": "COEUR-7" } }
+```
+
+Réponses : `201`/`200` avec `{ game }` (vue du joueur, `PlayerGameView`), ou `{ games }` pour
+`/me/active`. Erreurs `{ error, code, message, fields?, details? }` :
+
+| Statut | Codes |
+|---|---|
+| 400 | `VALIDATION_ERROR` (gameId, maxPlayers, stakeAmount, commandId, type, cardId…) |
+| 401 | `UNAUTHENTICATED` |
+| 403 | `NOT_A_MEMBER`, `ONLY_CREATOR_CAN_START` |
+| 404 | `GAME_NOT_FOUND` |
+| 409 | `VERSION_CONFLICT` (`details.currentVersion`), `ALREADY_IN_ACTIVE_GAME` (R-18), `GAME_FULL`, `GAME_NOT_JOINABLE`, `GAME_FINISHED`, `GAME_ALREADY_STARTED` |
+| 422 | `NOT_ENOUGH_PLAYERS`, `IDEMPOTENCY_KEY_REUSED`, `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND`, `CARD_NOT_PLAYABLE`, `INVALID_CARD`, `PLAYER_HAS_FLED`, `NOT_A_WINNING_HAND`, `WIN_DECLARATION_NOT_ALLOWED`, `FLEE_NOT_ALLOWED`, `GAME_NOT_IN_PROGRESS`… |
+| 429 | `RATE_LIMITED` (écritures : 120 par minute et par utilisateur) |
+| 501 | `RULE_NOT_DEFINED` (`details.ruleRef` : `R-30` pour une fuite qui laisserait un seul joueur ; les règles de jeu sont officielles depuis D-035, plus de `RULESET`) |
+| 503 | `GAMES_UNAVAILABLE` (base ou authentification absentes) |
 
 Conventions :
 
@@ -260,7 +343,8 @@ Conventions :
   `parseGameId` (400 si invalide), puis chargement (404), puis contrôle d'appartenance
   (403). Aucun contrôleur ne lit un `gameId` dans le corps de la requête pour décider
   de la partie visée.
-- Le `playerId` vient du token JWT, jamais du corps ni de l'URL.
+- Le `playerId` vient du token JWT, jamais du corps ni de l'URL : `playerIdOf(getAuth(res).userId)`
+  (D-029). C'est l'UUID du compte ; `game_players.player_id` référence `users(id)`.
 - 403 plutôt que 404 pour un non-membre : l'existence des parties est publique (lobby).
 - Les écritures renvoient la nouvelle vue joueur et sa `version`.
 - `GameVersionConflictError` → 409, `GameFullError` / `GameNotJoinableError` /
@@ -334,8 +418,9 @@ Détails (schéma, migrations, Redis, pannes) : [data-architecture.md](data-arch
   hook `useGameChannel(gameId)` qui s'abonne au montage et se désabonne au démontage ou au
   changement de `gameId`. Chaque événement reçu :
   1. est ignoré si `event.gameId !== gameId` ;
-  2. est ignoré si `event.version` est inférieure ou égale à la version en cache ;
-  3. déclenche une relecture de l'état si un trou de version est détecté ;
+  2. est ignoré si `(event.version, event.sequence)` ne dépasse pas le dernier couple
+     appliqué (§5.2) ;
+  3. déclenche une relecture de l'état si `event.version` dépasse la version en cache + 1 ;
   4. sinon, met à jour le cache `['games', gameId]`.
 - **Zustand** : un store de session global (utilisateur, token) est légitime. **Pas de
   `currentGame`**. L'état d'UI propre à une partie (carte sélectionnée, glisser-déposer)
@@ -355,8 +440,15 @@ Logger JSON structuré (`utils/logger.ts`). Chaque commande produit une ligne av
 {"timestamp":"2026-10-07T10:00:00.000Z","level":"info","message":"game command applied","gameId":"6703…a1","playerId":"user456","action":"JOIN_GAME","version":2}
 ```
 
-`logger.child({ gameId })` donne un logger lié à une partie. Un `requestId` par requête
-HTTP (middleware) et par message temps réel sera ajouté avec les routes de jeu.
+Une commande **refusée** produit aussi une ligne (`game command rejected`) avec `gameId`,
+`playerId`, `action`, `commandId`, `expectedVersion` et `errorName` : `warn` pour un refus
+attendu (règle, accès, version, partie pleine…), `error` avec le message pour une panne.
+Le message d'un refus attendu n'est pas recopié : il peut nommer une carte de la main.
+
+`logger.child({ gameId })` donne un logger lié à une partie. Chaque requête HTTP reçoit un
+`requestId` (en-tête `X-Request-Id`, repris de l'appelant s'il est valide), présent dans les
+logs d'erreur et dans le corps d'une réponse 500. Le `requestId` par message temps réel
+viendra avec le transport (T-01).
 
 ## 13. Tests d'isolation
 

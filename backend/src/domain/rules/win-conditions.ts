@@ -1,21 +1,37 @@
 import type { Card, CardValue } from '../cards/card';
-import type { ColorEquivalence } from './rule-set';
-import { UnresolvedRuleError } from './unresolved-rule';
 
-/** Conditions de gain instantané listées par la spécification fonctionnelle §4. */
+/**
+ * VICTOIRE INSTANTANÉE (D-035) : six combinaisons RANGÉES, évaluées uniquement sur les
+ * 5 cartes initialement distribuées. Plus le rang est PETIT, plus la priorité est FORTE.
+ *
+ *   1  THREE_SEVENS    trois cartes de valeur 7 (quelle que soit la famille)
+ *   2  SUM_AT_MOST_21  somme des 5 cartes ≤ 21
+ *   3  FIVE_SAME_SUIT  5 cartes de la même famille
+ *   4  FOUR_OF_A_VALUE 4 cartes de même valeur
+ *   5  THREE_AND_TWO   3 cartes d'une valeur + 2 cartes d'une autre valeur
+ *   6  THREE_THREES    3 cartes de valeur 3
+ *
+ * Une main qui satisfait plusieurs combinaisons retient la MEILLEURE (rang le plus petit).
+ * Les anciennes candidates (« somme ≥ 30 », « 7 + 7 + 4 + 3 ») ne font pas partie du socle.
+ */
 export type WinConditionId =
-  | 'THREE_THREES'
+  | 'THREE_SEVENS'
+  | 'SUM_AT_MOST_21'
+  | 'FIVE_SAME_SUIT'
   | 'FOUR_OF_A_VALUE'
-  | 'FIVE_SAME_COLOR'
-  | 'SUM_THRESHOLD'
-  | 'TWO_SEVENS_FOUR_THREE'
   | 'THREE_AND_TWO'
-  | 'THREE_SEVENS';
+  | 'THREE_THREES';
+
+export type InstantWinRank = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface WinCondition {
   readonly id: WinConditionId;
+  readonly rank: InstantWinRank;
   isSatisfiedBy(hand: readonly Card[]): boolean;
 }
+
+/** Nombre de cartes d'une main initiale. */
+export const INITIAL_HAND_SIZE = 5;
 
 function countByValue(hand: readonly Card[]): Map<CardValue, number> {
   const counts = new Map<CardValue, number>();
@@ -25,89 +41,92 @@ function countByValue(hand: readonly Card[]): Map<CardValue, number> {
   return counts;
 }
 
-function countOf(hand: readonly Card[], value: CardValue): number {
-  return hand.filter((c) => c.value === value).length;
-}
+const countOf = (hand: readonly Card[], value: CardValue) =>
+  hand.filter((c) => c.value === value).length;
 
-/** « Avoir 3 cartes de valeur 3 ». */
-export function threeThrees(): WinCondition {
-  return { id: 'THREE_THREES', isSatisfiedBy: (hand) => countOf(hand, 3) >= 3 };
-}
-
-/**
- * « Avoir 4 cartes de même valeur ». Impossible pour la valeur 10 (pas de 10 de
- * pique dans le paquet) : aucune exception n'est nécessaire, le paquet l'empêche.
- */
-export function fourOfAValue(): WinCondition {
-  return {
+/** Les combinaisons, de la plus forte (rang 1) à la plus faible (rang 6). */
+export const INSTANT_WIN_CONDITIONS: readonly WinCondition[] = [
+  { id: 'THREE_SEVENS', rank: 1, isSatisfiedBy: (hand) => countOf(hand, 7) >= 3 },
+  {
+    id: 'SUM_AT_MOST_21',
+    rank: 2,
+    isSatisfiedBy: (hand) => hand.reduce((total, c) => total + c.value, 0) <= 21,
+  },
+  {
+    id: 'FIVE_SAME_SUIT',
+    rank: 3,
+    isSatisfiedBy: (hand) => new Set(hand.map((c) => c.suit)).size === 1,
+  },
+  {
     id: 'FOUR_OF_A_VALUE',
+    rank: 4,
     isSatisfiedBy: (hand) => [...countByValue(hand).values()].some((n) => n >= 4),
-  };
-}
-
-/** « Avoir 5 cartes de même couleur ». Le sens de « couleur » est injecté (R-08). */
-export function fiveSameColor(sameColor: ColorEquivalence): WinCondition {
-  return {
-    id: 'FIVE_SAME_COLOR',
-    isSatisfiedBy: (hand) => {
-      const [first] = hand;
-      return hand.length >= 5 && first !== undefined && hand.every((c) => sameColor(first, c));
-    },
-  };
-}
-
-export interface SumThresholdOptions {
-  operator: '<=' | '>=';
-  threshold: number;
-}
-
-/**
- * Condition sur la somme des valeurs. Les documents se contredisent (spec §4 :
- * « ≤ 21 » ; note checkWinCondition : « ≥ 30 points ») : opérateur et seuil sont
- * donc obligatoires, sans valeur par défaut (R-01).
- */
-export function sumThreshold(options: SumThresholdOptions): WinCondition {
-  return {
-    id: 'SUM_THRESHOLD',
-    isSatisfiedBy: (hand) => {
-      const sum = hand.reduce((total, c) => total + c.value, 0);
-      return options.operator === '<=' ? sum <= options.threshold : sum >= options.threshold;
-    },
-  };
-}
-
-/**
- * « 2 cartes de valeur 7 avec 1 carte de valeur 4 et 1 carte de valeur 3 » ne décrit
- * que 4 cartes d'une main de 5 (R-04). Aucune interprétation n'est implémentée :
- * activer cette condition est refusé tant que la règle n'est pas clarifiée.
- */
-export function twoSevensFourThree(): never {
-  throw new UnresolvedRuleError(
-    'R-04',
-    'la combinaison 7 + 7 + 4 + 3 ne précise pas la 5e carte de la main',
-  );
-}
-
-/** « 3 cartes d'une même valeur et deux autres d'une même autre valeur ». */
-export function threeAndTwo(): WinCondition {
-  return {
+  },
+  {
     id: 'THREE_AND_TWO',
+    rank: 5,
     isSatisfiedBy: (hand) => {
       const counts = [...countByValue(hand).values()].sort((a, b) => b - a);
-      return hand.length === 5 && counts[0] === 3 && counts[1] === 2;
+      return counts[0] === 3 && counts[1] === 2;
     },
-  };
+  },
+  { id: 'THREE_THREES', rank: 6, isSatisfiedBy: (hand) => countOf(hand, 3) >= 3 },
+];
+
+export interface InstantWinMatch {
+  /** Meilleur rang de la main (le plus petit). */
+  rank: InstantWinRank;
+  /** Combinaison retenue (celle du meilleur rang). */
+  combination: WinConditionId;
+  /** Toutes les combinaisons satisfaites, du meilleur rang au moins bon. */
+  matches: WinConditionId[];
 }
 
-/** « Avoir 3 cartes de valeur 7 ». */
-export function threeSevens(): WinCondition {
-  return { id: 'THREE_SEVENS', isSatisfiedBy: (hand) => countOf(hand, 7) >= 3 };
+/**
+ * Meilleure combinaison d'une main INITIALE de 5 cartes, ou null si elle n'est pas
+ * gagnante. Une main de taille différente n'est jamais évaluée.
+ */
+export function bestInstantWin(hand: readonly Card[]): InstantWinMatch | null {
+  if (hand.length !== INITIAL_HAND_SIZE) {
+    return null;
+  }
+  const satisfied = INSTANT_WIN_CONDITIONS.filter((c) => c.isSatisfiedBy(hand));
+  const [best] = satisfied;
+  return best
+    ? { rank: best.rank, combination: best.id, matches: satisfied.map((c) => c.id) }
+    : null;
 }
 
-/** Toutes les conditions satisfaites, dans l'ordre de configuration (aucune priorité n'est définie). */
-export function matchingWinConditions(
-  hand: readonly Card[],
-  conditions: readonly WinCondition[],
-): WinConditionId[] {
-  return conditions.filter((c) => c.isSatisfiedBy(hand)).map((c) => c.id);
+export type InstantWinResolution<P> =
+  /** Aucune main gagnante : la partie se joue normalement. */
+  | { kind: 'none' }
+  /** Une seule main gagnante : son détenteur PEUT déclarer, ou jouer normalement. */
+  | { kind: 'optional'; playerId: P; rank: InstantWinRank }
+  /** Plusieurs mains gagnantes, un seul meilleur rang : victoire AUTOMATIQUE. */
+  | { kind: 'automatic'; playerId: P; rank: InstantWinRank }
+  /** Plusieurs mains gagnantes au même meilleur rang : aucun gagnant, reprise immédiate. */
+  | { kind: 'tie'; playerIds: P[]; rank: InstantWinRank };
+
+/**
+ * Issue de l'analyse des mains initiales (D-035) :
+ * - aucune main gagnante → partie normale ;
+ * - une seule → déclaration facultative ;
+ * - plusieurs, le meilleur rang détenu par UN joueur → il gagne automatiquement ;
+ * - plusieurs, le meilleur rang partagé → égalité de priorité, reprise immédiate.
+ */
+export function resolveInstantWins<P>(
+  ranks: ReadonlyArray<{ playerId: P; rank: InstantWinRank }>,
+): InstantWinResolution<P> {
+  if (ranks.length === 0) {
+    return { kind: 'none' };
+  }
+  if (ranks.length === 1) {
+    const [only] = ranks as [{ playerId: P; rank: InstantWinRank }];
+    return { kind: 'optional', playerId: only.playerId, rank: only.rank };
+  }
+  const best = Math.min(...ranks.map((r) => r.rank)) as InstantWinRank;
+  const holders = ranks.filter((r) => r.rank === best).map((r) => r.playerId);
+  return holders.length === 1
+    ? { kind: 'automatic', playerId: holders[0] as P, rank: best }
+    : { kind: 'tie', playerIds: holders, rank: best };
 }

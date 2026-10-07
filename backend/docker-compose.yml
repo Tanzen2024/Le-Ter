@@ -2,7 +2,7 @@
 # Identifiants factices, ports exposés sur localhost seulement. Ne pas utiliser en production.
 #
 #   docker compose up -d
-#   DATABASE_URL=postgres://le_ter:le_ter@localhost:543/le_ter
+#   DATABASE_URL=postgres://le_ter:le_ter@localhost:5433/le_ter
 #   REDIS_URL=redis://localhost:6379
 #   npm run db:migrate
 

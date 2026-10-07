@@ -24,29 +24,45 @@ type BusMessage =
  *   InMemoryGameEventHub : mêmes salles, mêmes règles de diffusion privée.
  *   L'instance qui publie reçoit aussi son propre message : un seul chemin de livraison.
  *
+ * - Un abonnement au canal qui échoue (Redis coupé) est retenté avec un délai
+ *   croissant tant qu'un abonné local suit la partie : sans cela, le client Redis ne
+ *   le rejouerait pas à la reconnexion et l'instance ne recevrait plus rien de la partie.
+ *
  * Panne de Redis : publier ne lève jamais d'erreur (l'état est déjà enregistré
  * dans PostgreSQL). L'événement est alors remis aux seuls abonnés locaux et les
  * autres instances le perdent ; leurs clients détectent le trou de version et
  * relisent l'état. Une remise en double est sans effet (version déjà vue).
  */
+export interface PubSubGameEventBusOptions {
+  /** Premier délai avant de retenter un abonnement échoué ; doublé à chaque échec. */
+  resubscribeDelayMs?: number;
+}
+
+const DEFAULT_RESUBSCRIBE_DELAY_MS = 1_000;
+const MAX_RESUBSCRIBE_DELAY_MS = 30_000;
+
 export class PubSubGameEventBus implements GameEventPublisher, GameEventSubscriber {
   private readonly local = new InMemoryGameEventHub();
   /** Nombre d'abonnements locaux par partie : décide de l'abonnement au canal. */
   private readonly localSubscriptions = new Map<GameId, number>();
+  /** Nouvel essai d'abonnement programmé, par partie. */
+  private readonly retries = new Map<GameId, NodeJS.Timeout>();
+  private readonly resubscribeDelayMs: number;
 
   constructor(
     private readonly transport: PubSubTransport,
     private readonly logger: Logger,
-  ) {}
+    options: PubSubGameEventBusOptions = {},
+  ) {
+    this.resubscribeDelayMs = options.resubscribeDelayMs ?? DEFAULT_RESUBSCRIBE_DELAY_MS;
+  }
 
   subscribe(gameId: GameId, playerId: PlayerId, listener: GameEventListener): () => void {
     const unsubscribeLocal = this.local.subscribe(gameId, playerId, listener);
     const count = (this.localSubscriptions.get(gameId) ?? 0) + 1;
     this.localSubscriptions.set(gameId, count);
     if (count === 1) {
-      this.transport
-        .subscribe(gameEventChannel(gameId), (raw) => this.receive(gameId, raw))
-        .catch((err: unknown) => this.logFailure('event channel subscribe failed', gameId, err));
+      this.subscribeChannel(gameId, this.resubscribeDelayMs);
     }
 
     let active = true;
@@ -62,6 +78,8 @@ export class PubSubGameEventBus implements GameEventPublisher, GameEventSubscrib
         return;
       }
       this.localSubscriptions.delete(gameId);
+      clearTimeout(this.retries.get(gameId));
+      this.retries.delete(gameId);
       this.transport
         .unsubscribe(gameEventChannel(gameId))
         .catch((err: unknown) => this.logFailure('event channel unsubscribe failed', gameId, err));
@@ -79,6 +97,25 @@ export class PubSubGameEventBus implements GameEventPublisher, GameEventSubscrib
   /** Canaux de partie auxquels cette instance est abonnée. */
   get channelCount(): number {
     return this.localSubscriptions.size;
+  }
+
+  private subscribeChannel(gameId: GameId, nextDelayMs: number): void {
+    this.transport
+      .subscribe(gameEventChannel(gameId), (raw) => this.receive(gameId, raw))
+      .catch((err: unknown) => {
+        this.logFailure('event channel subscribe failed', gameId, err);
+        if (!this.localSubscriptions.has(gameId) || this.retries.has(gameId)) {
+          return;
+        }
+        const retry = setTimeout(() => {
+          this.retries.delete(gameId);
+          if (this.localSubscriptions.has(gameId)) {
+            this.subscribeChannel(gameId, Math.min(nextDelayMs * 2, MAX_RESUBSCRIBE_DELAY_MS));
+          }
+        }, nextDelayMs);
+        retry.unref(); // N'empêche pas l'arrêt du processus.
+        this.retries.set(gameId, retry);
+      });
   }
 
   private send(message: BusMessage): void {

@@ -30,10 +30,17 @@ export function pgliteSqlClient(db: PGlite): SqlClient {
 export interface TestDatabase {
   db: PGlite;
   sql: SqlClient;
-  /** Vide les tables métier entre deux tests (le schéma reste en place). */
+  /** Vide les tables métier (parties, comptes, sessions) entre deux tests ; le schéma reste. */
   reset(): Promise<void>;
   close(): Promise<void>;
 }
+
+/**
+ * Démarrer PGlite (WASM) et appliquer les migrations prend plusieurs secondes quand
+ * les suites s'exécutent en parallèle : le délai Jest par défaut (5 s) ferait échouer
+ * toute la suite de manière aléatoire.
+ */
+export const PGLITE_TIMEOUT_MS = 30_000;
 
 /** Base neuve avec toutes les migrations de `backend/migrations/` appliquées. */
 export async function createMigratedDatabase(): Promise<TestDatabase> {
@@ -44,7 +51,7 @@ export async function createMigratedDatabase(): Promise<TestDatabase> {
     db,
     sql,
     reset: async () => {
-      await db.exec('TRUNCATE games CASCADE');
+      await db.exec('TRUNCATE games, users CASCADE');
     },
     close: () => db.close(),
   };

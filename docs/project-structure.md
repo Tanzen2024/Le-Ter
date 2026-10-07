@@ -38,24 +38,27 @@ Il n'y a **pas** de `package.json` à la racine ni de workspace npm (voir [decis
 frontend/
 ├── app/                      Routes Expo Router (UNIQUEMENT des écrans et _layout.tsx)
 │   ├── _layout.tsx           Navigateur racine (Stack)
-│   ├── index.tsx             Écran d'accueil provisoire
-│   ├── (auth)/               Connexion, inscription (à venir)
+│   ├── index.tsx             Accueil : session restaurée, sinon redirection vers /login
+│   ├── (auth)/               _layout.tsx, login.tsx (/login), register.tsx (/register, 2 étapes)
 │   ├── (tabs)/               Navigation principale (à venir)
-│   ├── game/                 Écrans de partie (à venir : game/[gameId].tsx)
+│   ├── game/[gameId].tsx     Écran d'une partie (identifiée par la route, D-017)
+│   ├── session/[sessionId].tsx  Écran d'une session : sièges (vacants compris), partie en
+│   │                         cours, Poursuivre/Quitter avec compte à rebours, historique
 │   └── tournament/           Écrans de tournoi (à venir)
 ├── src/
-│   ├── components/           Composants UI réutilisables
+│   ├── components/           Composants UI réutilisables (Screen : racine d'écran)
 │   ├── features/             Modules fonctionnels (auth, lobby, game, tournament, wallet…)
 │   ├── domain/               Types/logique d'affichage côté UI (non autoritaires)
 │   ├── services/             Client API, temps réel, notifications
 │   ├── stores/               Stores Zustand
-│   ├── hooks/                Hooks partagés
+│   ├── hooks/                Hooks partagés (use-server-countdown : compte à rebours aligné sur le serveur)
 │   ├── lib/                  Utilitaires et configuration de bibliothèques
 │   ├── constants/            Constantes (couleurs, tailles…)
 │   └── types/                Types TypeScript partagés dans le frontend
 ├── assets/                   Icônes, splash, images
 ├── tests/                    Tests frontend (à configurer)
-├── app.json                  Configuration Expo (scheme "leter", plugin expo-router)
+├── app.json                  Configuration Expo (scheme "leter", paysage uniquement — D-028)
+├── plugins/                  Config plugins Expo locaux (Android sensorLandscape)
 ├── package.json              main = "expo-router/entry"
 ├── package-lock.json
 └── tsconfig.json
@@ -85,17 +88,34 @@ backend/
 │   │   ├── env.ts            Lecture et validation des variables d'environnement
 │   │   ├── database.ts       Pool PostgreSQL : connexion, arrêt, état
 │   │   └── redis.ts          Connexions Redis (commandes + abonnements), état
-│   ├── controllers/          health.controller.ts
-│   ├── routes/               index.ts (/api), health.routes.ts (/api/health)
-│   ├── middleware/           error-handler.ts (404, 500)
+│   ├── controllers/          health, auth, game.controller.ts (minces : GameService seul)
+│   ├── routes/               index.ts (/api), health, auth.routes.ts (/api/auth/*),
+│   │                         game.routes.ts (/api/games/*)
+│   ├── middleware/           request-id.ts, security-headers.ts, error-handler.ts,
+│   │                         api-errors.ts (erreur → HTTP), require-auth.ts
+│   │                         (requireAuth, getAuth), rate-limit.ts
 │   ├── services/
-│   │   └── game/
-│   │       ├── game.service.ts          Point d'entrée unique des commandes d'une partie
-│   │       └── game-timer-registry.ts   Un timer par partie (Map<GameId, Timeout>)
+│   │   ├── auth/                        AuthService, PasswordService (bcrypt), AccessTokenService
+│   │   │                                (JWT), refresh-token.ts, auth-errors.ts, create-auth-service.ts
+│   │   ├── sessions/session.service.ts  SessionService (D-033, D-034) : sièges, décision
+│   │   │                                Poursuivre/Quitter, J1, parties successives
+│   │   ├── game/
+│   │   │   ├── game.service.ts          Point d'entrée unique des commandes d'une partie
+│   │   │   │                            (dont TURN_TIMEOUT et coup automatique, D-034)
+│   │   │   ├── create-game-service.ts      Assemblage (PostgreSQL + bus Redis + superviseur)
+│   │   │   ├── participation-policies.ts   R-18 : une seule partie active (D-031)
+│   │   │   └── game-timer-registry.ts   KeyedTimerRegistry : un timer par partie (tour) ou
+│   │   │                                par session (décision), copie des échéances en base
+│   │   └── timers/deadline-supervisor.ts  Reconstruction des timers au démarrage, balayage
+│   │                                      des échéances dépassées (D-034)
 │   ├── domain/
+│   │   ├── users/user.ts     UserId, User, PublicUser, playerIdOf (UserId → PlayerId)
+│   │   ├── sessions/         session.ts (Session, sièges, ronde Poursuivre/Quitter,
+│   │   │                     transitions pures), table-order.ts (ordre antihoraire unique,
+│   │   │                     J1 par siège), session-events.ts (D-033, D-034)
 │   │   ├── cards/
 │   │   │   ├── card.ts       Card, Suit, CardValue, CardId, composition (31 cartes)
-│   │   │   ├── deck.ts       createDeck, shuffleDeck (Fisher-Yates), dealCards
+│   │   │   ├── deck.ts       createDeck, shuffleDeck (Fisher-Yates), dealInPasses (lots 3 puis 2)
 │   │   │   └── random-source.ts   Interface RandomSource (hasard injecté)
 │   │   ├── game/
 │   │   │   ├── game-id.ts    GameId / PlayerId (types marqués), parseGameId
@@ -103,7 +123,9 @@ backend/
 │   │   │   ├── game-access.ts   Contrôle d'appartenance
 │   │   │   ├── game-view.ts  Vue joueur (seul état envoyé au client, sa main seulement)
 │   │   │   ├── ter-engine.ts startGame, playCard, declareWin, flee (moteur du Ter)
-│   │   │   ├── game-events.ts   Enveloppe d'événement (gameId, version)
+│   │   │   ├── automatic-card-selection.ts   Port AutomaticCardSelectionStrategy et
+│   │   │   │                 LowestCardAutomaticSelectionStrategy (D-036)
+│   │   │   ├── game-events.ts   Enveloppe d'événement (gameId, version, sequence)
 │   │   │   └── game-errors.ts   Erreurs du domaine
 │   │   └── rules/
 │   │       ├── rule-set.ts          Constantes certaines + TerRuleSet (règles ambiguës)
@@ -111,6 +133,7 @@ backend/
 │   │       ├── win-conditions.ts    Conditions de gain instantané
 │   │       ├── stake.ts             Mise : gagné simple, Kora (interface)
 │   │       └── unresolved-rule.ts   UnresolvedRuleError
+│   ├── cli/finish-game.ts    npm run game:finish -- <gameId> (administration, via GameService)
 │   ├── database/
 │   │   ├── sql-client.ts     Port SqlClient (query paramétrée, transaction), adaptateur pg
 │   │   ├── migrator.ts       Migrations versionnées (transaction, verrou, empreinte)
@@ -118,8 +141,11 @@ backend/
 │   ├── repositories/
 │   │   ├── game.repository.ts             Contrat (save versionné)
 │   │   ├── postgres-game.repository.ts    Implémentation PostgreSQL (UPDATE versionné)
-│   │   └── in-memory-game.repository.ts   Implémentation tests/dev (copies profondes)
-│   ├── validators/           Validation des entrées (vide)
+│   │   ├── in-memory-game.repository.ts   Implémentation tests/dev (copies profondes)
+│   │   ├── user.repository.ts / postgres-user.repository.ts         Comptes
+│   │   ├── auth-session.repository.ts / postgres-auth-session.repository.ts   Sessions d'auth (R-32)
+│   │   └── session.repository.ts / postgres-session.repository.ts   Sessions de jeu (D-033)
+│   ├── validators/           auth.validators.ts, game.validators.ts, validation-error.ts
 │   ├── websocket/
 │   │   ├── game-rooms.ts                Noms des salles game:{gameId}, game:{gameId}:chat
 │   │   ├── game-event-publisher.ts      Port de diffusion (transport à choisir)

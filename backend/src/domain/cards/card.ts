@@ -4,7 +4,7 @@
  * La spec emploie le mot « couleur » pour comparer des cartes (§2.4, §4). Son sens
  * (famille ou rouge/noir) n'est pas tranché (docs/TODO.md R-08) : ce module ne parle
  * donc que de FAMILLE (`Suit`), et la notion de « même couleur » est une règle
- * configurable (domain/rules/color.ts).
+ * configurable (`ColorEquivalence`, domain/rules/rule-set.ts).
  */
 export const SUITS = ['COEUR', 'PIQUE', 'TREFLE', 'ETOILE'] as const;
 export type Suit = (typeof SUITS)[number];

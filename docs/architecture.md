@@ -90,6 +90,34 @@ Une partie s'ouvre par la route `app/game/[gameId].tsx`. Son état serveur est m
 sous la clé `['games', gameId]`, et l'état d'UI propre à une partie est indexé par `gameId`.
 Il n'y a pas de `currentGame` global (D-017).
 
+### Mise en page : paysage uniquement (D-028)
+
+L'orientation est verrouillée globalement dans `app.json`. Aucun écran ne la gère. Règles pour
+tous les écrans :
+
+- **Racine d'écran** : `src/components/Screen.tsx` (zone de sécurité sur tous les bords, car
+  l'encoche est sur le côté en paysage). L'en-tête de pile est masqué par défaut : un écran ne
+  l'affiche que s'il en a besoin.
+- **Dimensions** : `flex`, pourcentages et `maxWidth`/`minWidth`. Pas de largeur ni de hauteur
+  fixe pensée pour un seul appareil (`width: 800`). `useWindowDimensions` seulement quand une
+  taille dépend vraiment de l'écran (taille des cartes, par exemple). Cibles : petit téléphone
+  (hauteur utile d'environ 320 pt), grand téléphone, tablette.
+- **Hauteur rare** : la hauteur est la dimension contrainte. Les contenus longs vont dans une
+  `ScrollView`. On répartit en colonnes plutôt que d'empiler.
+- **Formulaires** (connexion, inscription en deux étapes) : champs en deux colonnes
+  (prénom | nom, pseudo | email), contenu centré avec une largeur maximale, dans une
+  `ScrollView` avec `keyboardShouldPersistTaps="handled"`. En paysage, le clavier couvre plus
+  de la moitié de la hauteur : `KeyboardAvoidingView` (`behavior="padding"` sur iOS ; Android
+  redimensionne déjà la fenêtre, `adjustResize`) doit laisser visibles le champ actif et le
+  bouton de validation.
+- **Écran de jeu** : tapis au centre, adversaires répartis sur les bords, main et actions du
+  joueur en bas. La disposition doit rester utilisable à 2, 3 et 4 joueurs.
+- **Chat** : panneau latéral ou zone basse, jamais un écran qui suppose une grande hauteur. Le
+  message en cours de saisie est conservé dans l'état et pas seulement dans le champ.
+- **Modales** (confirmation, victoire, Kora, Double Kora, abandon, erreurs, résultats,
+  paramètres) : largeur et hauteur maximales relatives, contenu défilant si besoin, boutons
+  d'action toujours visibles.
+
 Le frontend possède ses propres types d'UI. Il ne duplique pas les règles du jeu
 (voir [decisions.md](decisions.md), D-009).
 
@@ -161,7 +189,8 @@ Socket.IO (latence, reconnexion). Le choix du transport n'est **pas encore fait*
 (voir [TODO.md](TODO.md), T-01).
 
 Le modèle, en revanche, est fixé (D-014) : une salle `game:{gameId}` par partie, un canal
-`game:{gameId}:chat` pour le chat, et une enveloppe d'événement portant `gameId` et `version`.
+`game:{gameId}:chat` pour le chat, et une enveloppe d'événement portant `gameId`, `version` et
+`sequence` (rang dans la commande, D-027).
 L'abonnement est soumis au contrôle d'appartenance. Le code dépend d'un port
 (`GameEventPublisher` / `GameEventSubscriber`) que l'adaptateur du transport choisi implémentera.
 
@@ -175,4 +204,7 @@ D-024). Une panne Redis n'affecte que la diffusion : l'état est déjà enregist
 - Requêtes SQL toujours paramétrées ; `gameId` validé (UUID) avant toute requête.
 - Redis sur réseau privé, avec authentification et TLS en production (il transporte des
   événements privés).
-- Prévu par la spécification : JWT, bcrypt, HTTPS, protection contre les injections et le XSS.
+- Authentification (D-029, [authentication.md](authentication.md)) : bcrypt, JWT 15 min,
+  refresh token opaque haché et tourné, une seule session active (R-32), identité issue du
+  JWT uniquement, aucun mode invité (R-10). `JWT_SECRET` obligatoire en production.
+- Prévu par la spécification : HTTPS, protection contre les injections et le XSS.

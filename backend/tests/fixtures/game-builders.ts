@@ -1,7 +1,9 @@
-import type { CardId } from '../../src/domain/cards/card';
+import { cardFromId, type CardId } from '../../src/domain/cards/card';
+import { bestInstantWin } from '../../src/domain/rules/win-conditions';
 import { createDeck } from '../../src/domain/cards/deck';
 import type { Game } from '../../src/domain/game/game';
 import { toPlayerId, type GameId, type PlayerId } from '../../src/domain/game/game-id';
+import { newSessionId } from '../../src/domain/sessions/session';
 import { startGame } from '../../src/domain/game/ter-engine';
 import type { TerRuleSet } from '../../src/domain/rules/rule-set';
 import { identityRandom } from './random';
@@ -21,10 +23,14 @@ export function waitingGame(playerNames: string[], maxPlayers = playerNames.leng
   const players = playerNames.map((name, seat) => ({
     playerId: toPlayerId(name),
     seat,
+    tablePosition: seat,
     joinedAt: NOW,
   }));
   return {
     id: nextGameId(),
+    // D-033 : une partie appartient à une session ; J1 = créateur (première partie).
+    sessionId: newSessionId(),
+    firstPlayerId: players[0]!.playerId,
     version: 1,
     status: 'waiting',
     creatorId: players[0]!.playerId,
@@ -49,5 +55,15 @@ export function startedGame(
   const dealt = new Set(Object.values(hands).flat());
   game.play!.hands = structuredClone(hands);
   game.play!.stock = createDeck().filter((card) => !dealt.has(card));
+  // Analyse serveur des mains initiales, refaite sur les mains choisies (D-035). La
+  // résolution (victoire automatique, égalité) n'est pas rejouée : elle se teste par la
+  // vraie distribution (decksRandom).
+  game.play!.instantWins = {};
+  for (const [playerId, cards] of Object.entries(hands)) {
+    const match = bestInstantWin(cards.map(cardFromId));
+    if (match) {
+      game.play!.instantWins[playerId] = { rank: match.rank, combination: match.combination };
+    }
+  }
   return { game, players: game.players.map((p) => p.playerId) };
 }

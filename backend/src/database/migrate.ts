@@ -10,7 +10,10 @@ async function main(): Promise<void> {
     throw new Error('DATABASE_URL non défini : aucune base à migrer');
   }
 
-  const client = await connectDatabase(databaseUrl);
+  // Une migration (index sur une grande table) peut légitimement être longue.
+  const client = await connectDatabase(databaseUrl, {
+    overrides: { statement_timeout: 0, query_timeout: 0 },
+  });
   try {
     const applied = await runMigrations(client, await loadMigrations());
     console.log(
