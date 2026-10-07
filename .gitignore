@@ -1,41 +1,67 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+# Le Ter — .gitignore racine (frontend/ + backend/ + docs/)
+# docs/ est la source de vérité : il DOIT rester suivi par Git.
 
-# dependencies
+# ---------------------------------------------------------------
+# Dépendances (chaque application a son propre node_modules)
+# ---------------------------------------------------------------
 node_modules/
+frontend/node_modules/
+backend/node_modules/
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
-
-# Native
-.kotlin/
-*.orig.*
-*.jks
+# ---------------------------------------------------------------
+# Secrets et environnement
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 *.p8
 *.p12
-*.key
+*.jks
+*.keystore
 *.mobileprovision
+google-services.json
+GoogleService-Info.plist
+serviceAccount*.json
+*-service-account*.json
 
-# Metro
+# ---------------------------------------------------------------
+# Frontend (Expo)
+# ---------------------------------------------------------------
+frontend/.expo/
+frontend/dist/
+frontend/web-build/
+frontend/expo-env.d.ts
+# Dossiers natifs générés (Continuous Native Generation)
+frontend/ios/
+frontend/android/
+.kotlin/
+*.orig.*
 .metro-health-check*
 
-# debug
+# ---------------------------------------------------------------
+# Backend (Node.js / TypeScript)
+# ---------------------------------------------------------------
+backend/dist/
+backend/coverage/
+
+# ---------------------------------------------------------------
+# Outils, logs, fichiers temporaires
+# ---------------------------------------------------------------
+coverage/
+*.tsbuildinfo
+*.log
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.tmp
+*.swp
 
-# macOS
+# Fichiers de verrou Office (ouverture d'un .docx dans docs/)
+~$*
+
+# Systèmes d'exploitation
 .DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-
-# generated native folders
-/ios
-/android
+Thumbs.db
+desktop.ini
