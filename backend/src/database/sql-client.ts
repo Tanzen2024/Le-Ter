@@ -50,16 +50,22 @@ export function createPgSqlClient(pool: Pool): SqlClient {
           return { rows: result.rows, rowCount: result.rowCount ?? 0 };
         },
       };
+      // Connexion à détruire plutôt qu'à rendre au pool : après un délai client
+      // (« Query read timeout »), la requête peut encore tourner côté serveur et
+      // bloquerait l'emprunteur suivant derrière elle.
+      let broken: Error | undefined;
       try {
         await connection.query('BEGIN');
         const value = await work(tx);
         await connection.query('COMMIT');
         return value;
       } catch (err) {
-        await connection.query('ROLLBACK').catch(() => undefined);
+        await connection.query('ROLLBACK').catch((rollbackErr: unknown) => {
+          broken = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
+        });
         throw err;
       } finally {
-        connection.release();
+        connection.release(broken);
       }
     },
   };

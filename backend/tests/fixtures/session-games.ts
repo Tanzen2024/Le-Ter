@@ -1,6 +1,7 @@
 import type { SqlClient } from '../../src/database/sql-client';
 import type { GameId, PlayerId } from '../../src/domain/game/game-id';
 import { PostgresGameRepository } from '../../src/repositories/postgres-game.repository';
+import { PasswordService } from '../../src/services/auth/password.service';
 import { PostgresSessionRepository } from '../../src/repositories/postgres-session.repository';
 import {
   GameService,
@@ -30,8 +31,12 @@ export function createSessionGameInstance(
     'repository' | 'participationPolicy' | 'logger' | 'sessionSeats'
   > & {
     participationPolicy?: (repository: PostgresGameRepository) => ParticipationPolicy;
-    /** Délai Poursuivre/Quitter (10 s par défaut, D-034). */
+    /** Délai Poursuivre/Quitter (20 s par défaut, D-034, D-064). */
     decisionWindowMs?: number;
+    /** Présentation du 5e tour avant la ronde (D-041) ; 0 par défaut dans les tests. */
+    lastTrickPresentationMs?: (cards: number) => number;
+    /** Partie suivante automatique après « Poursuivre » (D-042) ; désactivée par défaut. */
+    autoNextGame?: boolean;
   },
 ) {
   const repository = new PostgresGameRepository(sql);
@@ -53,6 +58,12 @@ export function createSessionGameInstance(
     logger: silentLogger,
     clock: deps.clock,
     timers: sessionTimers,
+    // Coût bcrypt minimal : les mots de passe de partie (D-039) restent rapides en test.
+    passwords: new PasswordService(4),
+    // Échéances de ronde exactes : la présentation du 5e tour (D-041) est testée à part.
+    lastTrickPresentationMs: deps.lastTrickPresentationMs ?? (() => 0),
+    // Les tests historiques créent la partie suivante eux-mêmes (POST …/games).
+    autoNextGame: deps.autoNextGame ?? false,
     decisionWindowMs: deps.decisionWindowMs,
   });
   const supervisor = new DeadlineSupervisor({

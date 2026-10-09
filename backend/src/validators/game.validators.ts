@@ -1,5 +1,6 @@
 import { isGameId, type GameId } from '../domain/game/game-id';
 import { ALLOWED_MAX_PLAYERS } from '../domain/game/game';
+import { BCRYPT_MAX_PASSWORD_BYTES } from '../services/auth/password.service';
 import { ValidationError } from './validation-error';
 
 /**
@@ -86,6 +87,90 @@ export function parseCreateGameInput(body: unknown): CreateGameInput {
     maxPlayers: maxPlayers as number,
     ...(stakeAmount !== undefined && { stakeAmount: stakeAmount as number }),
   };
+}
+
+/** Nom d'une partie privée (D-039) : 1 à 40 caractères visibles, espaces de bord retirés. */
+export const TABLE_NAME_MAX_LENGTH = 40;
+/** Mot de passe de partie (D-039) : 4 caractères minimum, 72 octets au plus (bcrypt). */
+export const TABLE_PASSWORD_MIN_LENGTH = 4;
+// Caractères de contrôle (sauts de ligne, tabulations…) refusés dans un nom affiché.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+export interface CreateSessionInput extends CreateGameInput {
+  name?: string;
+  password?: string;
+  /** Détection anti-collusion (D-043) : booléen facultatif, faux par défaut. */
+  suspicionDetectionEnabled?: boolean;
+}
+
+function parseTablePassword(value: unknown, fields: Record<string, string>): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (
+    typeof value !== 'string' ||
+    value.length < TABLE_PASSWORD_MIN_LENGTH ||
+    Buffer.byteLength(value, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES
+  ) {
+    fields.password = `Le mot de passe doit contenir au moins ${TABLE_PASSWORD_MIN_LENGTH} caractères (72 octets au plus).`;
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Création d'une partie privée (POST /api/sessions) : capacité et mise comme une partie,
+ * plus le nom et le mot de passe facultatif de la table (D-039).
+ */
+export function parseCreateSessionInput(body: unknown): CreateSessionInput {
+  const source = asRecord(body);
+  const fields: Record<string, string> = {};
+  let base: CreateGameInput | undefined;
+  try {
+    base = parseCreateGameInput(source);
+  } catch (err) {
+    if (!(err instanceof ValidationError)) throw err;
+    Object.assign(fields, err.fields);
+  }
+  let name: string | undefined;
+  if (source.name !== undefined && source.name !== null) {
+    const trimmed = typeof source.name === 'string' ? source.name.trim() : '';
+    if (
+      trimmed.length < 1 ||
+      trimmed.length > TABLE_NAME_MAX_LENGTH ||
+      CONTROL_CHARACTERS.test(trimmed)
+    ) {
+      fields.name = `Le nom de la partie doit contenir de 1 à ${TABLE_NAME_MAX_LENGTH} caractères.`;
+    } else {
+      name = trimmed;
+    }
+  }
+  const password = parseTablePassword(source.password, fields);
+  const { suspicionDetectionEnabled } = source;
+  if (suspicionDetectionEnabled !== undefined && typeof suspicionDetectionEnabled !== 'boolean') {
+    fields.suspicionDetectionEnabled = 'Valeur attendue : vrai ou faux.';
+  }
+  if (Object.keys(fields).length > 0 || !base) {
+    throw new ValidationError(fields);
+  }
+  return {
+    ...base,
+    ...(name !== undefined && { name }),
+    ...(password !== undefined && { password }),
+    ...(typeof suspicionDetectionEnabled === 'boolean' && { suspicionDetectionEnabled }),
+  };
+}
+
+/** Arrivée dans une partie privée (POST /api/sessions/:id/join) : mot de passe éventuel. */
+export function parseJoinSessionInput(body: unknown): { password?: string } {
+  const { password } = asRecord(body);
+  if (password === undefined || password === null || password === '') return {};
+  if (
+    typeof password !== 'string' ||
+    Buffer.byteLength(password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES
+  ) {
+    throw new ValidationError({ password: 'Mot de passe invalide.' });
+  }
+  return { password };
 }
 
 /**

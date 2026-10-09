@@ -7,6 +7,11 @@ import type { GameId, PlayerId } from './game-id';
 export type GameEventType =
   | 'game:created'
   | 'game:player_joined'
+  /**
+   * Partie en attente : un joueur a quitté la session, donc la partie (R-19, D-037).
+   * payload : playerId, firstPlayerId et creatorId (éventuellement remplacés).
+   */
+  | 'game:player_left'
   | 'game:started'
   | 'game:hand_dealt'
   | 'game:card_played'

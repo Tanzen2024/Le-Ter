@@ -8,8 +8,9 @@ import { getAuth } from '../middleware/require-auth';
 import { getRequestId } from '../middleware/request-id';
 import type { SessionService, SessionSnapshot } from '../services/sessions/session.service';
 import {
-  parseCreateGameInput,
+  parseCreateSessionInput,
   parseIdempotencyKey,
+  parseJoinSessionInput,
   parseNextGameInput,
   parseSessionDecisionInput,
 } from '../validators/game.validators';
@@ -26,7 +27,7 @@ export function createSessionController(sessions: SessionService) {
       const creationKey = parseIdempotencyKey(req.get('idempotency-key'));
       const { session, game, replayed } = await sessions.createSession(
         playerId,
-        { ...parseCreateGameInput(req.body), creationKey },
+        { ...parseCreateSessionInput(req.body), creationKey },
         { requestId: getRequestId(res) },
       );
       if (replayed) {
@@ -43,21 +44,39 @@ export function createSessionController(sessions: SessionService) {
       res.json({ sessions: mine.map((session) => toSessionView({ session, lastGame: null })) });
     },
 
+    /** Tables ouvertes (partie en attente, siège libre) ; la mienne est marquée `mine`. */
+    async listOpen(_req: Request, res: Response): Promise<void> {
+      res.json({ tables: await sessions.listOpenTables(currentPlayer(res)) });
+    },
+
     async get(_req: Request, res: Response): Promise<void> {
       res.json({
         session: toSessionView(await sessions.getSession(sessionIdOf(res), currentPlayer(res))),
       });
     },
 
-    async join(_req: Request, res: Response): Promise<void> {
+    async join(req: Request, res: Response): Promise<void> {
       const playerId = currentPlayer(res);
-      await sessions.joinSession(sessionIdOf(res), playerId, { requestId: getRequestId(res) });
+      const { password } = parseJoinSessionInput(req.body);
+      await sessions.joinSession(
+        sessionIdOf(res),
+        playerId,
+        { requestId: getRequestId(res) },
+        password,
+      );
       res.json({ session: toSessionView(await sessions.getSession(sessionIdOf(res), playerId)) });
     },
 
+    /** Quitter (R-19, D-037) : `session: null` si le dernier départ l'a supprimée (Q1). */
     async leave(_req: Request, res: Response): Promise<void> {
       const playerId = currentPlayer(res);
-      await sessions.leaveSession(sessionIdOf(res), playerId, { requestId: getRequestId(res) });
+      const { deleted } = await sessions.leaveSession(sessionIdOf(res), playerId, {
+        requestId: getRequestId(res),
+      });
+      if (deleted) {
+        res.json({ session: null });
+        return;
+      }
       res.json({ session: toSessionView(await sessions.getSession(sessionIdOf(res), playerId)) });
     },
 
@@ -105,6 +124,10 @@ export function toSessionView({ session, lastGame }: SessionSnapshot) {
     status: session.status,
     creatorId: session.creatorId,
     maxPlayers: session.maxPlayers,
+    ...(session.name !== undefined && { name: session.name }),
+    // Le hash ne quitte jamais le serveur : seulement l'existence d'un mot de passe.
+    hasPassword: session.passwordHash !== undefined,
+    suspicionDetectionEnabled: session.suspicionDetectionEnabled,
     seats: seatMap(session).map((playerId, seat) => ({ seat, playerId: playerId ?? null })),
     players: [...session.players]
       .sort((a, b) => Number(b.active) - Number(a.active) || a.seat - b.seat)

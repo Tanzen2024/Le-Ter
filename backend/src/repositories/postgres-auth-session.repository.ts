@@ -38,7 +38,7 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
 
   async rotate(
     tokenHash: string,
-    next: Omit<NewRefreshToken, 'sessionId'>,
+    next: Omit<NewRefreshToken, 'sessionId' | 'sessionExpiresAt'>,
   ): Promise<RotationResult> {
     return this.db.transaction(async (tx) => {
       const owner = await tx.query<{ user_id: UserId }>(
@@ -57,8 +57,10 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
         session_id: string;
         expires_at: Date;
         revoked_at: Date | null;
+        session_expires_at: Date | null;
       }>(
-        'SELECT id, session_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1',
+        `SELECT id, session_id, expires_at, revoked_at, session_expires_at
+         FROM refresh_tokens WHERE token_hash = $1`,
         [tokenHash],
       );
       const current = rows[0];
@@ -76,7 +78,16 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
         `UPDATE refresh_tokens SET revoked_at = $2, revoked_reason = 'rotated' WHERE id = $1`,
         [current.id, next.createdAt.toISOString()],
       );
-      await insertToken(tx, userId, { ...next, sessionId: current.session_id });
+      // Session bornée (administration) : le nouveau jeton n'expire jamais après la borne.
+      const sessionExpiresAt = current.session_expires_at ?? undefined;
+      const expiresAt =
+        sessionExpiresAt && sessionExpiresAt < next.expiresAt ? sessionExpiresAt : next.expiresAt;
+      await insertToken(tx, userId, {
+        ...next,
+        expiresAt,
+        sessionId: current.session_id,
+        ...(sessionExpiresAt && { sessionExpiresAt }),
+      });
       return { ok: true, userId, role: user.role, sessionId: current.session_id };
     });
   }
@@ -136,8 +147,9 @@ async function lockUser(
 
 async function insertToken(tx: SqlExecutor, userId: UserId, token: NewRefreshToken): Promise<void> {
   await tx.query(
-    `INSERT INTO refresh_tokens (id, user_id, session_id, token_hash, created_at, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO refresh_tokens (id, user_id, session_id, token_hash, created_at, expires_at,
+                                 session_expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       token.id,
       userId,
@@ -145,6 +157,7 @@ async function insertToken(tx: SqlExecutor, userId: UserId, token: NewRefreshTok
       token.tokenHash,
       token.createdAt.toISOString(),
       token.expiresAt.toISOString(),
+      token.sessionExpiresAt?.toISOString() ?? null,
     ],
   );
 }

@@ -667,4 +667,100 @@ describeWithPostgres('Sessions et timers sur PostgreSQL réel (concurrence)', ()
       expect(rows[0]).toEqual({ end_reason: 'INSTANT_WIN', winner_id: a });
     }
   });
+
+  // --- Quitter une partie en attente (R-19, D-037) ------------------------------------
+
+  async function waitingTrio(inst: ReturnType<typeof instance>) {
+    const [a, b, c] = (await players('a', 'b', 'c')) as [PlayerId, PlayerId, PlayerId];
+    const { session, game } = await inst.sessions.createSession(a, { maxPlayers: 4 });
+    for (const p of [b, c]) {
+      await inst.sessions.joinSession(session.id, p);
+      await inst.joinGame(game.id, p);
+    }
+    return { a, b, c, sessionId: session.id, gameId: game.id };
+  }
+
+  async function rowsOf(sessionId: SessionId, gameId: GameId) {
+    const { rows } = await sql.query<{ sessions: number; games: number; game_players: number }>(
+      `SELECT (SELECT count(*)::int FROM sessions WHERE id = $1) AS sessions,
+              (SELECT count(*)::int FROM games WHERE id = $2) AS games,
+              (SELECT count(*)::int FROM game_players WHERE game_id = $2) AS game_players`,
+      [sessionId, gameId],
+    );
+    return rows[0]!;
+  }
+
+  it('10 essais : les 3 joueurs d’une partie en attente partent en même temps → tout est supprimé', async () => {
+    for (let i = 0; i < 10; i++) {
+      const one = instance();
+      const two = instance();
+      const { a, b, c, sessionId, gameId } = await waitingTrio(one);
+
+      const results = await Promise.allSettled([
+        one.sessions.leaveSession(sessionId, a),
+        two.sessions.leaveSession(sessionId, b),
+        one.sessions.leaveSession(sessionId, c),
+      ]);
+
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled', 'fulfilled']);
+      const deleted = results.filter(
+        (r) => r.status === 'fulfilled' && r.value.deleted,
+      ) as PromiseFulfilledResult<{ deleted: boolean }>[];
+      expect(deleted).toHaveLength(1);
+      expect(await rowsOf(sessionId, gameId)).toEqual({ sessions: 0, games: 0, game_players: 0 });
+    }
+  });
+
+  it('10 essais : J1 et J2 partent en même temps → J3 devient J1, jamais un absent', async () => {
+    for (let i = 0; i < 10; i++) {
+      const one = instance();
+      const two = instance();
+      const { a, b, c, sessionId, gameId } = await waitingTrio(one);
+
+      await Promise.all([
+        one.sessions.leaveSession(sessionId, a),
+        two.sessions.leaveSession(sessionId, b),
+      ]);
+
+      const { rows } = await sql.query<{ first_player_id: string; creator_id: string }>(
+        'SELECT first_player_id, creator_id FROM games WHERE id = $1',
+        [gameId],
+      );
+      expect(rows[0]).toEqual({ first_player_id: c, creator_id: c });
+      expect((await rowsOf(sessionId, gameId)).game_players).toBe(1);
+      expect(await sessionState(sessionId)).toEqual({ status: 'open', n: 1 });
+    }
+  });
+
+  it('10 essais : départ contre démarrage (deux instances) → jamais parti ET dans la partie démarrée', async () => {
+    for (let i = 0; i < 10; i++) {
+      const one = instance();
+      const two = instance();
+      const { a, b, sessionId, gameId } = await waitingTrio(one);
+
+      const [left, started] = await Promise.allSettled([
+        two.sessions.leaveSession(sessionId, b),
+        one.startGame(gameId, a),
+      ]);
+
+      const { rows } = await sql.query<{ active: boolean; in_game: boolean; status: string }>(
+        `SELECT sp.active,
+           EXISTS (SELECT 1 FROM game_players gp WHERE gp.game_id = $2 AND gp.player_id = $3)
+             AS in_game,
+           (SELECT status FROM games WHERE id = $2) AS status
+         FROM session_players sp WHERE sp.session_id = $1 AND sp.player_id = $3`,
+        [sessionId, gameId, b],
+      );
+      const state = rows[0]!;
+      expect(state.active).toBe(state.in_game);
+      if (left.status === 'fulfilled') {
+        // Départ passé en premier : le démarrage a vu la partie sans B (ou a été refusé).
+        expect(state.in_game).toBe(false);
+      } else {
+        expect((left.reason as Error).name).toBe('PlayerInActiveGameError');
+        expect(started.status).toBe('fulfilled');
+        expect(state.status).toBe('in_progress');
+      }
+    }
+  });
 });

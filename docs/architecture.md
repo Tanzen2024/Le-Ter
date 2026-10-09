@@ -42,7 +42,7 @@ Le backend est **la seule autorité** sur tout ce qui touche à l'équité du je
 - validité d'une carte jouée, prise de contrôle, fin de tour ;
 - détection des gains instantanés et du gagnant ;
 - fuite, minuteur, jeu automatique en cas de déconnexion ;
-- calcul des mises, du prélèvement du Katika, des soldes et des transactions ;
+- calcul des mises, des commissions de la plateforme (compte financier de la plateforme, D-060), des soldes et des transactions ;
 - jetons et classement des tournois.
 
 Conséquences :

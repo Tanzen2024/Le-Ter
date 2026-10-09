@@ -1,6 +1,33 @@
+import {
+  IdempotencyKeyReusedError,
+  InsufficientBalanceError,
+  MobileMoneyUnavailableError,
+} from '../domain/wallet/wallet';
+import {
+  PaymentNotFoundError,
+  PaymentNotificationRejectedError,
+  PaymentProfileIncompleteError,
+  PaymentVerificationError,
+} from '../domain/payments/payment';
+import { CinetPayError } from '../services/payments/cinetpay/cinetpay-client';
 import { STATUS_CODES } from 'node:http';
 
+import { toAdminApiError } from './admin-errors';
+import { toTournamentApiError } from './tournament-errors';
+
 import { InvalidCardError } from '../domain/cards/card';
+import {
+  AlertNotFoundError,
+  AlertStatusConflictError,
+  AlertTransitionNotAllowedError,
+} from '../domain/detection/alert-admin';
+import { GeolocationDisabledError } from '../domain/detection/geo';
+import { AccessForbiddenError } from './require-role';
+import {
+  ChatClosedError,
+  ChatMessageKeyReusedError,
+  ChatRateLimitedError,
+} from '../domain/chat/chat';
 import {
   CardNotInHandError,
   CardNotPlayableError,
@@ -39,6 +66,7 @@ import {
   SessionClosedError,
   SessionDecisionInProgressError,
   SessionFullError,
+  SessionPasswordInvalidError,
   SessionGameInProgressError,
   SessionMaxPlayersImmutableError,
   SessionNotFoundError,
@@ -102,6 +130,107 @@ const RULE_VIOLATIONS: readonly [abstract new (...args: never[]) => Error, strin
 ];
 
 export function toApiError(err: unknown): ApiError | undefined {
+  // --- Tournois (D-051, D-054) --------------------------------------------------
+  const tournamentError = toTournamentApiError(err);
+  if (tournamentError) {
+    return tournamentError;
+  }
+  // --- Administration de la plateforme (D-061) -----------------------------------
+  const adminError = toAdminApiError(err);
+  if (adminError) {
+    return adminError;
+  }
+  // --- Détection : géolocalisation (D-046) -------------------------------------
+  // --- Administration de la détection (D-049) -----------------------------------
+  if (err instanceof AccessForbiddenError) {
+    return apiError(403, 'FORBIDDEN', "Vous n'avez pas accès à cette ressource.");
+  }
+  if (err instanceof AlertNotFoundError) {
+    return apiError(404, 'ALERT_NOT_FOUND', 'Alerte introuvable.');
+  }
+  if (err instanceof AlertTransitionNotAllowedError) {
+    return apiError(409, 'ALERT_TRANSITION_NOT_ALLOWED', 'Ce changement de statut est interdit.', {
+      details: { from: err.from, to: err.to },
+    });
+  }
+  if (err instanceof AlertStatusConflictError) {
+    return apiError(409, 'ALERT_STATUS_CONFLICT', "Le statut de l'alerte a changé entre-temps.", {
+      details: { expected: err.expected, current: err.current },
+    });
+  }
+  if (err instanceof GeolocationDisabledError) {
+    return apiError(
+      409,
+      'DETECTION_DISABLED',
+      "La détection anti-collusion n'est pas activée pour cette partie.",
+    );
+  }
+  // --- Chat de partie (D-045) -------------------------------------------------
+  if (err instanceof ChatClosedError) {
+    return apiError(409, 'CHAT_CLOSED', 'La partie est terminée : le chat est en lecture seule.');
+  }
+  if (err instanceof ChatMessageKeyReusedError) {
+    return apiError(
+      422,
+      'IDEMPOTENCY_KEY_REUSED',
+      'Cette clé d’envoi a déjà servi pour un autre message.',
+    );
+  }
+  if (err instanceof ChatRateLimitedError) {
+    return apiError(429, 'RATE_LIMITED', 'Trop de messages. Patientez quelques secondes.', {
+      details: { retryAfterMs: err.retryAfterMs },
+    });
+  }
+
+  // --- Compte de jeu (D-040) --------------------------------------------------
+  if (err instanceof InsufficientBalanceError) {
+    return apiError(409, 'INSUFFICIENT_BALANCE', 'Solde insuffisant.');
+  }
+  if (err instanceof IdempotencyKeyReusedError) {
+    return apiError(
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+      'Cette demande a déjà été utilisée pour une autre opération.',
+    );
+  }
+  if (err instanceof MobileMoneyUnavailableError) {
+    return apiError(
+      503,
+      'MOBILE_MONEY_UNAVAILABLE',
+      'Le service de paiement est indisponible : l’opération n’a pas été effectuée.',
+    );
+  }
+
+  // --- Paiements CinetPay (D-050) -----------------------------------------------
+  // Paiement d'un autre joueur ou inconnu : même réponse (aucune fuite d'existence).
+  if (err instanceof PaymentNotFoundError) {
+    return apiError(404, 'PAYMENT_NOT_FOUND', 'Paiement introuvable.');
+  }
+  // Prénom ou nom d'une lettre : refus clair, rien n'est créé (aucune modification du compte).
+  if (err instanceof PaymentProfileIncompleteError) {
+    const message = 'Doit contenir au moins 2 caractères pour un paiement CinetPay.';
+    return apiError(
+      422,
+      'PAYMENT_PROFILE_INCOMPLETE',
+      'Votre prénom et votre nom doivent contenir au moins 2 caractères pour payer par CinetPay. Contactez l’assistance pour mettre à jour votre profil.',
+      { fields: Object.fromEntries(err.fields.map((field) => [field, message])) },
+    );
+  }
+  if (err instanceof PaymentNotificationRejectedError) {
+    return apiError(401, 'NOTIFICATION_REJECTED', 'Notification refusée.');
+  }
+  if (err instanceof PaymentVerificationError) {
+    return apiError(409, 'PAYMENT_VERIFICATION_FAILED', 'Le paiement n’a pas pu être vérifié.');
+  }
+  // Fournisseur injoignable pendant une vérification : CinetPay renverra la notification.
+  if (err instanceof CinetPayError) {
+    return apiError(
+      502,
+      'PAYMENT_PROVIDER_UNAVAILABLE',
+      'Le fournisseur de paiement est injoignable.',
+    );
+  }
+
   // --- Entrées et authentification -------------------------------------------
   if (err instanceof ValidationError) {
     return apiError(400, 'VALIDATION_ERROR', err.message, { fields: err.fields });
@@ -151,6 +280,9 @@ export function toApiError(err: unknown): ApiError | undefined {
       'PLAYER_IN_ACTIVE_GAME',
       'Vous participez à une partie de cette session : vous ne pouvez pas la quitter maintenant.',
     );
+  }
+  if (err instanceof SessionPasswordInvalidError) {
+    return apiError(403, 'TABLE_PASSWORD_INVALID', 'Mot de passe incorrect.');
   }
   if (err instanceof SessionFullError) {
     return apiError(409, 'SESSION_FULL', 'Tous les sièges de cette session sont occupés.');

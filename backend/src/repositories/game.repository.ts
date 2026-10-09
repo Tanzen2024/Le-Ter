@@ -31,6 +31,12 @@ export interface TurnDeadline {
   timedOut: boolean;
 }
 
+/** Échéance de démarrage automatique persistée d'une partie en attente (D-065). */
+export interface StartDeadline {
+  gameId: GameId;
+  deadlineAt: Date;
+}
+
 export interface GameRepository {
   /** Génère un nouvel identifiant de partie (UUID, D-023). */
   nextId(): GameId;
@@ -58,4 +64,7 @@ export interface GameRepository {
 
   /** Parties en cours ayant une échéance de tour, la plus proche d'abord. */
   findTurnDeadlines(): Promise<TurnDeadline[]>;
+
+  /** Parties en attente ayant une échéance de démarrage (D-065), la plus proche d'abord. */
+  findStartDeadlines(): Promise<StartDeadline[]>;
 }

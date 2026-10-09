@@ -2,6 +2,7 @@ import type { Game } from '../domain/game/game';
 import type { PlayerId } from '../domain/game/game-id';
 import type {
   LastGameInfo,
+  LeaveTransition,
   Session,
   SessionGameSummary,
   SessionId,
@@ -17,6 +18,48 @@ export interface SessionContext {
    * est active, c'est celle-ci), ou null.
    */
   lastGame: LastGameInfo | null;
+}
+
+/** Contexte d'un départ (R-19, D-037), lu SOUS VERROU de la partie active et de la session. */
+export interface LeaveContext extends SessionContext {
+  /** La partie la plus récente si elle est EN ATTENTE (agrégat complet, verrouillé). */
+  waitingGame: Game | null;
+  /** La session a au moins une partie terminée (historique à conserver, Q1). */
+  hasFinishedGames: boolean;
+}
+
+/**
+ * Ce qu'un départ enregistre, en UNE transaction : la session (ou sa suppression) et sa
+ * partie en attente (mise à jour ou suppression).
+ */
+export interface LeaveWrite extends LeaveTransition {
+  /** Partie en attente à enregistrer, avec la version lue sous verrou. */
+  savedGame?: { game: Game; expectedVersion: number };
+}
+
+/**
+ * Table ouverte que l'on peut rejoindre (liste « Rechercher une partie ») : session ouverte,
+ * partie EN ATTENTE, au moins un siège libre. Aucune carte, aucune donnée de compte hormis le
+ * pseudo (nom visible en jeu) du créateur de la partie.
+ */
+export interface OpenTableSummary {
+  sessionId: SessionId;
+  gameId: string;
+  /** Nom choisi à la création (absent pour les tables antérieures à D-039). */
+  name?: string;
+  creatorName: string;
+  /** Mise de la partie en attente (indicative, R-13). */
+  stakeAmount?: number;
+  /** Protégée par un mot de passe (jamais le hash). */
+  hasPassword: boolean;
+  /** Réglage « détection anti-collusion » choisi à la création (D-043). */
+  suspicionDetectionEnabled: boolean;
+  /** Le joueur qui consulte y est présent (sa propre partie, à reprendre). */
+  mine: boolean;
+  maxPlayers: number;
+  /** Joueurs de la partie en attente. */
+  playerCount: number;
+  createdAt: Date;
 }
 
 /** Échéance d'une ronde Poursuivre/Quitter non résolue (réarmement des timers). */
@@ -35,9 +78,24 @@ export interface PendingDecisionDeadline {
  * s'exécutent l'un après l'autre, sur toutes les instances du backend. Les fonctions
  * `change` / `build` sont PURES et synchrones : aucune lecture ni écriture sous verrou.
  */
+/** Rattachement d'une nouvelle session à un tournoi (D-054). */
+export interface TournamentTableClaim {
+  tournamentId: string;
+  linkId: string;
+}
+
 export interface SessionRepository extends SessionSeatLookup {
-  /** Session + son créateur + sa première partie, en UNE transaction. */
-  createWithFirstGame(session: Session, game: Game): Promise<void>;
+  /**
+   * Session + son créateur + sa première partie, en UNE transaction. Table de tournoi
+   * (D-054) : dans la même transaction, verrou du tournoi, contrôle (tournoi en cours, aucune
+   * table du tournoi encore joignable) et rattachement `tournament_sessions` : la table n'est
+   * jamais visible comme table ordinaire, et deux instances n'ouvrent pas deux tables à la fois.
+   */
+  createWithFirstGame(
+    session: Session,
+    game: Game,
+    tournament?: TournamentTableClaim,
+  ): Promise<void>;
 
   findById(sessionId: SessionId): Promise<Session | null>;
 
@@ -46,6 +104,13 @@ export interface SessionRepository extends SessionSeatLookup {
 
   /** Sessions ouvertes où le joueur est présent (au plus une, D-034). */
   findActiveByPlayer(playerId: PlayerId): Promise<Session[]>;
+
+  /**
+   * Tables ouvertes à rejoindre (lecture sans verrou, purement indicative : l'arrivée reste
+   * validée sous verrou par `update`), les plus récentes d'abord ; `mine` marque celle où le
+   * joueur est déjà présent.
+   */
+  findOpenTables(viewerId: PlayerId, limit: number): Promise<OpenTableSummary[]>;
 
   /** Applique `change` au contexte verrouillé ; enregistre si des événements sont produits. */
   update<R extends SessionTransition>(
@@ -60,6 +125,16 @@ export interface SessionRepository extends SessionSeatLookup {
   createNextGame<R extends SessionTransition & { game: Game }>(
     sessionId: SessionId,
     build: (context: SessionContext) => R,
+  ): Promise<R>;
+
+  /**
+   * Départ d'un joueur (R-19, D-037), en UNE transaction : verrou de la partie active PUIS de
+   * la session (même ordre que les écritures de partie, sans interblocage), puis selon
+   * `change` : partie en attente mise à jour ou supprimée, session enregistrée ou supprimée.
+   */
+  leave<R extends LeaveWrite>(
+    sessionId: SessionId,
+    change: (context: LeaveContext) => R,
   ): Promise<R>;
 
   /** Historique des parties de la session, les plus anciennes d'abord (sans aucune carte). */

@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 
-import { isUserId, type UserId, type UserRole } from '../../domain/users/user';
+import { isUserId, isUserRole, type UserId, type UserRole } from '../../domain/users/user';
 
 const ALGORITHM = 'HS256';
 const ISSUER = 'le-ter-api';
@@ -70,7 +70,7 @@ export class AccessTokenService {
       throw new InvalidAccessTokenError('invalid');
     }
     const { sub, role, sid } = payload as jwt.JwtPayload & { role?: unknown; sid?: unknown };
-    if (!isUserId(sub) || role !== 'user' || typeof sid !== 'string' || !UUID_PATTERN.test(sid)) {
+    if (!isUserId(sub) || !isUserRole(role) || typeof sid !== 'string' || !UUID_PATTERN.test(sid)) {
       throw new InvalidAccessTokenError('invalid');
     }
     return { userId: sub, role, sessionId: sid };

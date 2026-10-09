@@ -22,7 +22,7 @@ export interface SessionSeat {
 
 export type DecisionChoice = 'continue' | 'leave' | 'auto_leave';
 
-/** Ronde Poursuivre / Quitter après une partie (10 s, décidée par le serveur). */
+/** Ronde Poursuivre / Quitter après une partie (20 s, décidée par le serveur). */
 export interface SessionDecision {
   gameId: string;
   deadlineAt: string;
@@ -39,6 +39,12 @@ export interface SessionView {
   creatorId: string;
   /** 2, 3 ou 4, fixé à la création, immuable. */
   maxPlayers: number;
+  /** Nom de la partie privée (D-039). */
+  name?: string;
+  /** Protégée par un mot de passe (le mot de passe ne revient jamais du serveur). */
+  hasPassword: boolean;
+  /** Réglage « détection anti-collusion » choisi à la création, immuable (D-043). */
+  suspicionDetectionEnabled: boolean;
   seats: SessionSeat[];
   /** Tous les joueurs passés par la session (présents d'abord). */
   players: SessionPlayer[];
@@ -64,4 +70,32 @@ export interface SessionGameSummary {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+}
+
+/**
+ * Table ouverte à rejoindre (liste « Rechercher une partie ») : une partie en attente avec
+ * une place libre. L'utilisateur n'y voit qu'une PARTIE : l'identifiant de session reste
+ * technique et n'est jamais affiché.
+ */
+export interface OpenTable {
+  sessionId: string;
+  gameId: string;
+  /**
+   * Nom choisi à la création (D-039). Absent pour les tables de l'ancien écran « Nouvelle
+   * session » : elles ne sont pas des parties privées et ne sont pas listées.
+   */
+  name?: string;
+  /** Pseudo du créateur de la partie. */
+  creatorName: string;
+  /** Mise indicative (R-13 : aucun mouvement de jetons n'existe encore). */
+  stakeAmount?: number;
+  /** 🔒 : un mot de passe est demandé pour rejoindre. */
+  hasPassword: boolean;
+  /** 🛡️ : réglage « détection anti-collusion » de la partie, valeur du serveur (D-043). */
+  suspicionDetectionEnabled: boolean;
+  /** Ma propre partie (à reprendre, pas à rejoindre). */
+  mine: boolean;
+  maxPlayers: number;
+  playerCount: number;
+  createdAt: string;
 }

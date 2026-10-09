@@ -38,24 +38,29 @@ Il n'y a **pas** de `package.json` à la racine ni de workspace npm (voir [decis
 frontend/
 ├── app/                      Routes Expo Router (UNIQUEMENT des écrans et _layout.tsx)
 │   ├── _layout.tsx           Navigateur racine (Stack)
-│   ├── index.tsx             Accueil : session restaurée, sinon redirection vers /login
+│   ├── index.tsx             Accueil (choix du mode Privé / Tournois) ; sans connexion → /login
 │   ├── (auth)/               _layout.tsx, login.tsx (/login), register.tsx (/register, 2 étapes)
 │   ├── (tabs)/               Navigation principale (à venir)
-│   ├── game/[gameId].tsx     Écran d'une partie (identifiée par la route, D-017)
-│   ├── session/[sessionId].tsx  Écran d'une session : sièges (vacants compris), partie en
-│   │                         cours, Poursuivre/Quitter avec compte à rebours, historique
-│   └── tournament/           Écrans de tournoi (à venir)
+│   ├── game/[gameId].tsx     Aire de jeu d'une partie (identifiée par la route, D-017) :
+│   │                         attente, jeu, fin, Poursuivre/Quitter, partie suivante
+│   ├── legal/[document].tsx  Conditions d'utilisation (/legal/terms) et Confidentialité
+│   │                         (/legal/privacy), FR/EN, accessibles sans connexion (D-052)
+│   └── tournament/           Écran Tournois (état vide tant que R-11 n'est pas défini)
+│
+│   Aucun écran « session » (D-038) : la session est un concept technique interne,
+│   l'utilisateur ne manipule que des parties.
 ├── src/
 │   ├── components/           Composants UI réutilisables (Screen : racine d'écran)
 │   ├── features/             Modules fonctionnels (auth, lobby, game, tournament, wallet…)
 │   ├── domain/               Types/logique d'affichage côté UI (non autoritaires)
 │   ├── services/             Client API, temps réel, notifications
-│   ├── stores/               Stores Zustand
+│   ├── stores/               Stores Zustand (preferences-store : son et langue persistés, D-052)
 │   ├── hooks/                Hooks partagés (use-server-countdown : compte à rebours aligné sur le serveur)
-│   ├── lib/                  Utilitaires et configuration de bibliothèques
-│   ├── constants/            Constantes (couleurs, tailles…)
+│   ├── lib/                  Utilitaires et configuration de bibliothèques (i18n : textes FR/EN)
+│   ├── constants/            Constantes (couleurs, tailles…, app-config : SUPPORT_URL, LEGAL_INFO)
 │   └── types/                Types TypeScript partagés dans le frontend
-├── assets/                   Icônes, splash, images
+├── assets/                   Icônes, splash, images ; audio/ : sons d'interface (D-052)
+├── scripts/                  generate-ui-sounds.mjs : génère assets/audio/*.wav
 ├── tests/                    Tests frontend (à configurer)
 ├── app.json                  Configuration Expo (scheme "leter", paysage uniquement — D-028)
 ├── plugins/                  Config plugins Expo locaux (Android sensorLandscape)

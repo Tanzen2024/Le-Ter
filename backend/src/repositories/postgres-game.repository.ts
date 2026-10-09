@@ -28,6 +28,7 @@ import {
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type StartDeadline,
   type TurnDeadline,
 } from './game.repository';
 
@@ -68,6 +69,8 @@ interface GameRow {
   turn_timed_out_at: Date | null;
   end_reason: GameEndReason | null;
   replay_of_game_id: string | null;
+  auto_start_delay_ms: number | null;
+  start_deadline_at: Date | null;
   creation_key: string | null;
   session_id: string | null;
   first_player_id: string;
@@ -81,14 +84,18 @@ interface PlayerJson {
   table_position: number;
   joined_at: string;
   fled_at: string | null;
+  /** Pseudo du compte (`users.username`), lu à chaque chargement, jamais écrit ici. */
+  username: string | null;
 }
 
 const SELECT_GAME = `
   SELECT g.*,
     (SELECT json_agg(json_build_object(
         'player_id', p.player_id, 'seat', p.seat, 'table_position', p.table_position,
-        'joined_at', p.joined_at, 'fled_at', p.fled_at) ORDER BY p.seat)
-     FROM game_players p WHERE p.game_id = g.id) AS players
+        'joined_at', p.joined_at, 'fled_at', p.fled_at, 'username', u.username)
+        ORDER BY p.seat)
+     FROM game_players p LEFT JOIN users u ON u.id = p.player_id
+     WHERE p.game_id = g.id) AS players
   FROM games g`;
 
 /**
@@ -138,58 +145,7 @@ export class PostgresGameRepository implements GameRepository {
   }
 
   private async saveInTransaction(game: Game, expectedVersion: number): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      // La ligne n'est modifiée que si la version est celle lue ET si le statut ne
-      // recule pas (waiting → in_progress → finished) : garde-fou en base du cycle de vie.
-      const { rowCount } = await tx.query(
-        `UPDATE games SET version = $3, status = $4, creator_id = $5, max_players = $6,
-           stake_amount = $7, state = $8, updated_at = $9, started_at = $10,
-           finished_at = $11, turn_deadline_at = $12, first_player_id = $13, winner_id = $14,
-           turn_started_at = $15, active_player_id = $16, turn_timed_out_at = $17,
-           end_reason = $18
-         WHERE id = $1 AND version = $2
-           AND array_position(ARRAY['waiting', 'in_progress', 'finished'], status)
-               <= array_position(ARRAY['waiting', 'in_progress', 'finished'], $4::text)`,
-        [
-          game.id,
-          expectedVersion,
-          game.version,
-          game.status,
-          game.creatorId,
-          game.maxPlayers,
-          game.stakeAmount ?? null,
-          stateDocument(game),
-          timestamp(game.updatedAt),
-          timestamp(game.startedAt),
-          timestamp(game.finishedAt),
-          timestamp(game.turnDeadlineAt),
-          game.firstPlayerId,
-          game.result?.winnerId ?? null,
-          timestamp(game.turnStartedAt),
-          activePlayerOf(game),
-          timestamp(game.turnTimedOutAt),
-          game.endReason ?? null,
-        ],
-      );
-      if (rowCount === 0) {
-        const { rows } = await tx.query<{ version: number; status: GameStatus }>(
-          'SELECT version, status FROM games WHERE id = $1',
-          [game.id],
-        );
-        const stored = rows[0];
-        if (!stored) {
-          throw new GameNotFoundError(game.id);
-        }
-        if (
-          stored.version === expectedVersion &&
-          !isForwardTransition(stored.status, game.status)
-        ) {
-          throw new InvalidStatusTransitionError(game.id, stored.status, game.status);
-        }
-        throw new GameVersionConflictError(game.id, expectedVersion, stored.version);
-      }
-      await writePlayers(tx, game);
-    });
+    await this.db.transaction((tx) => updateGameRows(tx, game, expectedVersion));
   }
 
   async findActiveByPlayer(playerId: PlayerId): Promise<Game[]> {
@@ -228,6 +184,15 @@ export class PostgresGameRepository implements GameRepository {
       timedOut: r.turn_timed_out_at !== null,
     }));
   }
+
+  async findStartDeadlines(): Promise<StartDeadline[]> {
+    const { rows } = await this.db.query<{ id: GameId; start_deadline_at: Date }>(
+      `SELECT id, start_deadline_at FROM games
+       WHERE status = 'waiting' AND start_deadline_at IS NOT NULL
+       ORDER BY start_deadline_at`,
+    );
+    return rows.map((r) => ({ gameId: r.id, deadlineAt: r.start_deadline_at }));
+  }
 }
 
 /**
@@ -241,9 +206,9 @@ export async function insertGameRows(tx: SqlExecutor, game: Game): Promise<void>
     `INSERT INTO games (id, version, status, creator_id, max_players, stake_amount, state,
        created_at, updated_at, started_at, finished_at, turn_deadline_at, creation_key,
        session_id, first_player_id, winner_id, turn_started_at, active_player_id,
-       turn_timed_out_at, end_reason, replay_of_game_id)
+       turn_timed_out_at, end_reason, replay_of_game_id, auto_start_delay_ms, start_deadline_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-       $19, $20, $21)`,
+       $19, $20, $21, $22, $23)`,
     [
       game.id,
       game.version,
@@ -266,9 +231,92 @@ export async function insertGameRows(tx: SqlExecutor, game: Game): Promise<void>
       timestamp(game.turnTimedOutAt),
       game.endReason ?? null,
       game.replayOfGameId ?? null,
+      game.autoStartDelayMs ?? null,
+      timestamp(game.startDeadlineAt),
     ],
   );
   await writePlayers(tx, game);
+}
+
+/**
+ * Enregistre une partie EXISTANTE dans la transaction `tx`, si sa version est encore
+ * `expectedVersion` (sinon GameVersionConflictError). Exportée pour qu'un départ de session
+ * modifie sa partie en attente dans la même transaction que la session (R-19, D-037).
+ */
+export async function updateGameRows(
+  tx: SqlExecutor,
+  game: Game,
+  expectedVersion: number,
+): Promise<void> {
+  // La ligne n'est modifiée que si la version est celle lue ET si le statut ne
+  // recule pas (waiting → in_progress → finished) : garde-fou en base du cycle de vie.
+  const { rowCount } = await tx.query(
+    `UPDATE games SET version = $3, status = $4, creator_id = $5, max_players = $6,
+         stake_amount = $7, state = $8, updated_at = $9, started_at = $10,
+         finished_at = $11, turn_deadline_at = $12, first_player_id = $13, winner_id = $14,
+         turn_started_at = $15, active_player_id = $16, turn_timed_out_at = $17,
+         end_reason = $18, start_deadline_at = $19
+       WHERE id = $1 AND version = $2
+         AND array_position(ARRAY['waiting', 'in_progress', 'finished'], status)
+             <= array_position(ARRAY['waiting', 'in_progress', 'finished'], $4::text)`,
+    [
+      game.id,
+      expectedVersion,
+      game.version,
+      game.status,
+      game.creatorId,
+      game.maxPlayers,
+      game.stakeAmount ?? null,
+      stateDocument(game),
+      timestamp(game.updatedAt),
+      timestamp(game.startedAt),
+      timestamp(game.finishedAt),
+      timestamp(game.turnDeadlineAt),
+      game.firstPlayerId,
+      game.result?.winnerId ?? null,
+      timestamp(game.turnStartedAt),
+      activePlayerOf(game),
+      timestamp(game.turnTimedOutAt),
+      game.endReason ?? null,
+      timestamp(game.startDeadlineAt),
+    ],
+  );
+  if (rowCount === 0) {
+    const { rows } = await tx.query<{ version: number; status: GameStatus }>(
+      'SELECT version, status FROM games WHERE id = $1',
+      [game.id],
+    );
+    const stored = rows[0];
+    if (!stored) {
+      throw new GameNotFoundError(game.id);
+    }
+    if (stored.version === expectedVersion && !isForwardTransition(stored.status, game.status)) {
+      throw new InvalidStatusTransitionError(game.id, stored.status, game.status);
+    }
+    throw new GameVersionConflictError(game.id, expectedVersion, stored.version);
+  }
+  await writePlayers(tx, game);
+}
+
+/** Partie lue et VERROUILLÉE (`FOR UPDATE`) dans la transaction `tx`, ou null. */
+export async function lockGame(tx: SqlExecutor, gameId: GameId): Promise<Game | null> {
+  await tx.query('SELECT 1 FROM games WHERE id = $1 FOR UPDATE', [gameId]);
+  const { rows } = await tx.query<GameRow>(`${SELECT_GAME} WHERE g.id = $1`, [gameId]);
+  const row = rows[0];
+  return row ? toGame(row) : null;
+}
+
+/**
+ * Supprime une partie EN ATTENTE (R-19, D-037 : plus aucun joueur). Ses sièges partent avec
+ * elle (`ON DELETE CASCADE`). Une partie démarrée ou terminée n'est jamais supprimée.
+ */
+export async function deleteWaitingGame(tx: SqlExecutor, gameId: GameId): Promise<void> {
+  const { rowCount } = await tx.query("DELETE FROM games WHERE id = $1 AND status = 'waiting'", [
+    gameId,
+  ]);
+  if (rowCount === 0) {
+    throw new GameNotFoundError(gameId);
+  }
 }
 
 /** Joueur attendu d'une partie en cours (colonne `active_player_id`, D-034). */
@@ -409,6 +457,7 @@ function toGame(row: GameRow): Game {
     tablePosition: p.table_position,
     joinedAt: new Date(p.joined_at),
     ...(p.fled_at !== null && { fledAt: new Date(p.fled_at) }),
+    ...(p.username && { username: p.username }),
   }));
   const { play, result, instantWinTie, recentCommandIds } = row.state;
 
@@ -434,6 +483,8 @@ function toGame(row: GameRow): Game {
     ...(row.turn_timed_out_at && { turnTimedOutAt: row.turn_timed_out_at }),
     ...(row.end_reason !== null && { endReason: row.end_reason }),
     ...(row.replay_of_game_id !== null && { replayOfGameId: row.replay_of_game_id as GameId }),
+    ...(row.auto_start_delay_ms !== null && { autoStartDelayMs: row.auto_start_delay_ms }),
+    ...(row.start_deadline_at && { startDeadlineAt: row.start_deadline_at }),
     recentCommandIds,
     ...(row.creation_key !== null && { creationKey: row.creation_key }),
   };

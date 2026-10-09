@@ -86,6 +86,13 @@ export interface PlayerGameView {
   turnStartedAt?: Date;
   turnDeadlineAt?: Date;
   turnTimedOutAt?: Date;
+  /**
+   * Table de tournoi (D-065) : `autoStart` signale le démarrage automatique ; `startDeadlineAt`
+   * est l'échéance fixée par le serveur dès 2 joueurs (le créateur peut démarrer avant). Le
+   * client n'affiche qu'un compte à rebours ; seul le serveur démarre.
+   */
+  autoStart?: boolean;
+  startDeadlineAt?: Date;
   /** Raison de la fin de partie (victoire, égalité de priorité, arrêt administratif). */
   endReason?: GameEndReason;
   /** Égalité de priorité des mains instantanées : la partie est rejouée (D-035). */
@@ -130,6 +137,9 @@ export function toPlayerView(
     turnStartedAt: game.turnStartedAt,
     turnDeadlineAt: game.turnDeadlineAt,
     turnTimedOutAt: game.turnTimedOutAt,
+    ...(game.autoStartDelayMs !== undefined && { autoStart: true }),
+    ...(game.status === 'waiting' &&
+      game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt }),
     ...(game.endReason && { endReason: game.endReason }),
     ...(game.instantWinTie && { instantWinTie: structuredClone(game.instantWinTie) }),
     ...(game.replayOfGameId && { replayOfGameId: game.replayOfGameId }),

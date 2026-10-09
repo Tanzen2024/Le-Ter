@@ -1,4 +1,4 @@
-import type { GameStatus, GameView, PlayerInGame } from '../../types/game';
+import type { GameView, PlayerInGame } from '../../types/game';
 
 const SUIT_SYMBOLS: Record<string, string> = {
   COEUR: '♥',
@@ -13,12 +13,6 @@ export function cardLabel(cardId: string): string {
   return `${value} ${SUIT_SYMBOLS[suit] ?? suit}`;
 }
 
-export const STATUS_LABELS: Record<GameStatus, string> = {
-  waiting: 'En attente de joueurs',
-  in_progress: 'En cours',
-  finished: 'Terminée',
-};
-
 /**
  * Siège d'un joueur à la table : son siège FIXE de session (D-034), à défaut son rang
  * d'arrivée dans la partie. C'est le même numéro que sur l'écran de la session.
@@ -27,16 +21,21 @@ export function tableSeat(player: PlayerInGame): number {
   return player.tablePosition ?? player.seat;
 }
 
+/** Libellés neutres quand le serveur n'a pas fourni de pseudo : jamais un faux pseudo. */
+export const UNKNOWN_SELF_LABEL = 'Vous';
+export const UNKNOWN_PLAYER_LABEL = 'Adversaire';
+
 /**
- * Nom affiché d'un joueur : « Vous » ou sa place à la table. Les pseudos des autres
- * joueurs ne sont pas encore exposés (option « noms cryptés » à clarifier : R-12).
+ * Nom affiché d'un joueur : son pseudo réel, fourni par le serveur avec la partie (D-064),
+ * y compris pour le joueur connecté. Pseudo absent : « Vous » ou « Adversaire », jamais un
+ * identifiant technique ni un numéro de siège.
  */
 export function playerLabel(game: GameView, playerId: string): string {
-  if (playerId === game.viewerId) {
-    return 'Vous';
+  const username = game.players.find((p) => p.playerId === playerId)?.username?.trim();
+  if (username) {
+    return username;
   }
-  const player = game.players.find((p) => p.playerId === playerId);
-  return player === undefined ? 'Joueur' : `Joueur ${tableSeat(player) + 1}`;
+  return playerId === game.viewerId ? UNKNOWN_SELF_LABEL : UNKNOWN_PLAYER_LABEL;
 }
 
 /** Libellés des combinaisons de victoire instantanée (rang 1 = le plus fort). */

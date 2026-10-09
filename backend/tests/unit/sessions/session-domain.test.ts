@@ -8,10 +8,12 @@ import {
   SessionClosedError,
   SessionDecisionInProgressError,
   SessionFullError,
+  arrivalOrder,
   decide,
   joinSession,
   leaveSession,
   newSession,
+  nextByArrival,
   pendingDecisions,
   seatMap,
   syncDecisionRound,
@@ -54,9 +56,13 @@ const finished = (overrides: Partial<LastGameInfo> = {}): LastGameInfo => ({
   finishedAt: NOW,
   endReason: 'CONTROL_AFTER_LAST_TRICK',
   firstPlayerId: A,
+  creatorId: A,
   playerIds: [A, B, C, D],
   ...overrides,
 });
+
+/** Départ entre deux parties : la dernière est terminée, l'historique existe. */
+const AFTER_GAME = { lastGame: finished(), hasFinishedGames: true };
 
 describe('Ordre de la table (sens antihoraire, implémentation unique)', () => {
   it('rotateFrom part de J1 et boucle : J4 → J1', () => {
@@ -117,12 +123,12 @@ describe('Sièges fixes (D-034)', () => {
   });
 
   it('un départ libère le siège : il devient VACANT, les autres ne bougent pas', () => {
-    const s = leaveSession(table(), C, NOW, { inActiveGame: false }).session;
+    const s = leaveSession(table(), C, NOW, AFTER_GAME).session;
     expect(seats(s)).toEqual([A, B, 'VACANT', D]);
   });
 
   it('un nouveau joueur prend le siège vacant, pas « la fin »', () => {
-    let s = leaveSession(table(), C, NOW, { inActiveGame: false }).session;
+    let s = leaveSession(table(), C, NOW, AFTER_GAME).session;
     const joined = joinSession(s, E, NOW);
     s = joined.session;
     expect(seats(s)).toEqual([A, B, E, D]);
@@ -132,16 +138,16 @@ describe('Sièges fixes (D-034)', () => {
   });
 
   it('le premier siège vacant (le plus petit) est pris en priorité', () => {
-    let s = leaveSession(table(), D, NOW, { inActiveGame: false }).session;
-    s = leaveSession(s, B, NOW, { inActiveGame: false }).session;
+    let s = leaveSession(table(), D, NOW, AFTER_GAME).session;
+    s = leaveSession(s, B, NOW, AFTER_GAME).session;
     expect(seats(s)).toEqual([A, 'VACANT', C, 'VACANT']);
     s = joinSession(s, E, NOW).session;
     expect(seats(s)).toEqual([A, E, C, 'VACANT']);
   });
 
   it('un ancien joueur qui revient suit la même règle (siège vacant)', () => {
-    let s = leaveSession(table(), B, NOW, { inActiveGame: false }).session;
-    s = leaveSession(s, D, NOW, { inActiveGame: false }).session;
+    let s = leaveSession(table(), B, NOW, AFTER_GAME).session;
+    s = leaveSession(s, D, NOW, AFTER_GAME).session;
     s = joinSession(s, D, NOW).session; // D revient : premier siège libre = 1
     expect(seats(s)).toEqual([A, D, C, 'VACANT']);
     // Historique : une seule ligne par joueur, B reste parti.
@@ -178,29 +184,29 @@ describe('J1 d’une nouvelle partie (D-033, D-034)', () => {
   });
 
   it('TEST 3 — gagnant B parti : J1 = C, premier siège occupé après celui de B', () => {
-    const s = leaveSession(table(), B, NOW, { inActiveGame: false }).session;
+    const s = leaveSession(table(), B, NOW, AFTER_GAME).session;
     expect(j1(s, { winnerId: B, winnerSeat: 1 })).toEqual({ kind: 'first', playerId: C });
   });
 
   it('TEST 4 — B et C partis : D ; puis D aussi : tour de la table jusqu’à A', () => {
-    let s = leaveSession(table(), B, NOW, { inActiveGame: false }).session;
-    s = leaveSession(s, C, NOW, { inActiveGame: false }).session;
+    let s = leaveSession(table(), B, NOW, AFTER_GAME).session;
+    s = leaveSession(s, C, NOW, AFTER_GAME).session;
     expect(j1(s, { winnerId: B, winnerSeat: 1 })).toEqual({ kind: 'first', playerId: D });
-    s = leaveSession(s, D, NOW, { inActiveGame: false }).session;
+    s = leaveSession(s, D, NOW, AFTER_GAME).session;
     expect(j1(s, { winnerId: B, winnerSeat: 1 })).toEqual({ kind: 'first', playerId: A });
   });
 
   it('TEST 5 — gagnant D (siège 3) parti : on repart au siège 0 (circulaire)', () => {
-    const s = leaveSession(table(), D, NOW, { inActiveGame: false }).session;
+    const s = leaveSession(table(), D, NOW, AFTER_GAME).session;
     expect(j1(s, { winnerId: D, winnerSeat: 3 })).toEqual({ kind: 'first', playerId: A });
   });
 
   it('TEST 6 — le siège du gagnant repris par un nouveau venu est examiné en dernier', () => {
-    let s = leaveSession(table(4, [B]), B, NOW, { inActiveGame: false }).session;
+    let s = leaveSession(table(4, [B]), B, NOW, AFTER_GAME).session;
     s = joinSession(s, E, NOW).session; // E prend le siège 1, celui du gagnant B
     expect(seats(s)).toEqual([A, E, 'VACANT', 'VACANT']);
     expect(j1(s, { winnerId: B, winnerSeat: 1 })).toEqual({ kind: 'first', playerId: A });
-    const alone = leaveSession(s, A, NOW, { inActiveGame: false }).session;
+    const alone = leaveSession(s, A, NOW, AFTER_GAME).session;
     expect(j1(alone, { winnerId: B, winnerSeat: 1 })).toEqual({ kind: 'first', playerId: E });
   });
 
@@ -215,7 +221,7 @@ describe('J1 d’une nouvelle partie (D-033, D-034)', () => {
     const s = table();
     expect(j1(s, { tieFirstPlayerId: C })).toEqual({ kind: 'first', playerId: C });
     expect(seats(s)).toEqual([A, B, C, D]);
-    const without = leaveSession(s, C, NOW, { inActiveGame: false }).session;
+    const without = leaveSession(s, C, NOW, AFTER_GAME).session;
     expect(j1(without, { tieFirstPlayerId: C })).toEqual({ kind: 'undetermined' });
   });
 
@@ -225,32 +231,34 @@ describe('J1 d’une nouvelle partie (D-033, D-034)', () => {
 });
 
 describe('Départ et fermeture', () => {
-  it('quitter : refusé dans la partie active ; le dernier départ ferme la session', () => {
+  it('quitter : refusé dans la partie EN COURS ; le dernier départ ferme la session (historique)', () => {
     let s = table(2, [B]);
-    expect(() => leaveSession(s, A, NOW, { inActiveGame: true })).toThrow(PlayerInActiveGameError);
-    s = leaveSession(s, A, NOW, { inActiveGame: false }).session;
+    const inProgress = finished({ status: 'in_progress', playerIds: [A, B] });
+    expect(() =>
+      leaveSession(s, A, NOW, { lastGame: inProgress, hasFinishedGames: false }),
+    ).toThrow(PlayerInActiveGameError);
+    s = leaveSession(s, A, NOW, AFTER_GAME).session;
     expect(s.status).toBe('open');
-    const last = leaveSession(s, B, NOW, { inActiveGame: false });
+    const last = leaveSession(s, B, NOW, AFTER_GAME);
     expect(last.events.map((e) => e.type)).toEqual(['session:player_left', 'session:closed']);
     expect(last.session).toMatchObject({ status: 'closed', closedAt: NOW });
     expect(last.session.players).toHaveLength(2); // historique conservé
   });
 
   it('session fermée : ni arrivée, ni décision ; quitter deux fois est sans effet', () => {
-    const closed = leaveSession(newSession(A, 2, NOW), A, NOW, { inActiveGame: false }).session;
+    const closed = leaveSession(newSession(A, 2, NOW), A, NOW, AFTER_GAME).session;
     expect(() => joinSession(closed, B, NOW)).toThrow(SessionClosedError);
     expect(() => decide(closed, A, 'continue', NOW)).toThrow(SessionClosedError);
-    expect(leaveSession(closed, A, NOW, { inActiveGame: false }).events).toEqual([]);
-    expect(() => leaveSession(closed, B, NOW, { inActiveGame: false })).toThrow(
-      NotASessionMemberError,
-    );
+    expect(leaveSession(closed, A, NOW, AFTER_GAME).events).toEqual([]);
+    expect(() => leaveSession(closed, B, NOW, AFTER_GAME)).toThrow(NotASessionMemberError);
   });
 });
 
 describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
   const open = (s: Session = table()) => syncDecisionRound(s, finished(), NOW).session;
 
-  it('la fin de partie ouvre une ronde de 10 s pour tous les présents', () => {
+  it('la fin de partie ouvre une ronde de 20 s pour tous les présents', () => {
+    expect(SESSION_DECISION_WINDOW_MS).toBe(20_000);
     const { session, events } = syncDecisionRound(table(), finished(), at(1));
     expect(session.round).toMatchObject({
       gameId: G1,
@@ -260,7 +268,7 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
     expect(events).toEqual([
       {
         type: 'session:decision_started',
-        payload: { gameId: G1, deadlineAt: at(10_000).toISOString(), playerIds: [A, B, C, D] },
+        payload: { gameId: G1, deadlineAt: at(SESSION_DECISION_WINDOW_MS).toISOString(), playerIds: [A, B, C, D] },
       },
     ]);
     expect(pendingDecisions(session)).toEqual([A, B, C, D]);
@@ -307,13 +315,13 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
     });
   });
 
-  it('absence de réponse : départ AUTOMATIQUE à 10 s, siège libéré', () => {
+  it('absence de réponse : départ AUTOMATIQUE à 20 s, siège libéré', () => {
     let s = decide(open(), A, 'continue', at(1)).session;
     s = decide(s, B, 'continue', at(1)).session;
-    expect(syncDecisionRound(s, finished(), at(9_999)).events).toEqual([]); // pas encore
-    const { session, events } = syncDecisionRound(s, finished(), at(10_000));
+    expect(syncDecisionRound(s, finished(), at(SESSION_DECISION_WINDOW_MS - 1)).events).toEqual([]); // pas encore
+    const { session, events } = syncDecisionRound(s, finished(), at(SESSION_DECISION_WINDOW_MS));
     expect(seats(session)).toEqual([A, B, 'VACANT', 'VACANT']);
-    expect(session.round?.decisions[C]).toEqual({ choice: 'auto_leave', decidedAt: at(10_000) });
+    expect(session.round?.decisions[C]).toEqual({ choice: 'auto_leave', decidedAt: at(SESSION_DECISION_WINDOW_MS) });
     expect(events.map((e) => e.type)).toEqual([
       'session:auto_leave',
       'session:player_left',
@@ -325,7 +333,7 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
   });
 
   it('personne ne répond : tout le monde part, la session est FERMÉE', () => {
-    const { session, events } = syncDecisionRound(open(), finished(), at(10_000));
+    const { session, events } = syncDecisionRound(open(), finished(), at(SESSION_DECISION_WINDOW_MS));
     expect(session).toMatchObject({ status: 'closed' });
     expect(session.players.every((p) => !p.active)).toBe(true);
     expect(events.filter((e) => e.type === 'session:closed')).toHaveLength(1);
@@ -334,7 +342,7 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
   it('pendant la ronde : arrivée refusée ; quitter vaut « Quitter »', () => {
     const s = open(table(4, [B]));
     expect(() => joinSession(s, E, NOW)).toThrow(SessionDecisionInProgressError);
-    const left = leaveSession(s, B, at(1), { inActiveGame: false });
+    const left = leaveSession(s, B, at(1), AFTER_GAME);
     expect(left.session.round?.decisions[B]?.choice).toBe('leave');
   });
 
@@ -347,5 +355,154 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
 
   it('aucune ronde ouverte : rien à décider', () => {
     expect(() => decide(table(), A, 'continue', NOW)).toThrow(NoDecisionPendingError);
+  });
+});
+
+describe('Quitter une session dont la partie est EN ATTENTE (R-19, D-037)', () => {
+  /** Partie en attente de la session : créateur et J1 = A par défaut, joueurs donnés. */
+  const waiting = (playerIds: PlayerId[], overrides: Partial<LastGameInfo> = {}) => ({
+    lastGame: finished({ status: 'waiting', playerIds, ...overrides }),
+    hasFinishedGames: false,
+  });
+
+  it('TEST 1 / 5 / 6 — un joueur non-J1 part : siège vacant, autres sièges et J1 inchangés', () => {
+    const s = table(4, [B, C]);
+    const left = leaveSession(s, B, NOW, waiting([A, B, C]));
+    expect(seats(left.session)).toEqual([A, 'VACANT', C, 'VACANT']);
+    expect(left.session.status).toBe('open');
+    expect(left.deleteSession).toBe(false);
+    expect(left.waitingGame).toEqual({
+      kind: 'remove_player',
+      gameId: G1,
+      playerId: B,
+      firstPlayerId: A,
+      creatorId: A,
+    });
+  });
+
+  it('TEST 2 — J1 (créateur) part : J2 devient J1 et peut démarrer ; creatorId historique conservé', () => {
+    const left = leaveSession(table(4, [B, C]), A, NOW, waiting([A, B, C]));
+    expect(seats(left.session)).toEqual(['VACANT', B, C, 'VACANT']);
+    expect(left.session.creatorId).toBe(A);
+    expect(left.waitingGame).toMatchObject({
+      kind: 'remove_player',
+      firstPlayerId: B,
+      creatorId: B,
+    });
+  });
+
+  it('TEST 3 — départs successifs des J1 : A → B → C → D (ordre d’arrivée)', () => {
+    let s = table(4, [B, C, D]);
+    let game = waiting([A, B, C, D]);
+    const expected: [PlayerId, PlayerId][] = [
+      [A, B],
+      [B, C],
+      [C, D],
+    ];
+    for (const [leaver, next] of expected) {
+      const left = leaveSession(s, leaver, NOW, game);
+      expect(left.waitingGame).toMatchObject({ firstPlayerId: next, creatorId: next });
+      s = left.session;
+      game = waiting(
+        game.lastGame.playerIds.filter((id) => id !== leaver),
+        {
+          firstPlayerId: next,
+          creatorId: next,
+        },
+      );
+    }
+    // TEST 4 — D, dernier : partie supprimée, puis session supprimée (Q1).
+    const last = leaveSession(s, D, NOW, game);
+    expect(last.waitingGame).toEqual({ kind: 'delete', gameId: G1 });
+    expect(last.deleteSession).toBe(true);
+    expect(last.events.map((e) => e.type)).toEqual(['session:player_left', 'session:deleted']);
+  });
+
+  it('Q2 — l’ordre d’ARRIVÉE décide, pas le siège : un arrivant tardif au siège 1 passe après', () => {
+    // A (siège 0), B (1), C (2) ; B part, E arrive et prend le siège 1, puis A part.
+    let s = table(4, [B, C]);
+    s = leaveSession(s, B, NOW, waiting([A, C])).session;
+    s = joinSession(s, E, NOW).session;
+    expect(seats(s)).toEqual([A, E, C, 'VACANT']);
+    const left = leaveSession(s, A, NOW, waiting([A, C, E]));
+    // Ordre d'arrivée : A, B (parti), C, E → C, bien qu'E soit assis avant lui.
+    expect(left.waitingGame).toMatchObject({ firstPlayerId: C, creatorId: C });
+  });
+
+  it('Q2 — un joueur qui revient est le DERNIER arrivé', () => {
+    let s = table(4, [B, C]);
+    s = leaveSession(s, B, NOW, waiting([A])).session;
+    s = joinSession(s, B, NOW).session; // B revient : rang 4
+    expect(s.players.find((p) => p.playerId === B)?.arrival).toBe(4);
+    const left = leaveSession(s, A, NOW, waiting([A, B, C]));
+    expect(left.waitingGame).toMatchObject({ firstPlayerId: C });
+  });
+
+  it('J1 hors de la partie qui reste : seul le droit de démarrer change de main', () => {
+    // Partie suivante créée par C, J1 = B (gagnant) qui ne l'a pas encore rejointe.
+    const game = waiting([C, D], { firstPlayerId: B, creatorId: C });
+    const left = leaveSession(table(4, [B, C, D]), C, NOW, game);
+    expect(left.waitingGame).toMatchObject({
+      kind: 'remove_player',
+      firstPlayerId: B,
+      creatorId: D,
+    });
+  });
+
+  it('partie sans plus aucun joueur : supprimée ; la session continue avec les présents', () => {
+    const left = leaveSession(table(4, [B]), A, NOW, waiting([A]));
+    expect(left.waitingGame).toEqual({ kind: 'delete', gameId: G1 });
+    expect(left.deleteSession).toBe(false);
+    expect(left.session.status).toBe('open');
+  });
+
+  it('joueur présent hors de la partie en attente : la partie ne change pas', () => {
+    const left = leaveSession(table(4, [B, C]), C, NOW, waiting([A, B]));
+    expect(left.waitingGame).toBeUndefined();
+  });
+
+  it('TEST 10 / Q1 — seul joueur, sans historique : session SUPPRIMÉE avec sa partie', () => {
+    const left = leaveSession(newSession(A, 2, NOW), A, NOW, waiting([A]));
+    expect(left.deleteSession).toBe(true);
+    expect(left.waitingGame).toEqual({ kind: 'delete', gameId: G1 });
+  });
+
+  it('Q1 — dernier départ avec un historique : session FERMÉE, partie en attente supprimée', () => {
+    const left = leaveSession(newSession(A, 2, NOW), A, NOW, {
+      ...waiting([A]),
+      hasFinishedGames: true,
+    });
+    expect(left.deleteSession).toBe(false);
+    expect(left.session.status).toBe('closed');
+    expect(left.waitingGame).toEqual({ kind: 'delete', gameId: G1 });
+  });
+
+  it('TEST 7 — partie EN COURS : refusé à un participant, accepté à un présent hors partie', () => {
+    const inProgress = {
+      lastGame: finished({ status: 'in_progress', playerIds: [A, B] }),
+      hasFinishedGames: false,
+    };
+    expect(() => leaveSession(table(4, [B, C]), B, NOW, inProgress)).toThrow(
+      PlayerInActiveGameError,
+    );
+    const left = leaveSession(table(4, [B, C]), C, NOW, inProgress);
+    expect(left.waitingGame).toBeUndefined();
+    expect(seats(left.session)).toEqual([A, B, 'VACANT', 'VACANT']);
+  });
+
+  it('J1 de la 1re partie quand le créateur est parti : le présent suivant dans l’ordre d’arrivée', () => {
+    const s = leaveSession(table(4, [B, C]), A, NOW, waiting([A])).session;
+    const occupants = seatMap(s);
+    expect(
+      determineFirstPlayer({
+        creatorId: s.creatorId,
+        arrivalOrder: arrivalOrder(s),
+        seatCount: s.maxPlayers,
+        occupantOf: (seat) => occupants[seat],
+        isActive: (p) => s.players.some((x) => x.playerId === p && x.active),
+        previousGame: null,
+      }),
+    ).toEqual({ kind: 'first', playerId: B });
+    expect(nextByArrival(s, A, () => true)).toBe(B);
   });
 });

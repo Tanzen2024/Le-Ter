@@ -4,6 +4,7 @@ import { NOW, waitingGame } from '../../fixtures/game-builders';
 import {
   CONTRACT_PLAYER_NAMES,
   describeGameRepositoryContract,
+  withoutUsernames,
 } from '../../fixtures/game-repository.contract';
 import {
   createMigratedDatabase,
@@ -64,6 +65,21 @@ describe('PostgresGameRepository — stockage', () => {
     expect(rows[0]?.state).toEqual({ recentCommandIds: ['cmd-1'] });
   });
 
+  it('relit le pseudo de chaque joueur dans users (affichage, D-064), sans le persister', async () => {
+    const repository = withSeededSessions(new PostgresGameRepository(database.sql), database.sql);
+    const game = waitingGame([alice, bob], 4);
+    await repository.insert(game);
+
+    const loaded = await repository.findById(game.id);
+    expect(loaded?.players.map((p) => [p.playerId, p.username])).toEqual([
+      [alice, `u_${alice.slice(0, 8)}`],
+      [bob, `u_${bob.slice(0, 8)}`],
+    ]);
+    // Le pseudo suit le compte (renommage) : il n'est jamais copié dans game_players.
+    await database.sql.query('UPDATE users SET username = $1 WHERE id = $2', ['Roly_237', alice]);
+    expect((await repository.findById(game.id))?.players[0]?.username).toBe('Roly_237');
+  });
+
   it('une écriture refusée ne laisse aucune trace partielle (transaction)', async () => {
     const repository = withSeededSessions(new PostgresGameRepository(database.sql), database.sql);
     const game = waitingGame([alice], 4);
@@ -77,7 +93,7 @@ describe('PostgresGameRepository — stockage', () => {
     };
     await expect(repository.save(invalid, 1)).rejects.toThrow();
 
-    expect(await repository.findById(game.id)).toEqual(game);
+    expect(withoutUsernames(await repository.findById(game.id))).toEqual(game);
   });
 
   it('les contraintes du schéma refusent un état incohérent', async () => {

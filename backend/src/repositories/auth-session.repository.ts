@@ -15,6 +15,11 @@ export interface NewRefreshToken {
   tokenHash: string;
   createdAt: Date;
   expiresAt: Date;
+  /**
+   * Borne ABSOLUE de la session (session d'administration : 8 h). Aucune rotation ne
+   * prolonge un jeton au-delà. Absente : sessions des joueurs, sans borne absolue.
+   */
+  sessionExpiresAt?: Date;
 }
 
 export type RotationFailure = 'unknown' | 'revoked' | 'expired' | 'account_disabled';
@@ -40,7 +45,10 @@ export interface AuthSessionRepository {
    * Rotation atomique : le jeton `tokenHash` est révoqué et `next` est créé dans la
    * même session. Deux rotations concurrentes du même jeton : une seule réussit.
    */
-  rotate(tokenHash: string, next: Omit<NewRefreshToken, 'sessionId'>): Promise<RotationResult>;
+  rotate(
+    tokenHash: string,
+    next: Omit<NewRefreshToken, 'sessionId' | 'sessionExpiresAt'>,
+  ): Promise<RotationResult>;
 
   /** Révoque le jeton s'il est actif. @returns la session révoquée, ou null. */
   revoke(tokenHash: string, now: Date): Promise<{ userId: UserId; sessionId: string } | null>;

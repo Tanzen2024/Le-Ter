@@ -4,7 +4,8 @@ import { UnresolvedRuleError } from './unresolved-rule';
 /**
  * Domaine minimal des mises : il traduit un résultat de partie en transferts
  * théoriques entre joueurs. Aucun mouvement d'argent n'est exécuté ici (pas de
- * portefeuille, pas de Mobile Money, pas de prélèvement du Katika : R-09).
+ * portefeuille, pas de Mobile Money). Aucune commission de la plateforme n'est prélevée sur
+ * les parties ordinaires : cette règle n'est pas définie (R-37, D-060).
  */
 export type PayoutKind = 'SIMPLE' | 'KORA' | 'DOUBLE_KORA';
 

@@ -33,7 +33,7 @@ import { deckForHands, decksRandom } from '../../fixtures/random';
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const redisUrl = process.env.TEST_REDIS_URL;
 const describeWithInfra = databaseUrl && redisUrl ? describe : describe.skip;
-jest.setTimeout(90_000);
+jest.setTimeout(180_000);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -156,10 +156,10 @@ describeWithInfra('C.6 — validation fonctionnelle (HTTP + PostgreSQL + Redis r
   });
 
   // -------------------------------------------------------------------------------------
-  // §8 et §14 — famille, actions manuelles et timeout de 10 s (production)
+  // §8 et §14 — famille, actions manuelles et timeout de 20 s (production)
   // -------------------------------------------------------------------------------------
 
-  it('CAS 1 — contrôle 5♠, main 7♠ 9♠ 4♥ 6♣ : 4♥ refusé à la main, 7♠ joué au timeout (10 s)', async () => {
+  it('CAS 1 — contrôle 5♠, main 7♠ 9♠ 4♥ 6♣ : 4♥ refusé à la main, 7♠ joué au timeout (20 s)', async () => {
     const A_HAND: CardId[] = ['COEUR-10', 'PIQUE-5', 'TREFLE-10', 'ETOILE-9', 'TREFLE-8'];
     const { app } = await setup([deckForHands([A_HAND, PLAIN_B])]);
     const {
@@ -188,9 +188,9 @@ describeWithInfra('C.6 — validation fonctionnelle (HTTP + PostgreSQL + Redis r
     const manual = await expectStatus(act(B!, gameId, 'PLAY_CARD', { cardId: 'COEUR-4' }), 422);
     expect(manual.body.code).toBe('CARD_NOT_PLAYABLE');
 
-    // B ne joue pas : 10 s plus tard, le serveur joue 7♠ (plus petite ♠), B prend le contrôle.
+    // B ne joue pas : 20 s plus tard, le serveur joue 7♠ (plus petite ♠), B prend le contrôle.
     const deadline = Date.parse(bView.turnDeadlineAt as string);
-    expect(deadline - Date.parse(bView.turnStartedAt as string)).toBe(10_000);
+    expect(deadline - Date.parse(bView.turnStartedAt as string)).toBe(20_000);
     await sleep(Math.max(0, deadline - Date.now()));
     const after = await until(
       () => view(A!, gameId),

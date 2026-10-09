@@ -13,10 +13,14 @@ import {
   SessionGameInProgressError,
   SessionMaxPlayersImmutableError,
   SessionNotFoundError,
+  SessionPasswordInvalidError,
+  activeSessionPlayers,
+  arrivalOrder,
   decide,
   isActiveSessionMember,
   isRoundOpen,
   joinSession,
+  lastTrickPresentationMs,
   leaveSession,
   newSession,
   seatMap,
@@ -28,21 +32,58 @@ import {
   type SessionTransition,
 } from '../../domain/sessions/session';
 import type { SessionEventDraft } from '../../domain/sessions/session-events';
+import { PasswordService } from '../auth/password.service';
 import type { GameEventDraft } from '../../domain/game/game-events';
 import { determineFirstPlayer } from '../../domain/sessions/table-order';
 import { DuplicateCreationKeyError } from '../../repositories/game.repository';
-import type { SessionContext, SessionRepository } from '../../repositories/session.repository';
+import type {
+  LeaveWrite,
+  OpenTableSummary,
+  SessionContext,
+  SessionRepository,
+} from '../../repositories/session.repository';
 import { BackgroundTasks } from '../../utils/background-tasks';
 import type { Logger } from '../../utils/logger';
 import type { SessionEventPublisher } from '../../websocket/session-event-publisher';
 import type { CreateGameOptions, GameService } from '../game/game.service';
 import { SessionTimerRegistry } from '../game/game-timer-registry';
 
+/** Nombre maximal de tables ouvertes renvoyées par la liste « Rechercher une partie ». */
+const OPEN_TABLES_LIMIT = 30;
+
 /** Paramètres de création d'une session (et de sa première partie). */
 export type NewSessionOptions = Pick<
   CreateGameOptions,
-  'maxPlayers' | 'stakeAmount' | 'creationKey'
->;
+  'maxPlayers' | 'stakeAmount' | 'creationKey' | 'autoStartDelayMs'
+> & {
+  /** Nom de la partie privée (D-039), déjà validé (1 à 40 caractères). */
+  name?: string;
+  /** Mot de passe facultatif en clair (D-039) : haché ici, jamais enregistré ni journalisé. */
+  password?: string;
+  /** Réglage « détection anti-collusion » (D-043) ; faux par défaut, immuable. */
+  suspicionDetectionEnabled?: boolean;
+  /**
+   * Table de tournoi (D-054) : rattachée au tournoi dans la MÊME transaction que sa création,
+   * sous verrou du tournoi (voir SessionRepository.createWithFirstGame).
+   */
+  tournamentId?: string;
+};
+
+/** Hachage des mots de passe de partie (bcrypt, comme les comptes). */
+export interface TablePasswordHasher {
+  hashPassword(password: string): Promise<string>;
+  verifyPassword(password: string, hash: string): Promise<boolean>;
+}
+
+/**
+ * Contrôle d'accès FACULTATIF à l'arrivée dans une session, pour un joueur qui n'y est pas
+ * déjà présent. Sans politique, toute session ouverte reste joignable (règles D-033, D-034
+ * inchangées). Tournois (D-051) : une table de tournoi est réservée aux inscrits pendant le
+ * tournoi. Lève une erreur pour refuser.
+ */
+export interface SessionAdmissionPolicy {
+  assertCanJoin(sessionId: SessionId, playerId: PlayerId): Promise<void>;
+}
 
 /**
  * Paramètres de la partie suivante. `maxPlayers` est celui de la session (immuable) :
@@ -59,8 +100,45 @@ export interface SessionServiceDependencies {
   clock?: () => Date;
   /** Timers de décision (un par session). */
   timers?: SessionTimerRegistry;
-  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (10 s, D-034). */
+  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (20 s, D-034, D-064). */
   decisionWindowMs?: number;
+  /** Mots de passe de partie (D-039). Par défaut bcrypt au coût des comptes. */
+  passwords?: TablePasswordHasher;
+  /**
+   * « Poursuivre » enchaîne directement la partie suivante (D-042) : créée et distribuée par
+   * le serveur dès la clôture de la ronde. Vrai par défaut ; les tests qui créent la partie
+   * suivante eux-mêmes (API historique) le désactivent.
+   */
+  autoNextGame?: boolean;
+  /**
+   * Durée de présentation du 5e tour, ajoutée avant la ronde (D-041). Par défaut le rythme
+   * des écrans (`lastTrickPresentationMs`) ; 0 dans les tests qui ne portent pas dessus.
+   */
+  lastTrickPresentationMs?: (cards: number) => number;
+  /** Accès aux sessions réservées (tables de tournoi, D-051) ; absent : aucune restriction. */
+  admission?: SessionAdmissionPolicy;
+  /**
+   * Nouvelle partie dans une session (suivante, automatique ou demandée, et reprise après
+   * égalité) ; absente : toujours permise. Tables de tournoi : rien après la fin (D-056).
+   */
+  continuation?: SessionContinuationPolicy;
+}
+
+/** Politique FACULTATIVE de création d'une nouvelle partie dans une session existante. */
+export interface SessionContinuationPolicy {
+  allowsNewGame(sessionId: SessionId): Promise<boolean>;
+  /** Partie automatique refusée : informer les joueurs (idempotent). */
+  onNewGameRefused?(sessionId: SessionId, playerIds: PlayerId[]): Promise<void>;
+  /**
+   * Joueurs présents qui ne peuvent PAS jouer la partie suivante (tables de tournoi : seuil
+   * de jetons, D-063), après la partie terminée `previous`. Ils quittent la session avant
+   * la création de la partie suivante ; absente : personne n'est écarté.
+   */
+  playersBarredFromNextGame?(
+    sessionId: SessionId,
+    playerIds: PlayerId[],
+    previous: Game,
+  ): Promise<PlayerId[]>;
 }
 
 interface CallMeta {
@@ -88,15 +166,21 @@ export class SessionService {
   private readonly clock: () => Date;
   private readonly timers: SessionTimerRegistry;
   private readonly windowMs: number;
+  private readonly passwords: TablePasswordHasher;
+  private readonly presentationMs: (cards: number) => number;
+  private readonly autoNextGame: boolean;
   private readonly background = new BackgroundTasks();
 
   constructor(private readonly deps: SessionServiceDependencies) {
     this.clock = deps.clock ?? (() => new Date());
     this.timers = deps.timers ?? new SessionTimerRegistry();
     this.windowMs = deps.decisionWindowMs ?? SESSION_DECISION_WINDOW_MS;
+    this.passwords = deps.passwords ?? new PasswordService();
+    this.presentationMs = deps.lastTrickPresentationMs ?? lastTrickPresentationMs;
+    this.autoNextGame = deps.autoNextGame ?? true;
     // Fin d'une partie → ronde Poursuivre/Quitter. Si ce processus s'arrête avant, la
     // reprise (`recoverDecisionTimers`) ou la prochaine mutation de la session l'ouvre,
-    // avec la même échéance (fin de partie + 10 s).
+    // avec la même échéance (fin de partie + 20 s).
     deps.games.onGameFinished((game) => {
       const { sessionId } = game;
       if (sessionId) {
@@ -124,8 +208,9 @@ export class SessionService {
     meta: CallMeta = {},
   ): Promise<{ session: Session; game: Game; replayed: boolean }> {
     const log = this.log(creatorId, 'CREATE_SESSION', meta);
+    const { name, password, suspicionDetectionEnabled, tournamentId, ...gameOptions } = options;
     const replay = async () => {
-      const game = await this.deps.games.findCreationReplay(creatorId, options, log);
+      const game = await this.deps.games.findCreationReplay(creatorId, gameOptions, log);
       return game?.sessionId ? { session: await this.load(game.sessionId), game } : undefined;
     };
     try {
@@ -133,16 +218,26 @@ export class SessionService {
       if (replayed) {
         return { ...replayed, replayed: true };
       }
-      const session = newSession(creatorId, options.maxPlayers, this.clock());
+      const passwordHash =
+        password !== undefined ? await this.passwords.hashPassword(password) : undefined;
+      const session = newSession(creatorId, options.maxPlayers, this.clock(), {
+        name,
+        passwordHash,
+        suspicionDetectionEnabled: suspicionDetectionEnabled ?? false,
+      });
       let game: Game;
       try {
         game = await this.deps.games.prepareNewGame(creatorId, {
-          ...options,
+          ...gameOptions,
           sessionId: session.id,
           firstPlayerId: creatorId, // première partie : J1 = créateur de la session
           creatorTablePosition: 0,
         });
-        await this.deps.sessions.createWithFirstGame(session, game);
+        await this.deps.sessions.createWithFirstGame(
+          session,
+          game,
+          tournamentId ? { tournamentId, linkId: randomUUID() } : undefined,
+        );
       } catch (err) {
         // Même clé envoyée en même temps : l'autre requête a créé la session pendant que
         // celle-ci était refusée (clé déjà prise, ou créateur déjà dans la partie/session
@@ -191,6 +286,13 @@ export class SessionService {
     const log = this.log(creatorId, 'CREATE_NEXT_GAME', meta).child({ sessionId });
     try {
       const { maxPlayers } = await this.load(sessionId);
+      if (this.deps.continuation && !(await this.deps.continuation.allowsNewGame(sessionId))) {
+        throw new SessionClosedError(sessionId);
+      }
+      const last = await this.deps.sessions.findLastGame(sessionId);
+      const previous =
+        last?.status === 'finished' ? await this.deps.games.findGame(last.gameId) : null;
+      if (previous) await this.removeBarredPlayers(sessionId, previous, log);
       if (options.maxPlayers !== undefined && options.maxPlayers !== maxPlayers) {
         throw new SessionMaxPlayersImmutableError(sessionId, maxPlayers);
       }
@@ -209,7 +311,7 @@ export class SessionService {
         const draft = await this.deps.games.prepareNewGame(creatorId, withSession);
         const now = this.clock();
         result = await this.deps.sessions.createNextGame(sessionId, (ctx) => {
-          const synced = syncDecisionRound(ctx.session, ctx.lastGame, now, this.windowMs);
+          const synced = this.syncRound(ctx.session, ctx.lastGame, now);
           const session = synced.session;
           if (session.status === 'closed') {
             throw new SessionClosedError(sessionId);
@@ -273,6 +375,7 @@ export class SessionService {
     const previous = lastGame?.status === 'finished' ? lastGame : null;
     return determineFirstPlayer({
       creatorId: session.creatorId,
+      arrivalOrder: arrivalOrder(session),
       seatCount: session.maxPlayers,
       occupantOf: (seat) => seats[seat],
       isActive: (id) => isActiveSessionMember(session, id),
@@ -292,25 +395,112 @@ export class SessionService {
    * Rejoindre une session ouverte (sans effet si déjà présent) : premier siège vacant.
    * Le joueur ne rejoint JAMAIS la partie en cours ; il attend la suivante.
    */
-  joinSession(sessionId: SessionId, playerId: PlayerId, meta: CallMeta = {}): Promise<Session> {
+  /**
+   * Arriver dans une session. Partie privée protégée (D-039) : le mot de passe est vérifié
+   * pour tout joueur qui n'y est pas déjà présent (le hash est fixé à la création, une
+   * vérification avant le verrou suffit).
+   */
+  async joinSession(
+    sessionId: SessionId,
+    playerId: PlayerId,
+    meta: CallMeta = {},
+    password?: string,
+  ): Promise<Session> {
+    const current = await this.deps.sessions.findById(sessionId);
+    if (current && this.deps.admission && !isActiveSessionMember(current, playerId)) {
+      await this.deps.admission.assertCanJoin(sessionId, playerId);
+    }
+    if (current?.passwordHash && !isActiveSessionMember(current, playerId)) {
+      const accepted =
+        password !== undefined &&
+        (await this.passwords.verifyPassword(password, current.passwordHash));
+      if (!accepted) {
+        this.log(playerId, 'JOIN_SESSION', meta).warn('table password rejected', { sessionId });
+        throw new SessionPasswordInvalidError(sessionId);
+      }
+    }
     return this.mutate(sessionId, 'JOIN_SESSION', playerId, meta, ({ session }, now) =>
       joinSession(session, playerId, now),
     );
   }
 
   /**
-   * Quitter la session (siège vacant). Le dernier départ FERME la session dans la même
-   * transaction. Refusé tant que le joueur est dans la partie active (R-19 / R-05).
-   * Pendant une ronde de décision, vaut « Quitter ».
+   * Quitter la session (R-19, D-037), en UNE transaction avec sa partie en attente :
+   * - partie EN COURS dont le joueur fait partie : refusé (PLAYER_IN_ACTIVE_GAME) ;
+   * - ronde Poursuivre/Quitter ouverte : vaut « Quitter » ;
+   * - partie EN ATTENTE : le joueur sort de la session (siège vacant) ET de la partie ; J1
+   *   et créateur de la partie remplacés selon l'ordre d'arrivée ; partie sans joueur
+   *   supprimée ;
+   * - dernier joueur : session supprimée (sans historique) ou fermée (avec historique).
+   * `deleted` : la session n'existe plus.
    */
-  leaveSession(sessionId: SessionId, playerId: PlayerId, meta: CallMeta = {}): Promise<Session> {
-    return this.mutate(sessionId, 'LEAVE_SESSION', playerId, meta, ({ session, lastGame }, now) =>
-      leaveSession(session, playerId, now, {
-        inActiveGame: Boolean(
-          lastGame && lastGame.status !== 'finished' && lastGame.playerIds.includes(playerId),
-        ),
-      }),
-    );
+  async leaveSession(
+    sessionId: SessionId,
+    playerId: PlayerId,
+    meta: CallMeta = {},
+  ): Promise<{ session: Session; deleted: boolean }> {
+    const log = this.deps.logger.child({
+      sessionId,
+      playerId,
+      action: 'LEAVE_SESSION',
+      requestId: meta.requestId,
+    });
+    const now = this.clock();
+    let refusal: unknown;
+    let gameEvents: GameEventDraft[] = [];
+    try {
+      const result = await this.deps.sessions.leave(sessionId, (ctx): LeaveWrite => {
+        const synced = this.syncRound(ctx.session, ctx.lastGame, now);
+        try {
+          const done = leaveSession(synced.session, playerId, now, {
+            lastGame: ctx.lastGame,
+            hasFinishedGames: ctx.hasFinishedGames,
+          });
+          const write: LeaveWrite = { ...done, events: [...synced.events, ...done.events] };
+          if (done.waitingGame?.kind === 'remove_player') {
+            if (!ctx.waitingGame || ctx.waitingGame.id !== done.waitingGame.gameId) {
+              throw new Error('leaveSession : partie en attente non verrouillée');
+            }
+            const built = this.deps.games.buildWaitingGameDeparture(
+              ctx.waitingGame,
+              done.waitingGame,
+              now,
+            );
+            gameEvents = built.events;
+            write.savedGame = { game: built.game, expectedVersion: ctx.waitingGame.version };
+          }
+          return write;
+        } catch (err) {
+          refusal = err;
+          return { ...synced, deleteSession: false };
+        }
+      });
+      this.afterCommit(result, playerId, log);
+      if (refusal) {
+        throw refusal;
+      }
+      if (result.savedGame) {
+        this.deps.games.announceWaitingGameDeparture(result.savedGame.game, gameEvents, playerId);
+      }
+      if (result.events.length > 0) {
+        log.info('SESSION_LEFT', {
+          version: result.session.version,
+          ...(result.waitingGame && {
+            waitingGame: result.waitingGame.kind,
+            gameId: result.waitingGame.gameId,
+          }),
+          ...(result.waitingGame?.kind === 'remove_player' && {
+            firstPlayerId: result.waitingGame.firstPlayerId,
+            creatorId: result.waitingGame.creatorId,
+          }),
+          deleted: result.deleteSession,
+        });
+      }
+      return { session: result.session, deleted: result.deleteSession };
+    } catch (err) {
+      this.logRejection(log, err);
+      throw err;
+    }
   }
 
   /** Poursuivre ou Quitter pendant la ronde de décision (D-034). */
@@ -339,7 +529,72 @@ export class SessionService {
       ({ session: current }) => ({ session: current, events: [] }),
     );
     await this.ensureReplay(sessionId);
+    await this.ensureContinuation(sessionId);
     return session;
+  }
+
+  /**
+   * PARTIE SUIVANTE APRÈS « POURSUIVRE » (D-042) : dès que la ronde Poursuivre/Quitter est
+   * close, le serveur crée la nouvelle partie de la MÊME session avec les joueurs restés
+   * (ceux qui ont choisi Poursuivre ; les autres sont déjà partis, D-034), à leurs sièges
+   * fixes, J1 selon les règles existantes, et la distribue aussitôt (dès 2 joueurs). Aucune
+   * action supplémentaire n'est demandée aux joueurs.
+   *
+   * Idempotente et sûre en concurrence (clics multiples, timer, plusieurs instances) : sous
+   * le verrou de la session, rien n'est fait si une partie plus récente existe déjà ; en
+   * base, une seule partie active par session (`games_one_active_per_session`).
+   */
+  private async ensureContinuation(sessionId: SessionId): Promise<void> {
+    if (!this.autoNextGame) return;
+    const last = await this.deps.sessions.findLastGame(sessionId);
+    if (!last || last.status !== 'finished' || last.endReason === 'INSTANT_WIN_TIE') return;
+    const previous = await this.deps.games.findGame(last.gameId);
+    if (!previous) return;
+    const log = this.deps.logger.child({ sessionId, action: 'CONTINUE_NEXT_GAME' });
+    if (!(await this.newGameAllowed(sessionId, previous, log))) return;
+    await this.removeBarredPlayers(sessionId, previous, log, { afterResolvedRound: true });
+    const now = this.clock();
+    let next: SessionTransition & { game: Game; gameEvents: GameEventDraft[] };
+    try {
+      next = await this.deps.sessions.createNextGame(sessionId, (ctx) => {
+        const round = ctx.session.round;
+        if (
+          ctx.session.status !== 'open' ||
+          ctx.lastGame?.gameId !== previous.id ||
+          round?.gameId !== previous.id ||
+          !round.resolvedAt
+        ) {
+          throw new ReplayNotNeeded();
+        }
+        const decision = this.determineFirstPlayer(ctx.session, ctx.lastGame);
+        if (decision.kind !== 'first') {
+          throw new ContinuationImpossible(decision.kind);
+        }
+        const seats = activeSessionPlayers(ctx.session).map((p) => ({
+          playerId: p.playerId,
+          tablePosition: p.seat,
+        }));
+        const built = this.deps.games.buildNextGame(previous, seats, decision.playerId, now);
+        return { session: ctx.session, events: [], game: built.game, gameEvents: built.events };
+      });
+    } catch (err) {
+      if (err instanceof ReplayNotNeeded || err instanceof SessionGameInProgressError) {
+        return; // rien à faire, ou déjà créée par une autre commande / instance
+      }
+      if (err instanceof ContinuationImpossible) {
+        log.warn('CONTINUE_NEXT_GAME not possible', { gameId: previous.id, reason: err.reason });
+        return;
+      }
+      throw err;
+    }
+    log.info('CONTINUE_NEXT_GAME', {
+      gameId: next.game.id,
+      previousGameId: previous.id,
+      firstPlayerId: next.game.firstPlayerId,
+      players: next.game.players.length,
+      status: next.game.status,
+    });
+    this.deps.games.announceInserted(next.game, next.gameEvents);
   }
 
   /**
@@ -367,6 +622,7 @@ export class SessionService {
       return;
     }
     const log = this.deps.logger.child({ sessionId, action: 'INSTANT_WIN_REPLAY' });
+    if (!(await this.newGameAllowed(sessionId, previous, log))) return;
     const now = this.clock();
     let replay: SessionTransition & { game: Game; gameEvents: GameEventDraft[] };
     try {
@@ -429,6 +685,14 @@ export class SessionService {
 
   findActiveSessions(playerId: PlayerId): Promise<Session[]> {
     return this.deps.sessions.findActiveByPlayer(playerId);
+  }
+
+  /**
+   * Tables ouvertes à rejoindre (partie en attente, siège libre), la sienne marquée `mine`.
+   * Lecture indicative : rejoindre reste validé par `joinSession` puis la partie.
+   */
+  listOpenTables(viewerId: PlayerId): Promise<OpenTableSummary[]> {
+    return this.deps.sessions.findOpenTables(viewerId, OPEN_TABLES_LIMIT);
   }
 
   /**
@@ -503,7 +767,7 @@ export class SessionService {
       const result = await this.deps.sessions.update(sessionId, (ctx) => {
         // D'abord la ronde de décision (ouverture, échéance) : elle s'applique et est
         // enregistrée même si l'opération est ensuite refusée.
-        const synced = syncDecisionRound(ctx.session, ctx.lastGame, now, this.windowMs);
+        const synced = this.syncRound(ctx.session, ctx.lastGame, now);
         try {
           const done = op({ ...ctx, session: synced.session }, now);
           return { session: done.session, events: [...synced.events, ...done.events] };
@@ -552,6 +816,8 @@ export class SessionService {
         log.info('SESSION_DECISION_CLOSED', { version: session.version, ...payload });
       } else if (event.type === 'session:closed') {
         log.info('SESSION_CLOSED', { version: session.version });
+      } else if (event.type === 'session:deleted') {
+        log.info('SESSION_DELETED', { version: session.version });
       }
     }
     if (result.events.some((e) => e.type === 'session:auto_leave')) {
@@ -562,10 +828,22 @@ export class SessionService {
       });
     }
     this.syncDecisionTimer(session);
+    // Ronde close (tous ont répondu, ou échéance) : la partie suivante enchaîne (D-042).
+    if (result.events.some((e) => e.type === 'session:decision_closed')) {
+      this.background.run(() =>
+        this.ensureContinuation(session.id).catch((err: unknown) =>
+          this.deps.logger.error('next game creation failed', {
+            sessionId: session.id,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        ),
+      );
+    }
   }
 
   /** Timer A : réarmé sur l'échéance persistée de la ronde ouverte, annulé sinon. */
   private syncDecisionTimer(session: Session): void {
+    // Une session supprimée (Q1) est vue ici fermée : son timer est annulé.
     if (session.status === 'open' && session.round && !session.round.resolvedAt) {
       this.scheduleDecisionTimer(session.id, session.round.deadlineAt);
     } else {
@@ -588,6 +866,61 @@ export class SessionService {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Joueurs écartés de la partie suivante par la politique (D-063) : ils quittent la session
+   * par le chemin normal (`leaveSession`, transaction et verrous habituels) AVANT la création
+   * de la partie, qui ne retient ensuite que les joueurs encore présents. Un départ en échec
+   * est journalisé et n'empêche pas les autres de continuer.
+   */
+  private async removeBarredPlayers(
+    sessionId: SessionId,
+    previous: Game,
+    log: Logger,
+    { afterResolvedRound = false } = {},
+  ) {
+    const policy = this.deps.continuation;
+    if (!policy?.playersBarredFromNextGame) return;
+    const session = await this.deps.sessions.findById(sessionId);
+    if (!session || session.status !== 'open') return;
+    // Partie suivante automatique : seulement une fois la ronde Poursuivre/Quitter close
+    // (`ensureContinuation` est aussi appelé à l'ouverture de la ronde).
+    if (
+      afterResolvedRound &&
+      (session.round?.gameId !== previous.id || !session.round.resolvedAt)
+    ) {
+      return;
+    }
+    const present = activeSessionPlayers(session).map((p) => p.playerId);
+    const barred = await policy.playersBarredFromNextGame(sessionId, present, previous);
+    for (const playerId of barred.filter((p) => present.includes(p))) {
+      log.info('PLAYER_BARRED_FROM_NEXT_GAME', { playerId, previousGameId: previous.id });
+      await this.leaveSession(sessionId, playerId).catch((err: unknown) =>
+        log.error('barred player removal failed', {
+          playerId,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+  }
+
+  /** Politique de continuation : refus journalisé et signalé aux joueurs de la partie. */
+  private async newGameAllowed(sessionId: SessionId, previous: Game, log: Logger) {
+    const policy = this.deps.continuation;
+    if (!policy || (await policy.allowsNewGame(sessionId))) return true;
+    log.info('NEW_GAME_REFUSED_BY_POLICY', { previousGameId: previous.id });
+    await policy
+      .onNewGameRefused?.(
+        sessionId,
+        previous.players.map((p) => p.playerId),
+      )
+      .catch((err: unknown) =>
+        log.error('new game refusal notification failed', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    return false;
   }
 
   private async load(sessionId: SessionId): Promise<Session> {
@@ -626,6 +959,12 @@ export class SessionService {
     });
   }
 
+  /** Ronde Poursuivre/Quitter, ouverte après la présentation du 5e tour (D-041). */
+  private syncRound(session: Session, lastGame: LastGameInfo | null, now: Date) {
+    const presentation = this.presentationMs(lastGame?.lastTrickCards ?? 0);
+    return syncDecisionRound(session, lastGame, now, this.windowMs, presentation);
+  }
+
   private log(playerId: PlayerId, action: string, meta: CallMeta): Logger {
     return this.deps.logger.child({ playerId, action, requestId: meta.requestId });
   }
@@ -639,6 +978,13 @@ export class SessionService {
 
 /** La dernière partie n'est plus une égalité à rejouer (déjà fait) : rien à faire. */
 class ReplayNotNeeded extends Error {}
+
+/** Partie suivante impossible sans règle : aucun J1 déterminable (ex. arrêt sans gagnant). */
+class ContinuationImpossible extends Error {
+  constructor(readonly reason: string) {
+    super('partie suivante impossible');
+  }
+}
 
 /** Reprise impossible sans règle : J1 absent ou moins de 2 joueurs restants. */
 class ReplayImpossible extends Error {

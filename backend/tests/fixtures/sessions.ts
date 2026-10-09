@@ -51,8 +51,11 @@ async function seedOnce(sql: SqlExecutor, game: Game): Promise<void> {
     const preferred = p.tablePosition ?? p.seat;
     const seat = used.has(preferred) ? [0, 1, 2, 3].find((s) => !used.has(s)) : preferred;
     await sql.query(
-      `INSERT INTO session_players (session_id, player_id, seat, active, joined_at)
-       VALUES ($1, $2, $3, true, now())
+      // Rang d'arrivée : le suivant de la session (D-037).
+      `INSERT INTO session_players (session_id, player_id, seat, arrival, active, joined_at)
+       VALUES ($1, $2, $3,
+         (SELECT coalesce(max(arrival), 0) + 1 FROM session_players WHERE session_id = $1),
+         true, now())
        ON CONFLICT (session_id, player_id) DO UPDATE SET active = true, left_at = NULL,
          seat = EXCLUDED.seat`,
       [game.sessionId, p.playerId, seat],
@@ -68,6 +71,7 @@ export function withSeededSessions(repository: GameRepository, sql: SqlExecutor)
     findActiveByPlayer: (id) => repository.findActiveByPlayer(id),
     findByCreationKey: (creatorId, key) => repository.findByCreationKey(creatorId, key),
     findTurnDeadlines: () => repository.findTurnDeadlines(),
+    findStartDeadlines: () => repository.findStartDeadlines(),
     insert: async (game) => {
       await seedSessionFor(sql, game);
       return repository.insert(game);

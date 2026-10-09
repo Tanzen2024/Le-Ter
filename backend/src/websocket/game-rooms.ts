@@ -21,6 +21,11 @@ export function gameEventChannel(gameId: GameId): string {
   return `le-ter:game:${gameId}:events`;
 }
 
+/** Canal inter-instances (Redis Pub/Sub) du chat d'une partie (D-045). */
+export function gameChatChannel(gameId: GameId): string {
+  return `le-ter:game:${gameId}:chat`;
+}
+
 /** Canal inter-instances (Redis Pub/Sub) des événements d'une session (D-033). */
 export function sessionEventChannel(sessionId: SessionId): string {
   return `le-ter:session:${sessionId}:events`;

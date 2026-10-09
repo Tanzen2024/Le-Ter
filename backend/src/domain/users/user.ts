@@ -29,8 +29,19 @@ export function playerIdOf(userId: UserId): PlayerId {
   return userId as string as PlayerId;
 }
 
-/** Seul rôle défini aujourd'hui ; Admin et Katika attendent R-09. */
-export type UserRole = 'user';
+/**
+ * Rôles des comptes. `admin` est le SEUL rôle d'administration, présenté comme
+ * `SUPER_ADMIN` dans l'interface d'administration (D-061, R-09 tranché). Il n'est
+ * attribuable que par l'outil `npm run user:role` (aucune route). Il ne se confond pas avec
+ * le compte financier de la plateforme (`platform_ledger`, D-060), qui n'est pas un compte
+ * utilisateur.
+ */
+export const USER_ROLES = ['user', 'admin'] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+
+export function isUserRole(value: unknown): value is UserRole {
+  return (USER_ROLES as readonly unknown[]).includes(value);
+}
 export type UserStatus = 'active' | 'disabled';
 
 /** Compte complet, interne au serveur : `passwordHash` ne sort jamais de l'API. */

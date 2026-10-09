@@ -24,7 +24,7 @@ import { deckForHands, decksRandom } from '../../fixtures/random';
 
 /**
  * D-036 sur l'infrastructure RÉELLE (HTTP + PostgreSQL + Redis, Docker), timer de
- * PRODUCTION (10 s) :
+ * PRODUCTION (20 s) :
  *
  *   A (J1) : 5♠ 10♣ 8♥ 9⭐ 10♥
  *   B      : 7♠ 9♠ 4♥ 6♣ 8♠
@@ -38,7 +38,7 @@ import { deckForHands, decksRandom } from '../../fixtures/random';
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const redisUrl = process.env.TEST_REDIS_URL;
 const describeWithInfra = databaseUrl && redisUrl ? describe : describe.skip;
-jest.setTimeout(60_000);
+jest.setTimeout(120_000);
 
 const H_A: CardId[] = ['PIQUE-5', 'TREFLE-10', 'COEUR-8', 'ETOILE-9', 'COEUR-10'];
 const H_B: CardId[] = ['PIQUE-7', 'PIQUE-9', 'COEUR-4', 'TREFLE-6', 'PIQUE-8'];
@@ -144,7 +144,7 @@ describeWithInfra(
 
       // --- Tour 2 : B OUVRE et ne joue pas → timeout réel → plus petite carte : 4♥ ---------
       const deadlineB = Date.parse(afterManual.body.game.turnDeadlineAt as string);
-      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(10_000);
+      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(20_000);
       await sleep(Math.max(0, deadlineB - Date.now()));
       const viewA = await until(
         () => expectStatus(A.api.get(`/api/games/${gameId}`), 200),

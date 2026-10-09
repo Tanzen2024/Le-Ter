@@ -72,7 +72,7 @@ export async function withAccessToken<T>(call: (accessToken: string) => Promise<
   }
   const renewed = await refreshSession();
   if (!renewed) {
-    throw new ApiError(401, 'UNAUTHENTICATED', 'Session expirée. Veuillez vous reconnecter.');
+    throw new ApiError(401, 'UNAUTHENTICATED', 'Connexion expirée. Veuillez vous reconnecter.');
   }
   return call(renewed);
 }

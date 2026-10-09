@@ -53,7 +53,7 @@ envoyé dans le corps, l'URL ou un en-tête est ignoré pour décider qui agit (
 | `phone` | text | E.164 `^\+[1-9][0-9]{7,14}$`, **unique** |
 | `phone_verified` | boolean | `false` par défaut |
 | `password_hash` | text | bcrypt ; jamais exposé |
-| `role` | text | `'user'` seulement (Admin / Katika : R-09) |
+| `role` | text | `'user'` ou `'admin'` (migration 0017 ; `admin` = `SUPER_ADMIN`, D-061) |
 | `status` | text | `'active'` ou `'disabled'` |
 | `created_at`, `updated_at` | timestamptz | |
 
@@ -197,13 +197,19 @@ sans jeton, la réponse est 401.
 | État serveur | TanStack Query, clé `['auth', 'me']` (`src/features/auth/hooks.ts`) |
 | Session | `src/features/auth/session.ts` : restauration au lancement, rotation en vol unique (une seule rotation à la fois, puisque le serveur n'en accepte qu'une par jeton), un nouvel essai après un 401 |
 
-Écrans, en paysage (D-028) : marque et titre à gauche, formulaire défilant à droite, champs
-par deux (prénom | nom, email | téléphone, mot de passe | confirmation), racine `Screen`,
-`KeyboardAvoidingView` sur iOS.
+Écrans, en paysage (D-028).
 
-- **Connexion** : « Bon retour 👋 », email, mot de passe (afficher/masquer), « Mot de passe
-  oublié ? » (message « bientôt disponible » : aucun flux n'est défini), « Se connecter »,
-  « Créer un compte ».
+- **Connexion** (`src/features/auth/LoginTable.tsx`) : « table de jeu » (fond rouge/brun
+  éclairé, cercle de feutre vert cerclé d'or, cartes Le Ter décoratives sur les côtés), titre
+  « Connexion », email, mot de passe (afficher/masquer), « Mot de passe oublié ? » (message
+  « bientôt disponible » : aucun flux n'est défini, R-35), « Se connecter », puis « Vous n'avez
+  pas de compte ? S'inscrire ». Tout est dimensionné depuis la surface paysage sûre
+  (`src/hooks/use-landscape-viewport.ts` : grande dimension = largeur, petite = hauteur, marges
+  de sécurité) ; la colonne défile si le clavier la réduit. Un seul message d'erreur
+  (validation ou serveur) s'affiche au-dessus du bouton.
+- **Inscription** : marque et titre à gauche, formulaire défilant à droite, champs par deux
+  (prénom | nom, email | téléphone, mot de passe | confirmation), racine `Screen`,
+  `KeyboardAvoidingView` sur iOS.
 - **Inscription en 2 étapes** :
   1. Prénom, Nom, Pseudo, puis « Continuer → » ;
   2. Email, Téléphone, Mot de passe, Confirmation, puis « Créer mon compte » ;
@@ -217,7 +223,7 @@ par deux (prénom | nom, email | téléphone, mot de passe | confirmation), raci
 - Vérification du téléphone par SMS : aucun fournisseur n'est choisi ; `phone_verified` est
   prêt.
 - Réinitialisation du mot de passe : aucun flux n'est défini.
-- Rôles Admin / Katika (R-09).
+- Session d'administration dédiée (8 h absolues, 30 min d'inactivité) : voir `docs/admin/SECURITY.md`.
 - Détection de réutilisation d'un refresh token avec révocation de toute la session : écartée
   pour l'instant, car un double envoi réseau légitime déconnecterait l'utilisateur. Le second
   essai est seulement refusé.

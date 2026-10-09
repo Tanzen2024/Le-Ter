@@ -26,6 +26,7 @@ declare global {
  *
  *   POST /                       créer une session et sa première partie (Idempotency-Key)
  *   GET  /me/active              sessions ouvertes où je suis présent
+ *   GET  /open                   tables ouvertes à rejoindre (partie en attente, siège libre)
  *   GET  /:sessionId             détail (membres actuels ou anciens)
  *   POST /:sessionId/join        rejoindre une session ouverte
  *   POST /:sessionId/leave       quitter (siège vacant ; le dernier départ ferme la session)
@@ -59,6 +60,7 @@ export function createSessionRouter(
 
   router.post('/', writes, controller.create);
   router.get('/me/active', controller.listMine);
+  router.get('/open', controller.listOpen);
   router.get('/:sessionId', controller.get);
   router.post('/:sessionId/join', writes, controller.join);
   router.post('/:sessionId/leave', writes, controller.leave);

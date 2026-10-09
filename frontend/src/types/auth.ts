@@ -8,7 +8,8 @@ export interface PublicUser {
   username: string;
   phone: string;
   phoneVerified: boolean;
-  role: 'user';
+  /** `admin` : administration de la détection uniquement (D-049, D-053). */
+  role: 'user' | 'admin';
   createdAt: string;
 }
 

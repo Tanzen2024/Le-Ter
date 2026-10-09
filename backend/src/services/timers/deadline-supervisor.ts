@@ -16,13 +16,19 @@ export interface RecoveryReport {
   decisionTimersScheduled: number;
   /** Rondes de décision expirées (AUTO_LEAVE) ou à ouvrir, traitées immédiatement. */
   decisionsProcessed: number;
+  /** Timers de démarrage automatique réarmés (tables de tournoi, D-065). */
+  startTimersScheduled: number;
+  /** Démarrages automatiques échus pendant l'arrêt, traités immédiatement (D-065). */
+  startDeadlinesProcessed: number;
 }
 
 /**
  * Timers PERSISTANTS (D-034). Les deux échéances vivent dans PostgreSQL :
  *
  *   - timer A, décision Poursuivre/Quitter : `session_decision_rounds.deadline_at` → AUTO_LEAVE ;
- *   - timer B, tour de jeu : `games.turn_deadline_at` → TURN_TIMEOUT → coup automatique.
+ *   - timer B, tour de jeu : `games.turn_deadline_at` → TURN_TIMEOUT → coup automatique ;
+ *   - timer C, démarrage d'une table de tournoi (D-065) : `games.start_deadline_at` →
+ *     démarrage automatique de la partie en attente.
  *
  * Les timers en mémoire n'en sont que des copies. Ce superviseur les RECONSTRUIT au
  * démarrage (échéance future → timer réarmé ; échéance passée → traitée immédiatement),
@@ -56,6 +62,8 @@ export class DeadlineSupervisor {
       autoPlaysRetried: 0,
       decisionTimersScheduled: 0,
       decisionsProcessed: 0,
+      startTimersScheduled: 0,
+      startDeadlinesProcessed: 0,
     };
     const now = this.now();
     for (const deadline of await this.deps.games.findTurnDeadlines()) {
@@ -73,6 +81,21 @@ export class DeadlineSupervisor {
             turnDeadlineAt: deadline.deadlineAt,
           });
           report.turnTimersScheduled += 1;
+        }
+      });
+    }
+    for (const deadline of await this.deps.games.findStartDeadlines()) {
+      await this.guard('AUTO_START_GAME', deadline.gameId, async () => {
+        if (deadline.deadlineAt.getTime() <= now) {
+          await this.deps.games.handleStartDeadline(deadline.gameId);
+          report.startDeadlinesProcessed += 1;
+        } else {
+          this.deps.games.syncStartTimer({
+            id: deadline.gameId,
+            status: 'waiting',
+            startDeadlineAt: deadline.deadlineAt,
+          });
+          report.startTimersScheduled += 1;
         }
       });
     }
@@ -104,6 +127,13 @@ export class DeadlineSupervisor {
         } else if (deadline.deadlineAt.getTime() <= now) {
           await this.guard('TURN_TIMEOUT', deadline.gameId, () =>
             this.deps.games.handleTurnTimeout(deadline.gameId),
+          );
+        }
+      }
+      for (const deadline of await this.deps.games.findStartDeadlines()) {
+        if (deadline.deadlineAt.getTime() <= now) {
+          await this.guard('AUTO_START_GAME', deadline.gameId, () =>
+            this.deps.games.handleStartDeadline(deadline.gameId),
           );
         }
       }

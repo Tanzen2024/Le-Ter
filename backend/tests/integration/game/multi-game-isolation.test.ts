@@ -4,6 +4,7 @@ import {
   GameFullError,
   GameVersionConflictError,
 } from '../../../src/domain/game/game-errors';
+import { TURN_DURATION_MS } from '../../../src/domain/rules/rule-set';
 import {
   createGameServiceFixture,
   listen,
@@ -68,13 +69,13 @@ describe('Isolation multi-parties', () => {
     it("l'expiration du timer de A ne touche pas B", async () => {
       const { service, timers } = createGameServiceFixture();
       const gameA = await startedGame(service, p1, p2);
-      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(TURN_DURATION_MS / 2);
       const gameB = await startedGame(service, p4, p5);
       const inboxA = await listen(service, gameA.id, p1);
       const inboxB = await listen(service, gameB.id, p4);
       expect(timers.size).toBe(2);
 
-      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(TURN_DURATION_MS / 2);
 
       // A expire : TURN_TIMEOUT puis coup automatique (D-036) ; son timer est réarmé pour
       // le joueur suivant. B n'est pas touchée.
@@ -90,7 +91,7 @@ describe('Isolation multi-parties', () => {
       expect(timers.has(gameA.id)).toBe(true);
       expect(timers.has(gameB.id)).toBe(true);
 
-      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(TURN_DURATION_MS / 2);
       expect(inboxB.map((e) => e.type)).toEqual(autoPlay);
       expect(inboxB.every((e) => e.gameId === gameB.id)).toBe(true);
       expect(inboxA).toHaveLength(autoPlay.length);

@@ -65,9 +65,9 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 | Gagné simple | Spec §5.1 | Chaque perdant verse la mise | CONFIRMÉ | `stakeTransfers('SIMPLE', …)` |
 | Kora / Double Kora | Spec §5.2-5.3 | Déclencheur inconnu ; 200 / 300 pour une mise de 100 | AMBIGU (R-02) | `PayoutKind`, `KoraDetector` sans implémentation |
 | Le fuyard paie-t-il ? | — | Non dit | NON DÉFINI (R-05) | `fledPlayerIds` séparé dans le résultat |
-| Prélèvement du Katika | Spec §9 | « Pourcentage minimal » non chiffré | AMBIGU (R-09) | Non modélisé |
+| Commission de la plateforme sur une partie ordinaire | Spec §9 (ancien « Katika », D-060) | « Pourcentage minimal » non chiffré | NON DÉFINI (R-37) | Non modélisé |
 | Unité de la mise | Spec §5 (FCFA) ; maquette (jetons) | FCFA ou jetons | AMBIGU (R-13) | `stakeAmount` entier, sans unité |
-| Minuteur | D-034 | 10 s par tour (tours 1 à 4) ; TURN_TIMEOUT puis coup automatique ; le 5e tour n'a pas de timer | TRANCHÉ (R-06), choix de la carte : voir D-036 | `handleTurnTimeout`, `AutomaticCardSelectionStrategy` |
+| Minuteur | D-034 | 20 s par tour (tours 1 à 4, D-064) ; TURN_TIMEOUT puis coup automatique ; le 5e tour n'a pas de timer | TRANCHÉ (R-06), choix de la carte : voir D-036 | `handleTurnTimeout`, `AutomaticCardSelectionStrategy` |
 | Tournoi, jetons | Spec §14-15 | — | Hors périmètre | Non modélisé |
 
 ## 2. Modèle
@@ -189,7 +189,7 @@ Une commande refusée ne modifie rien : la copie de travail est jetée.
 | `game:hand_dealt` | **privé**, au seul joueur concerné, dans cette partie | `cards`, `batches` (lot de 3, lot de 2) |
 | `game:card_played` | `game:{gameId}` | `playerId`, `cardId`, `trickNumber`, `tookControl`, `controllerId` |
 | `game:trick_completed` | `game:{gameId}` | `trickNumber`, `controllerId`, `plays` |
-| `game:turn_changed` | `game:{gameId}` | `trickNumber`, `nextPlayerId`, `turnStartedAt`, `turnDeadlineAt` (10 s, D-034) |
+| `game:turn_changed` | `game:{gameId}` | `trickNumber`, `nextPlayerId`, `turnStartedAt`, `turnDeadlineAt` (20 s, D-034, D-064) |
 | `game:control_changed` | `game:{gameId}` | `controllerId`, `cardId`, `trickNumber` (prise de contrôle) |
 | `game:turn_timeout` | `game:{gameId}` | `playerId`, `trickNumber`, `turnDeadlineAt` — échéance constatée par le serveur |
 | `game:auto_card_played` | `game:{gameId}` | `playerId`, `trickNumber` ; suivi du `game:card_played` du coup automatique |
@@ -201,7 +201,7 @@ l'état d'une partie.
 
 ### Timer de tour et coup automatique (D-034, D-036)
 
-- Chaque nouveau joueur attendu reçoit `turnStartedAt` et `turnDeadlineAt` = début + 10 s
+- Chaque nouveau joueur attendu reçoit `turnStartedAt` et `turnDeadlineAt` = début + 20 s (D-064)
   (`TURN_DURATION_MS`), fixés par le moteur et persistés avec la partie.
 - Après l'échéance, son coup est refusé (`TurnExpiredError`, 409 `TURN_EXPIRED`) ;
   `GameService.handleTurnTimeout` enregistre `turnTimedOutAt` (TURN_TIMEOUT), une seule fois.

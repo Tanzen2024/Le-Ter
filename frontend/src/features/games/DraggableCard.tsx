@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, StyleSheet, Text } from 'react-native';
+import { Animated, PanResponder, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
-import { colors, radius, spacing } from '../../constants/theme';
 import { cardLabel } from './format';
+import { CARD_RATIO, CardFace } from './table/Cards';
 
-/** Rectangle de l'aire de jeu, en coordonnées de la fenêtre. */
+/** Rectangle de la zone de dépôt, en coordonnées de la fenêtre. */
 export interface DropZone {
   x: number;
   y: number;
@@ -14,25 +14,42 @@ export interface DropZone {
 
 interface Props {
   cardId: string;
+  width: number;
   /** Jouable maintenant selon le SERVEUR (myActions.playableCardIds). */
   enabled: boolean;
-  /** Mesure à jour de l'aire de jeu (lue au moment du lâcher). */
+  /** Commande envoyée, en attente de la réponse du serveur : la carte reste estompée. */
+  pending?: boolean;
+  /** Mesure à jour de la zone de dépôt (lue au moment du lâcher). */
   getDropZone: () => DropZone | null;
-  /** Carte lâchée sur l'aire de jeu : envoie la commande ; le serveur décide. */
+  /** Carte lâchée sur la zone de dépôt : envoie la commande ; le serveur décide. */
   onDrop: (cardId: string) => void;
   onDragChange?: (dragging: boolean) => void;
+  /** Placement dans la main (chevauchement, ordre d'empilement). */
+  style?: StyleProp<ViewStyle>;
 }
 
 /**
- * Carte de MA main, à glisser-déposer vers l'aire de jeu (décision 48). Seules les cartes
- * que le serveur déclare jouables peuvent être saisies ; lâchée sur l'aire de jeu, la carte
- * déclenche PLAY_CARD, sinon elle revient à sa place. Le geste n'est jamais une preuve de
- * légalité : le serveur valide ou refuse (décision 49), et l'état affiché vient de lui.
+ * Carte de MA main, à glisser-déposer vers la zone d'action de la table (décision 48).
+ * Seules les cartes que le serveur déclare jouables peuvent être saisies. Pendant le glissé,
+ * la carte suit le doigt, se soulève (agrandie, ombre portée, légère rotation). Lâchée dans la
+ * zone, elle déclenche PLAY_CARD et revient estompée dans la main jusqu'à la réponse : le
+ * serveur la retire de la main s'il accepte le coup (décision 49), sinon elle redevient
+ * normale. Hors de la zone, elle revient à sa place.
  *
  * Accessibilité : l'action « activer » joue la carte sans geste (lecteur d'écran).
  */
-export function DraggableCard({ cardId, enabled, getDropZone, onDrop, onDragChange }: Props) {
+export function DraggableCard({
+  cardId,
+  width,
+  enabled,
+  pending = false,
+  getDropZone,
+  onDrop,
+  onDragChange,
+  style,
+}: Props) {
   const [position] = useState(() => new Animated.ValueXY());
+  const [lift] = useState(() => new Animated.Value(0));
   // Gestionnaires STABLES pendant tout un glissé (un nouveau rendu ne doit pas remplacer
   // le répondeur en cours de geste) : les dernières props sont lues via une référence.
   const props = useRef({ enabled, getDropZone, onDrop, onDragChange });
@@ -40,47 +57,54 @@ export function DraggableCard({ cardId, enabled, getDropZone, onDrop, onDragChan
     props.current = { enabled, getDropZone, onDrop, onDragChange };
   });
 
-  const responder = useMemo(
-    () =>
-      // La référence n'est lue que dans les rappels du geste, jamais pendant le rendu.
-      // eslint-disable-next-line react-hooks/refs
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => props.current.enabled,
-        onMoveShouldSetPanResponder: () => props.current.enabled,
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => props.current.onDragChange?.(true),
-        onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], {
-          useNativeDriver: false,
-        }),
-        onPanResponderRelease: (_event, gesture) => {
-          props.current.onDragChange?.(false);
-          const zone = props.current.getDropZone();
-          const inside =
-            zone &&
-            gesture.moveX >= zone.x &&
-            gesture.moveX <= zone.x + zone.width &&
-            gesture.moveY >= zone.y &&
-            gesture.moveY <= zone.y + zone.height;
-          if (inside) {
-            props.current.onDrop(cardId);
-          }
-          Animated.spring(position, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
-        },
-        onPanResponderTerminate: () => {
-          props.current.onDragChange?.(false);
-          Animated.spring(position, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
-        },
+  const responder = useMemo(() => {
+    const settle = () => {
+      Animated.parallel([
+        Animated.spring(position, { toValue: { x: 0, y: 0 }, useNativeDriver: false }),
+        Animated.spring(lift, { toValue: 0, useNativeDriver: false }),
+      ]).start();
+    };
+    // La référence n'est lue que dans les rappels du geste, jamais pendant le rendu.
+    // eslint-disable-next-line react-hooks/refs
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => props.current.enabled,
+      onMoveShouldSetPanResponder: () => props.current.enabled,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        props.current.onDragChange?.(true);
+        Animated.spring(lift, { toValue: 1, useNativeDriver: false }).start();
+      },
+      onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], {
+        useNativeDriver: false,
       }),
-    [cardId, position],
-  );
+      onPanResponderRelease: (_event, gesture) => {
+        props.current.onDragChange?.(false);
+        const zone = props.current.getDropZone();
+        const inside =
+          zone &&
+          gesture.moveX >= zone.x &&
+          gesture.moveX <= zone.x + zone.width &&
+          gesture.moveY >= zone.y &&
+          gesture.moveY <= zone.y + zone.height;
+        if (inside) {
+          props.current.onDrop(cardId);
+        }
+        settle();
+      },
+      onPanResponderTerminate: () => {
+        props.current.onDragChange?.(false);
+        settle();
+      },
+    });
+  }, [cardId, position, lift]);
 
   return (
     <Animated.View
       {...responder.panHandlers}
       accessible
       accessibilityRole="button"
-      accessibilityLabel={`${cardLabel(cardId)}${enabled ? ', à glisser vers l’aire de jeu' : ''}`}
-      accessibilityState={{ disabled: !enabled }}
+      accessibilityLabel={`${cardLabel(cardId)}${enabled ? ', à glisser vers la zone de jeu' : ''}`}
+      accessibilityState={{ disabled: !enabled, busy: pending }}
       accessibilityActions={enabled ? [{ name: 'activate', label: 'Jouer cette carte' }] : []}
       onAccessibilityAction={(event) => {
         if (enabled && event.nativeEvent.actionName === 'activate') {
@@ -89,26 +113,35 @@ export function DraggableCard({ cardId, enabled, getDropZone, onDrop, onDragChan
       }}
       style={[
         styles.card,
-        !enabled && styles.cardDisabled,
-        { transform: position.getTranslateTransform() },
+        { width, height: width * CARD_RATIO },
+        !enabled && !pending && styles.cardDisabled,
+        pending && styles.cardPending,
+        {
+          zIndex: 10,
+          transform: [
+            ...position.getTranslateTransform(),
+            { scale: lift.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] }) },
+            { rotate: lift.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '-4deg'] }) },
+          ],
+        },
+        style,
       ]}
     >
-      <Text style={styles.cardText}>{cardLabel(cardId)}</Text>
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.shadow,
+          { borderRadius: width * 0.1, opacity: lift },
+        ]}
+      />
+      <CardFace cardId={cardId} width={width} />
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    minWidth: 64,
-    minHeight: 88,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.sm,
-    zIndex: 10,
-  },
-  cardDisabled: { opacity: 0.55 },
-  cardText: { fontSize: 20, fontWeight: '800', color: colors.text },
+  card: { borderRadius: 8 },
+  cardDisabled: { opacity: 0.6 },
+  cardPending: { opacity: 0.35 },
+  shadow: { boxShadow: '0 14px 22px rgba(0, 0, 0, 0.5)' },
 });

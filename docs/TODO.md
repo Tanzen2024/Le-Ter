@@ -13,21 +13,23 @@
 | R-03 | ~~Obligation de suivre la couleur~~ | **TRANCHÉ (D-035)** : qui possède la famille de la carte du meneur doit la jouer (même inférieure) ; sinon n'importe quelle carte. | Décisions 46-47, 50 |
 | R-04 | ~~Combinaison 7 + 7 + 4 + 3~~ | **ÉCARTÉ (D-035)** : ne fait pas partie des combinaisons du socle. | Socle de vérité |
 | R-05 | **Fuite** — *en partie TRANCHÉ (D-035)* | Tranché : tour 1 seulement, avant la première carte du joueur ; un fuyard par partie ; le contrôleur peut fuir ; le fuyard reste dans la session à son siège. **Reste À CLARIFIER : le fuyard paie-t-il quelque chose ?** (finance) | Socle de vérité ; spec §2.5 |
-| R-06 | **Minuteur** — *TRANCHÉ (D-034, D-036)* | **10 s par tour**, server-authoritative ; à l'échéance, TURN_TIMEOUT puis le serveur joue **la plus petite carte de la famille du contrôle** si le joueur en possède, **sinon la plus petite carte de sa main** (D-036, déterministe). 5e tour : la carte unique est jouée sans timer (D-035). Tranché (correction D-036) : l'ouvreur de chaque tour 1 à 4 joue la plus petite carte de sa main ; jeu manuel = choix du joueur, sélection automatique UNIQUEMENT au timeout et au 5e tour. **Reste À CLARIFIER** : départage d'une égalité de valeur entre familles (ex. 3♣ / 3⭐) — aucune règle validée ; départage technique provisoire, non métier, `PROVISIONAL_TIE_BREAK_ORDER` (ordre de `SUITS` ♥, ♠, ♣, ⭐) en attendant. | Scénario §5 ; diagramme « déroulement de la partie » ; décision produit oct. 2026 |
+| R-06 | **Minuteur** — *TRANCHÉ (D-034, D-036, D-064)* | **20 s par tour** (D-064, 10 s auparavant), server-authoritative ; à l'échéance, TURN_TIMEOUT puis le serveur joue **la plus petite carte de la famille du contrôle** si le joueur en possède, **sinon la plus petite carte de sa main** (D-036, déterministe). 5e tour : la carte unique est jouée sans timer (D-035). Tranché (correction D-036) : l'ouvreur de chaque tour 1 à 4 joue la plus petite carte de sa main ; jeu manuel = choix du joueur, sélection automatique UNIQUEMENT au timeout et au 5e tour. **Reste À CLARIFIER** : départage d'une égalité de valeur entre familles (ex. 3♣ / 3⭐) — aucune règle validée ; départage technique provisoire, non métier, `PROVISIONAL_TIE_BREAK_ORDER` (ordre de `SUITS` ♥, ♠, ♣, ⭐) en attendant. | Scénario §5 ; diagramme « déroulement de la partie » ; décision produit oct. 2026 |
 | R-07 | ~~Gain instantané~~ | **TRANCHÉ (D-035)** : analyse automatique par le serveur ; une seule main gagnante → bouton facultatif (tour 1, avant sa première carte) ; plusieurs → meilleur rang automatique, égalité → reprise immédiate ; toujours une victoire SIMPLE. | Socle de vérité |
 | R-08 | ~~Couleur~~ | **TRANCHÉ (D-035)** : « même couleur » = même famille (♥, ♠, ♣, ⭐). | Décisions 44-45 |
-| R-09 | **Rôle Katika / Admin** | Le Katika est le garant de la partie, prélève un **pourcentage non chiffré** et organise les tournois. Les diagrammes parlent d'un Administrateur. Même rôle ou non ? | Spec fonctionnelle §9, §13.2, §14 ; diagramme de classes ; diagramme « administration » |
+| R-09 | ~~Rôle d'administration et compte des commissions~~ | **TRANCHÉ (D-060, D-061)** : l'appellation « Katika » est supprimée. Le compte central des commissions est le **compte financier de la plateforme Le-Ter** (`platform_ledger`, D-060), qui n'est pas un compte utilisateur ; le seul rôle d'administration est `admin`, présenté comme `SUPER_ADMIN` (D-061). La commission sur les parties ordinaires reste ouverte (R-37). | Spec fonctionnelle §9, §13.2, §14 ; diagramme de classes ; diagramme « administration » |
 | R-10 | ~~**Invité**~~ / Observateur | **TRANCHÉ (D-029) : le mode invité est supprimé.** Toute identité de joueur est un compte authentifié. Reste ouvert : le mode observateur (voir R-21). | Cas d'utilisation ; séquence connexion ; scénario §3 |
-| R-11 | **Tournoi** | Création par le Katika (spec) **ou** par un joueur (cas d'utilisation, séquence). Limite « un tournoi par jour ». Partie attribuée au hasard (séquence) ou créée par les joueurs (spec). Nombre de jetons, barème des primes et départage des égalités non définis. | Spec fonctionnelle §14, §15, §16 ; séquence « gestion des tournois » ; cas d'utilisation |
-| R-12 | **Noms cryptés** | Option à la création de la partie. S'agit-il de masquer les noms ou de les remplacer par des pseudonymes ? | Spec fonctionnelle §6.1 ; maquette « Partie privée » |
-| R-13 | **Conversion FCFA / jetons** | La spec raisonne en FCFA, la maquette affiche des jetons « T ». Taux de conversion et usage (hors tournoi) non définis. | Spec fonctionnelle §5 ; maquette « Partie privée » |
+| R-11 | ~~Tournoi~~ | **TRANCHÉ (D-054, complète D-051)** : création par l’admin (publiée) ou proposée par un joueur (brouillon → approbation) ; pas de chevauchement (garanti en base) ; inscription = **réservation** du prix d’entrée (capturée au démarrage, libérée si annulation) ; minimum/maximum de joueurs ; commission plateforme copiée à la publication ; jetons de tournoi (1 000) et mise par partie (100), participation tant que jetons ≥ 2 × mise (D-063) ; classement par score pondéré jetons restants / parties jouées, 50 % / 50 % par défaut (D-062, remplace l’ordre jetons → parties jouées → gagnées → inscription) ; gains par rang (reste au 1er, rangs vides non attribués) ; notifications dans l’application ; export CSV ; liste des tournois, tables de 4 attribuées par le serveur (la plus remplie d’abord), démarrage par le premier joueur affecté ou automatique 20 s après l’arrivée du 2e joueur (D-065). | Spec fonctionnelle §14, §15, §16 ; séquence « gestion des tournois » |
+| R-12 | **Noms cryptés** | *En partie TRANCHÉ (D-064) : les pseudos réels sont affichés à la table.* Reste : option à la création de la partie. S'agit-il de masquer les noms ou de les remplacer par des pseudonymes ? | Spec fonctionnelle §6.1 ; maquette « Partie privée » |
+| R-13 | **Conversion FCFA / jetons** | **Partiellement TRANCHÉ** : 1 FCFA = 1 jeton pour l’ACHAT (D-050) et les TOURNOIS (prix d’entrée, gains : D-054). Restent ouverts : conversion pour le retrait et la mise des parties privées. | Spec fonctionnelle §5 ; maquette « Partie privée » |
 | R-14 | Modération du chat | Faite par un Admin (scénario) ou par un Joueur (cas d'utilisation) ? | Scénario §4 ; cas d'utilisation |
 | R-15 | ~~Inscription~~ | **TRANCHÉ (D-029) : téléphone obligatoire.** Champs : Prénom, Nom, Email, Pseudo, Téléphone, Mot de passe, Confirmation. Connexion par email + mot de passe ; le pseudo est le nom visible en jeu. | Spec fonctionnelle §8.1 ; séquence « création de compte » |
 | R-32 | ~~Sessions~~ | **TRANCHÉ (D-029) : une seule session d'authentification active par utilisateur.** Une nouvelle connexion révoque la précédente. Sans effet sur le nombre de parties (R-18). | Décision produit, octobre 2026 |
 | R-33 | Téléphone : pays | Faut-il un indicatif pays par défaut (et lequel) ? Aujourd'hui le format international (+indicatif) est exigé, sans pays présumé. | R-15 |
 | R-34 | Vérification du téléphone | Fournisseur SMS, règles OTP (durée, tentatives), et la vérification est-elle exigée avant de miser ou de retirer ? `phone_verified` existe, à `false`. | R-15, R-16 |
 | R-35 | Mot de passe oublié | Flux de réinitialisation (email ? SMS ?) non défini. Le bouton affiche « bientôt disponible ». | Maquette « Connexion » |
-| R-16 | Montants minimum | Montant minimum de dépôt et de retrait non chiffré. | Séquence « gestion des soldes » |
+| R-36 | **Détection anti-collusion** | Seul le réglage `suspicionDetectionEnabled` existe (D-043 : choisi à la création, désactivé par défaut, immuable, affiché 🛡️). Socle technique en place (D-044 : `DetectionService`, signaux et scores de risque par partie). Feuille de route ([detection.md](detection.md)) : étape 1 Fondation DONE (D-044) · étape 2 Géolocalisation DONE (D-046) · étape 3 Analyse comportementale DONE (D-047) · étape 4 Score + alertes internes DONE après validation (D-048) · étape 5 Administration DONE (D-049 : consultation et statut des alertes, audit, rôle `admin` PROVISOIRE attribué par `npm run user:role`) · interrupteur global DONE (D-053 : désactivé par défaut, écran `/admin`). Restent à définir : validation de TOUS les seuils, contributions et règles d'alerte provisoires, usage des parties non surveillées (exclues aujourd'hui), données réseau (aucune IP conservée), quelles conséquences (alerte, examen par l’administration, sanction), machine d'état des alertes provisoire (aucune réouverture), interface d'administration, quelle transparence envers les joueurs ? | Demande produit (octobre 2026) |
+| R-37 | **Commission sur les parties ordinaires** | La spécification d'origine prévoyait un prélèvement d'un « pourcentage minimal » non chiffré sur chaque partie (ancien « Katika »). Rien n'est modélisé : aucune mise n'est réglée et aucune commission n'est prélevée. Taux, assiette, moment du prélèvement et effet sur les mises À CLARIFIER. | Spec fonctionnelle §9 ; D-060 |
+| R-16 | Montants minimum | **Partiellement TRANCHÉ (D-050)** : achats limités à 500, 1 000, 2 000 et 5 000 FCFA. Reste ouvert : montants du retrait. | Séquence « gestion des soldes » |
 | R-17 | ~~Distribution~~ | **TRANCHÉ (D-032, D-033, D-034)** : 5 cartes en deux passages (un lot de 3 par joueur, puis un lot de 2), dans le sens **antihoraire** à partir de J1, même ordre aux deux passages ; J1 commence et a le contrôle. J1 = créateur pour la 1re partie d'une session, puis gagnant précédent présent, sinon le premier siège occupé après celui du gagnant (sens antihoraire, sièges fixes). | Spec §2.2 ; décisions C.2, C.3, C.4 |
 
 ### Joueurs et parties simultanées
@@ -40,12 +42,12 @@
 | # | Question | Ce que disent les documents | Point d'extension prévu |
 |---|---|---|---|
 | R-18 | ~~Plusieurs parties actives ?~~ | **TRANCHÉ (D-031) : une seule partie active (waiting ou in_progress) à la fois** ; plusieurs parties historiques ; une partie finished ne bloque pas. Garanti en base (index unique partiel), y compris en concurrence. | `singleActiveGameParticipation` + index `game_players_one_active_game_per_player` |
-| R-19 | Peut-on **quitter une partie en attente** (avant la distribution) ? La mise est-elle rendue ? Est-ce différent de la fuite (R-05) ? | Cas d'utilisation « Quitter Partie » distinct de « Fuir une Session », sans règle. | Future commande `LEAVE_GAME` |
+| R-19 | ~~Quitter une partie en attente~~ | **TRANCHÉ (D-037)** : partie EN ATTENTE → on quitte directement la session (et la partie) ; partie EN COURS → départ direct refusé (`PLAYER_IN_ACTIVE_GAME`), la fuite ne concerne que la partie ; partie TERMINÉE → Poursuivre / Quitter (20 s, D-064). Q1 : session sans joueur supprimée ; Q2 : J1 qui part → joueur suivant dans l'ordre d'arrivée ; Q3 : siège libéré, les autres ne bougent pas. Reste ouvert : la mise (R-13, finance). | `SessionService.leaveSession`, `SessionRepository.leave` |
 | R-20 | Après une fuite ou la fin d'une partie, peut-on **rejoindre immédiatement** une autre partie ? | Rien. | `ParticipationPolicy.canJoin` |
 | R-21 | **Observateurs** : qui peut observer, combien, que voient-ils, peut-on observer plusieurs parties ou observer en jouant ? (complète R-10) | Scénario §3 uniquement. | Rôle « observateur » à ajouter au contrôle d'accès |
-| R-22 | **Invitations** : une partie privée se rejoint-elle seulement par mot de passe, ou aussi par invitation ? Un joueur peut-il avoir plusieurs invitations en attente ? | Mot de passe optionnel (séquence création de partie). Aucune notion d'invitation. | Champ de partie et commande à ajouter |
+| R-22 | **Invitations** : une partie privée se rejoint-elle seulement par mot de passe, ou aussi par invitation ? Un joueur peut-il avoir plusieurs invitations en attente ? | Mot de passe optionnel (séquence création de partie) : **implémenté (D-039)**. Reste ouvert : invitations. | Invitations : champ et commande à ajouter |
 | R-23 | ~~Démarrage~~ | **TRANCHÉ (D-031)** : capacité 2, 3 ou 4 à la création (un maximum) ; démarrage **par le créateur seul**, dès **2 joueurs**, sans attendre une table pleine ; plus d'adhésion ensuite. Reste ouvert : que devient une partie jamais démarrée (expiration, annulation, remboursement) ? | `POST /api/games/:gameId/start`, `assertCanStart` |
-| R-24 | **Déconnexion** : le timer de tour (10 s, D-034) est-il mis en pause pendant une déconnexion ? Attend-on davantage un joueur déconnecté ? | « Le système joue à la place du joueur » si la reconnexion échoue (séquence déroulement), sans délai. Aujourd'hui : aucune pause, le timer de 10 s s'applique. | `GameTimerRegistry` / `TURN_TIMEOUT` |
+| R-24 | **Déconnexion** : le timer de tour (20 s, D-034, D-064) est-il mis en pause pendant une déconnexion ? Attend-on davantage un joueur déconnecté ? | « Le système joue à la place du joueur » si la reconnexion échoue (séquence déroulement), sans délai. Aujourd'hui : aucune pause, le timer de 20 s s'applique. | `GameTimerRegistry` / `TURN_TIMEOUT` |
 | R-25 | **Partie bloquée / session suspendue** par un admin : la partie est-elle gelée (timers arrêtés), annulée, reprise plus tard ? Que deviennent les mises ? | Diagramme « administration » : statut mis à jour et notification, sans effet défini. | Statuts `blocked` / `suspended` à ajouter |
 
 ### Moteur de jeu
@@ -67,19 +69,20 @@
 
 | # | Sujet | Constat |
 |---|---|---|
-| T-01 | Temps réel | Firebase Realtime Database (chat) contre WebSocket / Socket.IO (latence, reconnexion). Un REST seul ne suffit pas pour l'état d'une partie. |
+| T-01 | Temps réel | ~~Firebase Realtime Database (chat) contre WebSocket / Socket.IO~~ **Tranché (D-045)** : WebSocket natif (`ws`) sur `/ws`, Redis pour la diffusion entre instances. Utilisé par le chat ; les événements de partie restent à y brancher. |
 | T-02 | Notifications push | FCM est imposé. Avec Expo, `expo-notifications` est l'approche naturelle (FCM sous Android). |
-| T-03 | Géolocalisation | « API Geolocation intégrée dans React Native » n'existe plus. Il faut utiliser `expo-location`. |
+| T-03 | ~~Géolocalisation~~ | **TRANCHÉ (D-046)** : `expo-location`, premier plan seulement, parties surveillées uniquement. |
 | T-04 | Modèle de données | Diagramme de classes : solde en double (`Joueur.solde` et `Compte.solde`), rôles de `SessionJeu`, `PartieJeu` et `SessionDevice` qui se chevauchent, `id : int` alors que les identifiants retenus sont des UUID (D-023). |
 | T-05 | Déploiement | Docker et Heroku ou AWS pour le backend. EAS pour les builds mobiles n'est pas mentionné. |
 | T-06 | Diagrammes manquants | Les critères de sprint citent des diagrammes d'état, de composants, d'architecture et de flux utilisateur absents de `docs/`. |
 | T-07 | Conformité | Le jeu se joue en argent réel (FCFA, Mobile Money). Il faut vérifier la licence de jeux d'argent requise dans le pays visé et les règles de l'App Store et du Play Store. |
 | T-08 | Plusieurs instances du backend | Diffusion inter-instances en place (Redis Pub/Sub, D-024) et écritures protégées par la version optimiste. Reste à choisir : affinité par `gameId` (commandes et timers sur la même instance) ou coordination des timers et des commandes via Redis. |
+| T-09 | Réglages : informations externes (D-052, [settings.md](settings.md)) | À fournir : URL de la plateforme d'assistance (`EXPO_PUBLIC_SUPPORT_URL`) ; nom légal de l'éditeur, adresse, email officiel, juridiction, âge minimum et date des documents (`LEGAL_INFO`) ; relecture juridique des Conditions d'utilisation et de la Politique de confidentialité ; durées de conservation ; sons définitifs (les sons d'interface actuels sont synthétiques) ; traduction anglaise des écrans restants ; vérification du son sur appareil réel. |
 
 ## 3. Fondation technique — suite
 
 - [x] Frontend : ESLint configuré (`npm run lint` = `expo lint`, eslint-config-expo).
-- [ ] Frontend : tests (Jest + React Native Testing Library).
+- [x] Frontend : tests (Jest + React Native Testing Library) : `npm test` (jest-expo), premiers tests sur le chat (D-045).
 - [ ] Backend : documentation Swagger/OpenAPI de l'API.
 - [ ] Backend : stratégie de validation des entrées (`validators/`).
 - [ ] Frontend : client API (`src/services/`) pointant vers `/api/health`.
@@ -92,7 +95,7 @@
 - [x] ~~Modèle Mongoose `Game` + `MongoGameRepository`~~ : abandonné (D-022). Remplacé par `PostgresGameRepository`, tables `games` + `game_players` et index de D-025.
 - [x] Diffusion inter-instances des événements de partie : `PubSubGameEventBus` sur Redis (D-024).
 - [x] Middleware `/api/games/:gameId` (validation → 404 → 403) et routes REST de partie (D-030).
-- [ ] Adaptateur temps réel du port `GameEventPublisher` / `GameEventSubscriber`, une fois T-01 tranché.
+- [ ] Adaptateur temps réel du port `GameEventPublisher` / `GameEventSubscriber` sur la passerelle WebSocket (T-01 tranché par D-045 ; seul le chat l'utilise encore).
 - [x] Politique de participation de production : R-18 tranchée (D-031). R-20 (rejoindre juste après une fuite) reste ouverte : un fuyard reste membre de sa partie jusqu'à sa fin.
 - [ ] Réarmement des timers au démarrage à partir de `turnDeadlineAt`.
 - [x] `requestId` par requête HTTP (`X-Request-Id`, D-027).
@@ -103,7 +106,7 @@
 
 - [x] Cartes, paquet, Fisher-Yates, distribution, contrôle, tours, fin, gain instantané, fuite, mise simple (D-018 à D-021).
 - [x] **Jeu de règles de production** : `OFFICIAL_TER_RULES` (D-035, socle de vérité des 52 décisions). Restent ouverts : fuite dans une partie à 2 (R-30), coût de la fuite (R-05), Kora (R-02), finance.
-- [ ] Kora / Double Kora (R-02), prélèvement du Katika (R-09), unité de mise (R-13).
+- [ ] Kora / Double Kora (R-02), commission de la plateforme sur les parties ordinaires (R-37), unité de mise (R-13).
 - [x] Choix de la carte jouée automatiquement après TURN_TIMEOUT (R-06, D-036,
   `LowestCardAutomaticSelectionStrategy`).
 - [ ] Effet de la déconnexion sur le timer (R-24).
@@ -119,6 +122,21 @@
 - [x] Câbler `GameService` au démarrage (`PostgresGameRepository` + `PubSubGameEventBus`) avec les routes de partie (D-030).
 - [ ] Test d'intégration contre un vrai PostgreSQL et un vrai Redis en CI (aujourd'hui : PGlite et courtier en mémoire).
 - [ ] Schémas des comptes, de la finance (portefeuilles, transactions, paiements) et des tournois, une fois les règles correspondantes clarifiées (R-02, R-05, R-09 à R-16, T-04, T-07).
+  - [x] Tournois financiers (D-054) : réservations du compte de jeu, registre plateforme, comptes de tournoi, résultats, notifications (migration 0021).
+  - [x] Compte financier de la plateforme Le-Ter (D-060) : `platform_ledger` est ce compte (journal des recettes, entrées seulement). Aucun compte utilisateur ne le représente.
+  - [ ] Sorties du compte financier de la plateforme (versement, retrait) : aucune règle définie.
+  - [x] Interfaces joueur (proposer) et administration des tournois ; attribution des tables atomique et sûre en multi-instance (D-055).
+  - [x] Corrections post-audit (D-056) : démarrage bloqué annulé en SYSTEM_ERROR, brouillons privés, plus de partie après la fin d’un tournoi, délai d’1 h revérifié, HUD sur le disponible.
+  - [x] Durée d’un tournoi de 30 à 120 minutes, message « Durée entre 30 minutes et 120 minutes. » (D-058).
+  - [x] Au plus 5 tournois en attente de démarrage (verrou PostgreSQL), non-chevauchement testé, bouton « + Proposer un tournoi » et prochain tournoi inscrit sur l’accueil (D-059).
+  - [x] Exécuter `postgres-tournament-concurrency.test.ts` avec `TEST_DATABASE_URL` (base de test dédiée `le_ter_test`) : exécuté le 2026-10-09, 29/29 après la correction de l'entrée en partie entre instances (D-065).
+  - [ ] Appliquer 0019 → 0022 sur la base réelle (sauvegarde, `npm run db:migrate`) : voir [tournaments-integration.md](tournaments-integration.md).
+  - [ ] Notifications push (T-02) pour les notifications de tournoi (aujourd’hui : dans l’application).
+  - [x] Socle du compte de jeu (D-040) : portefeuille en jetons, registre de transactions, achats/retraits idempotents, fournisseur Mobile Money non configuré.
+  - [x] Achat par CinetPay v1 (D-050, `docs/payments.md`) : paiement vérifié serveur à serveur, règlement atomique et idempotent, retour `leter://payment/return`.
+  - [ ] Validation de l'intégration CinetPay en **sandbox** (notification réelle, URL de retour, présence de `amount`/`currency` dans le statut, renvois de notification).
+  - [ ] Retrait Mobile Money (transfert CinetPay ou autre), conversion R-13 hors achat, montants de retrait R-16, exigence R-34.
+  - [ ] Rapprochement des paiements restés `PENDING` sans notification ni lecture (tâche périodique), et des anomalies `PAID_AFTER_WALLET_FAILURE`.
 - [ ] Journal d'audit `game_events` (append-only).
 - [ ] Configuration production : TLS PostgreSQL et Redis (`rediss://`), taille du pool, sauvegardes PostgreSQL.
 
@@ -139,7 +157,7 @@ journal des commandes refusées, arrêt forcé.
   - [x] `requireAuth` / `getAuth(res)`, identité issue du JWT uniquement.
   - [x] Frontend : écrans connexion et inscription en 2 étapes, SecureStore, Zustand + TanStack Query.
   - [ ] Vérification du téléphone par SMS (R-34), mot de passe oublié (R-35).
-  - [ ] Rôles Admin / Katika (R-09).
+  - [x] Rôle d'administration : `admin` = `SUPER_ADMIN` (D-061, R-09 tranché).
   - [ ] Limitation de débit partagée entre instances (Redis) si plusieurs instances.
 - **Phase C — API de partie** : **faite** (D-030, multi-game-architecture.md §7).
   - [x] Composition au démarrage (`create-game-service.ts`) : `PostgresGameRepository` +
@@ -164,7 +182,9 @@ journal des commandes refusées, arrêt forcé.
   - [x] Sessions OPEN/CLOSED, joueurs de session ≠ joueurs de partie, fermeture automatique,
     parties successives, J1 (créateur, gagnant précédent, suivant actif antihoraire).
   - [x] API `/api/sessions`, événements `session:*`, écrans session et accueil.
-  - [ ] À confirmer : quitter une session pendant une partie (R-19, R-05) ; J1 absent de la
+  - [x] Quitter une session (R-19, D-037) : partie en attente, J1 par ordre d'arrivée, place
+    libérée, session vide supprimée.
+  - [ ] À confirmer : session vide AVEC historique (fermée aujourd'hui, D-037) ; J1 absent de la
     partie ; partie précédente terminée sans gagnant ; retour d'un joueur (nouvelle place) ;
     présence dans plusieurs sessions ; nombre maximal de joueurs par session.
   - [ ] Abonnement temps réel aux événements de session (phase D).
@@ -180,16 +200,18 @@ journal des commandes refusées, arrêt forcé.
 - **Phase C.4 — Capacité, sièges, Poursuivre/Quitter, timers** : **faite** (D-034).
   - [x] `maxPlayers` 2/3/4 de session, immuable ; une seule session active par joueur.
   - [x] Sièges fixes, siège vacant réutilisé ; J1 change sans déplacer les sièges.
-  - [x] Ronde Poursuivre/Quitter de 10 s, AUTO_LEAVE à l'échéance, persistée.
-  - [x] Timer de tour de 10 s persisté ; TURN_TIMEOUT ; coup tardif refusé.
+  - [x] Ronde Poursuivre/Quitter de 20 s (D-064, 10 s auparavant), AUTO_LEAVE à l'échéance, persistée.
+  - [x] Timer de tour de 20 s (D-064) persisté ; TURN_TIMEOUT ; coup tardif refusé.
   - [x] Timers reconstruits depuis PostgreSQL au redémarrage, balayage des échéances.
   - [x] Coup automatique après TURN_TIMEOUT : plus petite carte de la famille du contrôle,
     sinon plus petite carte de la main (D-036).
   - [ ] À confirmer : arrivée pendant une ronde de décision (refusée aujourd'hui) ; création
     automatique ou manuelle de la partie suivante (manuelle aujourd'hui).
-  - [ ] Partie jamais démarrée : expiration ou annulation (suite de R-23).
-  - [ ] Quitter une partie en attente (R-19) ; lobby public et parties privées (R-22).
-  - [ ] Pseudos des autres joueurs dans la vue de partie (bloqué par R-12, noms cryptés).
+  - [x] Partie jamais démarrée quittée par tous ses joueurs : supprimée (D-037, Q1/Q2).
+  - [ ] Partie jamais démarrée : expiration après un délai (suite de R-23, non définie).
+  - [x] Quitter une partie en attente (R-19, D-037).
+  - [ ] Lobby public et parties privées (R-22).
+  - [x] Pseudos réels de tous les joueurs dans la vue de partie (D-064). Reste ouvert : l'option « noms cryptés » (R-12).
   - [x] Idempotence de la création (`Idempotency-Key` obligatoire, unique par créateur, D-031).
   - [ ] CORS : seulement si Expo web est visé (l'app native n'en a pas besoin).
 - **Phase D — Temps réel** (T-01) :

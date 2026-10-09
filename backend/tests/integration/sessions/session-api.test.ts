@@ -245,12 +245,16 @@ describe('Session : création, capacité, vue', () => {
     );
     expect(res.body.session.creatorId).toBe(A.id);
     expect(res.body.session.seats[0].playerId).toBe(A.id);
-    // B n'est membre de rien : agir « au nom de B » via le corps est impossible.
+    // B n'est membre de rien : agir « au nom de B » via le corps est impossible. C'est
+    // bien A qui part : seul dans sa session, il la supprime (R-19, Q1) ; B n'est touché en rien.
+    await expectStatus(B.api.post('/api/sessions', { maxPlayers: 2 }), 201);
     const forged = await expectStatus(
       A.api.post(`/api/sessions/${res.body.session.sessionId}/leave`, { playerId: B.id }),
-      409,
+      200,
     );
-    expect(forged.body.code).toBe('PLAYER_IN_ACTIVE_GAME'); // c'est bien A qui est traité
+    expect(forged.body.session).toBeNull();
+    const mine = await expectStatus(B.api.get('/api/sessions/me/active'), 200);
+    expect(mine.body.sessions).toHaveLength(1);
   });
 
   it('idempotence : la même Idempotency-Key renvoie la même session et la même partie', async () => {
@@ -305,8 +309,8 @@ describe('Une seule session active par joueur (D-034)', () => {
     const s2 = await createSession(C);
     await expect(
       database.sql.query(
-        `INSERT INTO session_players (session_id, player_id, seat, active, joined_at)
-         VALUES ($1, $2, 1, true, now())`,
+        `INSERT INTO session_players (session_id, player_id, seat, arrival, active, joined_at)
+         VALUES ($1, $2, 1, 2, true, now())`,
         [s2.sessionId, A.id],
       ),
     ).rejects.toThrow(/session_players_one_active_session_per_player/);
@@ -395,16 +399,297 @@ describe('Joueurs de session et joueurs de partie', () => {
     });
   });
 
-  it('quitter la session : refusé pendant sa partie active ; autorisé à un joueur hors partie', async () => {
+  it('quitter la session (R-19) : accepté pendant une partie EN ATTENTE, refusé pendant sa partie EN COURS', async () => {
     const [A, B, C] = [await newPlayer(), await newPlayer(), await newPlayer()];
     const { sessionId, gameId } = await createSession(A);
     await joinSession(B, sessionId);
     await joinSession(C, sessionId);
     await expectStatus(joinGame(B, gameId), 200);
 
-    const refused = await expectStatus(leaveSession(B, sessionId), 409);
+    await expectStatus(leaveSession(B, sessionId), 200); // partie en attente : départ accepté
+    await expectStatus(joinGame(C, gameId), 200);
+    await expectStatus(start(A, gameId), 200);
+    const refused = await expectStatus(leaveSession(C, sessionId), 409);
     expect(refused.body.code).toBe('PLAYER_IN_ACTIVE_GAME');
+  });
+});
+
+describe('Quitter une session (R-19, D-037)', () => {
+  /** Joueurs de la partie, par rang dans la partie, avec leur place de table. */
+  async function gamePlayers(gameId: string) {
+    const { rows } = await database.sql.query<{
+      player_id: string;
+      seat: number;
+      table_position: number;
+    }>(
+      'SELECT player_id, seat, table_position FROM game_players WHERE game_id = $1 ORDER BY seat',
+      [gameId],
+    );
+    return rows;
+  }
+
+  async function gameRow(gameId: string) {
+    const { rows } = await database.sql.query<{
+      status: string;
+      version: number;
+      first_player_id: string;
+      creator_id: string;
+    }>('SELECT status, version, first_player_id, creator_id FROM games WHERE id = $1', [gameId]);
+    return rows[0];
+  }
+
+  async function sessionExists(sessionId: string) {
+    const { rows } = await database.sql.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM sessions WHERE id = $1',
+      [sessionId],
+    );
+    return rows[0]?.n === 1;
+  }
+
+  /** Session à 4 places : A (créateur, J1), puis les autres, tous dans la partie en attente. */
+  async function waitingTable(count: number) {
+    const players: Player[] = [];
+    for (let i = 0; i < count; i++) players.push(await newPlayer());
+    const [creator, ...others] = players as [Player, ...Player[]];
+    const { sessionId, gameId } = await createSession(creator, 4);
+    for (const p of others) {
+      await joinSession(p, sessionId);
+      await expectStatus(joinGame(p, gameId), 200);
+    }
+    return { players, sessionId, gameId };
+  }
+
+  it('TEST 1 / 5 / 6 — J2 quitte pendant WAITING : siège libre, J1 et autres places inchangés, 2 joueurs', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+
+    const res = await expectStatus(leaveSession(B, sessionId), 200);
+    expect(res.body.session.status).toBe('open');
+
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, null, C.id, null]);
+    expect(await gameRow(gameId)).toMatchObject({
+      status: 'waiting',
+      first_player_id: A.id,
+      creator_id: A.id,
+    });
+    // B n'est plus joueur de la partie ; C garde son rang et sa place de table (2).
+    expect(await gamePlayers(gameId)).toEqual([
+      { player_id: A.id, seat: 0, table_position: 0 },
+      { player_id: C.id, seat: 2, table_position: 2 },
+    ]);
+    expect((await view(A, sessionId)).currentGame).toMatchObject({
+      gameId,
+      status: 'waiting',
+      playerIds: [A.id, C.id],
+    });
+    // B est libre : il peut ouvrir une autre session (R-18 et D-034 libérés).
+    await createSession(B, 2);
+  });
+
+  it('TEST 2 — J1 (créateur) quitte : J2 devient J1 et démarre ; creatorId historique conservé', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+
+    await expectStatus(leaveSession(A, sessionId), 200);
+
+    expect(await gameRow(gameId)).toMatchObject({ first_player_id: B.id, creator_id: B.id });
+    const session = await view(B, sessionId);
+    expect(session.creatorId).toBe(A.id);
+    expect(await seatsOf(B, sessionId)).toEqual([null, B.id, C.id, null]);
+    expect(await gamePlayers(gameId)).toHaveLength(2);
+    // Le droit de démarrer est passé à B seul ; le nouveau J1 est servi en premier.
+    const denied = await expectStatus(start(C, gameId), 403);
+    expect(denied.body.code).toBe('ONLY_CREATOR_CAN_START');
+    const started = await expectStatus(start(B, gameId), 200);
+    expect(started.body.game.play.dealOrder).toEqual([B.id, C.id]);
+  });
+
+  it('TEST 3 — J1 quitte, puis le nouveau J1 quitte : le troisième arrivé devient J1', async () => {
+    const { players, sessionId, gameId } = await waitingTable(4);
+    const [A, B, C, D] = players as [Player, Player, Player, Player];
+
+    await expectStatus(leaveSession(A, sessionId), 200);
+    expect((await gameRow(gameId))?.first_player_id).toBe(B.id);
+    await expectStatus(leaveSession(B, sessionId), 200);
+    expect(await gameRow(gameId)).toMatchObject({ first_player_id: C.id, creator_id: C.id });
+    expect(await seatsOf(C, sessionId)).toEqual([null, null, C.id, D.id]);
+  });
+
+  it('TEST 4 / 10 — tous partent : au dernier départ, partie WAITING et session SUPPRIMÉES', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+    const events: SessionEvent[] = [];
+    ctx.sessionEvents.subscribe(sessionId, (e) => events.push(e));
+
+    await expectStatus(leaveSession(A, sessionId), 200);
+    await expectStatus(leaveSession(B, sessionId), 200);
+    expect(await sessionExists(sessionId)).toBe(true);
+    const last = await expectStatus(leaveSession(C, sessionId), 200);
+
+    expect(last.body.session).toBeNull();
+    expect(await sessionExists(sessionId)).toBe(false);
+    expect(await gameRow(gameId)).toBeUndefined();
+    expect(await gamePlayers(gameId)).toEqual([]);
+    expect(events.map((e) => e.type).slice(-2)).toEqual(['session:player_left', 'session:deleted']);
+    await expectStatus(A.api.get(`/api/sessions/${sessionId}`), 404);
+    await expectStatus(C.api.get(`/api/games/${gameId}`), 404);
+    // Aucune session ouverte sans joueur présent, nulle part.
+    const { rows } = await database.sql.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM sessions s WHERE s.status = 'open'
+       AND NOT EXISTS (SELECT 1 FROM session_players p WHERE p.session_id = s.id AND p.active)`,
+    );
+    expect(rows[0]?.n).toBe(0);
+    // Tous sont libres.
+    for (const p of [A, B, C]) await createSession(p, 2);
+  });
+
+  it('Q1 — créateur seul (scénario mobile) : « Quitter la session » supprime session et partie', async () => {
+    const A = await newPlayer();
+    const { sessionId, gameId } = await createSession(A, 2);
+    const res = await expectStatus(leaveSession(A, sessionId), 200);
+    expect(res.body).toEqual({ session: null });
+    expect(await sessionExists(sessionId)).toBe(false);
+    expect(await gameRow(gameId)).toBeUndefined();
+    expect((await expectStatus(A.api.get('/api/sessions/me/active'), 200)).body.sessions).toEqual(
+      [],
+    );
+  });
+
+  it('partie sans joueur mais session non vide : partie supprimée, la session continue (J1 = arrivée suivante)', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const { sessionId, gameId } = await createSession(A, 3);
+    await joinSession(B, sessionId); // B est dans la session, pas dans la partie
+
+    await expectStatus(leaveSession(A, sessionId), 200);
+    expect(await gameRow(gameId)).toBeUndefined();
+    expect((await view(B, sessionId)).status).toBe('open');
+    expect((await view(B, sessionId)).currentGame).toBeNull();
+
+    // Nouvelle partie selon les règles existantes ; J1 = B, arrivé après A.
+    const next = await expectStatus(nextGame(B, sessionId), 201);
+    expect(next.body.game).toMatchObject({ firstPlayerId: B.id, creatorId: B.id });
+  });
+
+  it('TEST 7 — partie IN_PROGRESS : 409 PLAYER_IN_ACTIVE_GAME, rien n’est modifié', async () => {
+    const { players, sessionId, gameId } = await waitingTable(2);
+    const [A, B] = players as [Player, Player];
+    await expectStatus(start(A, gameId), 200);
+    const before = {
+      game: await gameRow(gameId),
+      players: await gamePlayers(gameId),
+      session: await view(A, sessionId),
+    };
+
+    for (const p of [A, B]) {
+      const refused = await expectStatus(leaveSession(p, sessionId), 409);
+      expect(refused.body.code).toBe('PLAYER_IN_ACTIVE_GAME');
+    }
+
+    expect(await gameRow(gameId)).toEqual(before.game);
+    expect(await gamePlayers(gameId)).toEqual(before.players);
+    const after = await view(A, sessionId);
+    expect({ ...after, serverNow: null }).toEqual({ ...before.session, serverNow: null });
+  });
+
+  it('TEST 7 bis — partie IN_PROGRESS : un présent hors de la partie peut partir (inchangé)', async () => {
+    const { players, sessionId, gameId } = await waitingTable(2);
+    const [A, B] = players as [Player, Player];
+    const C = await newPlayer();
+    await expectStatus(start(A, gameId), 200);
+    await joinSession(C, sessionId);
     await expectStatus(leaveSession(C, sessionId), 200);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, B.id, null, null]);
+    expect((await gameRow(gameId))?.status).toBe('in_progress');
+  });
+
+  it('TEST 8 — partie FINISHED, ronde ouverte : Poursuivre / Quitter inchangés ; /leave vaut « Quitter »', async () => {
+    const { A, B, C, D, sessionId, game1 } = await sessionWonByB();
+    await answer(sessionId, [
+      [A, 'continue'],
+      [B, 'leave'],
+    ]);
+    await expectStatus(leaveSession(C, sessionId), 200); // pendant la ronde = « Quitter »
+    const { rows } = await database.sql.query<{ player_id: string; choice: string }>(
+      'SELECT player_id, choice FROM session_decisions WHERE game_id = $1',
+      [game1],
+    );
+    expect(Object.fromEntries(rows.map((r) => [r.player_id, r.choice]))).toEqual({
+      [A.id]: 'continue',
+      [B.id]: 'leave',
+      [C.id]: 'leave',
+    });
+    await answer(sessionId, [[D, 'continue']]);
+    const session = await view(A, sessionId);
+    expect(session.decision.open).toBe(false);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, null, null, D.id]);
+    expect((await gameRow(game1))?.status).toBe('finished');
+  });
+
+  it('Q1 avec historique : tous partent après une partie terminée → session FERMÉE, historique conservé', async () => {
+    const { A, B, C, D, sessionId, game1 } = await sessionWonByB();
+    await allContinue(sessionId, [A, B, C, D]);
+    const game2 = (await expectStatus(nextGame(A, sessionId), 201)).body.game.gameId as string;
+    for (const p of [B, C, D, A]) await expectStatus(leaveSession(p, sessionId), 200);
+
+    expect(await view(A, sessionId)).toMatchObject({ status: 'closed' });
+    expect(await gameRow(game2)).toBeUndefined(); // partie en attente supprimée
+    expect((await gameRow(game1))?.status).toBe('finished'); // historique intact
+  });
+
+  it('TEST 9 — un nouveau joueur prend la place libérée, selon les règles normales', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+    const E = await newPlayer();
+
+    await expectStatus(leaveSession(B, sessionId), 200);
+    await joinSession(E, sessionId);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, E.id, C.id, null]);
+
+    await expectStatus(joinGame(E, gameId), 200);
+    expect(await gamePlayers(gameId)).toEqual([
+      { player_id: A.id, seat: 0, table_position: 0 },
+      { player_id: E.id, seat: 1, table_position: 1 },
+      { player_id: C.id, seat: 2, table_position: 2 },
+    ]);
+    const started = await expectStatus(start(A, gameId), 200);
+    expect(started.body.game.play.dealOrder).toEqual([A.id, E.id, C.id]);
+  });
+
+  it('événement game:player_left diffusé dans la salle de la partie', async () => {
+    const { players, sessionId, gameId } = await waitingTable(2);
+    const [A, B] = players as [Player, Player];
+    const seen: GameEvent[] = [];
+    await ctx.games.subscribe(gameId as GameId, B.id, (e) => seen.push(e));
+    await expectStatus(leaveSession(A, sessionId), 200);
+    expect(seen).toEqual([
+      expect.objectContaining({
+        type: 'game:player_left',
+        gameId,
+        actorId: A.id,
+        payload: { playerId: A.id, firstPlayerId: B.id, creatorId: B.id },
+      }),
+    ]);
+  });
+
+  it('concurrence : tous les joueurs d’une partie en attente partent en même temps', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const results = await Promise.all(players.map((p) => leaveSession(p, sessionId)));
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(results.filter((r) => r.body.session === null)).toHaveLength(1);
+    expect(await sessionExists(sessionId)).toBe(false);
+    expect(await gameRow(gameId)).toBeUndefined();
+  });
+
+  it('concurrence : départ contre démarrage → jamais « parti de la session ET dans la partie démarrée »', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B] = players as [Player, Player];
+    const [left, started] = await Promise.all([leaveSession(B, sessionId), start(A, gameId)]);
+    const inGame = (await gamePlayers(gameId)).some((p) => p.player_id === B.id);
+    const inSession = (await seatsOf(A, sessionId)).includes(B.id);
+    expect(inGame).toBe(inSession);
+    if (started.status === 200) {
+      expect([200, 409]).toContain(left.status);
+    }
   });
 });
 

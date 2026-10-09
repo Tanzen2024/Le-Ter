@@ -196,7 +196,8 @@ Serveur temps réel
 Types émis aujourd'hui : `game:created`, `game:player_joined`, `game:started`,
 `game:hand_dealt` (privé), `game:card_played`, `game:trick_completed`, `game:turn_changed`,
 `game:player_fled`, `game:finished` et `game:turn_timeout`. Leurs charges utiles sont décrites dans
-[game-domain.md](game-domain.md) §4. `game:player_left` viendra avec R-19. Il n'y a pas de
+[game-domain.md](game-domain.md) §4. `game:player_left` (partie en attente quittée avec la
+session : `playerId`, `firstPlayerId`, `creatorId`, D-037) complète cette liste. Il n'y a pas de
 `game:round_changed` : les documents ne définissent pas de manche (D-021).
 
 `version` est la version de la partie **après la commande** qui a produit l'événement. Une
@@ -232,7 +233,7 @@ L'utilisateur est identifié par le token de la connexion, **jamais** par un cha
 | Reprise après redémarrage du serveur | Les parties sont relues depuis PostgreSQL et les timers réarmés à partir de `turnDeadlineAt` (à implémenter avec le timer réel) |
 
 Ce que le système fait pendant l'absence du joueur (attendre, passer le tour, jouer à
-sa place) dépend de R-24 ; aujourd'hui le timer de 10 s s'applique et, à l'échéance, le
+sa place) dépend de R-24 ; aujourd'hui le timer de 20 s (D-064) s'applique et, à l'échéance, le
 serveur joue à sa place (D-036).
 
 ## 6. Timers (D-015, D-034)
@@ -241,7 +242,7 @@ Deux timers distincts, tous deux **SERVER-AUTHORITATIVE** et **persistés** :
 
 | | Timer A — décision Poursuivre/Quitter | Timer B — tour de jeu |
 |---|---|---|
-| Durée | 10 s après la fin d'une partie | 10 s pour le joueur attendu |
+| Durée | 20 s après la fin d'une partie (D-064) | 20 s pour le joueur attendu (D-064) |
 | Échéance persistée | `session_decision_rounds.deadline_at` | `games.turn_deadline_at` (+ `turn_started_at`, `active_player_id`) |
 | Clé du timer | `sessionId` (`SessionTimerRegistry`) | `gameId` (`GameTimerRegistry`) |
 | Commande déclenchée | `SessionService.syncSession` | `GameService.handleTurnTimeout` |
@@ -276,16 +277,25 @@ Deux timers distincts, tous deux **SERVER-AUTHORITATIVE** et **persistés** :
 | `GET` | `/api/games/me/active` | authentifié | Parties actives du joueur (reconnexion) |
 | `GET` | `/api/games/:gameId` | membre | Vue joueur de la partie (état + version) |
 | `POST` | `/api/games/:gameId/join` | authentifié | Rejoindre |
-| `POST` | `/api/games/:gameId/leave` | membre | Quitter : **non implémenté** (R-19, fuite R-05) |
+| `POST` | `/api/games/:gameId/leave` | membre | Non implémenté : on quitte une partie en attente en quittant sa SESSION (R-19, D-037) ; en cours, seule la fuite (R-05) |
 | `POST` | `/api/games/:gameId/actions` | membre | Commande de jeu : `PLAY_CARD`, `DECLARE_WIN`, `FLEE` |
 
 **Sessions (D-033, D-034)** : `POST /api/sessions` (`{ maxPlayers: 2|3|4 }`, immuable ;
 Idempotency-Key ; session + 1re partie), `GET /api/sessions/me/active` (au plus une session),
+`GET /api/sessions/open` (D-038, D-039 : tables ouvertes — session ouverte, partie en
+attente, siège libre, la sienne marquée `mine` ; `{ tables: [{ sessionId, gameId, name?,
+creatorName, stakeAmount?, hasPassword, mine, maxPlayers, playerCount, createdAt }] }`,
+lecture indicative sans verrou). `POST /api/sessions` accepte aussi `name` (1 à 40) et
+`password` (facultatif, 4 caractères minimum, haché bcrypt) ; `POST …/join` accepte
+`{ password }` (403 `TABLE_PASSWORD_INVALID`). Les vues exposent `name` et `hasPassword`,
+jamais le hash,
 `GET /api/sessions/:sessionId` (membres actuels ou anciens ; vue : `maxPlayers`, `seats`
 avec occupant ou `null`, `currentGame`, `decision`, `serverNow`),
 `POST /api/sessions/:sessionId/join` (premier siège vacant), `POST /api/sessions/:sessionId/leave`
-(siège vacant ; le dernier départ ferme la session),
-`POST /api/sessions/:sessionId/decision` (`{ choice: 'continue' | 'leave' }`, ronde de 10 s),
+(R-19, D-037 : siège vacant ; partie en attente quittée aussi, J1 remplacé selon l'ordre
+d'arrivée ; refusé pendant sa partie en cours ; dernier départ : session supprimée,
+`{ session: null }`, ou fermée si elle a un historique),
+`POST /api/sessions/:sessionId/decision` (`{ choice: 'continue' | 'leave' }`, ronde de 20 s, D-064),
 `GET /api/sessions/:sessionId/games` (historique, sans carte),
 `POST /api/sessions/:sessionId/games` (Idempotency-Key ; partie suivante à la capacité de la
 session, J1 calculé par le serveur). `POST /api/games` ouvre une session dont la partie est la

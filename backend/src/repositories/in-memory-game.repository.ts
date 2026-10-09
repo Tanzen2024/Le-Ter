@@ -8,6 +8,7 @@ import { newGameId, type GameId, type PlayerId } from '../domain/game/game-id';
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type StartDeadline,
   type TurnDeadline,
 } from './game.repository';
 
@@ -74,6 +75,13 @@ export class InMemoryGameRepository implements GameRepository {
         deadlineAt: g.turnDeadlineAt as Date,
         timedOut: Boolean(g.turnTimedOutAt),
       }))
+      .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
+  }
+
+  async findStartDeadlines(): Promise<StartDeadline[]> {
+    return [...this.games.values()]
+      .filter((g) => g.status === 'waiting' && g.startDeadlineAt)
+      .map((g) => ({ gameId: g.id, deadlineAt: g.startDeadlineAt as Date }))
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
   }
 }

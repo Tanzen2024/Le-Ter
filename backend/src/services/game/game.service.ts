@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
 import type { RandomSource } from '../../domain/cards/random-source';
-import { ALLOWED_MAX_PLAYERS, RECENT_COMMANDS_LIMIT, type Game } from '../../domain/game/game';
+import {
+  ALLOWED_MAX_PLAYERS,
+  MIN_PLAYERS_TO_START,
+  RECENT_COMMANDS_LIMIT,
+  syncStartDeadline,
+  type Game,
+} from '../../domain/game/game';
 import { assertPlayerInGame } from '../../domain/game/game-access';
 import { InvalidCardError } from '../../domain/cards/card';
 import {
@@ -40,6 +46,7 @@ import { cryptoRandomSource } from '../../utils/crypto-random-source';
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type StartDeadline,
   type TurnDeadline,
 } from '../../repositories/game.repository';
 import { BackgroundTasks } from '../../utils/background-tasks';
@@ -50,7 +57,7 @@ import type {
   GameEventPublisher,
   GameEventSubscriber,
 } from '../../websocket/game-event-publisher';
-import type { GameTimerRegistry } from './game-timer-registry';
+import { GameTimerRegistry } from './game-timer-registry';
 
 /**
  * Décide si un joueur peut rejoindre une partie au regard de ses AUTRES parties
@@ -73,6 +80,11 @@ export interface CreateGameOptions {
   firstPlayerId?: PlayerId;
   /** Place du créateur à la table de la session. */
   creatorTablePosition?: number;
+  /**
+   * Délai de démarrage automatique (D-065), tables de tournoi seulement : dès 2 joueurs, le
+   * créateur peut démarrer pendant ce délai, puis le serveur démarre la partie.
+   */
+  autoStartDelayMs?: number;
 }
 
 /**
@@ -116,6 +128,12 @@ export interface GameServiceDependencies {
   publisher: GameEventPublisher;
   subscriber: GameEventSubscriber;
   timers: GameTimerRegistry;
+  /**
+   * Timers de démarrage automatique (D-065), un par partie en attente. Copies volatiles de
+   * `games.start_deadline_at`, reconstruites par DeadlineSupervisor. Par défaut : un registre
+   * propre au service.
+   */
+  startTimers?: GameTimerRegistry;
   participationPolicy: ParticipationPolicy;
   logger: Logger;
   clock?: () => Date;
@@ -125,7 +143,7 @@ export interface GameServiceDependencies {
   random?: RandomSource;
   /** Obligatoire pour les parties rattachées à une session (D-033). */
   sessionSeats?: SessionSeatLookup;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (20 s, D-034, D-064). */
   turnDurationMs?: number;
   /**
    * Choix de la carte jouée automatiquement après TURN_TIMEOUT (tours 1 à 4). Par défaut :
@@ -152,9 +170,11 @@ export class GameService {
   private readonly clock: () => Date;
   private readonly finishedListeners: GameFinishedListener[] = [];
   private readonly background = new BackgroundTasks();
+  private readonly startTimers: GameTimerRegistry;
 
   constructor(private readonly deps: GameServiceDependencies) {
     this.clock = deps.clock ?? (() => new Date());
+    this.startTimers = deps.startTimers ?? new GameTimerRegistry();
   }
 
   /**
@@ -269,12 +289,19 @@ export class GameService {
    * `createGame` et par SessionService, qui l'enregistre avec sa session en une transaction.
    */
   async prepareNewGame(creatorId: PlayerId, options: CreateGameOptions): Promise<Game> {
-    const { maxPlayers, stakeAmount, creationKey, sessionId, creatorTablePosition } = options;
+    const { maxPlayers, stakeAmount, creationKey, sessionId, creatorTablePosition, autoStartDelayMs } =
+      options;
     if (!(ALLOWED_MAX_PLAYERS as readonly number[]).includes(maxPlayers)) {
       throw new InvalidPlayerCountError(maxPlayers);
     }
     if (stakeAmount !== undefined) {
       assertValidStake(stakeAmount);
+    }
+    if (
+      autoStartDelayMs !== undefined &&
+      (!Number.isSafeInteger(autoStartDelayMs) || autoStartDelayMs <= 0)
+    ) {
+      throw new RangeError(`Délai de démarrage invalide : ${autoStartDelayMs}`);
     }
     const now = this.clock();
     const game: Game = {
@@ -299,6 +326,7 @@ export class GameService {
       updatedAt: now,
       recentCommandIds: [],
       ...(creationKey && { creationKey }),
+      ...(autoStartDelayMs !== undefined && { autoStartDelayMs }),
     };
     if (!(await this.deps.participationPolicy.canJoin(creatorId, structuredClone(game)))) {
       throw new ParticipationRefusedError(game.id, creatorId);
@@ -361,13 +389,28 @@ export class GameService {
         }
         tablePosition = seat;
       }
+      // Rang dans la partie : le plus petit libre (un joueur parti d'une partie en attente
+      // libère le sien, R-19) ; jamais un rang déjà pris.
+      const seat = firstFreeGameSeat(game);
       game.players.push({
         playerId,
-        seat: game.players.length,
+        seat,
         ...(tablePosition !== undefined && { tablePosition }),
         joinedAt: now,
       });
-      return [{ type: 'game:player_joined', payload: { playerId, seat: game.players.length - 1 } }];
+      // Table de tournoi : l'arrivée du 2e joueur fait partir l'échéance de démarrage
+      // (D-065) ; les arrivées suivantes ne la repoussent pas.
+      syncStartDeadline(game, now);
+      return [
+        {
+          type: 'game:player_joined',
+          payload: {
+            playerId,
+            seat,
+            ...(game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt.toISOString() }),
+          },
+        },
+      ];
     });
   }
 
@@ -524,6 +567,93 @@ export class GameService {
     return game;
   }
 
+  // --- Démarrage automatique des tables de tournoi (D-065) ------------------------------
+
+  /**
+   * START_DEADLINE : commande système déclenchée par le timer de démarrage (ou par la reprise
+   * après redémarrage). Elle passe par la file de la partie et relit l'état : elle ne démarre
+   * la partie que si elle est TOUJOURS en attente, avec au moins 2 joueurs, et que son
+   * échéance PERSISTÉE est atteinte. Démarrage manuel concurrent, double timer, deux
+   * instances : une seule transition waiting → in_progress réussit (file par partie, version
+   * optimiste en base) ; les autres deviennent sans effet.
+   */
+  async handleStartDeadline(gameId: GameId): Promise<Game> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.applyStartDeadline(gameId);
+      } catch (err) {
+        if (!(err instanceof GameVersionConflictError) || attempt >= 3) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private async applyStartDeadline(gameId: GameId): Promise<Game> {
+    let started = false;
+    const game = await this.mutate(gameId, 'AUTO_START_GAME', undefined, {}, (g, { now }) => {
+      if (g.status !== 'waiting' || !g.startDeadlineAt) {
+        return null; // déjà démarrée (manuellement ou ailleurs), ou plus d'échéance
+      }
+      if (now.getTime() < g.startDeadlineAt.getTime()) {
+        return null; // déclenchement anticipé : le timer est réarmé ci-dessous
+      }
+      if (g.players.length < MIN_PLAYERS_TO_START) {
+        return null; // impossible : l'échéance est retirée sous 2 joueurs
+      }
+      started = true;
+      return engine.startGame(g, {
+        rules: this.rules,
+        random: this.random,
+        now,
+        turnDurationMs: this.turnDurationMs,
+      });
+    });
+    this.syncStartTimer(game);
+    if (started) {
+      this.deps.logger.info('GAME_AUTO_STARTED', {
+        gameId,
+        sessionId: game.sessionId,
+        players: game.players.length,
+        version: game.version,
+      });
+    }
+    return game;
+  }
+
+  /** Échéances de démarrage persistées (parties en attente), pour reconstruire les timers. */
+  findStartDeadlines(): Promise<StartDeadline[]> {
+    return this.deps.repository.findStartDeadlines();
+  }
+
+  /**
+   * Arme (ou annule) le timer de démarrage de la partie d'après son échéance PERSISTÉE.
+   * Échéance déjà dépassée : déclenchement immédiat.
+   */
+  syncStartTimer(game: Pick<Game, 'id' | 'status' | 'startDeadlineAt'>): void {
+    if (game.status !== 'waiting' || !game.startDeadlineAt) {
+      this.startTimers.cancel(game.id);
+      return;
+    }
+    const delay = game.startDeadlineAt.getTime() - this.clock().getTime();
+    this.startTimers.schedule(game.id, delay, () => {
+      this.background.run(() =>
+        this.handleStartDeadline(game.id).catch((err: unknown) => {
+          this.deps.logger.error('auto start failed', {
+            gameId: game.id,
+            action: 'AUTO_START_GAME',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }),
+      );
+    });
+  }
+
+  /** Arrêt du serveur : timers de démarrage annulés (les échéances restent en base). */
+  cancelStartTimers(): void {
+    this.startTimers.cancelAll();
+  }
+
   /** Reprise d'un coup automatique en attente (tour expiré avant un redémarrage). */
   async retryAutomaticPlay(gameId: GameId): Promise<Game> {
     const game = await this.load(gameId);
@@ -663,6 +793,59 @@ export class GameService {
   }
 
   /**
+   * Construit, sans rien enregistrer, la partie EN ATTENTE après le départ d'un joueur de
+   * sa session (R-19, D-037) : le joueur en sort ; J1 et créateur sont ceux décidés par la
+   * session (Q2) ; les places de table des autres joueurs ne changent pas (Q3). Pure et
+   * synchrone : SessionService l'appelle sous le verrou de la session et de la partie, et
+   * l'enregistre dans la même transaction (version + 1, comme toute commande).
+   */
+  buildWaitingGameDeparture(
+    current: Game,
+    departure: { playerId: PlayerId; firstPlayerId: PlayerId; creatorId: PlayerId },
+    now: Date,
+  ): { game: Game; events: GameEventDraft[] } {
+    if (current.status !== 'waiting') {
+      throw new GameNotJoinableError(current.id);
+    }
+    const game = structuredClone(current);
+    game.players = game.players.filter((p) => p.playerId !== departure.playerId);
+    game.firstPlayerId = departure.firstPlayerId;
+    game.creatorId = departure.creatorId;
+    game.version = current.version + 1;
+    game.updatedAt = now;
+    // Table de tournoi : sous 2 joueurs, plus de compte à rebours ; sinon l'échéance déjà
+    // posée est conservée et le droit de démarrer passe au nouveau créateur (D-065).
+    syncStartDeadline(game, now);
+    return {
+      game,
+      events: [
+        {
+          type: 'game:player_left',
+          payload: {
+            playerId: departure.playerId,
+            firstPlayerId: game.firstPlayerId,
+            creatorId: game.creatorId,
+          },
+        },
+      ],
+    };
+  }
+
+  /** Après l'enregistrement d'un départ (R-19) : diffusion dans la salle de la partie. */
+  announceWaitingGameDeparture(game: Game, events: GameEventDraft[], actorId: PlayerId): void {
+    this.publish(game, events, actorId);
+    this.syncStartTimer(game);
+    this.deps.logger.info('WAITING_GAME_PLAYER_LEFT', {
+      gameId: game.id,
+      sessionId: game.sessionId,
+      version: game.version,
+      firstPlayerId: game.firstPlayerId,
+      creatorId: game.creatorId,
+      players: game.players.length,
+    });
+  }
+
+  /**
    * Construit, sans rien enregistrer, la partie qui REJOUE une partie annulée pour égalité
    * de priorité : même session, même J1, mêmes joueurs présents à leurs sièges, nouveau
    * mélange des 31 cartes, nouvelle distribution et nouvelle analyse des mains. Pure et
@@ -696,6 +879,9 @@ export class GameService {
       updatedAt: now,
       recentCommandIds: [],
       replayOfGameId: previous.id,
+      ...(previous.autoStartDelayMs !== undefined && {
+        autoStartDelayMs: previous.autoStartDelayMs,
+      }),
     };
     const events = engine.startGame(game, {
       rules: this.rules,
@@ -721,6 +907,62 @@ export class GameService {
   }
 
   /**
+   * Construit, sans rien enregistrer, la PARTIE SUIVANTE d'une session après « Poursuivre »
+   * (D-042) : les joueurs restés à la table, à leurs sièges fixes (`tablePosition`), J1
+   * désigné par les règles de session (D-033, D-034), créateur = J1, même mise. Dès 2
+   * joueurs (R-23), la partie est démarrée dans la même transition : distribution 3 + 2,
+   * sens antihoraire depuis J1 (D-032). Avec un seul joueur, elle attend les arrivées.
+   */
+  buildNextGame(
+    previous: Game,
+    seats: readonly { playerId: PlayerId; tablePosition: number }[],
+    firstPlayerId: PlayerId,
+    now: Date,
+  ): { game: Game; events: GameEventDraft[] } {
+    const game: Game = {
+      id: this.deps.repository.nextId(),
+      ...(previous.sessionId && { sessionId: previous.sessionId }),
+      firstPlayerId,
+      version: 1,
+      status: 'waiting',
+      creatorId: firstPlayerId,
+      maxPlayers: previous.maxPlayers,
+      ...(previous.stakeAmount !== undefined && { stakeAmount: previous.stakeAmount }),
+      players: seats.map((s, seat) => ({
+        playerId: s.playerId,
+        seat,
+        tablePosition: s.tablePosition,
+        joinedAt: now,
+      })),
+      createdAt: now,
+      updatedAt: now,
+      recentCommandIds: [],
+      ...(previous.autoStartDelayMs !== undefined && {
+        autoStartDelayMs: previous.autoStartDelayMs,
+      }),
+    };
+    const created: GameEventDraft = {
+      type: 'game:created',
+      payload: {
+        maxPlayers: game.maxPlayers,
+        ...(game.sessionId && { sessionId: game.sessionId }),
+        firstPlayerId,
+        continuedFromGameId: previous.id,
+      },
+    };
+    if (game.players.length < MIN_PLAYERS_TO_START) {
+      return { game, events: [created] };
+    }
+    const started = engine.startGame(game, {
+      rules: this.rules,
+      random: this.random,
+      now,
+      turnDurationMs: this.turnDurationMs,
+    });
+    return { game, events: [created, ...started] };
+  }
+
+  /**
    * Après l'enregistrement d'une partie rejouée : diffusion de ses événements, timer du
    * premier tour, et notification si la nouvelle donne termine déjà la partie (nouvelle
    * égalité → nouvelle reprise ; victoire automatique → Poursuivre/Quitter).
@@ -728,6 +970,7 @@ export class GameService {
   announceInserted(game: Game, events: GameEventDraft[]): void {
     this.publish(game, events, undefined);
     this.syncTurnTimer(game);
+    this.syncStartTimer(game);
     this.deps.logger.info('GAME_REPLAYED', {
       gameId: game.id,
       sessionId: game.sessionId,
@@ -837,8 +1080,10 @@ export class GameService {
 
     await this.deps.repository.save(next, current.version);
     // À partir d'ici la commande est enregistrée : plus rien ne doit la faire échouer.
-    // Timer de tour : réarmé sur la nouvelle échéance, annulé si la partie est finie.
+    // Timer de tour : réarmé sur la nouvelle échéance, annulé si la partie est finie. Timer
+    // de démarrage (D-065) : armé à l'arrivée du 2e joueur, annulé au démarrage.
     this.syncTurnTimer(next);
+    this.syncStartTimer(next);
     this.publish(next, drafts, actorId);
     log.info('game command applied', {
       sessionId: next.sessionId,
@@ -975,4 +1220,14 @@ function logRejection(log: Logger, meta: CommandMeta, err: unknown): void {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/** Plus petit rang libre d'une partie (0 … maxPlayers-1). */
+function firstFreeGameSeat(game: Game): number {
+  const taken = new Set(game.players.map((p) => p.seat));
+  let seat = 0;
+  while (taken.has(seat)) {
+    seat += 1;
+  }
+  return seat;
 }

@@ -22,6 +22,13 @@ let ctx: AuthTestContext;
 
 beforeAll(async () => {
   database = await createMigratedDatabase();
+  // Démarrage à froid (premier appel HTTP, premier bcrypt, premières requêtes PGlite : ~330 ms
+  // seul, plusieurs secondes sous la charge de la suite complète) payé ICI, avec le délai de
+  // PGLITE_TIMEOUT_MS, et non par le premier test et son délai de 5 s. Le délai des tests
+  // n'est pas augmenté ; la base est vidée ensuite (aucun état partagé). Voir
+  // docs/data-architecture.md (« Mémoire des workers Jest »).
+  await registerAndLogin(createAuthTestApp(database.sql).app);
+  await database.reset();
 }, PGLITE_TIMEOUT_MS);
 afterAll(() => database.close());
 beforeEach(() => {

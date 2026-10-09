@@ -1,15 +1,15 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Button } from '../../components/ui/Button';
-import { colors, radius, spacing } from '../../constants/theme';
+import { tablePalette as palette } from '../../components/table/TableDecor';
 import { useServerCountdown } from '../../hooks/use-server-countdown';
 import type { SessionView } from '../../types/session';
+import { PanelButton } from '../lobby/LobbyUi';
 
 /**
- * Ronde Poursuivre / Quitter (10 s, D-034), affichée sur l'écran de la session ET sur
- * l'écran de fin de partie : le joueur peut répondre sans changer d'écran. Le compte à
- * rebours est calculé à partir de l'échéance du serveur ; à zéro, l'écran annonce le
- * départ automatique et attend que le serveur l'applique (il ne quitte rien lui-même).
+ * Ronde Poursuivre / Quitter (20 s, D-034, D-064), posée sur la table à la fin de la partie : le
+ * joueur répond sans changer d'écran. Le compte à rebours est calculé à partir de l'échéance
+ * du serveur ; à zéro, l'écran annonce le départ automatique et attend que le serveur
+ * l'applique (il ne quitte rien lui-même). La session qui porte la ronde n'est jamais nommée.
  */
 export function DecisionPanel({
   session,
@@ -33,37 +33,36 @@ export function DecisionPanel({
   const waitingForMe = Boolean(viewerId && round.pendingPlayerIds.includes(viewerId));
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Partie terminée : poursuivre ?</Text>
+    <View style={styles.container}>
+      <Text style={styles.title}>Poursuivre avec cette table ?</Text>
       {waitingForMe ? (
         secondsLeft ? (
           <>
             <Text style={[styles.countdown, secondsLeft <= 3 && styles.countdownUrgent]}>
               {secondsLeft} s
             </Text>
-            <Text style={styles.cardText}>
-              Sans réponse à la fin du compte à rebours, vous quitterez automatiquement la
-              session.
+            <Text style={styles.text}>
+              Sans réponse à la fin du compte à rebours, vous quitterez automatiquement la table.
             </Text>
             <View style={styles.row}>
-              <View style={styles.flex}>
-                <Button title="Poursuivre" loading={pending} onPress={() => onDecide('continue')} />
-              </View>
-              <View style={styles.flex}>
-                <Button
-                  title="Quitter"
-                  variant="secondary"
-                  disabled={pending}
-                  onPress={() => onDecide('leave')}
-                />
-              </View>
+              <PanelButton
+                title="Poursuivre"
+                loading={pending}
+                onPress={() => onDecide('continue')}
+              />
+              <PanelButton
+                title="Quitter"
+                tone="danger"
+                disabled={pending}
+                onPress={() => onDecide('leave')}
+              />
             </View>
           </>
         ) : (
-          <Text style={styles.cardText}>Temps écoulé : départ automatique en cours…</Text>
+          <Text style={styles.text}>Temps écoulé : départ automatique en cours…</Text>
         )
       ) : (
-        <Text style={styles.cardText}>
+        <Text style={styles.text}>
           {mine === 'continue' ? 'Vous poursuivez. ' : ''}
           En attente de {round.pendingPlayerIds.length} joueur
           {round.pendingPlayerIds.length > 1 ? 's' : ''}
@@ -75,16 +74,10 @@ export function DecisionPanel({
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.background,
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  cardText: { fontSize: 14, color: colors.text },
-  countdown: { fontSize: 32, fontWeight: '800', color: colors.text },
-  countdownUrgent: { color: colors.danger },
-  row: { flexDirection: 'row', gap: spacing.sm },
-  flex: { flex: 1 },
+  container: { gap: 4, alignItems: 'center' },
+  title: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', textAlign: 'center' },
+  text: { fontSize: 13, color: 'rgba(255, 255, 255, 0.8)', textAlign: 'center' },
+  countdown: { fontSize: 24, fontWeight: '800', color: palette.gold },
+  countdownUrgent: { color: palette.error },
+  row: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
 });

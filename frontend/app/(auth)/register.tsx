@@ -1,11 +1,19 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { AccessibilityInfo, Animated, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../src/components/ui/Button';
 import { TextField } from '../../src/components/ui/TextField';
 import { colors, spacing } from '../../src/constants/theme';
-import { AuthScreen, FieldColumn, FieldRow, FormBanner } from '../../src/features/auth/AuthScreen';
+import {
+  AuthFooter,
+  authPalette,
+  AuthScreen,
+  FieldColumn,
+  FieldRow,
+  FormBanner,
+  useDenseAuthLayout,
+} from '../../src/features/auth/AuthScreen';
 import { useRegister } from '../../src/features/auth/hooks';
 import {
   normalizePhone,
@@ -17,6 +25,8 @@ import type { RegisterPayload } from '../../src/types/auth';
 
 type Field = keyof RegisterPayload;
 const IDENTITY_FIELDS: readonly Field[] = ['firstName', 'lastName', 'username'];
+
+const STEPS = ['Identité', 'Accès et téléphone'] as const;
 
 const EMPTY: RegisterPayload = {
   firstName: '',
@@ -34,8 +44,12 @@ export default function RegisterScreen() {
   const [values, setValues] = useState<RegisterPayload>(EMPTY);
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const register = useRegister();
+  const dense = useDenseAuthLayout();
+  const appear = useStepTransition(step);
 
   const field = (name: Field) => ({
+    dense,
+    appearance: 'soft' as const,
     value: values[name],
     error: errors[name],
     onChangeText: (text: string) => {
@@ -55,7 +69,11 @@ export default function RegisterScreen() {
     setErrors(found);
     if (Object.keys(found).length > 0) return;
     register.mutate(
-      { ...values, phone: normalizePhone(values.phone), email: values.email.trim() },
+      {
+        ...values,
+        phone: normalizePhone(values.phone),
+        email: values.email.trim(),
+      },
       {
         onError: (err) => {
           if (err instanceof ApiError && Object.keys(err.fields).length > 0) {
@@ -76,11 +94,27 @@ export default function RegisterScreen() {
   return (
     <AuthScreen
       title="Créer un compte"
+      formTitle="Inscription"
       subtitle={step === 1 ? 'Comment vous appelle-t-on ?' : 'Vos accès et votre téléphone.'}
+      steps={STEPS}
+      currentStep={step}
     >
-      <Text style={styles.step}>Étape {step} sur 2</Text>
-      <View style={styles.progress}>
-        <View style={[styles.progressBar, { width: step === 1 ? '50%' : '100%' }]} />
+      <View
+        style={styles.stepHeader}
+        accessible
+        accessibilityLabel={`Étape ${step} sur 2 : ${STEPS[step - 1]}`}
+      >
+        <Text style={styles.step}>
+          Étape {step} sur 2 · <Text style={styles.stepName}>{STEPS[step - 1]}</Text>
+        </Text>
+        <View style={styles.progress}>
+          {STEPS.map((label, index) => (
+            <View
+              key={label}
+              style={[styles.progressSegment, index < step && styles.progressSegmentOn]}
+            />
+          ))}
+        </View>
       </View>
 
       {register.isSuccess ? (
@@ -88,126 +122,165 @@ export default function RegisterScreen() {
       ) : null}
       {failure ? <FormBanner tone="error" message={failure} /> : null}
 
-      {step === 1 ? (
-        <>
-          <FieldRow>
-            <FieldColumn>
-              <TextField
-                label="Prénom"
-                autoComplete="given-name"
-                textContentType="givenName"
-                {...field('firstName')}
-              />
-            </FieldColumn>
-            <FieldColumn>
-              <TextField
-                label="Nom"
-                autoComplete="family-name"
-                textContentType="familyName"
-                {...field('lastName')}
-              />
-            </FieldColumn>
-          </FieldRow>
-          <TextField
-            label="Pseudo"
-            hint="Votre nom visible en jeu (3 à 20 lettres, chiffres ou « _ »)."
-            autoCapitalize="none"
-            autoComplete="username"
-            {...field('username')}
-          />
-          <Button title="Continuer →" onPress={next} />
-        </>
-      ) : (
-        <>
-          <FieldRow>
-            <FieldColumn>
-              <TextField
-                label="Email"
-                placeholder="vous@exemple.com"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoComplete="email"
-                textContentType="emailAddress"
-                {...field('email')}
-              />
-            </FieldColumn>
-            <FieldColumn>
-              <TextField
-                label="Téléphone"
-                placeholder="+ indicatif pays et numéro"
-                hint="Format international, ex. +XXX XX XX XX XX."
-                keyboardType="phone-pad"
-                autoComplete="tel"
-                textContentType="telephoneNumber"
-                {...field('phone')}
-              />
-            </FieldColumn>
-          </FieldRow>
-          <FieldRow>
-            <FieldColumn>
-              <TextField
-                label="Mot de passe"
-                hint="8 caractères minimum, avec au moins une lettre et un chiffre."
-                secret
-                autoCapitalize="none"
-                autoComplete="new-password"
-                textContentType="newPassword"
-                {...field('password')}
-              />
-            </FieldColumn>
-            <FieldColumn>
-              <TextField
-                label="Confirmer le mot de passe"
-                secret
-                autoCapitalize="none"
-                autoComplete="new-password"
-                textContentType="newPassword"
-                {...field('confirmPassword')}
-              />
-            </FieldColumn>
-          </FieldRow>
-          <Button title="Créer mon compte" onPress={submit} loading={register.isPending} />
-          <View style={styles.back}>
-            <Button
-              title="← Retour"
-              variant="link"
-              disabled={register.isPending}
-              onPress={() => setStep(1)}
+      <Animated.View style={appear}>
+        {step === 1 ? (
+          <>
+            <FieldRow>
+              <FieldColumn>
+                <TextField
+                  label="Prénom"
+                  autoComplete="given-name"
+                  textContentType="givenName"
+                  {...field('firstName')}
+                />
+              </FieldColumn>
+              <FieldColumn>
+                <TextField
+                  label="Nom"
+                  autoComplete="family-name"
+                  textContentType="familyName"
+                  {...field('lastName')}
+                />
+              </FieldColumn>
+            </FieldRow>
+            <TextField
+              label="Pseudo"
+              hint="Votre nom visible en jeu (3 à 20 lettres, chiffres ou « _ »)."
+              autoCapitalize="none"
+              autoComplete="username"
+              {...field('username')}
             />
-          </View>
-        </>
-      )}
+            <Button title="Continuer →" onPress={next} />
+          </>
+        ) : (
+          <>
+            <FieldRow>
+              <FieldColumn>
+                <TextField
+                  label="Email"
+                  placeholder="vous@exemple.com"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                  {...field('email')}
+                />
+              </FieldColumn>
+              <FieldColumn>
+                <TextField
+                  label="Téléphone"
+                  placeholder="+ indicatif pays et numéro"
+                  hint="Format international, ex. +XXX XX XX XX XX."
+                  keyboardType="phone-pad"
+                  autoComplete="tel"
+                  textContentType="telephoneNumber"
+                  {...field('phone')}
+                />
+              </FieldColumn>
+            </FieldRow>
+            <FieldRow>
+              <FieldColumn>
+                <TextField
+                  label="Mot de passe"
+                  hint="8 caractères minimum, avec au moins une lettre et un chiffre."
+                  secret
+                  autoCapitalize="none"
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  {...field('password')}
+                />
+              </FieldColumn>
+              <FieldColumn>
+                <TextField
+                  label="Confirmer le mot de passe"
+                  secret
+                  autoCapitalize="none"
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  {...field('confirmPassword')}
+                />
+              </FieldColumn>
+            </FieldRow>
+            <Button title="Créer mon compte" onPress={submit} loading={register.isPending} />
+            <View style={styles.back}>
+              <Button
+                title="← Retour"
+                variant="link"
+                disabled={register.isPending}
+                onPress={() => setStep(1)}
+              />
+            </View>
+          </>
+        )}
+      </Animated.View>
 
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>Déjà un compte ?</Text>
-        <Button
-          title="Se connecter"
-          variant="link"
-          disabled={register.isPending}
-          onPress={() => (router.canGoBack() ? router.back() : router.replace('/login'))}
-        />
-      </View>
+      {/* Retour à l'écran de connexion (qui précède dans la pile (auth)). */}
+      <AuthFooter
+        prompt="Déjà un compte ?"
+        linkTitle="Se connecter"
+        disabled={register.isPending}
+        onPress={() => (router.canGoBack() ? router.back() : router.replace('/login'))}
+      />
     </AuthScreen>
   );
 }
 
+/**
+ * Changement d'étape : léger fondu avec un glissement de quelques points (180 ms), rien si
+ * l'utilisateur a demandé de réduire les animations.
+ */
+function useStepTransition(step: 1 | 2) {
+  const [value] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    let cancelled = false;
+    let animation: Animated.CompositeAnimation | undefined;
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduce) => {
+        if (cancelled || reduce) return;
+        value.setValue(0);
+        animation = Animated.timing(value, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        });
+        animation.start();
+      });
+    return () => {
+      cancelled = true;
+      animation?.stop();
+      value.setValue(1);
+    };
+  }, [step, value]);
+  return {
+    opacity: value,
+    transform: [
+      {
+        translateX: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [8, 0],
+        }),
+      },
+    ],
+  };
+}
+
 const styles = StyleSheet.create({
-  step: { color: colors.textMuted, fontSize: 13, fontWeight: '600', marginBottom: spacing.sm },
-  progress: {
+  stepHeader: { marginBottom: spacing.md },
+  step: {
+    color: authPalette.muted,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: spacing.sm,
+  },
+  stepName: { color: colors.feltLight },
+  progress: { flexDirection: 'row', gap: 6 },
+  progressSegment: {
+    flex: 1,
     height: 4,
-    backgroundColor: colors.border,
     borderRadius: 2,
-    marginBottom: spacing.lg,
-    overflow: 'hidden',
+    backgroundColor: authPalette.track,
   },
-  progressBar: { height: 4, backgroundColor: colors.gold },
-  back: { alignItems: 'center', marginTop: spacing.sm },
-  footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    marginTop: spacing.md,
-  },
-  footerText: { color: colors.textMuted, fontSize: 15 },
+  progressSegmentOn: { backgroundColor: colors.gold },
+  back: { alignItems: 'center', marginTop: spacing.xs },
 });

@@ -22,8 +22,8 @@ export const MAX_FLEES_PER_GAME = 1; // un seul joueur peut fuir par partie
  */
 export const AUTOMATIC_TRICK_NUMBER = 5;
 
-/** Temps maximal du joueur attendu pour jouer sa carte (D-034). */
-export const TURN_DURATION_MS = 10_000;
+/** Temps maximal du joueur attendu pour jouer sa carte (D-034 ; 20 s depuis D-064). */
+export const TURN_DURATION_MS = 20_000;
 
 /** Deux cartes sont-elles « de même couleur » ? Officiellement : même famille (D-035). */
 export type ColorEquivalence = (a: Card, b: Card) => boolean;

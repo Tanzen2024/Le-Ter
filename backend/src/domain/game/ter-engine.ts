@@ -53,7 +53,7 @@ import type { PlayerId } from './game-id';
 export interface EngineContext {
   rules: TerRuleSet;
   now: Date;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (20 s, D-034, D-064). */
   turnDurationMs?: number;
 }
 
@@ -139,6 +139,8 @@ export function startGame(game: Game, ctx: StartContext): GameEventDraft[] {
   game.play = play;
   game.status = 'in_progress';
   game.startedAt = ctx.now;
+  // Démarrage (manuel ou automatique) : plus d'échéance de démarrage (D-065).
+  game.startDeadlineAt = undefined;
   openTrick(game, play);
 
   // Analyse serveur des mains initiales.
@@ -534,6 +536,9 @@ function completeTrick(game: Game, play: TerPlay, ctx: EngineContext): GameEvent
   ];
 
   if (play.trickNumber >= TRICKS_PER_GAME) {
+    // Le 5e tour est désormais dans `completedTricks` : il ne reste pas AUSSI le tour en
+    // cours (une carte jouée n'a qu'une place dans l'état).
+    play.currentTrick = [];
     // À la fin du 5e tour, le contrôleur gagne automatiquement (décision 35).
     return [...events, ...finish(game, play, controllerId, 'CONTROL_AFTER_LAST_TRICK', ctx.now)];
   }

@@ -638,7 +638,8 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
     course d'idempotence (requête jumelle refusée par R-18).
 - **Interprétations et ambiguïtés signalées** (non inventées, à confirmer) :
   - Quitter la session est **refusé** pendant une partie active de cette session : quitter une
-    partie (R-19) ou fuir (R-05) n'est pas défini.
+    partie (R-19) ou fuir (R-05) n'est pas défini. *(Remplacé par D-037 : départ accepté
+    pendant une partie en attente, refusé pendant sa partie en cours.)*
   - Un joueur qui revient prend une **nouvelle place** en fin d'ordre. *(Remplacé par D-034 :
     premier siège vacant.)*
   - « Parties successives » : une seule partie active par session.
@@ -750,7 +751,8 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
     D-033 ; elle n'est pas créée automatiquement, et ses joueurs la rejoignent (les joueurs
     qui ont choisi Poursuivre en sont les candidats).
   - La partie suivante peut être créée avec un seul joueur restant ; elle ne démarre qu'à 2.
-  - Quitter la session reste refusé pendant **sa** partie active (R-19, R-05).
+  - Quitter la session reste refusé pendant **sa** partie active (R-19, R-05). *(Remplacé par
+    D-037 : refusé seulement pendant sa partie EN COURS ; une partie en attente se quitte.)*
   - Après TURN_TIMEOUT sans stratégie définie, la partie reste **bloquée** sur le tour
     expiré : c'est la conséquence voulue de « ne pas inventer » ; une stratégie devra être
     décidée avant toute mise en production. *(Caduc depuis D-036.)*
@@ -923,3 +925,1136 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
     Ce n'est PAS une hiérarchie des familles du Ter ; à remplacer dès que le métier tranche
     (TODO R-06). L'égalité ne peut survenir qu'entre familles différentes (une famille n'a
     qu'une carte par valeur), donc jamais quand le joueur suit la famille d'ouverture.
+
+## D-037 — R-19 : quitter une session (partie en attente, J1, place libérée, session vide)
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet · **Tranche** :
+  R-19 (quitter avant le démarrage) · **Remplace** : D-033 « quitter la session est refusé
+  pendant une partie active » et D-034 « quitter la session reste refusé pendant sa partie
+  active », pour une partie EN ATTENTE seulement ; « le dernier départ ferme la session »
+  (D-033, D-034) pour une session sans partie terminée.
+- **Règle métier R-19 — Quitter une session** :
+  1. **Partie EN ATTENTE (WAITING)** : un joueur peut quitter directement la session. Il en
+     sort ET sort de la partie en attente ; le nombre de joueurs reflète les présents.
+  2. **Partie EN COURS (IN_PROGRESS)** : un joueur de cette partie ne peut PAS quitter
+     directement la session (409 `PLAYER_IN_ACTIVE_GAME`). Il termine la partie ; **fuir**
+     (tour 1) ne concerne que la partie et ne fait pas quitter la session (D-035). Un présent
+     qui n'est pas joueur de la partie peut partir (inchangé).
+  3. **Partie TERMINÉE (FINISHED)** : la ronde **Poursuivre / Quitter** de 10 s s'applique
+     (D-034, inchangée) ; pendant la ronde, « Quitter la session » vaut le choix « Quitter » ;
+     sans réponse, départ automatique.
+  4. **Q1 — Session sans joueur** : quand plus aucun joueur n'est présent, la session est
+     **supprimée**, avec sa partie en attente. Pas de statut « annulée » pour une partie.
+  5. **Q2 — Départ du créateur / J1** (partie en attente, d'autres joueurs restent) : le
+     **joueur suivant dans l'ordre d'ARRIVÉE dans la session** devient le nouveau J1 (A, B, C,
+     D : A part → B ; B part → C ; C part → D ; D part → Q1). Ni l'identifiant, ni le siège
+     ne décident de cet ordre. `session.creatorId` reste le créateur historique et n'est
+     jamais réécrit.
+  6. **Q3 — Place libérée** : le siège du joueur qui part devient immédiatement libre, n'est
+     pas réservé, et les autres joueurs gardent le leur (ni décalage, ni renumérotation). Un
+     nouveau joueur prend une place libre selon la règle normale (premier siège vacant, D-034).
+- **Interprétations d'implémentation** (à confirmer si besoin) :
+  - **Ordre d'arrivée circulaire** : « le joueur suivant » est cherché après celui qui part
+    dans l'ordre d'arrivée, puis depuis le premier arrivé (identique à l'exemple A → B → C → D).
+    Un joueur qui revient dans la session est le **dernier arrivé**.
+  - **Créateur ≠ J1** (à partir de la 2e partie, le créateur est celui qui a appuyé sur
+    « Créer la partie » et J1 est calculé par D-033/D-034) : si J1 part, le nouveau J1 suit
+    Q2. Si seul le créateur part, J1 ne change PAS (il a été fixé par les règles de J1) ; le
+    droit de démarrer (D-031 : le créateur seul) passe à J1 s'il est dans la partie, sinon au
+    joueur de la partie suivant dans l'ordre d'arrivée.
+  - **Partie en attente sans plus aucun joueur, mais session non vide** (ex. un joueur de la
+    session n'avait pas rejoint la partie) : la partie est supprimée, la session continue et
+    une nouvelle partie se crée selon les règles existantes. J1 de cette « première » partie :
+    le créateur de la session s'il est présent, sinon le présent suivant dans l'ordre
+    d'arrivée (Q2).
+  - **Q1 et historique** : une session qui a au moins une partie TERMINÉE n'est pas supprimée
+    au dernier départ : elle est **fermée** (comportement D-034), car la supprimer effacerait
+    l'historique des parties jouées (gagnants, et plus tard les mises). Sa partie en attente
+    éventuelle est supprimée. Le dernier départ par la ronde Poursuivre / Quitter (choix ou
+    départ automatique) ferme aussi la session, inchangé. **À confirmer** par le métier.
+- **Décisions techniques** :
+  - Migration **0008** : `session_players.arrival` (rang d'arrivée, ≥ 1, unique par
+    session), rempli pour l'existant d'après `joined_at`. Un retour reçoit le rang suivant.
+  - Le départ est **une transaction** (`SessionRepository.leave`) : verrou de la partie active
+    PUIS de la session et de ses joueurs (même ordre que les écritures de partie, pas
+    d'interblocage) ; transition pure `leaveSession` (domaine) ; partie en attente modifiée
+    par `GameService.buildWaitingGameDeparture` (joueur retiré, J1 et créateur remplacés,
+    version + 1, contrôle de version) ou supprimée ; session enregistrée ou supprimée
+    (`DELETE` : joueurs, rondes et décisions en cascade ; une partie restante ferait échouer
+    la suppression, rien n'est perdu en silence). Un démarrage concurrent voit soit la partie
+    sans le joueur, soit le départ est refusé (`PLAYER_IN_ACTIVE_GAME`).
+  - Rang d'un joueur DANS une partie (`game_players.seat`) : le plus petit libre, pour qu'un
+    rang libéré par un départ soit réutilisable. La place de table (`table_position`), elle,
+    est celle de la session et ne change jamais.
+  - API : `POST /api/sessions/:id/leave` renvoie `{ session: null }` quand la session a été
+    supprimée. Événements : `session:deleted` (remplace `session:closed` dans ce cas),
+    `game:player_left` (`playerId`, `firstPlayerId`, `creatorId`) dans la salle de la partie.
+  - Écran de session : « Quitter la session » proposé sauf pendant SA partie en cours (message
+    explicite) et pendant la ronde Poursuivre / Quitter (panneau existant).
+    *(Interface remplacée par D-038 : plus d'écran de session ; le départ se fait par
+    « Quitter la partie » dans l'aire de jeu. Les règles de départ ci-dessus sont inchangées.)*
+
+## D-038 — La session est un concept technique, invisible pour l'utilisateur
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-033, D-034, D-037 · **Remplace** : l'écran frontend `session/[sessionId]` (sièges,
+  identifiant de session à partager, « Quitter la session », « Ouvrir la partie »,
+  historique).
+- **Principe** : « Session est un concept technique interne. L'utilisateur manipule uniquement
+  les parties. » Le backend garde intégralement la session (domaine, `SessionService`,
+  repository, `session_players`, sièges fixes, J1, R-19, ronde Poursuivre/Quitter) ; seul
+  l'affichage disparaît.
+- **Parcours** :
+  - Accueil → Privé → Rejoindre → Partie privée → Créer → **aire de jeu** directement
+    (`/game/:gameId`), « En attente de N-1 joueurs ».
+  - Rejoindre : liste « Rechercher une partie » (tables ouvertes) → arrivée dans la session
+    puis dans sa partie en attente → aire de jeu. « Ma partie » permet de reprendre la sienne.
+  - Sortie : bouton rouge « Quitter la partie » (le retour Android l'ouvre aussi) →
+    confirmation → départ selon R-19 / D-037 (refusé pendant sa partie en cours) → accueil.
+  - Fin de partie : résultat et ronde Poursuivre/Quitter sur la table ; puis « Nouvelle
+    partie » (D-034 : créée par un joueur) ou « Rejoindre la partie suivante », sans écran
+    intermédiaire.
+  - « Une seule partie à la fois » (R-18, une session par joueur) reste imposé par le
+    serveur ; le formulaire ne l'annonce plus comme un blocage préalable : un refus est
+    affiché comme erreur métier avec « Reprendre ma partie ».
+- **Décisions techniques** :
+  - `GET /api/sessions/open` (lecture seule, sans verrou) : tables à rejoindre — session
+    ouverte, partie en attente, siège libre. Rejoindre reste validé sous verrou par les
+    commandes existantes. *(Complété par D-039 : nom, mise, mot de passe, table du joueur
+    marquée `mine`.)*
+  - Le frontend reformule les messages d'erreur du serveur qui nomment la session (à partir
+    du `code`, dans `lib/api-client.ts`) ; les messages et règles du serveur sont inchangés.
+
+## D-039 — Partie privée : nom, mise et mot de passe enregistrés
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet (parcours
+  « Partie de Roly | 20 | 1/4 | 🔒 | → ») · **Complète** : D-038 · **Ne tranche pas** : R-12
+  (noms de joueurs cryptés), R-13 (valeur et mouvements des jetons), R-22 (invitations).
+- **Règles** :
+  - Créer : nom, mise, nombre de joueurs, mot de passe facultatif → le serveur crée la partie
+    et le créateur arrive directement dans l'aire de jeu ; la liste des autres joueurs affiche
+    « nom | mise | n/max | 🔒 ou 🔓 | → ».
+  - Le nom et le mot de passe appartiennent à la table (session, D-033) : fixés à la création,
+    inchangés pour les parties suivantes. La mise appartient à la partie (`games.stake_amount`,
+    existant) ; la partie suivante reprend la mise de la précédente (choix de l'interface).
+  - 🔒 : tout joueur qui n'est pas déjà présent à la table doit fournir le mot de passe
+    (vérifié par le serveur, 403 `TABLE_PASSWORD_INVALID`). Le créateur n'en a pas besoin.
+  - La mise est **indicative** : aucun solde n'est débité ni crédité (R-13 reste ouvert).
+- **Décisions techniques** :
+  - Migration **0009** : `sessions.name` (1 à 40 caractères, NULL pour les tables antérieures,
+    affichées « Partie de <créateur> ») et `sessions.password_hash` (bcrypt, comme les comptes ;
+    jamais le mot de passe en clair, jamais exposé : seulement `hasPassword`).
+  - Validation : nom 1 à 40 caractères visibles (espaces de bord retirés, caractères de
+    contrôle refusés) ; mot de passe vide = aucun, sinon 4 caractères minimum et 72 octets au
+    plus (limite bcrypt) ; mise entière ≥ 0 (règle existante).
+  - Vérification du mot de passe avant le verrou de la session (le hash ne change jamais),
+    puis arrivée normale sous verrou. Le mot de passe n'est jamais journalisé.
+  - `GET /api/sessions/open` inclut la table du joueur, marquée `mine` (reprise depuis la
+    liste) ; les tables des autres restent celles qu'il peut rejoindre.
+
+## D-040 — Compte de jeu (jetons) : socle, achats et retraits Mobile Money
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet (périmètre
+  « interface + socle portefeuille ») · **Ne tranche pas** : R-13 (conversion jetons ↔ FCFA),
+  R-16 (minimums), R-34 (téléphone vérifié avant retrait), T-07 (licence), choix du
+  fournisseur Mobile Money.
+- **Principes** :
+  - Deux comptes distincts : le **compte de jeu** (jetons, stocké par Le Ter) et le **compte
+    Mobile Money personnel** (numéro d'inscription `users.phone`, jamais recopié ni journalisé,
+    affiché masqué).
+  - Le serveur est la seule source de vérité : le solde ne change que par une transaction
+    enregistrée ; il ne devient jamais négatif (verrou `FOR UPDATE` + `CHECK (balance >= 0)`).
+  - Achat : transaction `pending` → demande de paiement au fournisseur → crédit **seulement**
+    à la confirmation (`WalletService.settle`, idempotent).
+  - Retrait : solde vérifié et **débité** sous verrou (`pending`) → demande de transfert →
+    succès confirmé par le fournisseur, ou échec et **remboursement** dans la même transaction.
+  - Idempotence : `Idempotency-Key` obligatoire, unique par joueur ; un renvoi rejoue l'issue
+    enregistrée, une clé réutilisée pour une autre opération est refusée (409).
+  - Aucun fournisseur n'est configuré : `UnconfiguredMobileMoneyGateway` refuse toute demande
+    (503 `MOBILE_MONEY_UNAVAILABLE`), l'opération est enregistrée `failed` et un retrait est
+    remboursé. **Jamais de fausse réussite.**
+- **Décisions techniques** :
+  - Migration **0010** : `wallets` (solde en jetons, `bigint`) et `wallet_transactions`
+    (deposit/withdrawal, pending/succeeded/failed, `idempotency_key` unique par joueur).
+  - API : `GET /api/wallet` (solde, numéro masqué, `phoneVerified`, `mobileMoneyAvailable`),
+    `POST /api/wallet/deposits` et `POST /api/wallet/withdrawals` (`{ tokens }` entier > 0,
+    Idempotency-Key ; 202 en attente du fournisseur ; 409 `INSUFFICIENT_BALANCE` « Solde
+    insuffisant. »). Limite : 10 opérations par minute et par joueur.
+  - Port `MobileMoneyGateway` (`requestCollection`, `requestDisbursement`) : l'implémentation
+    réelle portera la conversion R-13 et la réception sécurisée des confirmations du
+    fournisseur (rappel HTTP signé), qui appellera `WalletService.settle`.
+    *(Fournisseur d'achat : CinetPay v1, voir D-050.)*
+  - Frontend : HUD et aire de jeu affichent le solde réel ; « Ajouter des jetons » (jeton +)
+    ouvre Boutique → Acheter / Retirer ; X et retour Android ramènent à la Boutique.
+
+## D-041 — 5ᵉ tour automatique : présentation carte par carte, ronde décalée
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-035 (5ᵉ tour automatique), D-034 (ronde Poursuivre/Quitter de 10 s) · **Ne change pas** : la
+  règle du 5ᵉ tour (une carte par joueur actif, jouée par le serveur dans l'ordre du tour,
+  fuyards ignorés).
+- **Présentation** : le serveur joue les dernières cartes en une commande ; les écrans les
+  présentent UNE PAR UNE, dans l'ordre reçu : carte au centre (~2,5 s), rangée dans la zone
+  publique de son joueur, puis 2 s de pause avant la carte suivante. Jamais deux cartes du 5ᵉ
+  tour en mouvement ; aucune avant la fin des cartes du 4ᵉ tour. Une carte pas encore
+  présentée reste de dos (ou dans la main de son propriétaire) ; le gagnant et la ronde
+  n'apparaissent qu'après la dernière carte rangée. Aucun compte à rebours au 5ᵉ tour.
+  Ordonnancement dans `frontend/src/features/games/table/presentation-plan.ts` (pur, dérivé
+  de l'état du serveur : rien n'est rejoué après une reconnexion).
+- **Ronde décalée** : échéance = fin de partie + `lastTrickPresentationMs(cartes du 5ᵉ tour)`
+  + 10 s, avec `lastTrickPresentationMs(n) = 6,2 s + n × 3,2 s + (n − 1) × 2 s` (marge : dernière
+  carte du 4ᵉ tour et relecture de l'état par le client). Chaque joueur garde ses 10 s pleines
+  après la présentation. Les décisions envoyées plus tôt restent acceptées.
+- **Technique** : `LastGameInfo.lastTrickCards` (lu dans `games.state`), paramètre
+  `presentationMs` de `syncDecisionRound`, option `lastTrickPresentationMs` de
+  `SessionService` (0 dans les fixtures de test qui ne portent pas sur ce délai).
+
+## D-042 — « Poursuivre » enchaîne directement la partie suivante
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet · **Remplace** :
+  D-034 « la partie suivante est créée par un joueur (bouton), après la ronde » · **Ne
+  change pas** : la ronde Poursuivre/Quitter (10 s, départ automatique sans réponse), les
+  sièges fixes, la désignation de J1 (D-033), le démarrage dès 2 joueurs (R-23), la
+  distribution 3 + 2 antihoraire (D-032), la reprise immédiate après égalité (D-035).
+- **Règle** : dès que la ronde est close (tous ont répondu, ou échéance), le serveur crée la
+  partie suivante de la MÊME session avec les joueurs restés (ceux qui ont choisi Poursuivre),
+  à leurs sièges, J1 selon les règles existantes, créateur = J1, même mise, et la distribue
+  aussitôt s'ils sont au moins 2 ; seul, le joueur attend les arrivées sur la table. Aucun
+  écran, bouton ou action supplémentaire ; l'écran passe directement à la nouvelle partie,
+  dont la distribution se joue sur la table.
+- **Technique** : `SessionService.ensureContinuation` (déclenchée par
+  `session:decision_closed` et par `syncSession` à la reprise), sous le verrou de la session,
+  idempotente ; une seule partie active par session garantie en base ;
+  `GameService.buildNextGame`. `POST /api/sessions/:id/games` reste disponible (plus utilisé
+  par l'application). Option `autoNextGame` (vraie par défaut ; fausse dans les fixtures des
+  tests historiques).
+- **Correction liée** : à la fin du 5ᵉ tour, le moteur vidait `completedTricks` mais pas
+  `currentTrick` ; la vue de fin de partie contenait donc chaque carte du 5ᵉ tour deux fois
+  (clé React `COEUR-7` en double). Le tour en cours est désormais vidé ; le frontend ignore
+  aussi les doublons des parties déjà terminées en base.
+
+## D-043 — Réglage « détection anti-collusion » d'une partie privée
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet (périmètre « champ
+  + icône + case à la création ») · **Ne tranche pas** : R-36 (le mécanisme de détection
+  lui-même : aucune détection n'existe).
+- **Règle** : `suspicionDetectionEnabled` est choisi à la création d'une partie privée
+  (désactivé par défaut), puis immuable (garanti en base par un trigger). Il appartient à la
+  table (session), comme le nom et le mot de passe (D-039).
+- **Affichage** : une icône 🛡️, jamais Oui/Non. Dans la liste « Rechercher une partie »,
+  colonne à côté du cadenas : bouclier vif avec un point doré si activé, estompé sinon ; un
+  appui affiche « Détection anti-collusion activée / désactivée ». Dans « Créer une partie »,
+  la ligne « 🛡️ Détection anti-collusion » s'active d'un appui sur le bouclier. L'état affiché
+  vient toujours du serveur (`GET /api/sessions/open`, vue de session).
+- **Technique** : migration **0011** (`sessions.suspicion_detection_enabled`, trigger
+  d'immuabilité), `POST /api/sessions` accepte `suspicionDetectionEnabled` (booléen, 400
+  sinon), vues `suspicionDetectionEnabled`.
+- **Avertissement** : le bouclier activé n'enclenche aucune détection tant que R-36 n'est pas
+  défini et implémenté.
+
+## D-044 — Détection de potentielle collusion : socle (R-36, étape 1)
+
+- **Date** : 2026-10-08 · **Statut** : étape 1 (socle technique) demandée par le propriétaire
+  du projet · **Ne tranche pas** : R-36 sur le fond (données analysées, critères, seuils
+  définitifs, conséquences, transparence) ; aucune analyse réelle n'est branchée.
+- **Principe** : un `DetectionService` indépendant de `GameService`. Il OBSERVE les fins de
+  partie (`GameService.onGameFinished`) et n'agit jamais sur l'état du jeu ; le moteur ne
+  dépend pas de lui. Ses traitements tournent en arrière-plan (`BackgroundTasks`), en file
+  par partie (`KeyedSerialQueue`), jamais dans une commande critique ; une erreur d'analyse
+  est seulement journalisée.
+- **Activation** : `suspicionDetectionEnabled` de la table (D-043) est la seule source de
+  vérité. Désactivée : aucune analyse lancée, aucun signal, aucun score, aucune ligne. La
+  base le garantit aussi (trigger `detection_rows_guard`).
+- **Isolation** : toute donnée est rattachée à un `gameId` ; aucun état global. Un signal ne
+  peut citer que des joueurs de SA partie (service + trigger) ; les lignes disparaissent avec
+  la partie.
+- **Modèle** : 9 types de signaux (`PROXIMITY`, `REPEATED_PROXIMITY`, `IMPOSSIBLE_TRAVEL`,
+  `INCOHERENT_LOCATION`, `FREQUENT_COPLAY`, `CARD_CHOICE_ANOMALY`, `CORRELATED_WINS`,
+  `CONNECTION_PATTERN`, `SHARED_IP`) ; `SHARED_IP` est préparé mais DÉSACTIVÉ (aucune IP
+  collectée). Score de RISQUE par sujet (joueur seul ou groupe, le plus souvent une paire),
+  0 à 100, niveaux faible 0–24 / modéré 25–49 / élevé 50–74 / très élevé 75–100, avec version
+  d'algorithme et horodatage. Jamais une preuve de triche ; aucune sanction automatique.
+- **Configuration** : unique, `backend/src/domain/detection/detection-config.ts`. Les
+  plafonds par type (`SIGNAL_RULES`) et les seuils de catégories (`DETECTION_THRESHOLDS`)
+  sont des valeurs PROVISOIRES NON VALIDÉES, inutilisées à l'étape 1 ; elles devront être
+  validées avant toute mise en service d'une analyse.
+- **Technique** : migration **0012** (`detection_signals`, `detection_scores`, trigger de
+  garde), `DetectionRepository` / `PostgresDetectionRepository`, aucune route HTTP, aucun
+  changement frontend, aucun GPS, aucune IP.
+
+## D-045 — Chat de partie et transport temps réel WebSocket (T-01 tranché)
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet (WebSocket pour
+  le temps réel, REST pour l'historique, PostgreSQL pour la persistance, Redis pour la seule
+  diffusion entre instances ; pas de Firebase) · **Ne tranche pas** : R-14 (modération du
+  chat), R-36 (aucune analyse du chat).
+- **Transport (T-01)** : WebSocket natif (`ws` côté serveur, `WebSocket` standard de React
+  Native côté client), sur le serveur HTTP de l'API, chemin `/ws`, UNE connexion par
+  application. Pas de Socket.IO. Utilisé pour l'instant par le chat seulement ; les
+  événements de partie (`GameEventPublisher`) pourront s'y brancher ensuite.
+- **Authentification** : 1re trame `{ type: 'auth', token }` (jamais de jeton dans l'URL, ni
+  dans les journaux), 10 s pour s'authentifier, fermeture 4401 à l'expiration du jeton ; la
+  session est revérifiée avant chaque commande (R-32). L'identité est celle du jeton : aucun
+  `senderId`/`userId` reçu n'est lu.
+- **Chat** : `ChatService` indépendant de `GameService` (ni verrou, ni écriture sur une
+  partie). Un message appartient à UNE partie ; seuls ses joueurs (`game_players`) lisent,
+  écrivent et s'abonnent (403 `NOT_A_MEMBER` sinon), contrôle refait dans l'instruction
+  d'insertion. Salle `game:{gameId}:chat`, canal Redis `le-ter:game:{gameId}:chat`, événement
+  `chat:message` `{ gameId, message }` diffusé APRÈS l'écriture en base, identique à la réponse
+  REST. Une panne de Redis ne fait jamais échouer un envoi (diffusion locale, rattrapage REST).
+- **Message** : `id` UUID généré par le serveur, `gameId`, `senderId`, `senderDisplayName`
+  (`users.username`), `content`, `createdAt`. Texte brut (jamais HTML ni Markdown), espaces de
+  bord retirés, 1 à `MAX_CHAT_MESSAGE_LENGTH` = 500 caractères (constante unique du backend,
+  renvoyée au client ; garantie aussi en base), caractères de contrôle refusés.
+- **Double envoi** : une clé par intention (`Idempotency-Key` en REST, `clientMessageId` en
+  WebSocket), unique par (partie, expéditeur) : un renvoi rend le même message, sans nouvelle
+  diffusion. Anti-spam : 10 messages / 10 s par joueur (429 `RATE_LIMITED`).
+- **Partie terminée** : aucune règle n'existait ; choix le plus restrictif, SANS modifier les
+  règles du jeu : historique lisible par les joueurs, envoi refusé (409 `CHAT_CLOSED`).
+- **API** : `GET /api/games/:gameId/chat/messages` (dernière page ; `?before=<id>` plus
+  anciens ; `?after=<id>` rattrapage ; `?limit=1..50`, 30 par défaut ; renvoie `hasMore`,
+  `canSend`, `maxMessageLength`) et `POST /api/games/:gameId/chat/messages` `{ content }`.
+- **Reconnexion (client)** : délai croissant 1 s → 30 s, ping applicatif (connexion muette
+  coupée), réveil au retour au premier plan ; après chaque reconnexion, réabonnement puis
+  rattrapage `after` ; fusion par `id` (aucun doublon). Sans connexion, l'historique est relu
+  toutes les 5 s.
+- **Technique** : migration **0013** (`game_chat_messages`, index `(game_id, created_at, id)`,
+  unicité de la clé d'envoi).
+
+## D-046 — Détection de potentielle collusion : géolocalisation (R-36, étape 2)
+
+- **Date** : 2026-10-08 · **Statut** : étape 2 demandée par le propriétaire du projet ·
+  **Ne tranche pas** : score final, niveaux et alertes (étape 4), administration, analyse
+  des cartes ; les seuils ci-dessous sont PROVISOIRES et NON VALIDÉS.
+- **Activation** : uniquement pour une partie dont la table a `suspicionDetectionEnabled`
+  (D-043). Sinon : aucune permission demandée, aucune position lue, envoyée ni enregistrée
+  (refus 409 `DETECTION_DISABLED` + trigger en base), aucune distance, aucun signal.
+- **Téléphone** (`expo-location`, premier plan seulement, jamais d'arrière-plan) : sur
+  l'écran d'une partie surveillée, une explication neutre précède toute demande de
+  permission native (raison, coordonnées jamais montrées aux joueurs, distances calculées
+  par le serveur, conservation temporaire, refus possible). Le refus reste sur le téléphone
+  (mémorisé par table pour la durée de l'application) : jamais transmis, jamais un signal ;
+  le joueur joue normalement, ses distances affichent « — ». Collecte à la cadence du serveur
+  (45 s, jamais moins de 30 s), arrêtée quand la partie se termine, quand l'écran n'est plus
+  affiché ou actif, ou sur refus définitif du serveur.
+- **API** : `GET /api/games/:gameId/geolocation` (activation, cadence, distances du joueur)
+  et `POST /api/games/:gameId/position` `{ latitude, longitude, accuracy, capturedAt }` →
+  `{ distances }`. Identité = JWT ; partie existante (404), joueur membre (403), détection
+  activée (409), partie non terminée (409), coordonnées, précision (≤ 1 000 m) et date
+  (≤ 2 min, ≤ 30 s d'avance) validées (400) ; 4 positions par minute au plus (429). Les
+  réponses ne contiennent que des distances (arrondies à 10 m), jamais de coordonnées.
+- **Stockage** (migration **0014**, `detection_positions`) : coordonnées arrondies à
+  4 décimales (≈ 11 m, garanti par le type SQL), clé étrangère vers `game_players` (joueur
+  de LA partie), trigger refusant toute partie non surveillée. Conservation : suppression au
+  plus tard 24 h après la fin de la partie (ou 24 h après la capture si la partie n'est pas
+  terminée), par un nettoyage automatique au démarrage puis toutes les heures.
+- **Distances** : une seule formule, Haversine (`domain/detection/geo.ts`), calculée par le
+  serveur sur les paires de joueurs de LA partie (2 → 1, 3 → 3, 4 → 6), avec la dernière
+  position de chacun si elle a moins de 150 s. Temps réel : les distances reviennent dans la
+  réponse de chaque position envoyée et dans `GET …/geolocation` ; aucune nouvelle
+  connexion WebSocket (le transport `/ws` de D-045 pourra les diffuser plus tard).
+- **Analyses** (`services/detection/geo-analyzers.ts`, branchées sur `DetectionAnalyzer`,
+  en fin de partie, en arrière-plan) : `PROXIMITY` (< 50 m forte, < 200 m significative, au
+  moins 2 mesures appariées à ≤ 60 s et 60 s de durée), `REPEATED_PROXIMITY` (même paire
+  proche dans au moins 3 parties surveillées sur 30 jours), `IMPOSSIBLE_TRAVEL` (> 900 km/h
+  après retrait des rayons d'incertitude, déplacement ≥ 1 km), `INCOHERENT_LOCATION` (saut
+  ≥ 5 km suivi d'un retour à ≤ 200 m en ≤ 10 min). Positions de précision > 100 m ignorées.
+  Le critère « position identique entre appareils » n'est pas implémenté : l'arrondi à
+  ≈ 11 m ne permet pas de l'établir. Les éléments justificatifs ne contiennent jamais de
+  coordonnées. Aucun score calculé (`SUSPICION_SCORING_ENABLED = false`), aucune alerte.
+- **Configuration** : `GEOLOCATION_CONFIG` et `DETECTION_THRESHOLDS` dans
+  `backend/src/domain/detection/detection-config.ts`, et nulle part ailleurs.
+
+## D-047 — Détection de potentielle collusion : analyse comportementale (R-36, étape 3)
+
+- **Date** : 2026-10-08 · **Statut** : étape 3 demandée par le propriétaire du projet ;
+  seuils PROVISOIRES non validés · **Ne tranche pas** : score global, niveaux, alertes
+  (étape 4), administration (étape 5). Détails : [detection.md](detection.md).
+- **Signaux** : `FREQUENT_COPLAY_V1`, `CARD_CHOICE_ANOMALY_V1`, `CORRELATED_WINS_V1`,
+  `CONNECTION_PATTERN_V1`, analyses longitudinales en fin de partie (arrière-plan, file par
+  partie), rattachées à la partie OBSERVÉE et à ses seuls joueurs. Un signal est une
+  observation statistique, jamais une accusation ; aucune conséquence automatique.
+- **Historique** : parties SURVEILLÉES terminées uniquement (choix de confidentialité,
+  PROVISOIRE), relues depuis les tables du jeu ; aucune copie, aucune nouvelle collecte.
+- **Timeouts** : reconnus par le `commandId` déterministe `auto-play:{gameId}:{tour}:{position}`
+  déjà persisté dans `recentCommandIds` (contrat testé), sans modifier le moteur ni GameService.
+- **Données réseau** : aucune IP n'est conservée ; `SHARED_IP` reste désactivé ;
+  CONNECTION_PATTERN utilise les arrivées aux tables et les débuts de session
+  d'authentification.
+- **Technique** : migration **0015** (unicité `(game_id, type, player_ids,
+  algorithm_version)` des signaux : idempotence), version par type
+  (`SIGNAL_ALGORITHM_VERSIONS`), `BehaviorHistoryRepository` (lecture seule),
+  `services/detection/behavior-analyzers.ts`.
+
+## D-048 — Détection de potentielle collusion : score et alertes internes (R-36, étape 4)
+
+- **Date** : 2026-10-08 · **Statut** : étape 4 demandée par le propriétaire du projet ;
+  formule, contributions, seuils de niveaux et d'alerte PROVISOIRES (non validés) ·
+  **Ne tranche pas** : administration (étape 5), conséquences, transparence envers les
+  joueurs. Détails : [detection.md](detection.md).
+- **Nature** : le score est un INDICATEUR STATISTIQUE de 0 à 100, jamais une preuve de
+  triche. Une alerte signifie seulement « plusieurs signaux justifient une analyse ». AUCUNE
+  sanction, suspension, exclusion, modification de gains, de mise ou de classement, AUCUNE
+  accusation ni notification automatique. Rien n'est exposé aux joueurs.
+- **Formule `SUSPICION_SCORE_V2`** (remplace V1 de D-044, jamais activée en production) :
+  par sujet (joueur seul ou paire ; groupe prévu mais aucun signal n'en produit), sur ses
+  signaux des 30 derniers jours (parties surveillées uniquement) : par type, la plus forte
+  contribution (plafonnée par `SIGNAL_RULES`), puis somme plafonnée à 100. Un même constat
+  répété dans plusieurs parties ne compte qu'une fois.
+- **Niveaux** : ceux de D-044 (0–24 faible, 25–49 modéré, 50–74 élevé, 75–100 très élevé).
+- **Alertes internes** : HIGH → priorité NORMAL, VERY_HIGH → PRIORITY ; jamais pour LOW ou
+  MODERATE ; jamais avec un seul type de signal. Statut interne NEW / REVIEWED / DISMISSED /
+  RESOLVED (administration, étape 5). Déduplication par
+  `SUSPICION_LEVEL|sujet|niveau|version|période de 30 jours` (clé unique en base) ; une
+  alerte HIGH n'est pas recréée si une VERY_HIGH existe sur la période.
+- **Historique** : un instantané par (partie analysée, sujet) avec score précédent, signaux
+  retenus (type, contribution, signal, partie source), version et date ; jamais supprimé.
+- **Technique** : migration **0016** (clé de sujet calculée sur les signaux, colonnes
+  d'historique, `detection_alerts` avec les mêmes gardes que signaux et scores) ; calcul
+  dans `DetectionService.recordSignals`, en file par partie, en arrière-plan ; GameService
+  inchangé.
+
+## D-049 — Détection de potentielle collusion : administration (R-36, étape 5)
+
+- **Date** : 2026-10-08 · **Statut** : étape 5 demandée par le propriétaire du projet ;
+  rôle `admin` et machine d'état des alertes PROVISOIRES · **Ne tranche pas** : R-09
+  (Katika / Admin), conséquences d'une alerte, transparence envers les joueurs. Détails :
+  [detection.md](detection.md).
+- **Périmètre** : consultation des alertes (liste paginée, filtres, tri par liste blanche,
+  détail, signaux examinés, historique du score) et changement de leur statut. AUCUNE
+  sanction, aucun bannissement, aucune accusation, aucune modification du jeu, des comptes,
+  des gains ou des scores. Aucune interface joueur ; API seulement.
+- **Accès** : routes `/api/admin/detection/*` derrière `requireAuth` puis
+  `requireRole('admin')`, rôle lu dans la session serveur (relu en base à chaque requête).
+  Rôle `admin` ajouté au système EXISTANT `users.role` (pas de second système), attribuable
+  uniquement par `npm run user:role` (aucune route). L'acteur est toujours l'appelant
+  authentifié, jamais un identifiant reçu.
+- **Statuts** : `NEW → REVIEWED → RESOLVED`, `NEW → DISMISSED` ; `DISMISSED` et `RESOLVED`
+  finaux. Transaction avec verrou de ligne ; transition interdite → 409
+  `ALERT_TRANSITION_NOT_ALLOWED` ; `expectedStatus` périmé → 409 `ALERT_STATUS_CONFLICT` ;
+  statut déjà atteint → 200 `changed: false`, sans audit.
+- **Audit** : `admin_audit_log` (acteur, action, cible, `{ from, to }`, date), écrit dans la
+  même transaction que le changement ; jamais de jeton, mot de passe, IP, position ni donnée
+  de jeu.
+- **Confidentialité** : éléments justificatifs en représentation administrative minimisée
+  (coordonnées, IP, cartes, mains, jetons retirés ou masqués) ; aucune donnée personnelle de
+  compte ; aucune collecte réseau ajoutée.
+- **Technique** : migration **0017** (`0017_admin_role_and_audit.sql` : rôle `admin`,
+  `admin_audit_log`, index de liste) ; `DetectionAdminService` +
+  `PostgresDetectionAdminRepository` sur les tables de l'étape 4 (aucune copie) ;
+  `DetectionService`, `GameService`, formule `SUSPICION_SCORE_V2`, contributions et seuils
+  inchangés.
+
+## D-050 — Achat de jetons par CinetPay (API v1), fournisseur du compte de jeu
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-040 · **Tranche pour l'ACHAT seulement** : R-13 (1 FCFA = 1 jeton), R-16 (montants
+  500 / 1 000 / 2 000 / 5 000 FCFA) · **Ne tranche pas** : R-13 hors achat (mise, retrait,
+  tournois), R-16 pour le retrait, R-34 (téléphone vérifié, non exigé), T-07 (licence).
+- **Principes** :
+  - CinetPay est le fournisseur du port existant `MobileMoneyGateway` (`CinetPayGateway`) : ni
+    second portefeuille, ni système de paiement parallèle. Le compte de jeu reste la source de
+    vérité ; le crédit passe par le règlement idempotent du compte de jeu (`settle`).
+  - **Nouvelle API v1** uniquement (`/v1/oauth/login`, `/v1/payment`, `/v1/payment/{id}`),
+    contrats relevés dans le code des SDK officiels `cinetpay-js` / `cinetpay-go`.
+  - Achat en **XAF**, devise fixée par le serveur. **Aucun `gameId`** : le compte appartient au
+    joueur. Identité issue du JWT uniquement.
+  - Une notification n'est **jamais** une preuve. Le serveur compare le `notify_token` à son
+    empreinte SHA-256, en temps constant, vérifie la référence, **relit** le statut chez
+    CinetPay (serveur à serveur), vérifie les références (et le montant et la devise s'ils
+    sont renvoyés), puis règle.
+  - Retour de l'application : page HTTPS du backend → `leter://payment/return` (CinetPay
+    n'accepte que des URL http(s)). L'application relit le statut : elle ne conclut jamais.
+  - Retrait **hors périmètre** : refusé proprement, rien n'est débité.
+- **Décisions techniques** :
+  - Migration **0017_payments** : table `payments` 1–1 avec `wallet_transactions`, statuts
+    `PENDING` / `SUCCESS` / `FAILED` / `EXPIRED`, `UNIQUE (provider, provider_reference)` et
+    `(provider, merchant_transaction_id)`, empreinte du `notify_token` seulement.
+  - Paiement réglé dans **une** transaction SQL : verrou du paiement, puis le corps de
+    `WalletRepository.settle` (`settleWalletTransaction`, même code), puis statut du paiement.
+    Erreur → ROLLBACK complet. Le statut du paiement suit l'issue réelle du compte de jeu.
+  - API : `POST /api/wallet/deposits` (inchangée, `{ tokens, currency? }`, renvoie `payment`),
+    `GET /api/payments/:id` (propriétaire seulement, sinon 404 identique ; revérifie un
+    paiement en attente), `POST /api/payments/cinetpay/notify` (public, limité par IP),
+    `GET /api/payments/cinetpay/return/:paymentId` (redirection, sans effet).
+    `GET /api/wallet` ajoute `withdrawalAvailable`.
+  - Configuration : `CINETPAY_API_KEY`, `CINETPAY_API_PASSWORD`, `CINETPAY_NOTIFY_URL`,
+    `CINETPAY_RETURN_URL` (+ facultatifs `CINETPAY_BASE_URL`, `CINETPAY_APP_RETURN_URL`,
+    `CINETPAY_TIMEOUT_MS`). Sans clé : comportement D-040 (refus propre).
+  - Frontend : Boutique → Acheter = 4 montants, `expo-web-browser`, route `payment/return`.
+  - Détail : `docs/payments.md`.
+- **Compléments (2026-10-08, stabilisation avant sandbox)** :
+  - Prénom ou nom d'une lettre (accepté par le compte, refusé par CinetPay : 2 à 255
+    caractères) : refus `422 PAYMENT_PROFILE_INCOMPLETE` AVANT toute écriture, via la méthode
+    facultative `assertCollectionEligible` du port. Les règles du compte sont inchangées et
+    rien n'est complété à la place du joueur.
+  - La route `payment/return` est hors `Stack.Protected` : ouverte à froid pendant la
+    restauration de la session, une garde fausse redirige vers l'accueil et perd le lien.
+    L'écran gère lui-même la session ; le serveur reste seul juge.
+  - Journalisation du webhook : `notification received` → `payment verified` →
+    `payment settled` (identifiants et statuts seulement).
+
+## D-051 — Tournois : première version (inscription gratuite, tables de 4, accès réservé) — remplacée en partie par D-054
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet ·
+  **Tranche partiellement** : R-11 (création, inscription, formation des tables) ·
+  **Ne tranche pas** : R-09 (Admin / Katika), R-13 (jetons), barème, classement, primes,
+  départage, limite « un tournoi par jour ».
+- **Création** : uniquement par une opération d'exploitation, `npm run tournament:create`
+  (même modèle que `game:finish`). AUCUN endpoint public de création, AUCUN nouveau rôle.
+- **Période et statut** : un tournoi a un début et une fin (`timestamptz`, jamais de
+  comparaison de chaînes). Le statut est CALCULÉ par le serveur à partir de son horloge :
+  `SCHEDULED` avant le début, `IN_PROGRESS` entre début (inclus) et fin (exclue),
+  `COMPLETED` ensuite ; `CANCELLED` est le seul statut enregistré (annulation). Aucun timer
+  de bascule. Le client reçoit `serverNow` pour un compte à rebours ; il ne décide jamais
+  qu'un tournoi a commencé ou fini.
+- **Inscription** : GRATUITE dans cette version (aucun jeton, aucun paiement). Ouverte
+  seulement tant que le tournoi est `SCHEDULED`. Une inscription par (tournoi, joueur),
+  garantie en base (`UNIQUE (tournament_id, user_id)`) → `409 ALREADY_REGISTERED`.
+  `maxPlayers` du tournoi (facultatif) limite le nombre d'inscrits, contrôlé sous verrou
+  du tournoi → `409 TOURNAMENT_FULL`. La colonne `status` de l'inscription prépare des frais
+  futurs (seule valeur aujourd'hui : `REGISTERED`).
+- **Rejoindre** (`POST /api/tournaments/:id/join`), contrôles serveur dans l'ordre : tournoi
+  existant, `IN_PROGRESS`, joueur authentifié (JWT) et inscrit, pas d'autre session active
+  (`409 ALREADY_IN_SESSION`, R-18 inchangée). Puis : première table du tournoi (la plus
+  ancienne) dont la partie est EN ATTENTE avec un siège libre ; sinon une nouvelle session
+  est créée par `SessionService` (le joueur en est le créateur). Aucun tirage aléatoire,
+  aucun matchmaking. Un joueur déjà assis à une table du tournoi y est renvoyé (idempotent).
+  Réponse : `{ tournamentId, sessionId, gameId }` ; le client ouvre l'écran de jeu existant
+  `/game/[gameId]`.
+- **Tables** : capacité **4**, immuable (règle de session D-034). Démarrage : règles
+  existantes inchangées (seul le créateur, à partir de 2 joueurs, R-23). La session est liée
+  au tournoi par `tournament_sessions` ; les parties restent l'unité d'isolation (`gameId`).
+- **Accès réservé** : une table de tournoi n'apparaît PAS dans `GET /api/sessions/open` et
+  `POST /api/sessions/:id/join` la refuse (`403 TOURNAMENT_ACCESS_DENIED`) à un joueur non
+  inscrit ou hors période. Mécanisme : dépendance FACULTATIVE `admission` de SessionService,
+  sans effet par défaut (aucune règle de session existante modifiée).
+- **Fin** : après la fin, plus aucun `join`. Les données (tournoi, inscriptions, tables) ne
+  sont jamais supprimées. Le comportement des parties encore en cours à l'heure de fin
+  (enchaînement D-042 à une table de tournoi) n'est PAS défini : rien n'est interrompu.
+- **Temps réel** : aucune nouvelle infrastructure. Le client relit le tournoi (TanStack
+  Query) au retour sur l'écran et à l'échéance suivante (début ou fin) calculée avec
+  `serverNow`, sans polling agressif.
+- **Concurrence** : la recherche-ou-création d'une table est sérialisée par tournoi dans
+  une instance. Entre deux instances, deux joueurs simultanés peuvent ouvrir deux tables :
+  chacune reste valide (aucune règle violée).
+
+## D-052 — Module Réglages : son, langues, assistance et documents légaux
+
+- **Date** : 2026-10-08 · **Statut** : demandé par le propriétaire du projet · **Ne tranche
+  pas** : plateforme d'assistance, identité légale de l'éditeur, juridiction, âge minimum,
+  sons définitifs (sons de partie, habillage sonore). Détails : [settings.md](settings.md).
+- **Préférences** : `soundEnabled` (défaut `true`) et `language` (`fr` | `en`, défaut `fr`)
+  dans `usePreferencesStore`, source de vérité unique, persistées sur l'appareil via
+  `expo-secure-store` (déjà présent, aucune seconde architecture de persistance), relues et
+  nettoyées au lancement. Préférences de l'appareil : aucun `gameId`, aucun envoi au serveur,
+  aucun effet sur les parties.
+- **Son** : `playSound` (`services/audio-service.ts`) est l'unique point d'entrée audio et
+  respecte la préférence. Lecteur réel `expo-audio` ~57.0.5 (+ `expo-asset`), un lecteur par
+  son créé à la demande, tous libérés au passage sur OFF ; plugin sans micro ni lecture en
+  arrière-plan. Trois sons d'interface synthétisés localement (`assets/audio/`).
+- **Langues** : i18n légère sans dépendance (`lib/i18n`, dictionnaires typés), changement
+  immédiat. Traduits : Réglages, documents légaux, accueil, coquille des écrans connectés.
+- **Assistance** : `SUPPORT_URL` = `EXPO_PUBLIC_SUPPORT_URL` ; vide → message « bientôt
+  disponible », jamais d'adresse fictive.
+- **Documents légaux** : route `/legal/[document]` (accessible sans connexion), contenu FR/EN
+  dans `features/legal/content/`, repères entre crochets pour toute information inconnue
+  (`LEGAL_INFO`). Projets à faire valider juridiquement avant publication.
+
+## D-053 — Détection anti-collusion : interrupteur global (administration)
+
+- **Date** : 2026-10-08 · **Statut** : demandé par le propriétaire du projet · Détails :
+  [detection.md](detection.md) (« Interrupteur global »).
+- **Règle** : la détection d'une partie exige l'interrupteur GLOBAL activé ET
+  `suspicionDetectionEnabled` de sa table (D-043). **Défaut : désactivé.**
+- **Source de vérité** : PostgreSQL, `system_settings` (migration 0020, clé
+  `detection_enabled`, ligne absente = désactivé), relu à chaque consultation ; aucun cache,
+  aucun Redis, aucun état frontend.
+- **Point de contrôle unique** : `DetectionService.isEnabled` (avant toute lecture, analyse,
+  écriture, score ou alerte) et l'accès de `GeolocationService` (positions refusées, aucune
+  collecte demandée au téléphone). Analyseurs, formule `SUSPICION_SCORE_V2`, contributions,
+  seuils et GameService inchangés.
+- **Désactivation** : n'arrête aucune partie, ne modifie ni cartes, ni résultats, ni gains, ne
+  supprime aucune donnée ; empêche seulement toute nouvelle activité de détection.
+- **Administration** : `GET`/`PATCH /api/admin/settings/detection` (rôle `admin` relu en base,
+  acteur = session) ; audit `DETECTION_ENABLED` / `DETECTION_DISABLED` dans `admin_audit_log`
+  (D-049), même transaction, `{ key, from, to }`. Écran `/admin` dans l'application (Expo
+  Router), sans lien depuis les écrans joueur.
+- **Joueurs** : rien n'est exposé ; réponse de géolocalisation identique à celle d'une table
+  non surveillée ; application joueur inchangée.
+
+## D-054 — Tournois : réservation financière, cagnotte, jetons de tournoi, classement et gains
+
+- **Date** : 2026-10-08 · **Statut** : validée par le propriétaire du projet, qui a délégué
+  le choix des règles secondaires (choix les plus sûrs, documentés ici) · **Remplace** : D-051
+  pour la création, l'inscription gratuite et le statut calculé ; D-051 reste valable pour
+  l'attribution des tables (4 places, première table en attente, sinon nouvelle) et l'accès
+  réservé aux tables · **Tranche** : R-11 ; R-13 pour les tournois (1 FCFA = 1 jeton du
+  compte de jeu).
+- **Règle officielle (réservation)** : *Une inscription à un tournoi entraîne une réservation
+  financière du montant de participation. Le compte du joueur n'est pas débité définitivement
+  au moment de l'inscription. Le montant réservé est bloqué afin de garantir la participation.
+  Si le tournoi est annulé avant son démarrage, la réservation est automatiquement libérée.
+  Si le tournoi atteint les conditions de démarrage, les réservations sont capturées et
+  deviennent les paiements définitifs du tournoi.*
+- **Compte de jeu (extension de D-040, pas de second portefeuille)** :
+  - `wallets.reserved` = somme des réservations ACTIVE, maintenue dans la même transaction que
+    chaque réservation ; **disponible = solde − réservé** ; garanti en base par
+    `CHECK (0 <= reserved <= balance)`. Un retrait vérifie le DISPONIBLE.
+  - `wallet_reservations` : `ACTIVE → CAPTURED | RELEASED` (`EXPIRED` prévu, non utilisé) ;
+    une seule réservation non libérée par inscription (index unique partiel).
+  - Capture = transaction `tournament_entry` (débit du solde ET du réservé), clé
+    d'idempotence `tournament-entry:<réservation>`. Gain = transaction `tournament_prize`,
+    clé `tournament-prize:<tournoi>:<rang>`. Libération : aucune transaction (rien n'avait
+    été débité) ; `reserved` diminue et la réservation passe `RELEASED`.
+  - Montants entiers en jetons du compte de jeu, devise affichée **XAF** (1 FCFA = 1 jeton).
+    Prix d'entrée de 0 autorisé : réservation de 0, capture sans transaction.
+- **Compte de la plateforme** : `platform_ledger` (pas un utilisateur) : une écriture
+  `TOURNAMENT_PLATFORM_FEE` par tournoi (montant, taux) et, s'il y a lieu, une écriture
+  `UNALLOCATED_PRIZE` ; unicité (tournoi, type) = idempotence. Le compte Katika (R-09)
+  reste distinct et non défini.
+- **Cagnotte** (figée au démarrage, jamais recalculée) : `gross_pool = prix × participants` ;
+  `platform_fee = floor(gross × taux)` (arrondi en faveur des joueurs) ;
+  `prize_pool = gross − fee`. Le taux (`platform_fee_bps`, points de base : 1000 = 10 %) est
+  copié des paramètres à la PUBLICATION et n'est plus jamais relu.
+- **Paramètres** (`system_settings`, rôle `admin`) : `tournament_platform_fee_percent` 10,
+  `initial_tournament_tokens` 1000, `default_tournament_stake` 100,
+  `maximum_pending_tournaments_per_player` 1, `tournament_transition_minutes` 0. Paramètre
+  absent : valeur par défaut. Changement audité dans `admin_audit_log`.
+- **Création** :
+  - Admin (`requireRole('admin')`, aucun rôle Katika) : tournoi PUBLIÉ directement.
+  - Joueur : `DRAFT` → (soumission) `PENDING_APPROVAL` → (admin) `SCHEDULED`, ou refus
+    (`CANCELLED`, motif `APPROVAL_REJECTED`). Au plus
+    `maximum_pending_tournaments_per_player` tournois DRAFT/PENDING par joueur.
+  - Limites plateforme (constantes du domaine) : début au moins 1 h après la demande d'un
+    joueur ; durée 15 min à 24 h ; prix 0 à 100 000 ; joueurs 2 à 1 000 (min ≤ max) ; mise 1
+    à jetons initiaux (**D-063 : 1 à la moitié des jetons initiaux**) ; 1 à 10 rangs payés dont la somme vaut exactement 100 %.
+  - Modification avant verrouillage : tout tant qu'aucune inscription n'est active ; ensuite
+    nom et description seulement (les inscrits ont réservé à ces conditions).
+- **Chevauchement** : interdit entre tournois publiés et non terminés (`SCHEDULED` à
+  `CALCULATING_RESULTS`), garanti par PostgreSQL : contrainte d'exclusion GiST sur
+  `[starts_at, blocked_until)` (`blocked_until = fin + tournament_transition_minutes`, figé à
+  la publication) → `409 TOURNAMENT_OVERLAP`. Un tournoi non publié ne bloque rien ; le
+  contrôle a lieu à l'approbation.
+- **États** (transitions centralisées dans `TournamentService`, ligne verrouillée
+  `FOR UPDATE`, toute autre transition refusée) :
+  `DRAFT → PENDING_APPROVAL → SCHEDULED → REGISTRATION_OPEN → REGISTRATION_CLOSED → STARTING →
+  IN_PROGRESS → CALCULATING_RESULTS → RESULTS_VALIDATED → DISTRIBUTING_PRIZES → COMPLETED` ;
+  `CANCELLED` depuis tout état AVANT la capture, jamais après (`409 TOURNAMENT_STARTED`).
+  Les échéances (`registration_opens_at` = publication par défaut, `registration_closes_at` =
+  début par défaut, début, fin) sont en base ; `TournamentScheduler` (tick de 15 s) applique
+  les transitions dues, et chaque commande fait d'abord avancer son tournoi : reprise
+  automatique après redémarrage, une seule instance applique chaque transition.
+- **Inscription** (UNE transaction : verrou du tournoi, statut et fenêtre, capacité, verrou du
+  portefeuille, disponible ≥ prix, inscription + réservation ; tout ou rien) : un joueur par
+  tournoi (`UNIQUE`) → `409 ALREADY_REGISTERED` ; `409 TOURNAMENT_FULL`,
+  `409 INSUFFICIENT_BALANCE`, `409 REGISTRATION_CLOSED`. **Désinscription** avant la
+  fermeture : inscription `CANCELLED` + réservation libérée ; une nouvelle inscription
+  réactive la même ligne avec une nouvelle réservation. Après la fermeture :
+  `409 REGISTRATION_CLOSED` ; après le démarrage : `409 TOURNAMENT_STARTED`.
+- **Démarrage** (à `starts_at`) : `STARTING`, puis en UNE transaction : inscrits < minimum →
+  `CANCELLED` (`INSUFFICIENT_PLAYERS`) et toutes les réservations libérées ; sinon capture
+  de toutes les réservations, écriture de la commission, cagnotte figée, un compte de
+  tournoi par inscrit (jetons initiaux), `IN_PROGRESS`.
+- **Annulation** : motif obligatoire parmi `INSUFFICIENT_PLAYERS`, `ADMIN_CANCELLED`,
+  `SYSTEM_ERROR`, `PAYMENT_ERROR`, `APPROVAL_REJECTED`, `CREATOR_CANCELLED` ; toujours avec
+  libération de toutes les réservations actives, dans la même transaction.
+- **Jetons de tournoi** : `tournament_player_accounts` (un par inscrit au démarrage),
+  indépendants du compte de jeu, ni retirables ni transférables. Mise par partie
+  `stake_per_game` (défaut 100). Règlement à la FIN de chaque partie d'une table du tournoi
+  (`tournament_games`, une ligne par `gameId` = idempotence) : mise effective
+  `e = min(mise, jetons du gagnant)` ; chaque autre joueur de la partie (fuyard compris) paie
+  au gagnant `min(e, ses jetons)` : jamais de solde négatif, jamais de jetons créés (règle du
+  « tapis » : on ne gagne pas plus que ce qu'on risque). Parties jouées +1 pour tous,
+  gagnées +1 pour le gagnant. Partie sans gagnant (égalité rejouée, arrêt administratif) ou
+  commencée après la fin : `VOID`, aucun mouvement. Un compte sous la mise passe
+  `OUT_OF_TOKENS` (**seuil remplacé par D-063 : moins de 2 × la mise**) : il ne peut plus rejoindre une table du tournoi
+  (`409 TOURNAMENT_OUT_OF_TOKENS`) et garde ses jetons et son classement. Les parties d'une
+  table de tournoi n'ont aucune mise réelle : le compte de jeu n'est jamais touché pendant
+  une partie.
+- **Fin** (à `ends_at`) : plus aucune table attribuée ; `CALCULATING_RESULTS` attend la fin
+  des parties commencées avant `ends_at`, au plus 10 min (au-delà, elles sont `VOID`).
+- **Classement** (déterministe, sans ex æquo) : jetons restants DESC, parties jouées DESC,
+  parties gagnées DESC, date d'inscription ASC.
+  **Remplacé par D-062** (score pondéré) pour les tournois classés après la migration 0025.
+- **Gains** : rang r payé `floor(prize_pool × part_r)` ; le reste d'arrondi va au 1er rang.
+  Rangs sans joueur : leur part est écrite `UNALLOCATED_PRIZE` dans `platform_ledger`, non
+  redistribuée. Résultats (`tournament_results`) écrits une fois, validés automatiquement
+  (`RESULTS_VALIDATED`, aucune validation manuelle), puis immuables ; versement d'un gain par
+  transaction (`DISTRIBUTING_PRIZES`), idempotent par sa clé ; `COMPLETED` quand tout est
+  versé.
+- **Notifications** : table `notifications` dans l'application (pas de FCM, T-02), écrite
+  dans la transaction de l'événement, dédoublonnée par clé : `TOURNAMENT_APPROVED`,
+  `TOURNAMENT_REGISTRATION_CONFIRMED`, `TOURNAMENT_CANCELLED`, `TOURNAMENT_STARTED`,
+  `TOURNAMENT_RESULTS_AVAILABLE`, `TOURNAMENT_PRIZE_CREDITED`. API `GET /api/notifications`,
+  `POST /api/notifications/:id/read`.
+- **Résultats et export** : `GET /api/tournaments/:id/results` (rang, pseudo, jetons, parties
+  jouées et gagnées, gain) et résumé partageable en texte (WhatsApp = canal complémentaire,
+  jamais source de vérité) ; export CSV admin, formaté par un formateur isolé (XLSX
+  ajoutable sans toucher au calcul).
+- **Technique** : migration **0021** (0019 conservée : elle a pu être appliquée ; les
+  tournois gratuits de la première version passent `CANCELLED` / `SYSTEM_ERROR`).
+- **API** (toutes authentifiées ; identité issue du JWT) :
+  - Joueur `/api/tournaments` : `GET /active`, `GET /mine`, `POST /` (proposition),
+    `GET|PATCH /:id`, `POST /:id/submit`, `POST /:id/withdraw`, `POST /:id/register`,
+    `POST /:id/unregister`, `POST /:id/join` → `{ tournamentId, sessionId, gameId }`,
+    `GET /:id/standings`, `GET /:id/results`.
+  - Admin `/api/admin/tournaments` (`requireRole('admin')`, audité) : `GET|PATCH /settings`,
+    `GET /`, `POST /`, `GET|PATCH /:id`, `POST /:id/approve|reject|cancel`,
+    `GET /:id/registrations`, `GET /:id/results`, `GET /:id/results.csv`.
+  - `GET /api/notifications`, `POST /api/notifications/:id/read` ; `GET /api/wallet` expose
+    aussi `reserved` et `available`.
+  - Commande d'exploitation : `npm run tournament:create -- --admin <email> …` (même chemin
+    que l'API admin).
+- **Frontend** : `TournamentWidget` sur `/tournament` uniquement (HomeScreen inchangé) ; états
+  NO_TOURNAMENT / UPCOMING / REGISTERED / WAITING / IN_PROGRESS / COMPLETED dérivés du statut
+  du serveur ; rejoindre → `router.replace('/game/<gameId>')` (écran de jeu existant).
+
+## D-055 — Tournois : interfaces joueur et administration, attribution des tables atomique
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Complète** : D-054 (aucune règle de D-054 modifiée).
+- **Atomicité table → tournoi** : une table de tournoi est créée par
+  `SessionService.createSession({ …, tournamentId })` ; `createWithFirstGame` insère la
+  session, sa première partie ET la ligne `tournament_sessions` dans UNE transaction. Aucune
+  table de tournoi n'existe jamais sans son rattachement : elle n'apparaît jamais dans
+  `GET /api/sessions/open`, même un instant, et un échec ou un arrêt ne laisse rien
+  (ROLLBACK complet). L'ancien rattachement séparé (`linkSession`) est supprimé.
+- **Concurrence (plusieurs instances)** : dans cette même transaction, la ligne du tournoi est
+  verrouillée (`FOR NO KEY UPDATE`, compatible avec le contrôle de clé étrangère du
+  rattachement), puis le serveur revérifie que le tournoi est en cours et qu'AUCUNE table du
+  tournoi n'est joignable (partie en attente, siège libre). Sinon la création est refusée
+  (`TournamentTableAvailableError`, interne) et TournamentService rejoint la table existante
+  (au plus 3 tours ; au-delà `409 TOURNAMENT_BUSY`, « réessayez »). Deux joueurs arrivant en
+  même temps sur deux instances partagent donc la même table ; une seconde table n'est ouverte
+  que lorsque la première est pleine ou a démarré. Les arrivées dans une table existante
+  restent sérialisées par le verrou de la session (D-034). Aucune nouvelle infrastructure
+  (ni Redis, ni verrou consultatif).
+- **Interface joueur** : `/tournament/propose` (lien « Proposer un tournoi » au bas du cercle
+  de l'écran Tournois ; HomeScreen et widget inchangés) : formulaire (nom, description, date,
+  heure, durée, participation, minimum, maximum, rangs et parts) et « Mes propositions »
+  (Brouillon, En attente d'approbation, Approuvé, Refusé, Retiré, Annulé ; Soumettre /
+  Retirer). L'écran ne vérifie que le FORMAT ; les limites de D-054 restent appliquées et
+  expliquées par le serveur (erreurs par champ).
+- **Interface d'administration** : `/admin/tournaments` (rôle `admin` existant, lien depuis
+  `/admin`) : liste filtrée par statut (créateur, inscrits, min/max, commission, création),
+  création publiée, détail (approuver, refuser, annuler avec confirmation quand l'état le
+  permet, inscriptions et réservations, cagnotte, classement), export CSV produit par le
+  serveur et transmis tel quel par la feuille de partage du téléphone (`Share`, aucune
+  nouvelle dépendance), paramètres de D-054. `GET /api/admin/tournaments` renvoie en plus
+  `registeredCount`, `creatorName` et `createdAt`.
+- **Hors périmètre** : règlement de `platform_ledger` vers le compte Katika (R-09).
+
+## D-056 — Tournois : corrections post-audit (démarrage bloqué, brouillons, fin des tables)
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Complète** : D-054, D-055 (aucune règle financière modifiée).
+- **Démarrage bloqué** : un échec du démarrage (transaction de capture) est journalisé
+  (`TOURNAMENT_START_FAILED`, avec `alert: true` à partir du 3e échec consécutif) et retenté
+  au tick suivant. Passé `starts_at` + **15 min** (`START_RECOVERY_MS`, réglable par la
+  dépendance `startRecoveryMs`), le tournoi est annulé `SYSTEM_ERROR` et ses réservations
+  ACTIVES sont libérées, sur la ligne verrouillée, seulement s'il est TOUJOURS `STARTING` et
+  qu'AUCUNE réservation n'est `CAPTURED` (capture et `IN_PROGRESS` sont une seule
+  transaction). Sinon : rien n'est libéré, alerte critique `TOURNAMENT_START_INCONSISTENT`.
+  Le délai ne dépend que de `starts_at` (persisté) : un redémarrage reprend la récupération.
+  L'« alerte » est une ligne de journal de niveau `error` (aucune nouvelle infrastructure).
+- **Brouillons** : un tournoi jamais publié (`published_at` absent : brouillon, en attente,
+  refusé, retiré) n'est lisible (`GET /api/tournaments/:id`, `…/standings`) que par son
+  créateur et le rôle `admin` ; pour les autres : `404 TOURNAMENT_NOT_FOUND` (l'existence
+  n'est pas révélée).
+- **Fin des tables** : `SessionService` accepte une politique FACULTATIVE de continuation
+  (sans effet par défaut). Tables de tournoi : aucune nouvelle partie (suivante automatique
+  D-042, reprise après égalité, partie demandée → `409 SESSION_CLOSED`) une fois le tournoi
+  hors `IN_PROGRESS` ou `ends_at` atteint. Les parties commencées avant `ends_at` se
+  terminent et sont réglées dans le délai de grâce de D-054. Les joueurs encore assis
+  reçoivent une notification `TOURNAMENT_TABLE_CLOSED` (une par table). Migration **0022**
+  (ajout de ce type de notification uniquement).
+- **Délai d'une heure** : revérifié à la soumission ET à l'approbation d'une proposition de
+  joueur (le début doit rester au moins 1 h plus tard) ; un tournoi de l'administration doit
+  seulement commencer dans le futur.
+- **Solde affiché** : le HUD (accueil et table de jeu) affiche le DISPONIBLE ; les fonds
+  réservés sont indiqués à part (« 🔒 1000 ») et dans le libellé d'accessibilité.
+- **PostgreSQL réel** : tests de concurrence à plusieurs connexions et deux instances
+  (inscription avec réservation, attribution des tables) dans
+  `tests/integration/tournaments/postgres-tournament-concurrency.test.ts`, exécutés seulement
+  avec `TEST_DATABASE_URL` vers une base de TEST dédiée (schéma temporaire), jamais si l'URL
+  est celle de l'application.
+
+## D-057 — Tournois : durée 45 à 120 min, 20 à 1 000 participants, message « Tournoi complet »
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet ·
+  **Remplace** : les limites de durée (15 min à 24 h) et de participants (2 à 1 000) de
+  D-054 ; D-054, D-055 et D-056 sont inchangées pour le reste. (Demandée sous le numéro
+  D-056, déjà attribué aux corrections post-audit : enregistrée sous le prochain numéro libre.)
+- **Règles** (tournois de l'administration ET propositions de joueurs, bornes incluses) :
+  durée **45 à 120 minutes** ; minimum de participants **20 à 1 000** ; maximum, s'il est
+  fixé, **20 à 1 000** et au moins égal au minimum.
+- **Contrôles serveur** (source de vérité, `validateTournamentInput`) : à la création, à la
+  modification autorisée, et désormais aussi à la soumission et à l'approbation d'une
+  proposition (un brouillon créé sous d'anciennes limites ne peut être ni soumis ni publié).
+  Les tournois déjà publiés ne sont pas modifiés rétroactivement.
+- **Conséquence** : avec 20 participants au moins et 10 rangs payés au plus, tous les rangs
+  payés sont toujours occupés ; la part « non attribuée » de D-054 reste dans le code
+  (calcul inchangé) mais ne peut plus se produire.
+- **Capacité atteinte** : contrôle inchangé (verrou de la ligne du tournoi, compte des
+  inscriptions actives dans la même transaction : jamais de dépassement, même en
+  concurrence) ; code `409 TOURNAMENT_FULL`. Message de l'API adouci (« Tournoi complet 🎉 … »).
+  Application : ce code, et lui seul, est affiché comme une INFORMATION (titre doré
+  « Tournoi complet 🎉 », pas d'alerte rouge) :
+  - inscription refusée : « Ce tournoi a atteint son nombre maximum de participants. Merci
+    pour ton intérêt ! Découvre les autres tournois disponibles pour participer à la
+    prochaine partie. » ;
+  - tournoi déjà complet (consultation, ou tournoi en cours pour un non-inscrit) : « Toutes
+    les places de ce tournoi sont prises. Merci pour ton intérêt, on te retrouve au prochain
+    tournoi ! ».
+  Les erreurs financières, de réservation et de connexion gardent leurs messages.
+- **Valeur par défaut** : formulaires (joueur, admin) et `npm run tournament:create` : 20
+  joueurs minimum.
+
+## D-058 — Tournois : durée de 30 à 120 minutes, message de durée imposé
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet ·
+  **Remplace** : la durée minimale de D-057 (45 min) ; le reste de D-057 (participants,
+  « Tournoi complet ») et D-054, D-055, D-056 sont inchangés. (Demandée sous le numéro D-057,
+  déjà attribué : enregistrée sous le prochain numéro libre.)
+- **Règle** (tournois de l'administration ET propositions de joueurs, bornes incluses) :
+  durée **30 à 120 minutes**. 29 min et 121 min refusées ; 30, 45 et 120 min acceptées.
+- **Message** : une durée hors limites affiche EXACTEMENT
+  `Durée entre 30 minutes et 120 minutes.` (point final compris, aucun texte ajouté). Ce
+  texte remplace celui demandé initialement (« Durée entre 45 minutes et 120 minutes »), à la
+  demande du propriétaire du projet.
+- **Serveur** (source de vérité) : `TOURNAMENT_LIMITS.minDurationMs` / `maxDurationMs` et
+  `TOURNAMENT_DURATION_ERROR` dans `domain/tournaments/tournament.ts`, appliqués par
+  `validateTournamentInput` (création, modification, soumission, approbation, outil
+  `tournament:create`) ; erreur `400` avec `fields.endsAt`. La durée est `endsAt − startsAt`
+  (instants ISO 8601), comparée en millisecondes.
+- **Application** : les deux formulaires (proposition, création admin) partagent
+  `toTournamentPayload`, qui refuse une durée hors limites avant tout appel API, avec le même
+  message (`TOURNAMENT_DURATION_MINUTES`, `TOURNAMENT_DURATION_ERROR` dans
+  `features/tournaments/tournament-form.ts`, miroir du serveur : pas de code partagé entre
+  `frontend/` et `backend/`). Saisie en minutes entières (`^\d+$`, espaces ignorés) ; `endsAt`
+  = début + durée × 60 000 ms. Le message du serveur, identique, est placé sur le champ
+  « Durée (minutes) ».
+- **Valeur par défaut** : les formulaires (proposition, création admin) proposent **60 minutes**
+  (`TOURNAMENT_DURATION_MINUTES.default`), modifiable dans les limites ci-dessus.
+- **Données** : aucune migration (aucune contrainte de durée en base). Les tournois existants
+  ne sont pas modifiés.
+
+## D-059 — Tournois : 5 tournois en attente au plus, non-chevauchement, prochain tournoi à l'accueil
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet ·
+  **Complète** : D-054 à D-058 (durée, joueurs, réservations, commissions et gains inchangés).
+- **Limite de 5 tournois en attente de démarrage**, GLOBALE à la plateforme (la planification
+  est globale : un seul tournoi à la fois, D-054). Sont comptés les tournois PUBLIÉS pas
+  encore commencés : `SCHEDULED`, `REGISTRATION_OPEN`, `REGISTRATION_CLOSED`, `STARTING`
+  (`WAITING_STATUSES`, `TOURNAMENT_LIMITS.maxWaitingTournaments`). Les brouillons et les
+  propositions en attente d'approbation ne sont pas planifiés : non comptés (la limite d'UNE
+  proposition en attente PAR JOUEUR, paramètre `maximumPendingTournamentsPerPlayer`, est
+  conservée telle quelle). Une place se libère dès qu'un tournoi passe `IN_PROGRESS` ou
+  `CANCELLED`.
+  - **Garantie** (création admin, approbation d'une proposition — les deux seules façons
+    d'entrer dans ces statuts) : verrou consultatif transactionnel PostgreSQL
+    `pg_advisory_xact_lock(728302059)` pris EN PREMIER dans la transaction, puis comptage,
+    puis insertion / publication ; les créations simultanées, sur toutes les instances, sont
+    sérialisées et ne dépassent jamais 5. Ordre des verrous unique (planification, puis ligne
+    du tournoi) : pas d'interblocage.
+  - **Information au plus tôt** : la proposition d'un joueur (création du brouillon,
+    soumission) est refusée avec le même message si la limite est déjà atteinte (sans
+    verrou : la garantie reste l'approbation).
+  - **Erreur** : `409 TOO_MANY_WAITING_TOURNAMENTS`, « Limite atteinte : 5 tournois sont déjà
+    en attente de démarrage. Réessaie dès que l'un d'eux aura commencé. », affiché tel quel
+    par les formulaires (joueur, admin).
+- **Chevauchement** : règle INCHANGÉE, déjà garantie par PostgreSQL et désormais testée
+  explicitement : contrainte d'exclusion GiST `tournaments_no_overlap` (migration 0021) sur
+  `tstzrange(starts_at, blocked_until, '[)')`, avec `blocked_until` = fin + transition
+  (0 min par défaut), pour les statuts publiés non terminés. Conflit si
+  `début A < fin B ET début B < fin A` : 14:00–15:00 puis 15:00–16:00 accepté ;
+  14:00–15:00 puis 14:30–15:30 refusé (`409 TOURNAMENT_OVERLAP`). Annulés, terminés,
+  brouillons et propositions ne bloquent pas. Portée globale (aucun filtre par organisateur).
+  Sûre en concurrence (contrainte vérifiée par PostgreSQL, quelle que soit l'instance).
+- **Participation** : un joueur peut être inscrit à plusieurs tournois, même simultanés ;
+  seule l'unicité (tournoi, joueur) des inscriptions s'applique (inchangée).
+- **Accueil** : bouton « + Proposer un tournoi » sous le titre TOURNOIS (ouvre le parcours
+  existant `/tournament/propose`) et, au-dessus de « Rejoindre », la date, l'heure de début
+  et l'heure de fin du prochain tournoi auquel le joueur est inscrit (rien s'il n'y en a pas).
+  Sélection par le serveur, sur son horloge : `GET /api/tournaments/next` → inscription
+  `REGISTERED`, statut parmi `WAITING_STATUSES`, `starts_at > maintenant`, plus proche début ;
+  réponse limitée à `tournamentId`, `name`, `startsAt`, `endsAt`, `timezone` (ou `null`).
+  Relu au retour sur l'accueil, après inscription / désinscription, et à l'heure de début.
+  Affichage dans le fuseau du téléphone, comme le reste du module (D-055).
+- **Données** : aucune migration (la contrainte d'exclusion existe ; le verrou consultatif ne
+  crée rien en base).
+
+## D-060 — Suppression de l'appellation « Katika » : compte financier de la plateforme Le-Ter
+
+- **Date** : 2026-10-09 · **Statut** : décidé par le propriétaire du projet · **Tranche** :
+  R-09 (avec D-061) · **Remplace sur ce point** : toutes les mentions antérieures de
+  « Katika » (D-0xx historiques, spécification fonctionnelle `.docx`, diagramme de classes).
+- **Sens** : « Katika » désignait le compte financier central qui reçoit les commissions de la
+  plateforme. Ce n'est **ni un rôle, ni l'administrateur, ni un compte utilisateur**.
+- **Nouvelle appellation** : **compte financier de la plateforme Le-Ter**. Sa réalisation
+  existante est `platform_ledger` (migration 0021) : un **journal d'écritures de recettes**,
+  en entrée seulement, alimenté par `TournamentService` (types `TOURNAMENT_PLATFORM_FEE` :
+  commission d'un tournoi, `floor(cagnotte brute × fee_bps / 10 000)` ; `UNALLOCATED_PRIZE` :
+  part des gains des rangs non occupés), une écriture par tournoi et par type (idempotence).
+  Aucun second compte n'est créé ; le journal n'est transformé ni en portefeuille ni en
+  compte bancaire.
+- **Solde** : solde comptable **calculé** = somme des écritures (aucune sortie n'est
+  modélisée). La trésorerie réelle (CinetPay, banque) n'est pas intégrée et s'affiche comme
+  telle. Achats des joueurs, soldes des joueurs et recettes de la plateforme ne sont jamais
+  additionnés.
+- **Parties ordinaires** : aucune commission n'existe (les mises ne sont pas réglées) ; la
+  règle reste à définir (R-37). Aucun taux ni prélèvement n'est inventé.
+- **Données** : aucune donnée, table, colonne ni valeur de rôle « Katika » n'a jamais existé :
+  aucune migration. Les commentaires des migrations appliquées `0002` et `0017` restent
+  intacts (empreinte vérifiée par le migrateur, D-026) ; les décisions antérieures et les
+  documents sources (`SPECIFICATION FONCTIONNELLE DE LE TER.docx`,
+  `Voici des critères…docx`, `Diagramme_de_classe_de_LE_TER.jpg`) ne sont pas modifiés et
+  sont remplacés par la présente décision sur ce point.
+
+## D-061 — Rôle d'administration : `admin` = `SUPER_ADMIN`
+
+- **Date** : 2026-10-09 · **Statut** : décidé par le propriétaire du projet (demandé sous le
+  numéro D-059, déjà attribué : enregistré sous le prochain numéro libre) · **Tranche** :
+  R-09 (avec D-060) · **Complète** : D-049 (le rôle n'est plus « provisoire »).
+- Le rôle existant `admin` (`users.role`, migration 0017) est le **seul** rôle
+  d'administration ; l'interface d'administration le présente comme `SUPER_ADMIN`. Aucune
+  nouvelle valeur de rôle en base.
+- Attribution uniquement par l'outil d'exploitation `npm run user:role -- <email> admin` ;
+  aucune route, aucune inscription publique d'administrateur. Compte dédié recommandé (une
+  connexion révoque la session précédente du compte, R-32).
+- Toutes les routes `/api/admin/*` exigent `requireAuth`, `requireRole('admin')` et une
+  session d'administration dédiée (8 h absolues, 30 min d'inactivité, contrôlées côté
+  serveur) : voir `docs/admin/SECURITY.md`.
+
+## D-062 — Tournois : classement final par score pondéré (jetons restants et parties jouées)
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet ; la méthode de
+  normalisation (références, durée de référence d'une partie) est un choix technique
+  documenté ici, ajustable par une nouvelle décision · **Remplace** : la règle « Classement »
+  de D-054 (ordre jetons → parties jouées → gagnées → inscription) pour tout tournoi publié
+  après la migration 0025 ou pas encore classé à son application. Le reste de D-054
+  (jetons, règlement des parties, gains par rang, versements) est inchangé.
+- **Principe** : aucun des deux critères n'est prioritaire par principe ; le rang découle
+  d'un score sur 100 points :
+  `score = 100 × (poids_jetons × ratio_jetons + poids_parties × ratio_parties)`.
+- **Poids** : `poids_jetons + poids_parties = 1`, chacun entre 0 et 1. Configuration
+  initiale **50 % / 50 %**. Paramètres plateforme (`system_settings`, rôle `admin`) :
+  `tournament_ranking_tokens_weight_percent` et `tournament_ranking_games_weight_percent`
+  (entiers 0 à 100, somme exactement 100, validée par `TournamentService.updateSettings`,
+  modification auditée). Les poids sont **copiés sur le tournoi à sa publication**
+  (`tournaments.ranking_tokens_weight_bps` / `ranking_games_weight_bps`, points de base,
+  somme 10 000 garantie par une contrainte CHECK), comme la commission, puis immuables : les
+  joueurs s'inscrivent en connaissant la règle, et un changement ultérieur des paramètres
+  ne touche ni un tournoi en cours ni un classement publié.
+- **Normalisation** (`domain/tournaments/tournament.ts`) : chaque critère est ramené dans
+  [0, 1[ par `ratio = x / (x + référence)` : 0 sans rien, 0,5 à la référence, strictement
+  croissant, jamais plafonné (deux joueurs différents restent départagés).
+  - Référence des jetons : le **capital initial** du tournoi (identique pour tous).
+  - Référence des parties : `floor(durée du tournoi / 170 s)`, où 170 s est la durée de
+    référence d'une partie dérivée des règles existantes : 4 plis joués × 4 joueurs × 10 s
+    (D-034, le 5e pli est automatique, D-035) + 10 s de manche Continuer/Quitter. Soit 10
+    parties pour 30 min, 42 pour 120 min.
+  - Les références ne dépendent que des paramètres figés du tournoi, jamais des autres
+    participants : l'arrivée, l'absence ou l'élimination d'un joueur ne modifie le score de
+    personne d'autre.
+  - Cas limites : valeur négative ou invalide → 0 ; référence nulle (tournoi plus court
+    qu'une partie de référence) → ratio 1 dès la première partie, 0 sinon ; jamais de 0/0.
+- **Classement** (à `CALCULATING_RESULTS`, et classement en direct) : tous les comptes du
+  tournoi, y compris ceux passés sous le seuil de jetons ; tri par score **exact** DESC
+  (fractions entières comparées sans arrondi). Égalité exacte : parties gagnées DESC, puis
+  date d'inscription ASC, puis identifiant — aucun des deux critères du score n'est utilisé
+  pour départager.
+- **Résultats** : `tournament_results.score` (`numeric(7, 4)`, arrondi au plus proche à
+  4 décimales) est figé avec le rang ; les résultats antérieurs gardent `score` NULL et leur
+  ordre historique. Tableau : rang, joueur, jetons restants, parties jouées, score (pas de
+  colonne « Statut ») ; l'export CSV ajoute la colonne `Score`.
+- **Technique** : migration **0025** (colonnes ajoutées, nouveaux paramètres autorisés ;
+  tournois publiés non classés : 50 / 50 ; tournois déjà classés et brouillons : NULL).
+  Tests : `tests/unit/tournaments/tournament-ranking.test.ts`,
+  `tests/integration/database/tournament-weighted-ranking.test.ts`,
+  `tests/integration/tournaments/tournament-service.test.ts` (« score pondéré figé »).
+
+## D-063 — Tournois : seuil de participation à deux fois la mise
+
+- **Date** : 2026-10-09 · **Statut** : décidé par le propriétaire du projet · **Remplace** :
+  le seuil « sous la mise » de D-054 (`OUT_OF_TOKENS` dès `jetons < mise`).
+- **Règle** : un participant peut créer ou rejoindre une partie d'un tournoi si et seulement
+  si `jetons_restants >= 2 × mise_par_partie`. En dessous, son compte passe `OUT_OF_TOKENS` :
+  plus aucune partie du tournoi ; il garde ses jetons et reste classé (D-062, aucune pénalité
+  supplémentaire).
+- **Source unique** : `canPlayTournamentGame(tokens, stake)` (`domain/tournaments/
+  tournament.ts`, avec `TOURNAMENT_MIN_STAKES_TO_PLAY = 2`), utilisée par `accountStatusFor`,
+  l'attribution d'une table (`TournamentService.join` : création ou table existante, y
+  compris un joueur déjà assis qui rejoint la partie suivante), l'accès direct à une session
+  (`tournamentSessionAdmission`, `isAdmitted`), la partie suivante après « Poursuivre »
+  (`tournamentTableContinuation.playersBarredFromNextGame`) et l'indication `canJoin` de
+  l'API. Aucun autre endroit ne compare jetons et mise.
+- **Partie suivante** : quand la ronde Poursuivre/Quitter est close, un joueur sous le seuil
+  quitte la table par le chemin normal (`SessionService.leaveSession`) AVANT la création de
+  la partie suivante, qui ne retient que les joueurs restants. Même contrôle pour la partie
+  suivante demandée explicitement (`createNextGame`). Un joueur déjà dans la partie en cours
+  (reconnexion) n'est jamais refusé : ses jetons ne bougent qu'au règlement, en fin de partie.
+- **Concurrence** : les jetons ne changent qu'au règlement d'une partie (verrou du tournoi,
+  une fois par partie). Toute décision d'accès règle d'abord les parties terminées non encore
+  réglées du tournoi (`settlePendingGames`, idempotent) puis lit le solde : un joueur qui
+  quitte sa table juste après une défaite, avant le règlement en arrière-plan, est jugé sur
+  son solde réglé. Les politiques de SessionService reçoivent ce règlement après coup
+  (TournamentService est construit après SessionService).
+- **Validation** : `mise ≤ jetons initiaux / 2` (sinon personne ne pourrait jouer au
+  départ) ; message « Entre 1 et la moitié des jetons initiaux. ». Les tournois déjà créés ne
+  sont pas modifiés ; les statuts déjà enregistrés sont recalculés au prochain règlement, et
+  chaque accès applique le seuil sur le solde, pas sur le statut stocké.
+- **Technique** : aucune migration. Tests :
+  `tests/unit/tournaments/tournament-domain.test.ts` (200 = seuil, 199 en dessous…),
+  `tests/integration/tournaments/tournament-participation-threshold.test.ts` (parties
+  réellement jouées, seuil exact, juste en dessous, deux courses avant règlement).
+
+## D-064 — Délais de 20 s (tour et Poursuivre/Quitter), pseudos réels à la table
+
+- **Date** : 2026-10-09 · **Statut** : décidé par le propriétaire du projet · **Remplace** :
+  les durées de 10 s de D-034 (timer de tour, ronde Poursuivre/Quitter), reprises par D-036,
+  D-041 et R-06 ; le reste de ces décisions est inchangé · **Tranche en partie** : R-12.
+- **Délais** : `TURN_DURATION_MS` (`domain/rules/rule-set.ts`) et
+  `SESSION_DECISION_WINDOW_MS` (`domain/sessions/session.ts`) passent de 10 000 à
+  **20 000 ms**. Ce sont les seules sources de ces durées : le serveur pose les échéances en
+  PostgreSQL (`turn_deadline_at`, `deadline_at` de la ronde), `DeadlineSupervisor` les
+  reconstruit, et les écrans n'affichent qu'un compte à rebours vers ces échéances
+  (`turnDeadlineAt`, `decision.deadlineAt`) : le client ne décide jamais du délai. Côté
+  client, `DEFAULT_TURN_MS` (20 000) ne sert qu'à l'échelle de l'anneau si le début du tour
+  manque. La présentation du 5e tour (D-041) précède toujours la ronde, désormais de 20 s.
+  Les échéances déjà posées avant le déploiement restent à 10 s (instants absolus en base).
+- **Non concernés** (délais techniques distincts, inchangés) : authentification WebSocket
+  10 s, fenêtre anti-spam du chat, arrêt du serveur, `statement_timeout`, relecture des
+  paiements, délais réseau du client, durées et transitions des tournois.
+- **Classement des tournois** : la durée de référence d'une partie de D-062
+  (`RANKING_REFERENCE_GAME_MS`) était DÉRIVÉE des deux délais (170 s). Pour ne pas modifier
+  le classement des tournois par effet de bord, elle est **figée à 170 s** ; seule une
+  nouvelle décision peut l'ajuster (à 340 s, par exemple, si l'on veut qu'elle suive les
+  nouveaux délais).
+- **Pseudos** : la vue de partie porte le pseudo réel de chaque joueur
+  (`PlayerInGame.username`), y compris le joueur connecté. `PostgresGameRepository` le lit
+  dans `users` à chaque chargement (`LEFT JOIN users`) ; il n'est jamais copié dans
+  `game_players` ni utilisé par les règles, et suit un renommage du compte. Toutes les vues
+  (REST, reconnexion, relecture régulière) en bénéficient. Pseudo absent : « Vous » ou
+  « Adversaire », jamais un identifiant technique ni un numéro de siège (`playerLabel`).
+  **Reste À CLARIFIER (R-12)** : l'option « noms cryptés » à la création de la partie
+  (masquer ou remplacer les noms) n'existe pas et n'est pas implémentée.
+- **Technique** : aucune migration. Tests : `turn-timer.test.ts` (scénarios relatifs à
+  `TURN_DURATION_MS`), `session-domain.test.ts`, `multi-game-isolation.test.ts`,
+  `postgres-game.repository.test.ts` (pseudo relu dans `users`), `game-table.test.tsx`
+  (pseudos, compteur « Tour n/5 », plaques). Les tests en temps réel (`turn-timeout-*`,
+  `c6-functional-real-infra`) attendent 20 s par tour et ne s'exécutent qu'avec
+  `TEST_DATABASE_URL` et `TEST_REDIS_URL`.
+
+## D-065 — Tournois : liste des tournois, tables attribuées par le serveur, démarrage à 20 s
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Complète** : D-051, D-054, D-055 (affectation), D-059 (accueil) ·
+  **Ne modifie pas** : parties privées (seul le créateur démarre, sans échéance), D-062
+  (classement), D-063 (seuil à deux mises), réservations et portefeuille (D-054).
+- **Tables** : uniquement créées par le serveur (`POST /api/tournaments/:id/join`) ; aucune
+  route ne permet à un joueur de créer une partie de tournoi. Capacité **4** (D-051) ; une
+  partie démarre avec **2, 3 ou 4** joueurs (moteur inchangé : `MIN_PLAYERS_TO_START = 2`,
+  distribution 3 + 2 dans l'ordre antihoraire, aucun joueur fictif). Une table démarrée
+  n'accepte plus personne (partie `in_progress`) ; une table pleine refuse un 5e
+  (`GameFullError`, places de session).
+- **Affectation** : déjà assis → même table (idempotent : une nouvelle tentative réseau ne
+  double jamais l'affectation) ; sinon une table en attente avec une place libre, **la plus
+  remplie d'abord, puis la plus ancienne** (stratégie déterministe, choisie plutôt qu'un
+  tirage : les parties démarrent au plus tôt) ; sinon une nouvelle table, ouverte sous
+  verrou du tournoi (D-055). Inscription et seuil de jetons revérifiés à chaque entrée
+  (D-063).
+- **Responsable du démarrage** : le premier joueur affecté = créateur de la partie
+  (`games.creator_id`, ordre d'affectation enregistré par le serveur). S'il quitte la table
+  avant le démarrage, le droit passe au joueur suivant dans l'ordre d'arrivée (règle
+  existante R-19 / D-037, `buildWaitingGameDeparture`) ; l'échéance n'est pas réinitialisée.
+  Une simple déconnexion ne change rien : l'échéance court côté serveur.
+- **Délai de 20 s** (`TOURNAMENT_TABLE_AUTO_START_MS`) : posé quand la partie en attente
+  atteint **2 joueurs** (`games.start_deadline_at` = arrivée du 2e + 20 s), visible de tous
+  (`startDeadlineAt` dans la vue de la partie) ; jamais repoussé par les 3e et 4e arrivées
+  ni par une reconnexion ; retiré si la table redescend sous 2 joueurs (un joueur seul
+  attend sans compte à rebours ; une nouvelle échéance partira à la prochaine 2e arrivée).
+  Le créateur peut démarrer à tout moment pendant le délai (« Démarrer la partie ») ; les
+  autres joueurs voient l'attente et le temps restant.
+- **Démarrage automatique** : à l'échéance, le SERVEUR démarre la partie
+  (`GameService.handleStartDeadline`, commande système passée par la file de la partie, qui
+  relit l'état : toujours en attente, ≥ 2 joueurs, échéance persistée atteinte). Timer en
+  mémoire = copie de l'échéance ; `DeadlineSupervisor` la reconstruit au démarrage du
+  backend (future → timer réarmé, passée → démarrage immédiat) et la balaie toutes les 5 s :
+  le démarrage a lieu même si le premier joueur est déconnecté ou si aucun client n'affiche
+  le compte à rebours.
+- **Unicité** : démarrage manuel, timer, balayage et plusieurs instances aboutissent à UNE
+  seule transition `waiting → in_progress` : file par partie dans une instance, écriture
+  conditionnée à la version entre instances (`UPDATE … WHERE version = $n`), les perdants
+  deviennent sans effet (`GameAlreadyStartedError` pour un démarrage manuel tardif). Au
+  démarrage, l'échéance est effacée (contrainte `games_start_deadline_when_waiting`) et le
+  timer annulé.
+- **Parties suivantes d'une table** : inchangées (D-042 : démarrées aussitôt dès 2 joueurs
+  restés) ; le délai est recopié, il ne sert que si un joueur reste seul et attend une
+  arrivée. Les tables ouvertes avant la migration 0026 n'ont pas de délai (comportement
+  antérieur : démarrage par le créateur).
+- **Fin du tournoi** : comportement existant inchangé (D-056) ; une partie démarrée après
+  `ends_at` est réglée `VOID` (D-054).
+- **Liste** : `GET /api/tournaments` → `{ tournaments, history, serverNow }` : tournois
+  PUBLIÉS non terminés, début le plus proche d'abord (au plus 20), puis l'historique terminé
+  ou annulé, le plus récent d'abord (au plus 10) ; chacun avec MON inscription, ma
+  réservation, mon compte de tournoi, le nombre d'inscrits et `canRegister` / `canJoin`.
+  Chaque tournoi non terminé est d'abord avancé (transitions dues) : jamais un tournoi
+  commencé présenté « à venir ». Brouillons et propositions non publiées exclus.
+- **Interface** : Accueil → Tournois → Rejoindre = liste (carte : date, horaires, statut,
+  participation, inscrits / min / max, rangs récompensés, jetons de départ, mon inscription,
+  flèche à droite) → fiche `/tournament/[tournamentId]` (actions autorisées par le serveur ;
+  « Rejoindre le Tournoi » affiche « Recherche d'une partie en cours… » pendant la requête,
+  puis la table). Statuts affichés : À venir, Inscriptions ouvertes, Inscriptions clôturées,
+  Démarrage, En cours, Résultats, Terminé, Annulé. Accueil : résumé compact du prochain
+  tournoi pertinent en filigrane dans le panneau Tournois (en cours où je participe, sinon
+  le plus proche à venir où je suis inscrit ou qui est ouvert), qui ouvre sa fiche ; le
+  bloc « Prochain tournoi » de D-059 est remplacé par ce résumé (`GET /api/tournaments/next`
+  reste disponible). Table en attente : « En attente d'un autre joueur… », puis « Partie
+  prête à démarrer. », nombre de joueurs du serveur, « Démarrage automatique dans N s ».
+- **Compléments (session parallèle, même jour, frontend seulement)** :
+  - **Liste en 4 groupes** (`features/tournaments/tournament-groups.ts`), chaque tournoi
+    dans un seul groupe, déduit du statut du SERVEUR et de sa capacité :
+    1. inscriptions ouvertes avec une place libre ;
+    2. pas encore démarré mais sans inscription possible (`SCHEDULED`, clôturé, complet ou
+       `STARTING`) ;
+    3. en cours (`IN_PROGRESS` jusqu'au versement des gains) ;
+    4. historique (terminé ou annulé).
+
+    Tri par début croissant, historique le plus récent d'abord.
+  - **« Annuler la recherche »** : pendant la requête `join` (fiche) et sur la table
+    d'attente. Elle réutilise le départ de session existant (R-19 / D-037) : la place est
+    libérée, l'échéance de 20 s est retirée si la table redescend sous 2 joueurs, et le
+    droit de démarrer passe au suivant. L'inscription au tournoi, la réservation et les
+    jetons ne changent pas. Cas particuliers :
+    - place attribuée après l'annulation : libérée aussitôt ;
+    - partie déjà démarrée : le joueur est envoyé à sa table (une partie commencée n'est
+      jamais quittée ainsi).
+
+    Tests : `tournament-groups.test.ts`, `tournament-table-waiting.test.tsx`,
+    `TournamentDetailPanel.test.tsx`,
+    `backend/tests/integration/tournaments/tournament-search-cancel.test.ts`.
+- **Technique** : migration **0026** (`games.auto_start_delay_ms`, `games.start_deadline_at`,
+  contrainte et index partiel ; ajout seulement). Tests :
+  `tests/integration/tournaments/tournament-table-auto-start.test.ts` (15 cas : seul, 2e
+  arrivée, 3e/4e sans réinitialisation, 5e refusé, priorité à la table la plus remplie, table
+  démarrée fermée, manuel, automatique à l'échéance exacte, manuel + automatique
+  concurrents, premier joueur absent, redémarrage, départ du premier joueur, parties privées
+  inchangées, liste) ; frontend : `TournamentScreen.test.tsx`, `TournamentDetailPanel.test.tsx`,
+  `HomeScreen.test.tsx`, `tournament-state.test.ts`, `waiting-state.test.ts`. La concurrence
+  entre deux processus sur un vrai PostgreSQL est couverte par
+  `postgres-tournament-concurrency.test.ts` (attribution des tables), exécuté seulement avec
+  `TEST_DATABASE_URL` : 29/29 le 2026-10-09 sur `le_ter_test`, après les corrections
+  ci-dessous.
+- **Corrections d'attribution (révélées par ce test, même jour)** :
+  - Entrée dans la partie d'une table entre deux instances : `joinGame` n'est sérialisé que
+    dans une instance. Le perdant du conflit de version (`GameVersionConflictError`) relit
+    la table et réessaie (`seatAt`, 3 tentatives), puis reçoit `409 TOURNAMENT_BUSY`
+    (« réessayez »).
+  - `tryTable` libère la place de session après TOUT échec (jamais assis sans jouer). Une
+    partie pleine, non joignable ou démarrée entre le choix de la table et l'entrée
+    (`TournamentGameInProgressError`, plus fréquent avec le démarrage automatique) fait
+    passer à la table suivante ou à une nouvelle table.
+  - Tests sans PostgreSQL réel : `tests/integration/tournaments/tournament-two-instances.test.ts`
+    (deux piles sur la même base PGlite).

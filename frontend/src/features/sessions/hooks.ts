@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { randomUUID } from 'expo-crypto';
 
-import { sessionsApi } from '../../services/sessions-api';
+import { sessionsApi, type NewPrivateGame } from '../../services/sessions-api';
 import type { GameView } from '../../types/game';
 import type { SessionView } from '../../types/session';
 import { withAccessToken } from '../auth/session';
-import { gameKeys, isGameId, type MaxPlayers } from '../games/hooks';
+import { gameKeys, isGameId } from '../games/hooks';
 
 /** Clés TanStack Query, paramétrées par sessionId : aucune « session courante » globale. */
 export const sessionKeys = {
   mine: ['sessions', 'mine'] as const,
+  open: ['sessions', 'open'] as const,
   detail: (sessionId: string) => ['sessions', sessionId] as const,
   games: (sessionId: string) => ['sessions', sessionId, 'games'] as const,
 };
@@ -32,6 +33,15 @@ export function useMySessions() {
   });
 }
 
+/** Tables ouvertes à rejoindre ; relues tant que la liste est affichée. */
+export function useOpenTables() {
+  return useQuery({
+    queryKey: sessionKeys.open,
+    queryFn: async () => (await withAccessToken((t) => sessionsApi.listOpen(t))).tables,
+    refetchInterval: SESSION_REFRESH_MS,
+  });
+}
+
 export function useSession(sessionId: string) {
   return useQuery({
     queryKey: sessionKeys.detail(sessionId),
@@ -39,15 +49,6 @@ export function useSession(sessionId: string) {
     enabled: isSessionId(sessionId),
     refetchInterval: (query) =>
       query.state.data?.decision?.open ? DECISION_REFRESH_MS : SESSION_REFRESH_MS,
-  });
-}
-
-export function useSessionGames(sessionId: string) {
-  return useQuery({
-    queryKey: sessionKeys.games(sessionId),
-    queryFn: async () => (await withAccessToken((t) => sessionsApi.listGames(t, sessionId))).games,
-    enabled: isSessionId(sessionId),
-    refetchInterval: SESSION_REFRESH_MS,
   });
 }
 
@@ -65,6 +66,7 @@ function useRefreshSession() {
       }
     }
     void queryClient.invalidateQueries({ queryKey: sessionKeys.mine });
+    void queryClient.invalidateQueries({ queryKey: sessionKeys.open });
     void queryClient.invalidateQueries({ queryKey: gameKeys.active });
   };
 }
@@ -73,16 +75,16 @@ function useRefreshSession() {
 export function useCreateSession() {
   const refresh = useRefreshSession();
   const mutation = useMutation({
-    mutationFn: async (input: { maxPlayers: MaxPlayers; idempotencyKey: string }) =>
-      withAccessToken((t) => sessionsApi.create(t, input.maxPlayers, input.idempotencyKey)),
+    mutationFn: async ({ idempotencyKey, ...input }: NewPrivateGame & { idempotencyKey: string }) =>
+      withAccessToken((t) => sessionsApi.create(t, input, idempotencyKey)),
     onSuccess: ({ session, game }) => refresh(session, game),
   });
   return {
     ...mutation,
     create: (
-      maxPlayers: MaxPlayers,
+      input: NewPrivateGame,
       options?: { onSuccess?: (result: { session: SessionView; game: GameView }) => void },
-    ) => mutation.mutate({ maxPlayers, idempotencyKey: randomUUID() }, options),
+    ) => mutation.mutate({ ...input, idempotencyKey: randomUUID() }, options),
   };
 }
 
@@ -96,11 +98,18 @@ export function useJoinSession() {
 }
 
 export function useLeaveSession() {
+  const queryClient = useQueryClient();
   const refresh = useRefreshSession();
   return useMutation({
     mutationFn: async (sessionId: string) =>
       (await withAccessToken((t) => sessionsApi.leave(t, sessionId))).session,
-    onSuccess: (session) => refresh(session),
+    onSuccess: (session, sessionId) => {
+      if (!session) {
+        // Session supprimée (dernier départ) : plus rien à relire.
+        queryClient.removeQueries({ queryKey: sessionKeys.detail(sessionId) });
+      }
+      refresh(session ?? undefined);
+    },
   });
 }
 
@@ -112,15 +121,4 @@ export function useSessionDecision(sessionId: string) {
       (await withAccessToken((t) => sessionsApi.decide(t, sessionId, choice))).session,
     onSuccess: (session) => refresh(session),
   });
-}
-
-/** Partie suivante de la session (capacité de la session ; J1 décidé par le serveur). */
-export function useCreateNextGame(sessionId: string) {
-  const refresh = useRefreshSession();
-  const mutation = useMutation({
-    mutationFn: async (idempotencyKey: string) =>
-      (await withAccessToken((t) => sessionsApi.createGame(t, sessionId, idempotencyKey))).game,
-    onSuccess: (game) => refresh(undefined, game),
-  });
-  return { ...mutation, create: () => mutation.mutate(randomUUID()) };
 }

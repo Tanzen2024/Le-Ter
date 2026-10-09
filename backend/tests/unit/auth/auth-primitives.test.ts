@@ -96,7 +96,9 @@ describe('AccessTokenService (JWT)', () => {
         expiresIn: 60,
       });
     expect(() => tokens.verify(sign('admin', 'user'), NOW)).toThrow(InvalidAccessTokenError);
-    expect(() => tokens.verify(sign(userId, 'admin'), NOW)).toThrow(InvalidAccessTokenError);
+    // `admin` est un rôle connu depuis D-049 (le rôle effectif reste celui relu en base) :
+    // le rôle inconnu testé est donc un autre.
+    expect(() => tokens.verify(sign(userId, 'superuser'), NOW)).toThrow(InvalidAccessTokenError);
   });
 
   it('exige un secret d’au moins 32 caractères', () => {

@@ -5,6 +5,11 @@ import {
   type SqlExecutor,
 } from '../database/sql-client';
 import type { Game } from '../domain/game/game';
+import {
+  TournamentTableAvailableError,
+  TournamentTableRefusedError,
+} from '../domain/tournaments/tournament';
+import { AUTOMATIC_TRICK_NUMBER } from '../domain/rules/rule-set';
 import type { GameId, PlayerId } from '../domain/game/game-id';
 import {
   PlayerAlreadyInSessionError,
@@ -20,11 +25,21 @@ import {
   type SessionStatus,
   type SessionTransition,
 } from '../domain/sessions/session';
-import { insertGameRows, translateGameInsertError } from './postgres-game.repository';
+import {
+  deleteWaitingGame,
+  insertGameRows,
+  lockGame,
+  translateGameInsertError,
+  updateGameRows,
+} from './postgres-game.repository';
 import type {
+  LeaveContext,
+  LeaveWrite,
+  OpenTableSummary,
   PendingDecisionDeadline,
   SessionContext,
   SessionRepository,
+  TournamentTableClaim,
 } from './session.repository';
 
 /** Index de la migration 0006 : un joueur présent dans une seule session. */
@@ -39,6 +54,9 @@ interface SessionRow {
   status: SessionStatus;
   creator_id: string;
   max_players: number;
+  name: string | null;
+  password_hash: string | null;
+  suspicion_detection_enabled: boolean;
   created_at: Date;
   updated_at: Date;
   closed_at: Date | null;
@@ -47,6 +65,7 @@ interface SessionRow {
 interface SessionPlayerRow {
   player_id: string;
   seat: number;
+  arrival: number;
   active: boolean;
   joined_at: Date;
   left_at: Date | null;
@@ -66,13 +85,20 @@ interface SessionPlayerRow {
 export class PostgresSessionRepository implements SessionRepository {
   constructor(private readonly db: SqlClient) {}
 
-  async createWithFirstGame(session: Session, game: Game): Promise<void> {
+  async createWithFirstGame(
+    session: Session,
+    game: Game,
+    tournament?: TournamentTableClaim,
+  ): Promise<void> {
     try {
       await this.db.transaction(async (tx) => {
+        if (tournament) {
+          await claimTournamentTable(tx, tournament);
+        }
         await tx.query(
           `INSERT INTO sessions (id, version, status, creator_id, max_players, created_at,
-             updated_at, closed_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             updated_at, closed_at, name, password_hash, suspicion_detection_enabled)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             session.id,
             session.version,
@@ -82,10 +108,25 @@ export class PostgresSessionRepository implements SessionRepository {
             session.createdAt.toISOString(),
             session.updatedAt.toISOString(),
             session.closedAt?.toISOString() ?? null,
+            session.name ?? null,
+            session.passwordHash ?? null,
+            session.suspicionDetectionEnabled,
           ],
         );
         await writePlayers(tx, session);
         await insertGameRows(tx, game);
+        if (tournament) {
+          await tx.query(
+            `INSERT INTO tournament_sessions (id, tournament_id, session_id, created_at)
+             VALUES ($1, $2, $3, $4)`,
+            [
+              tournament.linkId,
+              tournament.tournamentId,
+              session.id,
+              session.createdAt.toISOString(),
+            ],
+          );
+        }
       });
     } catch (err) {
       throw translateSessionError(err, translateGameInsertError(err, game));
@@ -109,6 +150,54 @@ export class PostgresSessionRepository implements SessionRepository {
     );
     const sessions = await Promise.all(rows.map((r) => loadSession(this.db, r.session_id, false)));
     return sessions.filter((s): s is Session => s !== null);
+  }
+
+  async findOpenTables(viewerId: PlayerId, limit: number): Promise<OpenTableSummary[]> {
+    const { rows } = await this.db.query<{
+      session_id: SessionId;
+      game_id: string;
+      name: string | null;
+      creator_name: string;
+      stake_amount: string | number | null;
+      has_password: boolean;
+      suspicion_detection_enabled: boolean;
+      mine: boolean;
+      max_players: number;
+      player_count: number;
+      created_at: Date;
+    }>(
+      `SELECT s.id AS session_id, g.id AS game_id, s.name, u.username AS creator_name,
+         g.stake_amount, s.password_hash IS NOT NULL AS has_password,
+         s.suspicion_detection_enabled, s.max_players,
+         EXISTS (SELECT 1 FROM session_players sp
+           WHERE sp.session_id = s.id AND sp.player_id = $1 AND sp.active) AS mine,
+         (SELECT count(*)::int FROM game_players gp WHERE gp.game_id = g.id) AS player_count,
+         g.created_at
+       FROM sessions s
+       JOIN games g ON g.session_id = s.id AND g.status = 'waiting'
+       JOIN users u ON u.id = g.creator_id
+       WHERE s.status = 'open'
+         AND (SELECT count(*) FROM session_players sp
+              WHERE sp.session_id = s.id AND sp.active) < s.max_players
+         -- Les tables de tournoi ne se rejoignent que par le tournoi (D-051).
+         AND NOT EXISTS (SELECT 1 FROM tournament_sessions ts WHERE ts.session_id = s.id)
+       ORDER BY g.created_at DESC, g.id
+       LIMIT $2`,
+      [viewerId, limit],
+    );
+    return rows.map((r) => ({
+      sessionId: r.session_id,
+      gameId: r.game_id,
+      ...(r.name !== null && { name: r.name }),
+      creatorName: r.creator_name,
+      ...(r.stake_amount !== null && { stakeAmount: Number(r.stake_amount) }),
+      hasPassword: r.has_password,
+      suspicionDetectionEnabled: r.suspicion_detection_enabled,
+      mine: r.mine,
+      maxPlayers: Number(r.max_players),
+      playerCount: Number(r.player_count),
+      createdAt: r.created_at,
+    }));
   }
 
   async update<R extends SessionTransition>(
@@ -145,6 +234,58 @@ export class PostgresSessionRepository implements SessionRepository {
       });
     } catch (err) {
       throw game ? translateGameInsertError(err, game) : err;
+    }
+  }
+
+  async leave<R extends LeaveWrite>(
+    sessionId: SessionId,
+    change: (context: LeaveContext) => R,
+  ): Promise<R> {
+    try {
+      return await this.db.transaction(async (tx) => {
+        // 1. La partie active d'abord : une écriture de partie verrouille sa ligne `games`
+        //    puis les joueurs de la session ; le départ prend les verrous dans le même ordre.
+        const active = await tx.query<{ id: GameId }>(
+          "SELECT id FROM games WHERE session_id = $1 AND status <> 'finished'",
+          [sessionId],
+        );
+        const activeId = active.rows[0]?.id;
+        let locked = activeId ? await lockGame(tx, activeId) : null;
+        // 2. Puis la session et ses joueurs.
+        const context = await lockContext(tx, sessionId);
+        const last = context.lastGame;
+        if (last?.status === 'waiting' && last.gameId !== locked?.id) {
+          // Partie créée entre les deux lectures (rare) : verrouillée à son tour.
+          locked = await lockGame(tx, last.gameId);
+        }
+        const history = await tx.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM games WHERE session_id = $1 AND status = 'finished'",
+          [sessionId],
+        );
+        const result = change({
+          ...context,
+          waitingGame: last?.status === 'waiting' ? locked : null,
+          hasFinishedGames: (history.rows[0]?.n ?? 0) > 0,
+        });
+        if (result.events.length === 0) {
+          return result;
+        }
+        if (result.savedGame) {
+          await updateGameRows(tx, result.savedGame.game, result.savedGame.expectedVersion);
+        } else if (result.waitingGame?.kind === 'delete') {
+          await deleteWaitingGame(tx, result.waitingGame.gameId);
+        }
+        if (result.deleteSession) {
+          // Q1 : joueurs, rondes et décisions partent avec la session (ON DELETE CASCADE).
+          // Une partie restante (historique) ferait échouer la suppression : rien n'est perdu.
+          await tx.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
+        } else {
+          await saveSession(tx, result.session);
+        }
+        return result;
+      });
+    } catch (err) {
+      throw translateSessionError(err, err);
     }
   }
 
@@ -232,6 +373,40 @@ export class PostgresSessionRepository implements SessionRepository {
 }
 
 /** Erreurs de la base propres aux sessions → erreurs du domaine. */
+/**
+ * Table de tournoi (D-054), DANS la transaction de création : verrou de la ligne du tournoi
+ * (`FOR NO KEY UPDATE`, compatible avec le contrôle de clé étrangère du rattachement), puis
+ * contrôles. Deux créations simultanées pour un même tournoi (plusieurs instances) passent
+ * l'une après l'autre ; la seconde voit la table de la première et rejoint celle-ci.
+ */
+async function claimTournamentTable(tx: SqlExecutor, claim: TournamentTableClaim): Promise<void> {
+  const { rows } = await tx.query<{ status: string; ends_at: Date }>(
+    'SELECT status, ends_at FROM tournaments WHERE id = $1 FOR NO KEY UPDATE',
+    [claim.tournamentId],
+  );
+  const tournament = rows[0];
+  if (
+    !tournament ||
+    tournament.status !== 'IN_PROGRESS' ||
+    new Date(tournament.ends_at).getTime() <= Date.now()
+  ) {
+    throw new TournamentTableRefusedError(claim.tournamentId);
+  }
+  const joinable = await tx.query<{ session_id: string }>(
+    `SELECT ts.session_id FROM tournament_sessions ts
+     JOIN sessions s ON s.id = ts.session_id AND s.status = 'open'
+     WHERE ts.tournament_id = $1
+       AND EXISTS (SELECT 1 FROM games g WHERE g.session_id = s.id AND g.status = 'waiting')
+       AND (SELECT count(*) FROM session_players sp
+            WHERE sp.session_id = s.id AND sp.active) < s.max_players
+     LIMIT 1`,
+    [claim.tournamentId],
+  );
+  if (joinable.rows[0]) {
+    throw new TournamentTableAvailableError(claim.tournamentId);
+  }
+}
+
 function translateSessionError(err: unknown, fallback: unknown): unknown {
   if (isPgError(err, PG_UNIQUE_VIOLATION) && constraintOf(err) === ONE_ACTIVE_SESSION_INDEX) {
     const detail = (err as { detail?: unknown }).detail;
@@ -269,18 +444,24 @@ async function loadLastGame(db: SqlExecutor, sessionId: SessionId): Promise<Last
     finished_at: Date | null;
     end_reason: LastGameInfo['endReason'] | null;
     first_player_id: PlayerId;
+    creator_id: PlayerId;
     winner_id: PlayerId | null;
     winner_seat: number | null;
     player_ids: PlayerId[] | null;
+    last_trick_cards: number | null;
   }>(
-    `SELECT g.id, g.status, g.finished_at, g.end_reason, g.first_player_id, g.winner_id,
+    `SELECT g.id, g.status, g.finished_at, g.end_reason, g.first_player_id, g.creator_id,
+       g.winner_id,
+       (SELECT jsonb_array_length(t -> 'plays')
+        FROM jsonb_array_elements(COALESCE(g.state -> 'play' -> 'completedTricks', '[]'::jsonb)) t
+        WHERE (t ->> 'number')::int = $2) AS last_trick_cards,
        (SELECT p.table_position FROM game_players p
         WHERE p.game_id = g.id AND p.player_id = g.winner_id) AS winner_seat,
        (SELECT array_agg(p.player_id ORDER BY p.seat) FROM game_players p
         WHERE p.game_id = g.id) AS player_ids
      FROM games g WHERE g.session_id = $1
      ORDER BY g.created_at DESC, g.id DESC LIMIT 1`,
-    [sessionId],
+    [sessionId, AUTOMATIC_TRICK_NUMBER],
   );
   const row = rows[0];
   if (!row) {
@@ -292,9 +473,11 @@ async function loadLastGame(db: SqlExecutor, sessionId: SessionId): Promise<Last
     ...(row.finished_at && { finishedAt: row.finished_at }),
     ...(row.end_reason && { endReason: row.end_reason }),
     firstPlayerId: row.first_player_id,
+    creatorId: row.creator_id,
     ...(row.winner_id !== null && { winnerId: row.winner_id }),
     ...(row.winner_seat !== null && { winnerSeat: row.winner_seat }),
     playerIds: row.player_ids ?? [],
+    ...(row.last_trick_cards !== null && { lastTrickCards: Number(row.last_trick_cards) }),
   };
 }
 
@@ -312,7 +495,7 @@ async function loadSession(
     return null;
   }
   const players = await db.query<SessionPlayerRow>(
-    `SELECT player_id, seat, active, joined_at, left_at FROM session_players
+    `SELECT player_id, seat, arrival, active, joined_at, left_at FROM session_players
      WHERE session_id = $1 ORDER BY active DESC, seat, joined_at`,
     [sessionId],
   );
@@ -323,9 +506,13 @@ async function loadSession(
     status: row.status,
     creatorId: row.creator_id as PlayerId,
     maxPlayers: row.max_players,
+    ...(row.name !== null && { name: row.name }),
+    ...(row.password_hash !== null && { passwordHash: row.password_hash }),
+    suspicionDetectionEnabled: row.suspicion_detection_enabled,
     players: players.rows.map((p): SessionPlayer => ({
       playerId: p.player_id as PlayerId,
       seat: p.seat,
+      arrival: p.arrival,
       active: p.active,
       joinedAt: p.joined_at,
       ...(p.left_at && { leftAt: p.left_at }),
@@ -390,23 +577,28 @@ async function saveSession(tx: SqlExecutor, session: Session): Promise<void> {
 
 /**
  * Les départs sont écrits AVANT les arrivées : un siège libéré et repris dans la même
- * transaction ne viole pas l'unicité des sièges présents.
+ * transaction ne viole pas l'unicité des sièges présents. Un retour reçoit un nouveau rang
+ * d'arrivée, le plus grand de la session : jamais celui d'une autre ligne.
  */
 async function writePlayers(tx: SqlExecutor, session: Session): Promise<void> {
   const ordered = [...session.players].sort((a, b) => Number(a.active) - Number(b.active));
   for (const p of ordered) {
     await tx.query(
-      `INSERT INTO session_players (session_id, player_id, seat, active, joined_at, left_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO session_players (session_id, player_id, seat, arrival, active, joined_at,
+         left_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (session_id, player_id) DO UPDATE SET seat = EXCLUDED.seat,
-         active = EXCLUDED.active, joined_at = EXCLUDED.joined_at, left_at = EXCLUDED.left_at
-       WHERE (session_players.seat, session_players.active, session_players.joined_at,
-              session_players.left_at)
-         IS DISTINCT FROM (EXCLUDED.seat, EXCLUDED.active, EXCLUDED.joined_at, EXCLUDED.left_at)`,
+         arrival = EXCLUDED.arrival, active = EXCLUDED.active, joined_at = EXCLUDED.joined_at,
+         left_at = EXCLUDED.left_at
+       WHERE (session_players.seat, session_players.arrival, session_players.active,
+              session_players.joined_at, session_players.left_at)
+         IS DISTINCT FROM (EXCLUDED.seat, EXCLUDED.arrival, EXCLUDED.active, EXCLUDED.joined_at,
+              EXCLUDED.left_at)`,
       [
         session.id,
         p.playerId,
         p.seat,
+        p.arrival,
         p.active,
         p.joinedAt.toISOString(),
         p.leftAt?.toISOString() ?? null,

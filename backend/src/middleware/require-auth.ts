@@ -24,6 +24,12 @@ const BEARER = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/;
  */
 export function createRequireAuth(auth: AuthService, logger: Logger): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
+    // Déjà authentifiée plus haut dans la même requête (garde /api/admin puis routeur) :
+    // `res.locals.auth` n'est posé que par ce middleware, jamais par le client.
+    if (res.locals.auth) {
+      next();
+      return;
+    }
     const match = BEARER.exec(req.get('authorization') ?? '');
     try {
       if (!match?.[1]) {

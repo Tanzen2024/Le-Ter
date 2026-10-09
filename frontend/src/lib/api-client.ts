@@ -24,10 +24,37 @@ export class ApiError extends Error {
 
 const NETWORK_ERROR_MESSAGE = 'Impossible de joindre le serveur. Vérifiez votre connexion.';
 
+/**
+ * L'utilisateur ne manipule que des PARTIES : la session (D-033) est un concept technique.
+ * Les refus du serveur qui la nomment sont reformulés ici, à partir de leur `code` stable,
+ * sans changer la règle appliquée par le serveur.
+ */
+const PLAYER_FACING_MESSAGES: Record<string, string> = {
+  SESSION_NOT_FOUND: 'Partie introuvable.',
+  NOT_A_SESSION_MEMBER: 'Vous ne participez pas à cette partie.',
+  SESSION_CLOSED: 'Cette partie est terminée.',
+  SESSION_GAME_IN_PROGRESS: 'Une partie est déjà en cours à cette table.',
+  PLAYER_IN_ACTIVE_GAME: 'La partie est en cours : vous ne pouvez pas la quitter maintenant.',
+  SESSION_FULL: 'Cette partie est complète.',
+  ALREADY_IN_SESSION:
+    'Vous êtes déjà dans une partie. Reprenez-la ou quittez-la avant d’en commencer une autre.',
+  ALREADY_IN_ACTIVE_GAME:
+    'Vous êtes déjà dans une partie. Reprenez-la ou quittez-la avant d’en commencer une autre.',
+  SESSION_MAX_PLAYERS_IMMUTABLE: 'Le nombre de joueurs est fixé à la création de la partie.',
+};
+
+/** Refus « déjà dans une partie » (R-18, une table par joueur) : on propose de la reprendre. */
+export function isAlreadyPlaying(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.code === 'ALREADY_IN_SESSION' || error.code === 'ALREADY_IN_ACTIVE_GAME')
+  );
+}
+
 export async function apiRequest<T>(
   path: string,
   options: {
-    method?: 'GET' | 'POST';
+    method?: 'GET' | 'POST' | 'PATCH';
     body?: unknown;
     accessToken?: string;
     headers?: Record<string, string>;
@@ -62,7 +89,9 @@ export async function apiRequest<T>(
     throw new ApiError(
       response.status,
       body.code ?? 'HTTP_ERROR',
-      body.message ?? 'Une erreur est survenue. Réessayez.',
+      PLAYER_FACING_MESSAGES[body.code ?? ''] ??
+        body.message ??
+        'Une erreur est survenue. Réessayez.',
       body.fields,
     );
   }

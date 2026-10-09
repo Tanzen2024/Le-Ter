@@ -11,6 +11,11 @@ export type SessionEventType =
   /** payload.reason : `leave` (choix du joueur) ou `auto_leave` (sans réponse à l'échéance). */
   | 'session:player_left'
   | 'session:closed'
+  /**
+   * Dernier départ d'une session sans aucune partie terminée (Q1, D-037) : la session et sa
+   * partie en attente sont supprimées.
+   */
+  | 'session:deleted'
   /** Fin d'une partie : ronde Poursuivre/Quitter ouverte (gameId, deadlineAt, playerIds). */
   | 'session:decision_started'
   /** Un joueur a choisi Poursuivre (`continue`) ou Quitter (`leave`). */

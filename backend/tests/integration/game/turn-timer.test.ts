@@ -8,6 +8,7 @@ import type { Game } from '../../../src/domain/game/game';
 import { TurnExpiredError } from '../../../src/domain/game/game-errors';
 import type { PlayerId } from '../../../src/domain/game/game-id';
 import { TURN_DURATION_MS } from '../../../src/domain/rules/rule-set';
+
 import { rotateFrom } from '../../../src/domain/sessions/table-order';
 import { GameService } from '../../../src/services/game/game.service';
 import { GameTimerRegistry } from '../../../src/services/game/game-timer-registry';
@@ -24,8 +25,11 @@ import {
 import { deckForHands, decksRandom } from '../../fixtures/random';
 import { testRules } from '../../fixtures/rules';
 
+/** Durée de production d'un tour (D-034, 20 s depuis D-064) : les scénarios en dépendent. */
+const TURN = TURN_DURATION_MS;
+
 /**
- * Timer de tour (D-034) et coup automatique (D-036) : 10 s par tour, SERVER-AUTHORITATIVE,
+ * Timer de tour (D-034) et coup automatique (D-036) : 20 s par tour, SERVER-AUTHORITATIVE,
  * échéance persistée ; à l'échéance, TURN_TIMEOUT puis le serveur joue la plus petite
  * carte de la famille du contrôle si le joueur en possède, sinon la plus petite de sa main,
  * par le MÊME chemin qu'un coup manuel.
@@ -119,32 +123,32 @@ beforeEach(() => {
 });
 afterEach(() => jest.useRealTimers());
 
-describe('Timer de tour — 10 secondes, autorité du serveur (D-034)', () => {
+describe('Timer de tour — 20 secondes, autorité du serveur (D-034)', () => {
   it('le démarrage arme le timer de J1 ; début, échéance et joueur attendu sont persistés', async () => {
     const { game, repository, timers } = await startedGame();
-    expect(TURN_DURATION_MS).toBe(10_000);
+    expect(TURN_DURATION_MS).toBe(20_000);
     const stored = await repository.findById(game.id);
     expect(stored).toMatchObject({
       turnStartedAt: T0,
-      turnDeadlineAt: new Date(T0.getTime() + 10_000),
+      turnDeadlineAt: new Date(T0.getTime() + TURN),
     });
     expect(stored?.play?.nextPlayerId).toBe(p1);
     expect(stored?.turnTimedOutAt).toBeUndefined();
     expect(timers.has(game.id)).toBe(true);
   });
 
-  it('jouer AVANT l’échéance : accepté, le tour suivant reçoit sa propre échéance de 10 s', async () => {
+  it('jouer AVANT l’échéance : accepté, le tour suivant reçoit sa propre échéance de 20 s', async () => {
     const { service, game, events } = await startedGame();
-    jest.setSystemTime(new Date(T0.getTime() + 9_999));
+    jest.setSystemTime(new Date(T0.getTime() + TURN - 1));
     const after = await service.playCard(game.id, p1, 'PIQUE-5');
     expect(after.play?.nextPlayerId).toBe(p2);
-    expect(after.turnDeadlineAt).toEqual(new Date(T0.getTime() + 19_999));
+    expect(after.turnDeadlineAt).toEqual(new Date(T0.getTime() + 2 * TURN - 1));
     expect(events.find((e) => e.type === 'game:turn_changed')?.payload).toMatchObject({
       nextPlayerId: p2,
-      turnDeadlineAt: new Date(T0.getTime() + 19_999).toISOString(),
+      turnDeadlineAt: new Date(T0.getTime() + 2 * TURN - 1).toISOString(),
     });
-    // L'ancienne échéance (T0 + 10 s) passe sans effet : seule la nouvelle compte.
-    await jest.advanceTimersByTimeAsync(9_999);
+    // L'ancienne échéance (T0 + 20 s) passe sans effet : seule la nouvelle compte.
+    await jest.advanceTimersByTimeAsync(TURN - 1);
     expect(events.filter((e) => e.type === 'game:turn_timeout')).toHaveLength(0);
     await jest.advanceTimersByTimeAsync(1);
     expect(events.filter((e) => e.type === 'game:turn_timeout')).toEqual([
@@ -154,14 +158,14 @@ describe('Timer de tour — 10 secondes, autorité du serveur (D-034)', () => {
 
   it('jouer APRÈS l’échéance (avant même que le timer ne se déclenche) : refusé, TURN_EXPIRED', async () => {
     const { service, game, repository } = await startedGame();
-    jest.setSystemTime(new Date(T0.getTime() + 10_000)); // échéance atteinte, timer non exécuté
+    jest.setSystemTime(new Date(T0.getTime() + TURN)); // échéance atteinte, timer non exécuté
     await expect(service.playCard(game.id, p1, 'PIQUE-5')).rejects.toThrow(TurnExpiredError);
     expect((await repository.findById(game.id))?.play?.hands[p1]).toHaveLength(5);
   });
 
   it('le timeout ne fait ni quitter, ni fuir, ni finir la partie', async () => {
     const { game, repository } = await startedGame();
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const stored = await repository.findById(game.id);
     expect(stored?.status).toBe('in_progress');
     expect(stored?.players.map((p) => [p.playerId, p.fledAt])).toEqual([
@@ -181,7 +185,7 @@ describe('Timer de tour — 10 secondes, autorité du serveur (D-034)', () => {
 describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par défaut)', () => {
   it('à l’échéance : TURN_TIMEOUT puis PLAY_CARD automatique ; persistance, version, événements', async () => {
     const { service, game, events, eventsP2, repository, logLines } = await startedGame();
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
 
     // p1 ouvre le tour : aucune famille imposée → plus petite carte de la main : 5♠.
     const stored = (await repository.findById(game.id))!;
@@ -189,7 +193,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
     expect(stored.play?.hands[p1]).toEqual(H1.filter((c) => c !== 'PIQUE-5'));
     expect(stored.play?.nextPlayerId).toBe(p2);
     expect(stored.turnTimedOutAt).toBeUndefined();
-    expect(stored.turnDeadlineAt).toEqual(new Date(T0.getTime() + 20_000));
+    expect(stored.turnDeadlineAt).toEqual(new Date(T0.getTime() + 2 * TURN));
     // Deux commandes enregistrées : l'expiration (v+1), puis le coup automatique (v+2).
     expect(stored.version).toBe(game.version + 2);
     expect(stored.recentCommandIds).toContain(`auto-play:${game.id}:1:0`);
@@ -223,7 +227,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
   it('CAS A : famille du contrôle 5♠ → la plus petite ♠ (7♠), pas le 4♥ plus petit', async () => {
     const { service, game, repository } = await startedGame();
     await service.playCard(game.id, p1, 'PIQUE-5');
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const stored = (await repository.findById(game.id))!;
     // Tour 1 terminé : 5♠ puis 7♠ (automatique).
     expect(stored.play?.completedTricks[0]?.plays).toEqual([
@@ -236,7 +240,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
   it('CAS B : aucune carte de la famille du contrôle (9⭐) → plus petite carte de la main (4♥)', async () => {
     const { service, game, repository } = await startedGame();
     await service.playCard(game.id, p1, 'ETOILE-9');
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const stored = (await repository.findById(game.id))!;
     expect(stored.play?.completedTricks[0]?.plays).toEqual([
       { playerId: p1, cardId: 'ETOILE-9' },
@@ -249,7 +253,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
     for (let i = 0; i < 5; i++) {
       const { service, game, repository } = await startedGame();
       await service.playCard(game.id, p1, 'COEUR-8');
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(TURN);
       played.push((await repository.findById(game.id))!.play!.completedTricks[0]!.plays[1]!.cardId);
       jest.setSystemTime(T0);
     }
@@ -259,8 +263,8 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
   it('partie terminée avant l’échéance : aucune carte automatique', async () => {
     const { service, game, events, repository } = await startedGame();
     await service.finishGame(game.id);
-    await jest.advanceTimersByTimeAsync(30_000);
-    jest.setSystemTime(new Date(T0.getTime() + 60_000));
+    await jest.advanceTimersByTimeAsync(2 * TURN);
+    jest.setSystemTime(new Date(T0.getTime() + 3 * TURN));
     await service.handleTurnTimeout(game.id);
     await service.retryAutomaticPlay(game.id);
     const stored = (await repository.findById(game.id))!;
@@ -271,11 +275,11 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
 
   it('tour déjà joué avant l’exécution du timeout : l’ancien TURN_TIMEOUT est ignoré', async () => {
     const { service, game, events, repository } = await startedGame();
-    jest.setSystemTime(new Date(T0.getTime() + 9_000));
+    jest.setSystemTime(new Date(T0.getTime() + TURN - 1_000));
     await service.playCard(game.id, p1, 'PIQUE-5');
     const before = (await repository.findById(game.id))!;
-    // Le TURN_TIMEOUT du tour de p1 (échéance T0 + 10 s) arrive en retard.
-    jest.setSystemTime(new Date(T0.getTime() + 10_000));
+    // Le TURN_TIMEOUT du tour de p1 (échéance T0 + 20 s) arrive en retard.
+    jest.setSystemTime(new Date(T0.getTime() + TURN));
     const after = await service.handleTurnTimeout(game.id);
     expect(after.version).toBe(before.version);
     expect(after.play?.nextPlayerId).toBe(p2);
@@ -285,7 +289,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
 
   it('même TURN_TIMEOUT reçu deux fois (et reprise) : une seule carte jouée', async () => {
     const { service, game, events, repository } = await startedGame();
-    jest.setSystemTime(new Date(T0.getTime() + 10_000));
+    jest.setSystemTime(new Date(T0.getTime() + TURN));
     await Promise.all([
       service.handleTurnTimeout(game.id),
       service.handleTurnTimeout(game.id),
@@ -314,7 +318,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
       rules: testRules,
     });
     const eventsTwo = await listen(two, one.game.id, p1);
-    jest.setSystemTime(new Date(T0.getTime() + 10_000));
+    jest.setSystemTime(new Date(T0.getTime() + TURN));
     await Promise.all([
       one.service.handleTurnTimeout(one.game.id),
       two.handleTurnTimeout(one.game.id),
@@ -333,8 +337,8 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
   it('joueur ayant fui : jamais attendu, aucune carte automatique pour lui', async () => {
     const { service, game, repository, events } = await startedGame({ threePlayers: true });
     await service.flee(game.id, p2);
-    await jest.advanceTimersByTimeAsync(10_000); // p1 expire
-    await jest.advanceTimersByTimeAsync(10_000); // p3 expire (p2 ignoré)
+    await jest.advanceTimersByTimeAsync(TURN); // p1 expire
+    await jest.advanceTimersByTimeAsync(TURN); // p3 expire (p2 ignoré)
     const stored = (await repository.findById(game.id))!;
     expect(stored.play?.completedTricks[0]?.plays.map((p) => p.playerId)).toEqual([p1, p3]);
     expect(stored.play?.hands[p2]).toHaveLength(5);
@@ -355,7 +359,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
     expect((await repository.findById(game.id))!.play?.nextPlayerId).toBe(p2);
 
     // p2 ouvre le tour 2 et ne joue pas : main 7♠ 4♥ 6♣ 8♠ → 4♥.
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0]).toMatchObject({ playerId: p2, trickNumber: 2, currentTrick: [] });
     expect(spy.calls[0]!.leadCardId).toBeUndefined();
@@ -364,7 +368,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
     expect(stored.play?.nextPlayerId).toBe(p1);
 
     // p1 suit sans jouer : main 10♣ 8♥ 9⭐ 10♥, ouverture 4♥ → plus petite ♥ : 8♥.
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     expect(spy.calls[1]).toMatchObject({ playerId: p1, trickNumber: 2, leadCardId: 'COEUR-4' });
     stored = (await repository.findById(game.id))!;
     expect(stored.play?.completedTricks[1]?.plays).toEqual([
@@ -380,7 +384,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
   it('TEST 5 — partie entièrement jouée à la main dans les délais : la stratégie n’est JAMAIS appelée', async () => {
     const spy = new SpySelection();
     const { service, game, repository, events } = await startedGame({ autoCardSelection: spy });
-    // Chaque joueur choisit lui-même sa carte, à 9 s (avant l'échéance de 10 s).
+    // Chaque joueur choisit lui-même sa carte, à 19 s (avant l'échéance de 20 s).
     const manual: [PlayerId, CardId][] = [
       [p1, 'PIQUE-5'],
       [p2, 'PIQUE-9'], // p2 prend le contrôle
@@ -392,7 +396,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
       [p2, 'PIQUE-7'], // p2 sans ⭐ : carte libre, choisie par lui
     ];
     for (const [playerId, cardId] of manual) {
-      await jest.advanceTimersByTimeAsync(9_000);
+      await jest.advanceTimersByTimeAsync(TURN - 1_000);
       await service.playCard(game.id, playerId, cardId);
     }
     const finished = (await repository.findById(game.id))!;
@@ -418,7 +422,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
     const spy = new SpySelection();
     const { game, repository } = await startedGame({ autoCardSelection: spy });
     for (let i = 0; i < 30 && (await repository.findById(game.id))!.status !== 'finished'; i++) {
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(TURN);
     }
     const finished = (await repository.findById(game.id))!;
     expect(finished.status).toBe('finished');
@@ -439,7 +443,7 @@ describe('Partie complète sans aucune action : tours 1 à 4 par D-036, 5e tour 
       if (current.status === 'finished') {
         return current;
       }
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(TURN);
     }
     throw new Error('la partie ne s’est pas terminée');
   }
@@ -510,7 +514,7 @@ describe('AutomaticCardSelectionStrategy — contrat du port', () => {
     const strategy = new ScriptedSelection('PIQUE-7');
     const { service, game } = await startedGame({ autoCardSelection: strategy });
     await service.playCard(game.id, p1, 'PIQUE-5');
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
 
     expect(strategy.calls).toHaveLength(1);
     const context = strategy.calls[0]!;
@@ -535,7 +539,7 @@ describe('AutomaticCardSelectionStrategy — contrat du port', () => {
       autoCardSelection: strategy,
     });
     await service.playCard(game.id, p1, 'PIQUE-5');
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const stored = (await repository.findById(game.id))!;
     expect(stored.play?.hands[p2]).toHaveLength(5);
     expect(stored.turnTimedOutAt).toBeDefined();
@@ -563,19 +567,19 @@ describe('Reconstruction des timers après redémarrage', () => {
     return { service, timers, hub };
   }
 
-  it('arrêt à 4 s, redémarrage : réarmé pour les 6 s restantes, puis coup automatique', async () => {
+  it('arrêt à 4 s, redémarrage : réarmé pour les 16 s restantes, puis coup automatique', async () => {
     const fixture = await startedGame();
     jest.setSystemTime(new Date(T0.getTime() + 4_000));
     const { service, timers } = restart(fixture);
 
     const deadlines = await service.findTurnDeadlines();
     expect(deadlines).toEqual([
-      { gameId: fixture.game.id, deadlineAt: new Date(T0.getTime() + 10_000), timedOut: false },
+      { gameId: fixture.game.id, deadlineAt: new Date(T0.getTime() + TURN), timedOut: false },
     ]);
     service.syncTurnTimer({ ...fixture.game });
     expect(timers.has(fixture.game.id)).toBe(true);
 
-    await jest.advanceTimersByTimeAsync(5_999);
+    await jest.advanceTimersByTimeAsync(TURN - 4_000 - 1);
     expect((await fixture.repository.findById(fixture.game.id))?.play?.currentTrick).toEqual([]);
     await jest.advanceTimersByTimeAsync(1);
     expect((await fixture.repository.findById(fixture.game.id))?.play?.currentTrick).toEqual([
@@ -585,7 +589,7 @@ describe('Reconstruction des timers après redémarrage', () => {
 
   it('échéance déjà dépassée au redémarrage : traitée immédiatement, une seule carte', async () => {
     const fixture = await startedGame();
-    jest.setSystemTime(new Date(T0.getTime() + 60_000));
+    jest.setSystemTime(new Date(T0.getTime() + 3 * TURN));
     const { service } = restart(fixture);
     await service.handleTurnTimeout(fixture.game.id);
     await service.handleTurnTimeout(fixture.game.id);
@@ -596,7 +600,7 @@ describe('Reconstruction des timers après redémarrage', () => {
 
   it('arrêt entre TURN_TIMEOUT et le coup automatique : coup repris au redémarrage', async () => {
     const fixture = await startedGame({ autoCardSelection: crashingSelection });
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const pendingState = (await fixture.repository.findById(fixture.game.id))!;
     expect(pendingState.turnTimedOutAt).toBeDefined();
     expect(pendingState.play?.currentTrick).toEqual([]);
@@ -613,7 +617,7 @@ describe('Reconstruction des timers après redémarrage', () => {
 
   it('instance arrêtée entre TURN_TIMEOUT et le coup automatique : le balayage d’une autre instance le joue, une fois', async () => {
     const fixture = await startedGame({ autoCardSelection: crashingSelection });
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(TURN);
     const pendingState = (await fixture.repository.findById(fixture.game.id))!;
     expect(pendingState.turnTimedOutAt).toBeDefined();
     expect(pendingState.play?.currentTrick).toEqual([]);

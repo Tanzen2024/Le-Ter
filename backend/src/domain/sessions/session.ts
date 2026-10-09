@@ -5,6 +5,7 @@ import { InvalidPlayerCountError } from '../game/game-errors';
 import type { GameEndReason } from '../game/game';
 import type { GameId, PlayerId } from '../game/game-id';
 import type { SessionEventDraft } from './session-events';
+import { getNextPlayer } from './table-order';
 
 /**
  * SESSION (D-033, D-034) : une table de jeu persistante sur laquelle se succèdent
@@ -28,8 +29,29 @@ export function newSessionId(): SessionId {
 /** OPEN : on peut la rejoindre et y créer des parties. CLOSED : historique seulement. */
 export type SessionStatus = 'open' | 'closed';
 
-/** Délai pour choisir Poursuivre ou Quitter après une partie (D-034). */
-export const SESSION_DECISION_WINDOW_MS = 10_000;
+/** Délai pour choisir Poursuivre ou Quitter après une partie (D-034 ; 20 s depuis D-064). */
+export const SESSION_DECISION_WINDOW_MS = 20_000;
+
+/**
+ * Présentation du 5e tour automatique (D-041). Le serveur joue les dernières cartes en une
+ * fois ; les écrans les présentent UNE PAR UNE (≈ 3,2 s par carte au centre puis rangée,
+ * 2 s entre deux cartes). Les 20 s de Poursuivre/Quitter commencent après cette
+ * présentation, sinon la ronde expirerait avant d'être visible.
+ */
+export const LAST_TRICK_CARD_PRESENTATION_MS = 3_200;
+export const LAST_TRICK_CARD_GAP_MS = 2_000;
+/** Dernière carte du 4e tour encore présentée + délai de relecture de l'état par le client. */
+export const LAST_TRICK_PRESENTATION_MARGIN_MS = 6_200;
+
+/** Durée de présentation du 5e tour pour `cards` cartes jouées automatiquement. */
+export function lastTrickPresentationMs(cards: number): number {
+  if (cards <= 0) return 0;
+  return (
+    LAST_TRICK_PRESENTATION_MARGIN_MS +
+    cards * LAST_TRICK_CARD_PRESENTATION_MS +
+    (cards - 1) * LAST_TRICK_CARD_GAP_MS
+  );
+}
 
 /**
  * Présence d'un joueur dans la session. `seat` est son siège FIXE à la table
@@ -40,6 +62,12 @@ export const SESSION_DECISION_WINDOW_MS = 10_000;
 export interface SessionPlayer {
   playerId: PlayerId;
   seat: number;
+  /**
+   * Rang d'ARRIVÉE dans la session (1 = créateur, puis 2, 3…), distinct du siège. Un joueur
+   * qui revient reçoit un nouveau rang, le plus grand. Sert à désigner le nouveau J1 quand
+   * le J1 d'une partie en attente quitte la session (R-19, D-037).
+   */
+  arrival: number;
   joinedAt: Date;
   active: boolean;
   leftAt?: Date;
@@ -76,6 +104,15 @@ export interface Session {
   creatorId: PlayerId;
   /** 2, 3 ou 4, choisi à la création, immuable (garanti aussi en base). */
   maxPlayers: number;
+  /** Nom de la partie privée, fixé à la création (D-039). */
+  name?: string;
+  /** Hash bcrypt du mot de passe facultatif (D-039) ; jamais exposé. */
+  passwordHash?: string;
+  /**
+   * Réglage « détection anti-collusion » (D-043), choisi à la création, immuable. Seul le
+   * réglage existe : aucun mécanisme de détection n'est encore défini.
+   */
+  suspicionDetectionEnabled: boolean;
   /** Tous les joueurs passés par la session, actifs ou partis. */
   players: SessionPlayer[];
   /** Dernière ronde de décision (ouverte ou résolue), absente avant la 1re fin de partie. */
@@ -94,11 +131,15 @@ export interface LastGameInfo {
   endReason?: GameEndReason;
   /** J1 de cette partie (repris tel quel par la partie qui la rejoue, décision 23). */
   firstPlayerId: PlayerId;
+  /** Créateur de la partie : le seul joueur qui peut la démarrer (D-031). */
+  creatorId: PlayerId;
   winnerId?: PlayerId;
   /** Siège du gagnant dans cette partie (copie figée de son siège de session). */
   winnerSeat?: number;
   /** Joueurs de la partie (ceux qui ont reçu des cartes, ou attendent le démarrage). */
   playerIds: PlayerId[];
+  /** Cartes jouées automatiquement au 5e tour (0 ou absent : pas de 5e tour, D-041). */
+  lastTrickCards?: number;
 }
 
 /** Résumé d'une partie de la session (historique), sans aucune carte. */
@@ -132,7 +173,12 @@ export function assertAllowedMaxPlayers(maxPlayers: number): void {
 }
 
 /** Nouvelle session : ouverte, capacité fixée, son créateur au siège 0. */
-export function newSession(creatorId: PlayerId, maxPlayers: number, now: Date): Session {
+export function newSession(
+  creatorId: PlayerId,
+  maxPlayers: number,
+  now: Date,
+  details: { name?: string; passwordHash?: string; suspicionDetectionEnabled?: boolean } = {},
+): Session {
   assertAllowedMaxPlayers(maxPlayers);
   return {
     id: newSessionId(),
@@ -140,7 +186,10 @@ export function newSession(creatorId: PlayerId, maxPlayers: number, now: Date): 
     status: 'open',
     creatorId,
     maxPlayers,
-    players: [{ playerId: creatorId, seat: 0, joinedAt: now, active: true }],
+    ...(details.name !== undefined && { name: details.name }),
+    ...(details.passwordHash !== undefined && { passwordHash: details.passwordHash }),
+    suspicionDetectionEnabled: details.suspicionDetectionEnabled ?? false,
+    players: [{ playerId: creatorId, seat: 0, arrival: 1, joinedAt: now, active: true }],
     createdAt: now,
     updatedAt: now,
   };
@@ -164,6 +213,26 @@ export function seatMap(session: Session): (PlayerId | undefined)[] {
     seats[p.seat] = p.playerId;
   }
   return seats;
+}
+
+/**
+ * Joueur suivant `fromId` dans l'ORDRE D'ARRIVÉE de la session (circulaire : après le
+ * dernier arrivé vient le premier), parmi les joueurs `eligible`. Les joueurs partis restent
+ * dans l'ordre (ils peuvent servir de point de départ) mais ne sont renvoyés que s'ils sont
+ * éligibles. undefined si aucun ne l'est.
+ */
+export function nextByArrival(
+  session: Session,
+  fromId: PlayerId,
+  eligible: (playerId: PlayerId) => boolean,
+): PlayerId | undefined {
+  const order = arrivalOrder(session);
+  return order.includes(fromId) ? getNextPlayer(order, fromId, eligible) : undefined;
+}
+
+/** Tous les joueurs passés par la session, du premier au dernier arrivé. */
+export function arrivalOrder(session: Session): PlayerId[] {
+  return [...session.players].sort((a, b) => a.arrival - b.arrival).map((p) => p.playerId);
 }
 
 export function isRoundOpen(session: Session): boolean {
@@ -219,7 +288,7 @@ function removePlayer(
  * Met la ronde de décision à jour par rapport à la dernière partie et à l'heure :
  *
  * 1. la dernière partie est terminée et n'a pas encore de ronde → ouverture. L'échéance
- *    vaut fin de la partie + 10 s : elle est la même quel que soit le processus qui ouvre
+ *    vaut fin de la partie + 20 s : elle est la même quel que soit le processus qui ouvre
  *    la ronde (événement de fin, reprise après redémarrage, balayage) ;
  * 2. ronde ouverte et échéance atteinte → les joueurs sans réponse QUITTENT
  *    automatiquement (siège vacant), puis la ronde est résolue ;
@@ -232,6 +301,8 @@ export function syncDecisionRound(
   lastGame: LastGameInfo | null,
   now: Date,
   windowMs: number = SESSION_DECISION_WINDOW_MS,
+  /** Présentation du 5e tour à attendre avant les `windowMs` (D-041). */
+  presentationMs = 0,
 ): SessionTransition {
   let current = session;
   const events: SessionEventDraft[] = [];
@@ -245,7 +316,7 @@ export function syncDecisionRound(
     current.round?.gameId !== lastGame.gameId
   ) {
     const openedAt = lastGame.finishedAt;
-    const deadlineAt = new Date(openedAt.getTime() + windowMs);
+    const deadlineAt = new Date(openedAt.getTime() + presentationMs + windowMs);
     current = {
       ...current,
       round: { gameId: lastGame.gameId, openedAt, deadlineAt, decisions: {} },
@@ -368,8 +439,10 @@ export function joinSession(session: Session, playerId: PlayerId, now: Date): Se
   if (seat < 0) {
     throw new SessionFullError(session.id);
   }
+  // Nouveau rang d'arrivée, y compris pour un joueur qui revient : il est le dernier arrivé.
+  const arrival = Math.max(0, ...session.players.map((p) => p.arrival)) + 1;
   const players = session.players.filter((p) => p.playerId !== playerId);
-  players.push({ playerId, seat, joinedAt: now, active: true });
+  players.push({ playerId, seat, arrival, joinedAt: now, active: true });
   return {
     session: bump({ ...session, players }, now),
     events: [{ type: 'session:player_joined', payload: { playerId, seat } }],
@@ -377,31 +450,156 @@ export function joinSession(session: Session, playerId: PlayerId, now: Date): Se
 }
 
 /**
- * Quitter la session. Déjà parti : sans effet. Refusé tant que le joueur est membre de la
- * partie ACTIVE de la session (R-19 / R-05 non tranchées). Pendant une ronde de décision,
- * quitter vaut le choix « Quitter ». Le dernier départ FERME la session (D-033).
+ * Partie EN ATTENTE de la session, vue par un départ (R-19) : ses rôles et ses joueurs.
+ * Le créateur est le seul qui peut la démarrer (D-031) ; J1 est son premier servi (D-033).
+ */
+export interface WaitingGameRoles {
+  gameId: GameId;
+  creatorId: PlayerId;
+  firstPlayerId: PlayerId;
+  playerIds: PlayerId[];
+}
+
+/**
+ * Effet d'un départ sur la partie en attente, appliqué par GameService dans la même
+ * transaction que la session :
+ * - `remove_player` : le joueur sort de la partie ; J1 et créateur éventuellement remplacés ;
+ * - `delete` : plus aucun joueur dans la partie, elle est supprimée (aucun statut
+ *   « annulée » : la partie n'a jamais eu de cartes ni de résultat).
+ */
+export type WaitingGameDeparture =
+  | {
+      kind: 'remove_player';
+      gameId: GameId;
+      playerId: PlayerId;
+      firstPlayerId: PlayerId;
+      creatorId: PlayerId;
+    }
+  | { kind: 'delete'; gameId: GameId };
+
+export interface LeaveTransition extends SessionTransition {
+  waitingGame?: WaitingGameDeparture;
+  /**
+   * Q1 (D-037) : plus aucun joueur présent et aucune partie terminée à conserver → la
+   * session est SUPPRIMÉE (avec sa partie en attente). Avec un historique, elle est fermée.
+   */
+  deleteSession: boolean;
+}
+
+/**
+ * Quitter la session (R-19, D-037). Déjà parti : sans effet.
+ *
+ * - Partie EN COURS dont le joueur fait partie : refusé (PLAYER_IN_ACTIVE_GAME). Il termine
+ *   la partie (la fuite ne concerne que la partie) puis choisit Poursuivre ou Quitter.
+ * - Ronde Poursuivre/Quitter ouverte : quitter vaut le choix « Quitter » (D-034).
+ * - Partie EN ATTENTE : départ accepté. Le siège devient vacant, les autres ne bougent pas
+ *   (Q3), et le joueur sort aussi de la partie. S'il en était J1, le nouveau J1 est le joueur
+ *   présent suivant dans l'ordre d'ARRIVÉE (Q2). S'il en était le créateur, le droit de la
+ *   démarrer passe à J1 s'il est dans la partie, sinon au joueur de la partie suivant dans
+ *   l'ordre d'arrivée. Sans plus aucun joueur, la partie est supprimée.
+ * - Plus aucun joueur présent (Q1) : session supprimée si elle n'a aucune partie terminée,
+ *   sinon fermée (son historique est conservé).
+ *
+ * `session.creatorId` (créateur historique) n'est jamais réécrit.
  */
 export function leaveSession(
   session: Session,
   playerId: PlayerId,
   now: Date,
-  options: { inActiveGame: boolean },
-): SessionTransition {
+  context: {
+    /** Partie la plus récente de la session (lue sous verrou). */
+    lastGame: LastGameInfo | null;
+    /** La session a au moins une partie terminée (historique à conserver). */
+    hasFinishedGames: boolean;
+  },
+): LeaveTransition {
   const member = session.players.find((p) => p.playerId === playerId);
   if (!member) {
     throw new NotASessionMemberError(session.id, playerId);
   }
   if (!member.active) {
-    return { session, events: [] };
+    return { session, events: [], deleteSession: false };
   }
-  if (options.inActiveGame) {
+  const { lastGame } = context;
+  if (lastGame?.status === 'in_progress' && lastGame.playerIds.includes(playerId)) {
     throw new PlayerInActiveGameError(session.id, playerId);
   }
   if (isRoundOpen(session)) {
-    return decide(session, playerId, 'leave', now);
+    return { ...decide(session, playerId, 'leave', now), deleteSession: false };
   }
+
   const removal = removePlayer(session, playerId, now, 'leave');
-  return { session: bump(removal.session, now), events: removal.events };
+  const remaining = removal.session;
+  const waiting = lastGame?.status === 'waiting' ? waitingRoles(lastGame) : null;
+  let waitingGame = waiting
+    ? waitingGameDeparture(session, remaining, playerId, waiting)
+    : undefined;
+
+  if (remaining.status === 'closed' && waiting) {
+    // Q1 : personne ne reste ; une partie en attente ne survit pas à sa session.
+    waitingGame = { kind: 'delete', gameId: waiting.gameId };
+  }
+  if (remaining.status === 'closed' && !context.hasFinishedGames) {
+    return {
+      session: bump(remaining, now),
+      events: [
+        ...removal.events.filter((e) => e.type !== 'session:closed'),
+        { type: 'session:deleted' },
+      ],
+      ...(waitingGame && { waitingGame }),
+      deleteSession: true,
+    };
+  }
+  return {
+    session: bump(remaining, now),
+    events: removal.events,
+    ...(waitingGame && { waitingGame }),
+    deleteSession: false,
+  };
+}
+
+function waitingRoles(game: LastGameInfo): WaitingGameRoles {
+  return {
+    gameId: game.gameId,
+    creatorId: game.creatorId,
+    firstPlayerId: game.firstPlayerId,
+    playerIds: game.playerIds,
+  };
+}
+
+/**
+ * Q2 et Q3 sur la partie en attente. `before` : la session avant le départ (ordre
+ * d'arrivée complet) ; `after` : après (joueurs encore présents). undefined si le joueur
+ * n'est ni dans la partie, ni son créateur, ni son J1 : la partie ne change pas.
+ */
+function waitingGameDeparture(
+  before: Session,
+  after: Session,
+  playerId: PlayerId,
+  game: WaitingGameRoles,
+): WaitingGameDeparture | undefined {
+  const concerned =
+    game.playerIds.includes(playerId) ||
+    game.creatorId === playerId ||
+    game.firstPlayerId === playerId;
+  if (!concerned) {
+    return undefined;
+  }
+  const players = game.playerIds.filter((id) => id !== playerId);
+  const firstPlayerId =
+    game.firstPlayerId === playerId
+      ? nextByArrival(before, playerId, (id) => isActiveSessionMember(after, id))
+      : game.firstPlayerId;
+  const creatorId =
+    game.creatorId !== playerId
+      ? game.creatorId
+      : firstPlayerId !== undefined && players.includes(firstPlayerId)
+        ? firstPlayerId
+        : nextByArrival(before, playerId, (id) => players.includes(id));
+  if (players.length === 0 || firstPlayerId === undefined || creatorId === undefined) {
+    return { kind: 'delete', gameId: game.gameId };
+  }
+  return { kind: 'remove_player', gameId: game.gameId, playerId, firstPlayerId, creatorId };
 }
 
 // --- Erreurs ----------------------------------------------------------------------------
@@ -443,6 +641,14 @@ export class SessionFullError extends Error {
 }
 
 /** maxPlayers est fixé à la création de la session et ne change plus (D-034). */
+/** Partie privée protégée (D-039) : mot de passe absent ou incorrect à l'arrivée. */
+export class SessionPasswordInvalidError extends Error {
+  constructor(readonly sessionId: SessionId) {
+    super(`Mot de passe refusé pour la session ${sessionId}`);
+    this.name = 'SessionPasswordInvalidError';
+  }
+}
+
 export class SessionMaxPlayersImmutableError extends Error {
   constructor(
     readonly sessionId: SessionId,
@@ -473,9 +679,9 @@ export class NotASessionMemberError extends Error {
 }
 
 /**
- * Quitter la session est refusé tant que le joueur est membre de sa partie active :
- * quitter une partie en attente (R-19) ou en cours (fuite, R-05) relève de règles encore
- * ouvertes, le serveur refuse plutôt que de deviner.
+ * Quitter la session est refusé tant que le joueur est membre de sa partie EN COURS
+ * (R-19, D-037) : il la termine (la fuite ne concerne que la partie), puis choisit
+ * Poursuivre ou Quitter. Une partie EN ATTENTE, elle, se quitte (D-037).
  */
 export class PlayerInActiveGameError extends Error {
   constructor(
@@ -498,7 +704,7 @@ export class SessionGameInProgressError extends Error {
 /**
  * Ronde Poursuivre/Quitter en cours : la partie suivante attend sa résolution, et une
  * arrivée pendant la ronde est refusée (le cas n'est pas défini : le joueur réessaie
- * après au plus 10 s, plutôt que le serveur ne lui attribue un choix).
+ * après au plus 20 s, plutôt que le serveur ne lui attribue un choix).
  */
 export class SessionDecisionInProgressError extends Error {
   constructor(readonly sessionId: SessionId) {

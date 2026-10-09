@@ -19,6 +19,14 @@ const [alice, bob, carol, dave, erin] = CONTRACT_PLAYER_NAMES.map(testPlayerId) 
   PlayerId,
 ];
 const mallory = testPlayerId('mallory');
+
+/**
+ * Partie telle qu'elle est PERSISTÉE : sans le pseudo des joueurs, donnée d'affichage que
+ * PostgreSQL relit dans `users` (D-064) et que la mémoire ne connaît pas.
+ */
+export function withoutUsernames(game: Game | null): Game | null {
+  return game && { ...game, players: game.players.map(({ username: _username, ...p }) => p) };
+}
 const nobody = testPlayerId('nobody');
 
 /**
@@ -50,7 +58,7 @@ export function describeGameRepositoryContract(
       const game = { ...waitingGame([alice, bob], 4), stakeAmount: 100 };
       await repository.insert(game);
 
-      expect(await repository.findById(game.id)).toEqual(game);
+      expect(withoutUsernames(await repository.findById(game.id))).toEqual(game);
     });
 
     it('relit une partie démarrée (mains, tours, contrôle) à l’identique', async () => {
@@ -63,7 +71,7 @@ export function describeGameRepositoryContract(
       game.recentCommandIds = ['cmd-1'];
       await repository.insert(game);
 
-      expect(await repository.findById(game.id)).toEqual(game);
+      expect(withoutUsernames(await repository.findById(game.id))).toEqual(game);
     });
 
     it('renvoie null pour une partie inconnue', async () => {
@@ -100,7 +108,7 @@ export function describeGameRepositoryContract(
       delete next.turnDeadlineAt;
       await repository.save(next, 1);
 
-      expect(await repository.findById(game.id)).toEqual(next);
+      expect(withoutUsernames(await repository.findById(game.id))).toEqual(next);
     });
 
     it('refuse une écriture basée sur une version périmée, sans rien modifier', async () => {
@@ -155,7 +163,7 @@ export function describeGameRepositoryContract(
         1,
       );
 
-      expect(await repository.findById(b.id)).toEqual(b);
+      expect(withoutUsernames(await repository.findById(b.id))).toEqual(b);
     });
 
     it('ne renvoie que les parties actives du joueur', async () => {

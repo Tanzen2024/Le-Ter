@@ -66,6 +66,12 @@ export function nextOccupiedSeat<T>(
 /** Contexte de la session pour choisir J1 d'une nouvelle partie. */
 export interface FirstPlayerContext<T> {
   creatorId: T;
+  /**
+   * Tous les joueurs passés par la session, du premier au dernier ARRIVÉ (R-19, D-037) : si
+   * le créateur est parti avant la première partie, J1 est le présent qui le suit dans cet
+   * ordre.
+   */
+  arrivalOrder?: readonly T[];
   /** Nombre de sièges de la table (maxPlayers de la session). */
   seatCount: number;
   /** Joueur PRÉSENT assis à ce siège, undefined si le siège est vacant. */
@@ -87,8 +93,9 @@ export type FirstPlayerDecision<T> =
   | { kind: 'none' };
 
 /**
- * J1 d'une nouvelle partie (D-033, D-034) :
- * - première partie de la session : le créateur de la session ;
+ * J1 d'une nouvelle partie (D-033, D-034, D-037) :
+ * - première partie de la session : le créateur de la session ; s'il est parti (partie en
+ *   attente quittée, R-19), le joueur présent qui le suit dans l'ordre d'ARRIVÉE ;
  * - partie suivante : le gagnant de la dernière partie terminée s'il est encore présent ;
  * - sinon : à partir du SIÈGE du gagnant, le premier siège occupé dans le sens antihoraire
  *   (tour complet de la table ; jamais un retour automatique au créateur, jamais un choix
@@ -98,9 +105,13 @@ export type FirstPlayerDecision<T> =
  */
 export function determineFirstPlayer<T>(ctx: FirstPlayerContext<T>): FirstPlayerDecision<T> {
   if (!ctx.previousGame) {
-    return ctx.isActive(ctx.creatorId)
-      ? { kind: 'first', playerId: ctx.creatorId }
-      : { kind: 'none' };
+    if (ctx.isActive(ctx.creatorId)) {
+      return { kind: 'first', playerId: ctx.creatorId };
+    }
+    const next = ctx.arrivalOrder?.includes(ctx.creatorId)
+      ? getNextPlayer(ctx.arrivalOrder, ctx.creatorId, ctx.isActive)
+      : undefined;
+    return next === undefined ? { kind: 'none' } : { kind: 'first', playerId: next };
   }
   const { winnerId, winnerSeat, tieFirstPlayerId } = ctx.previousGame;
   if (tieFirstPlayerId !== undefined) {

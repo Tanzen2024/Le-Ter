@@ -8,10 +8,16 @@ import type { SqlClient, SqlExecutor } from '../../src/database/sql-client';
 import type { RandomSource } from '../../src/domain/cards/random-source';
 import type { TerRuleSet } from '../../src/domain/rules/rule-set';
 import { PostgresGameRepository } from '../../src/repositories/postgres-game.repository';
+import { PasswordService } from '../../src/services/auth/password.service';
 import { PostgresSessionRepository } from '../../src/repositories/postgres-session.repository';
 import { SessionService } from '../../src/services/sessions/session.service';
 import { InMemorySessionEventHub } from '../../src/websocket/session-event-publisher';
+import type { AuthService } from '../../src/services/auth/auth.service';
 import { createAuthService } from '../../src/services/auth/create-auth-service';
+import type { ChatService } from '../../src/services/chat/chat.service';
+import type { DetectionAdminService } from '../../src/services/detection/detection-admin.service';
+import type { DetectionSettingsService } from '../../src/services/detection/detection-settings.service';
+import type { GeolocationService } from '../../src/services/detection/geolocation.service';
 import { GameService, type ParticipationPolicy } from '../../src/services/game/game.service';
 import {
   GameTimerRegistry,
@@ -21,6 +27,7 @@ import { DeadlineSupervisor } from '../../src/services/timers/deadline-superviso
 import type { AutomaticCardSelectionStrategy } from '../../src/domain/game/automatic-card-selection';
 import { singleActiveGameParticipation } from '../../src/services/game/participation-policies';
 import { createLogger, type Logger } from '../../src/utils/logger';
+import { testAdminDependencies } from './admin';
 import type {
   GameEventPublisher,
   GameEventSubscriber,
@@ -31,6 +38,8 @@ import { defaultTestRandom } from './random';
 
 export interface GameApiTestContext {
   app: Express;
+  /** Authentification de l'application (connexions temps réel des tests). */
+  auth: AuthService;
   games: GameService;
   sessions: SessionService;
   sessionEvents: InMemorySessionEventHub;
@@ -60,10 +69,22 @@ export function createGameApiTestApp(
     random?: RandomSource;
     bus?: GameEventPublisher & GameEventSubscriber;
     gameWritesPerMinute?: number;
-    /** Durées des timers (10 s par défaut, comme en production, D-034). */
+    /** Durées des timers (20 s par défaut, comme en production, D-034, D-064). */
     turnDurationMs?: number;
     decisionWindowMs?: number;
     autoCardSelection?: AutomaticCardSelectionStrategy;
+    /** Présentation du 5e tour avant la ronde (D-041) ; 0 par défaut dans les tests. */
+    lastTrickPresentationMs?: (cards: number) => number;
+    /** Partie suivante automatique après « Poursuivre » (D-042) ; désactivée par défaut. */
+    autoNextGame?: boolean;
+    /** Chat de partie (D-045) ; absent, ses routes ne sont pas montées. */
+    chat?: ChatService;
+    /** Géolocalisation de la détection (D-046) ; absente, ses routes ne sont pas montées. */
+    geolocation?: GeolocationService;
+    /** Administration de la détection (D-049) ; absente, 503. */
+    detectionAdmin?: DetectionAdminService;
+    /** Interrupteur global de la détection (D-053) ; absent, 503. */
+    detectionSettings?: DetectionSettingsService;
   } = {},
 ): GameApiTestContext {
   const logLines: Record<string, unknown>[] = [];
@@ -104,6 +125,12 @@ export function createGameApiTestApp(
     publisher: sessionEvents,
     logger,
     timers: sessionTimers,
+    // Coût bcrypt minimal : les mots de passe de partie (D-039) restent rapides en test.
+    passwords: new PasswordService(4),
+    // Échéances de ronde exactes : la présentation du 5e tour (D-041) est testée à part.
+    lastTrickPresentationMs: options.lastTrickPresentationMs ?? (() => 0),
+    // Les tests historiques créent la partie suivante eux-mêmes (POST …/games).
+    autoNextGame: options.autoNextGame ?? false,
     decisionWindowMs: options.decisionWindowMs,
   });
   const supervisor = new DeadlineSupervisor({ games, sessions, logger });
@@ -114,9 +141,15 @@ export function createGameApiTestApp(
     sessions,
     authRateLimits: NO_RATE_LIMITS,
     gameRateLimits: { writes: { windowMs: 60_000, max: options.gameWritesPerMinute ?? 100_000 } },
+    chat: options.chat,
+    geolocation: options.geolocation,
+    detectionAdmin: options.detectionAdmin,
+    detectionSettings: options.detectionSettings,
+    admin: testAdminDependencies(sql, auth, logger),
   });
   return {
     app,
+    auth,
     games,
     sessions,
     sessionEvents,

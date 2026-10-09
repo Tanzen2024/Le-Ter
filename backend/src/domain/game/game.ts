@@ -44,6 +44,11 @@ export interface PlayerInGame {
   joinedAt: Date;
   /** Présent si le joueur a fui la partie (spec §2.5). */
   fledAt?: Date;
+  /**
+   * Pseudo du compte, pour l'affichage seulement (D-064) : lu dans `users` au chargement de
+   * la partie, jamais persisté avec elle ni utilisé par les règles. Absent si inconnu.
+   */
+  username?: string;
 }
 
 export interface TrickPlay {
@@ -192,6 +197,17 @@ export interface Game {
    * reste à jouer. Absent tant que le tour n'a pas expiré.
    */
   turnTimedOutAt?: Date;
+  /**
+   * Délai de démarrage (D-065), fixé à la création : présent seulement pour les tables de
+   * tournoi. Absent : seul le créateur démarre, sans échéance (parties privées inchangées).
+   */
+  autoStartDelayMs?: number;
+  /**
+   * Échéance PERSISTÉE du démarrage automatique (D-065) : posée quand la partie en attente
+   * atteint 2 joueurs, jamais repoussée par les arrivées suivantes, retirée sous 2 joueurs et
+   * au démarrage. Voir `syncStartDeadline`.
+   */
+  startDeadlineAt?: Date;
   /** Derniers commandId traités, pour ignorer les doubles soumissions. */
   recentCommandIds: string[];
   /**
@@ -214,4 +230,28 @@ export function isActive(game: Game): boolean {
 
 export function activePlayerIds(game: Game): PlayerId[] {
   return game.players.filter((p) => !p.fledAt).map((p) => p.playerId);
+}
+
+/**
+ * Échéance de démarrage automatique d'une partie EN ATTENTE (D-065), recalculée après chaque
+ * changement de joueurs. Sans délai de démarrage (parties privées), ne fait rien.
+ *
+ * - 2 joueurs ou plus, sans échéance : l'échéance part MAINTENANT (arrivée du 2e joueur) ;
+ * - échéance déjà posée : inchangée (les 3e et 4e arrivées ne la repoussent pas) ;
+ * - moins de 2 joueurs : l'échéance est retirée (un joueur seul attend, sans compte à rebours).
+ *
+ * Renvoie true si l'échéance a changé.
+ */
+export function syncStartDeadline(game: Game, now: Date): boolean {
+  if (game.status !== 'waiting' || game.autoStartDelayMs === undefined) {
+    return false;
+  }
+  if (game.players.length < MIN_PLAYERS_TO_START) {
+    if (game.startDeadlineAt === undefined) return false;
+    game.startDeadlineAt = undefined;
+    return true;
+  }
+  if (game.startDeadlineAt !== undefined) return false;
+  game.startDeadlineAt = new Date(now.getTime() + game.autoStartDelayMs);
+  return true;
 }

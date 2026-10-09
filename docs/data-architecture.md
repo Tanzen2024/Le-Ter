@@ -129,7 +129,7 @@ session_decision_rounds                    session_decisions
 ├── game_id     uuid PK FK → games         ├── game_id    uuid FK → rounds (CASCADE)
 ├── session_id  uuid FK → sessions         ├── player_id  uuid FK → users
 ├── opened_at   timestamptz (= fin partie) ├── choice     continue | leave | auto_leave
-├── deadline_at timestamptz (+ 10 s)       ├── decided_at timestamptz
+├── deadline_at timestamptz (+ 20 s)       ├── decided_at timestamptz
 └── resolved_at timestamptz                └── PK (game_id, player_id)
 
 games      + turn_started_at, active_player_id (FK users), turn_timed_out_at
@@ -270,3 +270,16 @@ serveur ni Docker n'est nécessaire pour `npm test`. Redis est simulé par un co
 mémoire (`tests/fixtures/in-memory-pubsub.ts`) qui respecte ses garanties (asynchrone,
 ordonné, sans persistance). Un test d'intégration contre un vrai Redis reste à ajouter avec
 la CI.
+
+**Mémoire des workers Jest** (`workerIdleMemoryLimit: "1GB"`, `backend/package.json`). Une
+base PGlite migrée occupe environ 130 à 270 Mo, que le processus ne rend pas au système après
+`close()` (mémoire WebAssembly). Jest réutilise ses workers (6 avec `maxWorkers: "50%"` sur
+12 cœurs) d'une suite à l'autre : chaque worker grossissait en enchaînant les 28 suites
+PGlite, jusqu'à dépasser la RAM (7,7 Go) et faire swapper la machine. Mesure : la suite
+`register-login` passait de 7,6 s (seule) à 105 s (suite complète), soit environ 14 fois plus
+lent, et son premier test (330 ms de démarrage à froid : premier appel HTTP, premier bcrypt,
+premières requêtes) dépassait le délai de 5 s. Aucune ressource n'était laissée ouverte :
+chaque suite ferme sa base, et les timers sont `unref()` et annulables. La limite recycle un
+worker dès qu'il dépasse 1 Go entre deux suites. Avec elle, la suite complète passe de 405 s à
+302 s, `register-login` de 105 s à 28 s et son premier test de plus de 5 s à 0,5 s, sans
+augmenter aucun délai.

@@ -35,6 +35,21 @@ export interface TokenPair {
   refreshToken: string;
 }
 
+/** Résultat d'une vérification d'identifiants ; `reason` ne sort jamais vers le client. */
+export type CredentialCheck =
+  | { ok: true; user: User }
+  | {
+      ok: false;
+      reason: 'unknown_account' | 'invalid_credentials' | 'account_disabled';
+      userId?: UserId;
+    };
+
+export interface OpenedSession extends TokenPair {
+  user: PublicUser;
+  sessionId: string;
+  startedAt: Date;
+}
+
 /** Contexte de journalisation d'un appel (requête HTTP d'origine). */
 export interface CallMeta {
   requestId?: string;
@@ -103,28 +118,60 @@ export class AuthService {
 
   async login(input: LoginInput, meta: CallMeta = {}): Promise<TokenPair & { user: PublicUser }> {
     const log = this.deps.logger.child({ requestId: meta.requestId, action: 'LOGIN' });
+    const check = await this.verifyCredentials(input);
+    if (!check.ok) {
+      // Compte inconnu et mauvais mot de passe : même raison journalisée qu'avant.
+      const reason = check.reason === 'unknown_account' ? 'invalid_credentials' : check.reason;
+      log.warn('login failed', { reason, userId: check.userId });
+      throw check.reason === 'account_disabled'
+        ? new AccountDisabledError()
+        : new InvalidCredentialsError();
+    }
+    const { user, accessToken, refreshToken } = await this.openSession(check.user, log);
+    return { user, accessToken, refreshToken };
+  }
+
+  /**
+   * Vérifie email et mot de passe SANS ouvrir de session (temps constant si le compte est
+   * inconnu). Utilisé par `login` et par la connexion d'administration, qui contrôle le rôle
+   * AVANT d'ouvrir une session (une connexion refusée ne révoque pas la session existante).
+   */
+  async verifyCredentials(input: LoginInput): Promise<CredentialCheck> {
     const user = await this.deps.users.findByEmail(input.email);
     const valid = user
       ? await this.deps.passwords.verifyPassword(input.password, user.passwordHash)
       : await this.deps.passwords.verifyAgainstDummy(input.password);
-    if (!user || !valid) {
-      log.warn('login failed', { reason: 'invalid_credentials', userId: user?.id });
-      throw new InvalidCredentialsError();
-    }
-    if (user.status !== 'active') {
-      log.warn('login failed', { reason: 'account_disabled', userId: user.id });
-      throw new AccountDisabledError();
-    }
+    if (!user) return { ok: false, reason: 'unknown_account' };
+    if (!valid) return { ok: false, reason: 'invalid_credentials', userId: user.id };
+    if (user.status !== 'active') return { ok: false, reason: 'account_disabled', userId: user.id };
+    return { ok: true, user };
+  }
 
+  /**
+   * Ouvre la session d'un compte déjà vérifié (R-32 : révoque la précédente). Avec
+   * `absoluteLifetimeSeconds`, la session ne peut pas durer au-delà (administration).
+   */
+  async openSession(
+    user: User,
+    log = this.deps.logger.child({ action: 'LOGIN' }),
+    options: { absoluteLifetimeSeconds?: number } = {},
+  ): Promise<OpenedSession> {
     const now = this.clock();
     const sessionId = randomUUID();
     const refresh = generateRefreshToken();
+    const sessionExpiresAt =
+      options.absoluteLifetimeSeconds === undefined
+        ? undefined
+        : new Date(now.getTime() + options.absoluteLifetimeSeconds * 1000);
+    const refreshExpiry = this.refreshExpiry(now);
     const revoked = await this.deps.sessions.startSession(user.id, {
       id: randomUUID(),
       sessionId,
       tokenHash: refresh.hash,
       createdAt: now,
-      expiresAt: this.refreshExpiry(now),
+      expiresAt:
+        sessionExpiresAt && sessionExpiresAt < refreshExpiry ? sessionExpiresAt : refreshExpiry,
+      ...(sessionExpiresAt && { sessionExpiresAt }),
     });
     if (revoked > 0) {
       log.info('previous session revoked', { userId: user.id, reason: 'new_login', revoked });
@@ -132,6 +179,8 @@ export class AuthService {
     log.info('login succeeded', { userId: user.id, sessionId });
     return {
       user: toPublicUser(user),
+      sessionId,
+      startedAt: now,
       accessToken: this.deps.accessTokens.sign(
         { userId: user.id, role: user.role, sessionId },
         now,

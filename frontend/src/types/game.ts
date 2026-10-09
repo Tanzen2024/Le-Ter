@@ -12,6 +12,8 @@ export interface PlayerInGame {
   tablePosition?: number;
   joinedAt: string;
   fledAt?: string;
+  /** Pseudo du compte, lu par le serveur (D-064) ; absent s'il est inconnu. */
+  username?: string;
 }
 
 export interface TrickPlay {
@@ -54,10 +56,7 @@ export type InstantWinCombination =
   | 'THREE_THREES';
 
 export type GameEndReason =
-  | 'INSTANT_WIN'
-  | 'CONTROL_AFTER_LAST_TRICK'
-  | 'INSTANT_WIN_TIE'
-  | 'ADMIN_STOP';
+  'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK' | 'INSTANT_WIN_TIE' | 'ADMIN_STOP';
 
 export interface GameResult {
   winnerId: string;
@@ -97,6 +96,12 @@ export interface GameView {
   turnStartedAt?: string;
   turnDeadlineAt?: string;
   turnTimedOutAt?: string;
+  /**
+   * Table de tournoi (D-065) : démarrage automatique par le serveur. `startDeadlineAt` :
+   * échéance fixée dès 2 joueurs (le créateur peut démarrer avant) ; absente sinon.
+   */
+  autoStart?: boolean;
+  startDeadlineAt?: string;
   endReason?: GameEndReason;
   /** Égalité de priorité des mains instantanées : la partie est rejouée aussitôt. */
   instantWinTie?: { rank: number; playerIds: string[] };
