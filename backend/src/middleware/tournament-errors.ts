@@ -74,7 +74,7 @@ const SIMPLE: readonly [abstract new (...args: never[]) => Error, number, string
     TooManyWaitingTournamentsError,
     409,
     'TOO_MANY_WAITING_TOURNAMENTS',
-    `Limite atteinte : ${TOURNAMENT_LIMITS.maxWaitingTournaments} tournois sont déjà en attente de démarrage. Réessaie dès que l’un d’eux aura commencé.`,
+    `Limite atteinte : ${TOURNAMENT_LIMITS.maxWaitingTournaments} tournois ont déjà leurs inscriptions ouvertes ou sur le point d’ouvrir. Réessaie dès que les inscriptions de l’un d’eux seront closes.`,
   ],
   [
     TournamentLockedError,

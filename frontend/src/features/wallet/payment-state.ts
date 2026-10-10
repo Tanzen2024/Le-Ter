@@ -1,3 +1,4 @@
+import { formatFcfa as formatXafAmount } from '../../lib/money';
 import type { PaymentView } from '../../types/wallet';
 
 /** Montants d'achat proposés (D-050), en FCFA ; identiques à ceux acceptés par le serveur. */
@@ -11,7 +12,7 @@ export function formatNumber(value: number): string {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
-export const formatFcfa = (amount: number) => `${formatNumber(amount)} FCFA`;
+export const formatFcfa = (amount: number) => formatXafAmount(amount);
 
 export const formatTokens = (tokens: number) =>
   `${formatNumber(tokens)} jeton${tokens > 1 ? 's' : ''}`;

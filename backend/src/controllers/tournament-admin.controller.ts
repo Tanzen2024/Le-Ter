@@ -37,6 +37,8 @@ export function createTournamentAdminController(tournaments: TournamentService) 
         tournament: {
           ...toTournamentSummary(snapshot.tournament),
           registeredCount: snapshot.registeredCount,
+          // Non publié : coefficients en vigueur du calcul (D-071) ; absents une fois figés.
+          ...(snapshot.tokenCoefficients && { tokenCoefficients: snapshot.tokenCoefficients }),
         },
       });
     },

@@ -94,7 +94,7 @@ export function createTournamentRouter(
  * la session serveur (403). Toute action de gestion est auditée (admin_audit_log).
  *
  *   GET   /settings                    paramètres plateforme
- *   PATCH /settings                    modifier (commission, jetons, mise, limites, transition)
+ *   PATCH /settings                    modifier (commission, coefficients, limites, transition, poids)
  *   GET   /                            liste (?status=A,B)
  *   POST  /                            créer un tournoi publié
  *   GET   /:tournamentId               détail

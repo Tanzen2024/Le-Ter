@@ -2,7 +2,7 @@ import { Router, type Request } from 'express';
 
 import { createAuthController } from '../controllers/auth.controller';
 import { createRateLimiter } from '../middleware/rate-limit';
-import { createRequireAuth } from '../middleware/require-auth';
+import { createRequireAuth, getAuth } from '../middleware/require-auth';
 import type { AuthService } from '../services/auth/auth.service';
 import type { Logger } from '../utils/logger';
 
@@ -14,6 +14,8 @@ export interface AuthRateLimits {
   /** Tentatives de connexion par IP. Large : de nombreux mobiles partagent une IP (CGNAT). */
   loginPerIp: { windowMs: number; max: number };
   refresh: { windowMs: number; max: number };
+  /** Changements de mot de passe par utilisateur authentifié (essais du mot de passe actuel). */
+  passwordChange?: { windowMs: number; max: number };
 }
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -23,6 +25,7 @@ export const DEFAULT_AUTH_RATE_LIMITS: AuthRateLimits = {
   loginPerAccount: { windowMs: FIFTEEN_MINUTES, max: 10 },
   loginPerIp: { windowMs: FIFTEEN_MINUTES, max: 100 },
   refresh: { windowMs: FIFTEEN_MINUTES, max: 300 },
+  passwordChange: { windowMs: FIFTEEN_MINUTES, max: 10 },
 };
 
 export function createAuthRouter(
@@ -60,6 +63,16 @@ export function createAuthRouter(
   );
   router.post('/logout', controller.logout);
   router.get('/me', createRequireAuth(auth, logger), controller.me);
+  router.post(
+    '/password',
+    createRequireAuth(auth, logger),
+    createRateLimiter({
+      name: 'password-change',
+      ...(limits.passwordChange ?? DEFAULT_AUTH_RATE_LIMITS.passwordChange!),
+      keyOf: (_req, res) => getAuth(res).userId,
+    }),
+    controller.changePassword,
+  );
 
   return router;
 }

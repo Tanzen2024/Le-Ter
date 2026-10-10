@@ -31,7 +31,7 @@ export function createSessionGameInstance(
     'repository' | 'participationPolicy' | 'logger' | 'sessionSeats'
   > & {
     participationPolicy?: (repository: PostgresGameRepository) => ParticipationPolicy;
-    /** Délai Poursuivre/Quitter (20 s par défaut, D-034, D-064). */
+    /** Délai Poursuivre/Quitter (15 s par défaut, D-034, D-068). */
     decisionWindowMs?: number;
     /** Présentation du 5e tour avant la ronde (D-041) ; 0 par défaut dans les tests. */
     lastTrickPresentationMs?: (cards: number) => number;

@@ -189,8 +189,10 @@ export interface TournamentProposalInput {
 /** Paramètres plateforme (rôle admin). */
 export interface TournamentSettings {
   platformFeePercent: number;
-  initialTournamentTokens: number;
-  defaultTournamentStake: number;
+  /** Jetons de départ = prix d'entrée × coefficient (D-071), calculés par le serveur. */
+  initialTokensCoefficient: number;
+  /** Mise par partie = prix d'entrée × coefficient (D-071), calculée par le serveur. */
+  stakePerGameCoefficient: number;
   maximumPendingTournamentsPerPlayer: number;
   tournamentTransitionMinutes: number;
   /** Poids du classement (D-062), en % ; somme exactement 100 (vérifiée par le serveur). */

@@ -99,7 +99,7 @@ describe('TournamentScheduler — base indisponible', () => {
     expect(s.advance).toHaveBeenCalledTimes(1);
   });
 
-  it("start() : un échec en arrière-plan ne produit aucun rejet non géré", async () => {
+  it('start() : un échec en arrière-plan ne produit aucun rejet non géré', async () => {
     const unhandled = jest.fn();
     process.on('unhandledRejection', unhandled);
     try {

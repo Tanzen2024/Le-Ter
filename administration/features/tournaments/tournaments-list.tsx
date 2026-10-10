@@ -19,6 +19,14 @@ import { TOURNAMENT_STATUS } from '@/lib/labels';
 import type { TournamentSummary } from '@/types/admin';
 
 import { tournamentLabel, tournamentsQuery } from './api';
+import {
+  apiStatusFilter,
+  onCategoryChange,
+  onStatusChange,
+  selectedCategory,
+  statusesOfCategory,
+  TOURNAMENT_CATEGORIES,
+} from './status-categories';
 
 const PAGE = 25;
 
@@ -68,12 +76,24 @@ const columns: Column<TournamentSummary>[] = [
 
 export function TournamentsList() {
   const router = useRouter();
-  const { filters, page, setFilter, setPage, reset } = useListState([
+  const { filters, page, setFilter, setFilters, setPage, reset } = useListState([
+    'categorie',
     'status',
     'du',
     'au',
   ] as const);
-  const query = useQuery(tournamentsQuery(filters.status || undefined));
+  // Catégorie et statut synchronisés (le statut précis prime) ; une catégorie seule filtre
+  // sur tous ses statuts, par la liste de statuts que l'API accepte déjà.
+  const category = selectedCategory(filters);
+  // « Statut » ne propose que les statuts de la catégorie affichée ; un statut d'URL hors de
+  // toute catégorie reste affiché (et sélectionné) tel quel.
+  const statusOptions = useMemo(() => {
+    const available: readonly string[] = statusesOfCategory(category);
+    return filters.status && !available.includes(filters.status)
+      ? [...available, filters.status]
+      : available;
+  }, [category, filters.status]);
+  const query = useQuery(tournamentsQuery(apiStatusFilter(filters)));
   // L'API existante filtre par statut ; la période est filtrée ici, sur la date de début.
   const filtered = useMemo(() => {
     const from = filters.du ? new Date(localDayStartIso(filters.du)).getTime() : -Infinity;
@@ -105,15 +125,30 @@ export function TournamentsList() {
       <Card>
         <FilterBar onReset={reset}>
           <Select
-            aria-label="Statut"
-            value={filters.status}
-            onChange={(e) => setFilter('status', e.target.value)}
+            aria-label="Catégorie"
+            value={category}
+            onChange={(e) => setFilters(onCategoryChange(e.target.value, filters))}
             className="w-auto"
           >
-            <option value="">Tous les statuts</option>
-            {Object.entries(TOURNAMENT_STATUS).map(([value, [text]]) => (
+            <option value="">Toutes les catégories</option>
+            {TOURNAMENT_CATEGORIES.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </Select>
+          <Select
+            aria-label="Statut"
+            value={filters.status}
+            onChange={(e) => setFilters(onStatusChange(e.target.value, filters))}
+            className="w-auto"
+          >
+            <option value="">
+              {category ? 'Tous les statuts de la catégorie' : 'Tous les statuts'}
+            </option>
+            {statusOptions.map((value) => (
               <option key={value} value={value}>
-                {text}
+                {TOURNAMENT_STATUS[value]?.[0] ?? value}
               </option>
             ))}
           </Select>

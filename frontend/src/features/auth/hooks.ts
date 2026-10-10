@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { authApi } from '../../services/auth-api';
 import { useAuthStore } from '../../stores/auth-store';
-import type { LoginPayload, PublicUser, RegisterPayload } from '../../types/auth';
+import type {
+  ChangePasswordPayload,
+  LoginPayload,
+  PublicUser,
+  RegisterPayload,
+} from '../../types/auth';
 import { signOut, storeSession, withAccessToken } from './session';
 
 /** Clé TanStack Query de l'utilisateur courant (état serveur). */
@@ -36,7 +41,10 @@ export function useRegister() {
   return useMutation({
     mutationFn: async (payload: RegisterPayload) => {
       await authApi.register(payload);
-      await login.mutateAsync({ email: payload.email, password: payload.password });
+      await login.mutateAsync({
+        email: payload.email,
+        password: payload.password,
+      });
     },
   });
 }
@@ -46,5 +54,13 @@ export function useLogout() {
   return useMutation({
     mutationFn: signOut,
     onSettled: () => queryClient.clear(),
+  });
+}
+
+/** Changement du mot de passe du compte connecté ; la session reste ouverte. */
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (payload: ChangePasswordPayload) =>
+      withAccessToken((token) => authApi.changePassword(token, payload)),
   });
 }

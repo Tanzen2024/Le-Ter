@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { AccessibilityInfo, Animated, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../src/components/ui/Button';
+import { CountrySelectField } from '../../src/components/ui/CountrySelectField';
 import { TextField } from '../../src/components/ui/TextField';
 import { colors, spacing } from '../../src/constants/theme';
 import {
@@ -15,12 +16,13 @@ import {
   useDenseAuthLayout,
 } from '../../src/features/auth/AuthScreen';
 import { useRegister } from '../../src/features/auth/hooks';
-import {
-  normalizePhone,
-  validateCredentialsStep,
-  validateIdentityStep,
-} from '../../src/features/auth/validation';
+import { validateCredentialsStep, validateIdentityStep } from '../../src/features/auth/validation';
 import { ApiError } from '../../src/lib/api-client';
+import {
+  findPhoneCountry,
+  nationalExample,
+  sanitizeNationalInput,
+} from '../../src/lib/phone-countries';
 import type { RegisterPayload } from '../../src/types/auth';
 
 type Field = keyof RegisterPayload;
@@ -33,6 +35,7 @@ const EMPTY: RegisterPayload = {
   lastName: '',
   username: '',
   email: '',
+  country: '',
   phone: '',
   password: '',
   confirmPassword: '',
@@ -58,6 +61,14 @@ export default function RegisterScreen() {
     },
   });
 
+  // Nouveau pays : l'ancien numéro (validé pour un autre indicatif) est effacé.
+  const chooseCountry = (code: string) => {
+    if (code === values.country) return;
+    setValues((v) => ({ ...v, country: code, phone: '' }));
+    setErrors((e) => ({ ...e, country: undefined, phone: undefined }));
+  };
+  const country = values.country ? findPhoneCountry(values.country) : undefined;
+
   const next = () => {
     const found = validateIdentityStep(values);
     setErrors(found);
@@ -71,7 +82,8 @@ export default function RegisterScreen() {
     register.mutate(
       {
         ...values,
-        phone: normalizePhone(values.phone),
+        // Numéro national seul : le serveur reconstruit le numéro international du pays.
+        phone: values.phone.replace(/[\s.()-]/g, ''),
         email: values.email.trim(),
       },
       {
@@ -154,53 +166,69 @@ export default function RegisterScreen() {
           </>
         ) : (
           <>
+            <TextField
+              label="Email"
+              placeholder="vous@exemple.com"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoComplete="email"
+              textContentType="emailAddress"
+              {...field('email')}
+            />
+            {/* Pays d'abord : il fixe l'indicatif (non modifiable) et le format du numéro. */}
             <FieldRow>
               <FieldColumn>
-                <TextField
-                  label="Email"
-                  placeholder="vous@exemple.com"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoComplete="email"
-                  textContentType="emailAddress"
-                  {...field('email')}
+                <CountrySelectField
+                  label="Pays"
+                  placeholder="Sélectionnez votre pays"
+                  value={values.country}
+                  onChange={chooseCountry}
+                  error={errors.country}
+                  dense={dense}
                 />
               </FieldColumn>
               <FieldColumn>
                 <TextField
                   label="Téléphone"
-                  placeholder="+ indicatif pays et numéro"
-                  hint="Format international, ex. +XXX XX XX XX XX."
-                  keyboardType="phone-pad"
-                  autoComplete="tel"
-                  textContentType="telephoneNumber"
                   {...field('phone')}
+                  onChangeText={(text) => {
+                    setValues((v) => ({ ...v, phone: sanitizeNationalInput(text) }));
+                    setErrors((e) => ({ ...e, phone: undefined }));
+                  }}
+                  editable={Boolean(country)}
+                  prefix={country?.dialCode}
+                  prefixAccessibilityLabel={
+                    country ? `Indicatif ${country.dialCode}, non modifiable` : undefined
+                  }
+                  placeholder={
+                    country
+                      ? (nationalExample(country.code) ?? 'Numéro national')
+                      : "Sélectionnez d'abord votre pays"
+                  }
+                  hint={country ? 'Numéro national, sans l’indicatif.' : undefined}
+                  keyboardType="phone-pad"
+                  autoComplete="tel-national"
+                  textContentType="telephoneNumber"
                 />
               </FieldColumn>
             </FieldRow>
-            <FieldRow>
-              <FieldColumn>
-                <TextField
-                  label="Mot de passe"
-                  hint="8 caractères minimum, avec au moins une lettre et un chiffre."
-                  secret
-                  autoCapitalize="none"
-                  autoComplete="new-password"
-                  textContentType="newPassword"
-                  {...field('password')}
-                />
-              </FieldColumn>
-              <FieldColumn>
-                <TextField
-                  label="Confirmer le mot de passe"
-                  secret
-                  autoCapitalize="none"
-                  autoComplete="new-password"
-                  textContentType="newPassword"
-                  {...field('confirmPassword')}
-                />
-              </FieldColumn>
-            </FieldRow>
+            <TextField
+              label="Mot de passe"
+              hint="8 caractères minimum, avec au moins une lettre et un chiffre."
+              secret
+              autoCapitalize="none"
+              autoComplete="new-password"
+              textContentType="newPassword"
+              {...field('password')}
+            />
+            <TextField
+              label="Confirmer le mot de passe"
+              secret
+              autoCapitalize="none"
+              autoComplete="new-password"
+              textContentType="newPassword"
+              {...field('confirmPassword')}
+            />
             <Button title="Créer mon compte" onPress={submit} loading={register.isPending} />
             <View style={styles.back}>
               <Button

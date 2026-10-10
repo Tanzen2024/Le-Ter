@@ -405,6 +405,73 @@ describe('tableau de bord, finances, rapports, journal, système', () => {
     );
   });
 
+  it('finances : achats sans paiement CinetPay séparés, aucun double compte, grands montants exacts', async () => {
+    const player = await registerAndLogin(ctx.app);
+    const at = new Date('2026-10-08T13:42:17Z');
+    // Tentatives refusées AVANT l'appel à CinetPay (cas réel : un numéro de téléphone saisi
+    // comme montant) : aucun paiement rattaché, rien n'est crédité.
+    const orphans = [690_040_149, 690_040_149, 690_040_149, 1_000, 1_000_000_000, 1_000_000_000];
+    for (const tokens of orphans) {
+      await database.sql.query(
+        `INSERT INTO wallets (user_id, balance, created_at, updated_at) VALUES ($1, 0, $2, $2)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [player.userId, at.toISOString()],
+      );
+      await database.sql.query(
+        `INSERT INTO wallet_transactions (id, user_id, kind, status, tokens, idempotency_key,
+           failure_code, created_at, updated_at, completed_at)
+         VALUES ($1, $2, 'deposit', 'failed', $3, $4, 'PROVIDER_UNAVAILABLE', $5, $5, $5)`,
+        [randomUUID(), player.userId, tokens, randomUUID(), at.toISOString()],
+      );
+    }
+    // Paiements CinetPay : deux échecs de 500 et un succès de 2 000.
+    const settle = async (amount: number, ok: boolean) => {
+      const p = await seedPendingPayment(database.sql, player.userId, { amount, createdAt: at });
+      await database.sql.query(
+        `UPDATE wallet_transactions SET status = $2, failure_code = $3, completed_at = updated_at
+         WHERE id = $1`,
+        [p.walletTransactionId, ok ? 'succeeded' : 'failed', ok ? null : 'PAYMENT_FAILED'],
+      );
+      await database.sql.query(
+        'UPDATE payments SET status = $2, completed_at = updated_at WHERE id = $1',
+        [p.paymentId, ok ? 'SUCCESS' : 'FAILED'],
+      );
+    };
+    await settle(500, false);
+    await settle(500, false);
+    await settle(2_000, true);
+
+    const res = await api
+      .get('/api/admin/finance/overview?from=2026-10-01T00:00:00Z&to=2026-10-10T00:00:00Z')
+      .expect(200);
+    const body = res.body as {
+      purchases: { byStatus: { status: string; count: number; amount: number }[] };
+      walletMovements: {
+        kind: string;
+        status: string;
+        withoutPayment: boolean;
+        count: number;
+        tokens: number;
+      }[];
+      reservations: unknown[];
+    };
+    expect(body.purchases.byStatus).toEqual([
+      { status: 'FAILED', count: 2, amount: 1_000 },
+      { status: 'SUCCESS', count: 1, amount: 2_000 },
+    ]);
+    expect(body.walletMovements).toEqual([
+      { kind: 'deposit', status: 'failed', withoutPayment: false, count: 2, tokens: 1_000 },
+      // 4 070 121 447 > 2^31 (int32) : somme exacte (bigint → nombre sûr), sans dépassement.
+      { kind: 'deposit', status: 'failed', withoutPayment: true, count: 6, tokens: 4_070_121_447 },
+      { kind: 'deposit', status: 'succeeded', withoutPayment: false, count: 1, tokens: 2_000 },
+    ]);
+    // Achats rattachés à un paiement = paiements CinetPay (1 FCFA = 1 jeton), ligne à ligne.
+    const linked = body.walletMovements.filter((m) => m.kind === 'deposit' && !m.withoutPayment);
+    expect(linked.reduce((t, m) => t + m.count, 0)).toBe(3);
+    expect(linked.reduce((t, m) => t + m.tokens, 0)).toBe(3_000);
+    expect(body.reservations).toEqual([]);
+  });
+
   it('export CSV d’un rapport : audité REPORT_EXPORTED ; rapport inconnu : 400', async () => {
     const res = await api
       .get('/api/admin/reports/players/csv?from=2026-10-01T00:00:00Z&to=2026-10-09T00:00:00Z')

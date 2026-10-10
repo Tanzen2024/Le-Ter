@@ -6,6 +6,7 @@ import {
   ArrowLeftRight,
   CheckCircle2,
   Clock,
+  Flag,
   Gamepad2,
   Landmark,
   ShieldAlert,
@@ -113,71 +114,81 @@ export function DashboardView() {
         </Card>
       ) : (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard
-              label="Joueurs inscrits"
-              value={formatNumber(data?.players.total)}
-              hint={data && `${formatNumber(data.players.newInPeriod)} nouveaux sur la période`}
-              icon={Users}
-              loading={!data}
-            />
-            <StatCard
-              label="Joueurs actifs"
-              value={formatNumber(data?.players.active)}
-              hint={`Sur les ${periodLabel}`}
-              icon={UserCheck}
-              tone="accent"
-              loading={!data}
-            />
-            <StatCard
-              label="Parties en cours"
-              value={formatNumber(data?.games.inProgress)}
-              hint={data && `${formatNumber(data.games.waiting)} en attente de joueurs`}
-              icon={Gamepad2}
-              tone="info"
-              loading={!data}
-            />
-            <StatCard
-              label="Recettes de la plateforme"
-              value={formatXaf(data?.platformRevenue)}
-              hint="Commissions comptabilisées sur la période"
-              icon={Landmark}
-              tone="success"
-              loading={!data}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard
-              label="Paiements confirmés"
-              value={data ? formatXaf(paymentsBy(data, 'SUCCESS').amount) : '—'}
-              hint={data && `${formatNumber(paymentsBy(data, 'SUCCESS').count)} paiements CinetPay`}
-              icon={CheckCircle2}
-              tone="success"
-              loading={!data}
-            />
-            <StatCard
-              label="Paiements en attente"
-              value={data ? formatNumber(paymentsBy(data, 'PENDING').count) : '—'}
-              hint={data && formatXaf(paymentsBy(data, 'PENDING').amount)}
-              icon={Clock}
-              tone="warning"
-              loading={!data}
-            />
-            <StatCard
-              label="Paiements échoués ou expirés"
-              value={
-                data
-                  ? formatNumber(
-                      paymentsBy(data, 'FAILED').count + paymentsBy(data, 'EXPIRED').count,
-                    )
-                  : '—'
-              }
-              hint="Aucun crédit effectué"
-              icon={XCircle}
-              tone="danger"
-              loading={!data}
-            />
+          {/* Grille unique de 8 indicateurs : 4 colonnes seulement quand la zone de contenu
+              (et non la fenêtre) est assez large, pour que les montants restent lisibles. */}
+          <div className="@container">
+            <div className="grid grid-cols-1 gap-4 @xl:grid-cols-2 @4xl:grid-cols-4">
+              <StatCard
+                label="Joueurs inscrits"
+                value={formatNumber(data?.players.total)}
+                hint={data && `${formatNumber(data.players.newInPeriod)} nouveaux sur la période`}
+                icon={Users}
+                loading={!data}
+              />
+              <StatCard
+                label="Joueurs actifs"
+                value={formatNumber(data?.players.active)}
+                hint={`Sur les ${periodLabel}`}
+                icon={UserCheck}
+                tone="accent"
+                loading={!data}
+              />
+              <StatCard
+                label="Parties en cours"
+                value={formatNumber(data?.games.inProgress)}
+                hint={data && `${formatNumber(data.games.waiting)} en attente de joueurs`}
+                icon={Gamepad2}
+                tone="info"
+                loading={!data}
+              />
+              <StatCard
+                label="Recettes de la plateforme"
+                value={formatXaf(data?.platformRevenue)}
+                hint="Commissions comptabilisées sur la période"
+                icon={Landmark}
+                tone="success"
+                loading={!data}
+              />
+              <StatCard
+                label="Paiements confirmés"
+                value={data ? formatXaf(paymentsBy(data, 'SUCCESS').amount) : '—'}
+                hint={
+                  data && `${formatNumber(paymentsBy(data, 'SUCCESS').count)} paiements CinetPay`
+                }
+                icon={CheckCircle2}
+                tone="success"
+                loading={!data}
+              />
+              <StatCard
+                label="Paiements en attente"
+                value={data ? formatNumber(paymentsBy(data, 'PENDING').count) : '—'}
+                hint={data && formatXaf(paymentsBy(data, 'PENDING').amount)}
+                icon={Clock}
+                tone="warning"
+                loading={!data}
+              />
+              <StatCard
+                label="Paiements échoués ou expirés"
+                value={
+                  data
+                    ? formatNumber(
+                        paymentsBy(data, 'FAILED').count + paymentsBy(data, 'EXPIRED').count,
+                      )
+                    : '—'
+                }
+                hint="Aucun crédit effectué"
+                icon={XCircle}
+                tone="danger"
+                loading={!data}
+              />
+              <StatCard
+                label="Parties terminées"
+                value={formatNumber(data?.games.finishedInPeriod)}
+                hint={data && `${formatNumber(data.games.createdInPeriod)} créées sur la période`}
+                icon={Flag}
+                loading={!data}
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">

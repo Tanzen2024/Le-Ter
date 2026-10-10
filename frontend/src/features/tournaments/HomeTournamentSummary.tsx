@@ -40,7 +40,7 @@ export function HomeTournamentSummary({ width: w }: { width: number }) {
   const facts = [
     t.entry(formatFcfa(tournament.entryFee)),
     `👥 ${tournament.registeredCount}/${tournament.minimumPlayers}`,
-    ranks > 0 ? `🏆 ${ranks}` : undefined,
+    ranks > 0 ? `🏆 ${t.facts.ranks(ranks)}` : undefined,
   ].filter((fact): fact is string => fact !== undefined);
 
   return (

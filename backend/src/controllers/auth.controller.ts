@@ -4,6 +4,7 @@ import { getAuth } from '../middleware/require-auth';
 import { getRequestId } from '../middleware/request-id';
 import type { AuthService } from '../services/auth/auth.service';
 import {
+  parseChangePasswordInput,
   parseLoginInput,
   parseRefreshTokenInput,
   parseRegisterInput,
@@ -36,6 +37,13 @@ export function createAuthController(auth: AuthService) {
     /** L'utilisateur est celui du JWT : aucun identifiant n'est lu dans la requête. */
     async me(_req: Request, res: Response): Promise<void> {
       res.json({ user: await auth.getCurrentUser(getAuth(res).userId) });
+    },
+
+    /** Compte du JWT uniquement ; 204 sans corps (rien de sensible n'est renvoyé). */
+    async changePassword(req: Request, res: Response): Promise<void> {
+      const input = parseChangePasswordInput(req.body);
+      await auth.changePassword(getAuth(res).userId, input, meta(res));
+      res.status(204).end();
     },
   };
 }

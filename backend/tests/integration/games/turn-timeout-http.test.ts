@@ -18,7 +18,7 @@ import { deckForHands, decksRandom } from '../../fixtures/random';
 
 /**
  * Scénario HTTP réel du timeout de tour (D-034, D-036), avec le timer de PRODUCTION
- * (20 s, aucune durée injectée) : session → partie → distribution → aucune action des
+ * (15 s, aucune durée injectée) : session → partie → distribution → aucune action des
  * joueurs → TURN_TIMEOUT → PLAY_CARD automatique → GET de la partie.
  *
  *   A (J1, meneur) : 5♠ 10♣ 8♥ 9⭐ 10♥  → ouvre le tour : plus petite carte, 5♠
@@ -65,8 +65,8 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, tim
   }
 }
 
-describe('HTTP — aucune action du joueur pendant 20 s : le serveur joue à sa place', () => {
-  it('session → partie → distribution → 20 s → coup automatique D-036 visible par GET', async () => {
+describe('HTTP — aucune action du joueur pendant 15 s : le serveur joue à sa place', () => {
+  it('session → partie → distribution → 15 s → coup automatique D-036 visible par GET', async () => {
     ctx = createGameApiTestApp(database.sql, { random: decksRandom(deckForHands([H_A, H_B])) });
     const [A, B] = [await newPlayer(), await newPlayer()];
 
@@ -84,9 +84,9 @@ describe('HTTP — aucune action du joueur pendant 20 s : le serveur joue à sa 
     const eventsB: GameEvent[] = [];
     await ctx.games.subscribe(gameId, B.id, (e) => eventsB.push(e));
 
-    // Timer de production : 20 s, décidé par le serveur.
+    // Timer de production : 15 s, décidé par le serveur.
     const deadlineA = Date.parse(started.body.game.turnDeadlineAt as string);
-    expect(deadlineA - Date.parse(started.body.game.turnStartedAt as string)).toBe(20_000);
+    expect(deadlineA - Date.parse(started.body.game.turnStartedAt as string)).toBe(15_000);
 
     // Aucune action, peu avant l'échéance : le serveur n'a encore rien joué. L'assertion
     // ne vaut que si le serveur lui-même situe la lecture avant l'échéance (`serverNow`).
@@ -113,9 +113,9 @@ describe('HTTP — aucune action du joueur pendant 20 s : le serveur joue à sa 
     });
     expect(afterA.body.game.turnTimedOutAt).toBeUndefined();
 
-    // Échéance de B (20 s après le début de SON tour) : il possède des ♠ → 7♠, pas le 4♥.
+    // Échéance de B (15 s après le début de SON tour) : il possède des ♠ → 7♠, pas le 4♥.
     const deadlineB = Date.parse(afterA.body.game.turnDeadlineAt as string);
-    expect(deadlineB - Date.parse(afterA.body.game.turnStartedAt as string)).toBe(20_000);
+    expect(deadlineB - Date.parse(afterA.body.game.turnStartedAt as string)).toBe(15_000);
     await sleep(Math.max(0, deadlineB - Date.now()));
     const viewB = await until(
       () => expectStatus(B.api.get(`/api/games/${gameId}`), 200),

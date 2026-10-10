@@ -31,8 +31,8 @@ const number = z
   .regex(/^\d+([.,]\d+)?$/, 'Nombre attendu.');
 const settingsSchema = z.object({
   platformFeePercent: number,
-  initialTournamentTokens: number,
-  defaultTournamentStake: number,
+  initialTokensCoefficient: number,
+  stakePerGameCoefficient: number,
   maximumPendingTournamentsPerPlayer: number,
   tournamentTransitionMinutes: number,
   rankingTokensWeightPercent: number,
@@ -44,17 +44,17 @@ const SETTING_FIELDS: { key: keyof SettingsForm; label: string; hint: string }[]
   {
     key: 'platformFeePercent',
     label: 'Commission de la plateforme (%)',
-    hint: 'Copiée sur un tournoi à sa publication, puis immuable.',
+    hint: 'Commission de la plateforme appliquée selon les règles financières du tournoi.',
   },
   {
-    key: 'initialTournamentTokens',
-    label: 'Jetons de tournoi au départ',
-    hint: 'Pour les prochains tournois publiés.',
+    key: 'initialTokensCoefficient',
+    label: 'Coefficient de jetons de tournoi au départ',
+    hint: 'Multiplié par le prix d’entrée pour calculer les jetons de départ des prochains tournois publiés.',
   },
   {
-    key: 'defaultTournamentStake',
-    label: 'Mise par partie de tournoi',
-    hint: 'Pour les prochains tournois publiés.',
+    key: 'stakePerGameCoefficient',
+    label: 'Coefficient de mise par partie de tournoi',
+    hint: 'Multiplié par le prix d’entrée pour calculer la mise par partie des prochains tournois publiés.',
   },
   {
     key: 'maximumPendingTournamentsPerPlayer',
@@ -69,17 +69,20 @@ const SETTING_FIELDS: { key: keyof SettingsForm; label: string; hint: string }[]
   {
     key: 'rankingTokensWeightPercent',
     label: 'Poids des jetons restants (%)',
-    hint: 'Classement pondéré ; total des deux poids = 100 %.',
+    hint: 'Le total des deux poids doit être égal à 100 %.',
   },
   {
     key: 'rankingGamesWeightPercent',
     label: 'Poids des parties jouées (%)',
-    hint: 'Classement pondéré ; total des deux poids = 100 %.',
+    hint: 'Le total des deux poids doit être égal à 100 %.',
   },
 ];
 
+/** Décimales affichées avec la virgule (« 0,5 ») ; la saisie accepte la virgule ou le point. */
 function toForm(s: TournamentSettings): SettingsForm {
-  return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, String(v)])) as SettingsForm;
+  return Object.fromEntries(
+    Object.entries(s).map(([k, v]) => [k, String(v).replace('.', ',')]),
+  ) as SettingsForm;
 }
 
 function TournamentSettingsCard() {

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -10,7 +10,15 @@ import {
 } from 'react-native';
 
 import { Screen } from '../../components/Screen';
-import { BRAND_INITIAL } from '../../components/table/TableDecor';
+import {
+  BRAND_INITIAL,
+  fontOf,
+  TableBackdrop,
+  tablePalette,
+  TatamiCard,
+  titleShadow,
+  useTableFonts,
+} from '../../components/table/TableDecor';
 import { Button } from '../../components/ui/Button';
 import { colors, radius, spacing } from '../../constants/theme';
 
@@ -36,7 +44,36 @@ export function useDenseAuthLayout(): boolean {
   return useWindowDimensions().height < DENSE_MAX_HEIGHT;
 }
 
-/** Palette douce de l'inscription : vert du tapis, or discret, neutres chauds. */
+/** Part de la largeur utile laissée à la colonne de présentation en paysage. */
+const SIDE_SHARE = 0.35;
+/** En deçà, la marque, le titre et les étapes ne sont plus lisibles. */
+const SIDE_MIN_WIDTH = 200;
+
+/**
+ * Largeur du volet formulaire en paysage, à partir de la largeur RÉELLEMENT disponible
+ * (marges de sécurité et barre de navigation déjà déduites) : 65 % quand l'écran est assez
+ * large ; sur un paysage étroit, la présentation garde sa largeur minimale lisible.
+ */
+export function formPaneWidth(available: number): number {
+  const side = Math.min(available / 2, Math.max(available * SIDE_SHARE, SIDE_MIN_WIDTH));
+  return Math.round(available - side);
+}
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/** Tailles de la colonne de présentation, proportionnelles à sa largeur réelle. */
+export function sideMetrics(sideWidth: number) {
+  return {
+    monogram: Math.round(clamp(sideWidth * 0.17, 40, 64)),
+    brand: Math.round(clamp(sideWidth * 0.055, 14, 20)),
+    title: Math.round(clamp(sideWidth * 0.09, 22, 36)),
+    subtitle: Math.round(clamp(sideWidth * 0.058, 15, 19)),
+    stepDot: Math.round(clamp(sideWidth * 0.1, 28, 36)),
+    stepLabel: Math.round(clamp(sideWidth * 0.055, 14, 18)),
+  };
+}
+
+/** Palette douce de l'inscription : panneau crème posé sur la table, neutres chauds. */
 export const authPalette = {
   card: '#FBFAF6',
   cardBorder: 'rgba(14, 59, 46, 0.08)',
@@ -47,10 +84,11 @@ export const authPalette = {
 } as const;
 
 /**
- * Gabarit des écrans d'authentification, conçu pour le paysage (D-028) : marque, titre et
- * étapes à gauche, carte du formulaire à droite. La hauteur étant rare, seul le formulaire
- * défile et le clavier laisse visibles le champ actif et le bouton (padding sur iOS ; Android
- * redimensionne déjà la fenêtre).
+ * Gabarit des écrans d'authentification, conçu pour le paysage (D-028) et habillé comme la
+ * connexion (fond « table de jeu », or, police Cinzel, dos de cartes Le Ter) : marque, titre,
+ * étapes et éventail de cartes à gauche (≈ 35 %), carte du formulaire à droite (≈ 65 %). La
+ * hauteur étant rare, seul le formulaire défile et le clavier laisse visibles le champ actif et
+ * le bouton (padding sur iOS ; Android redimensionne déjà la fenêtre).
  */
 export function AuthScreen({
   title,
@@ -61,76 +99,182 @@ export function AuthScreen({
   children,
 }: AuthScreenProps) {
   const dense = useDenseAuthLayout();
+  const window = useWindowDimensions();
+  const fonts = useTableFonts();
+  const [rowWidth, setRowWidth] = useState(0);
+  // Paysage mesuré : présentation ≈ 35 %, formulaire ≈ 65 %. Sinon (portrait, avant la
+  // mesure) : partage flex d'origine.
+  const formWidth =
+    window.width > window.height && rowWidth > 0 ? formPaneWidth(rowWidth) : undefined;
+  const m = sideMetrics(
+    formWidth !== undefined ? rowWidth - formWidth : (rowWidth || window.width) * 0.4,
+  );
   return (
-    <Screen style={styles.screen}>
-      <KeyboardAvoidingView
-        style={styles.row}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={styles.side}>
-          <View style={styles.brandRow}>
-            <View style={[styles.monogram, dense && styles.monogramDense]}>
-              <Text style={[styles.monogramText, dense && styles.monogramTextDense]}>
-                {BRAND_INITIAL}
-              </Text>
+    <TableBackdrop>
+      <Screen style={styles.screen}>
+        <KeyboardAvoidingView
+          style={styles.row}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          onLayout={(e) => setRowWidth(e.nativeEvent.layout.width)}
+        >
+          <View style={[styles.side, formWidth !== undefined && styles.sideMeasured]}>
+            <View style={styles.brandRow}>
+              <View
+                style={[
+                  styles.monogram,
+                  { width: m.monogram, height: m.monogram, borderRadius: m.monogram / 2 },
+                ]}
+              >
+                <Text
+                  allowFontScaling={false}
+                  style={[styles.monogramText, fontOf(fonts.title), { fontSize: m.monogram * 0.5 }]}
+                >
+                  {BRAND_INITIAL}
+                </Text>
+              </View>
+              <Text style={[styles.brand, fontOf(fonts.title), { fontSize: m.brand }]}>LE TER</Text>
             </View>
-            <Text style={styles.brand}>LE TER</Text>
-          </View>
-          <Text style={[styles.title, dense && styles.titleDense]} accessibilityRole="header">
-            {title}
-          </Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
-          {steps && steps.length > 1 ? (
-            <View style={[styles.steps, dense && styles.stepsDense]}>
-              {steps.map((label, index) => {
-                const number = index + 1;
-                const done = number < currentStep;
-                const current = number === currentStep;
-                return (
-                  <View
-                    key={label}
-                    style={styles.stepItem}
-                    accessible
-                    accessibilityLabel={`Étape ${number} : ${label}${
-                      done ? ', terminée' : current ? ', en cours' : ''
-                    }`}
-                  >
+            <Text
+              style={[
+                styles.title,
+                fontOf(fonts.title),
+                { fontSize: m.title, lineHeight: Math.round(m.title * 1.2) },
+                dense && styles.titleDense,
+              ]}
+              accessibilityRole="header"
+            >
+              {title}
+            </Text>
+            {subtitle ? (
+              <Text
+                style={[
+                  styles.subtitle,
+                  { fontSize: m.subtitle, lineHeight: Math.round(m.subtitle * 1.35) },
+                ]}
+              >
+                {subtitle}
+              </Text>
+            ) : null}
+            {steps && steps.length > 1 ? (
+              <View style={[styles.steps, dense && styles.stepsDense]}>
+                {steps.map((label, index) => {
+                  const number = index + 1;
+                  const done = number < currentStep;
+                  const current = number === currentStep;
+                  return (
                     <View
-                      style={[
-                        styles.stepDot,
-                        done && styles.stepDotDone,
-                        current && styles.stepDotCurrent,
-                      ]}
+                      key={label}
+                      style={styles.stepItem}
+                      accessible
+                      accessibilityLabel={`Étape ${number} : ${label}${
+                        done ? ', terminée' : current ? ', en cours' : ''
+                      }`}
                     >
-                      <Text style={[styles.stepDotText, (done || current) && styles.stepDotTextOn]}>
-                        {done ? '✓' : number}
+                      <View
+                        style={[
+                          styles.stepDot,
+                          { width: m.stepDot, height: m.stepDot, borderRadius: m.stepDot / 2 },
+                          done && styles.stepDotDone,
+                          current && styles.stepDotCurrent,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.stepDotText,
+                            { fontSize: m.stepDot * 0.45 },
+                            (done || current) && styles.stepDotTextOn,
+                          ]}
+                        >
+                          {done ? '✓' : number}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.stepLabel,
+                          { fontSize: m.stepLabel },
+                          current && styles.stepLabelCurrent,
+                        ]}
+                      >
+                        {label}
                       </Text>
                     </View>
-                    <Text style={[styles.stepLabel, current && styles.stepLabelCurrent]}>
-                      {label}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
-        </View>
-        <ScrollView
-          style={styles.formPane}
-          contentContainerStyle={[styles.formContent, dense && styles.formContentDense]}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={[styles.card, dense && styles.cardDense]}>
-            {formTitle ? (
-              <Text style={[styles.formTitle, dense && styles.formTitleDense]}>{formTitle}</Text>
+                  );
+                })}
+              </View>
             ) : null}
-            {children}
+            <CardFan fontFamily={fonts.title} />
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </Screen>
+          <ScrollView
+            style={
+              formWidth !== undefined
+                ? [styles.formPaneFixed, { width: formWidth }]
+                : styles.formPane
+            }
+            contentContainerStyle={[styles.formContent, dense && styles.formContentDense]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            showsVerticalScrollIndicator={false}
+          >
+            <View
+              style={[
+                styles.card,
+                formWidth !== undefined && styles.cardWide,
+                dense && styles.cardDense,
+              ]}
+            >
+              {formTitle ? (
+                <Text style={[styles.formTitle, dense && styles.formTitleDense]}>{formTitle}</Text>
+              ) : null}
+              {children}
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Screen>
+    </TableBackdrop>
+  );
+}
+
+/** Éventail de dos de cartes : la carte du centre, légèrement relevée, passe devant. */
+const SIDE_FAN = [
+  { shift: -0.55, rotate: -14, lift: 0 },
+  { shift: 0.55, rotate: 14, lift: 0 },
+  { shift: 0, rotate: 0, lift: 0.08 },
+] as const;
+/** Sous cette largeur de carte, le décor est omis plutôt que réduit à une miniature. */
+const FAN_MIN_CARD_WIDTH = 36;
+
+/**
+ * Décor de cartes Le Ter (mêmes dos que la connexion) dans l'espace libre SOUS les étapes :
+ * il est mesuré, donc les cartes ne recouvrent jamais la marque, le titre ni les étapes, et
+ * n'interceptent aucun geste.
+ */
+function CardFan({ fontFamily }: { fontFamily?: string }) {
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  const cardWidth = Math.min((box.height * 0.82) / 1.36, box.width * 0.3, 120);
+  const cardHeight = cardWidth * 1.36;
+  const base = (box.height - cardHeight * 1.08) / 2;
+  return (
+    <View
+      style={styles.fan}
+      onLayout={(e) => setBox(e.nativeEvent.layout)}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      {cardWidth >= FAN_MIN_CARD_WIDTH
+        ? SIDE_FAN.map(({ shift, rotate, lift }) => (
+            <TatamiCard
+              key={shift}
+              width={cardWidth}
+              fontFamily={fontFamily}
+              style={{
+                left: box.width / 2 - cardWidth / 2 + shift * cardWidth,
+                bottom: base + lift * cardHeight,
+                transform: [{ rotate: `${rotate}deg` }],
+              }}
+            />
+          ))
+        : null}
+    </View>
   );
 }
 
@@ -185,83 +329,51 @@ export function FormBanner({ tone, message }: { tone: 'error' | 'success'; messa
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    backgroundColor: colors.felt,
-    experimental_backgroundImage:
-      'radial-gradient(circle at 22% 30%, rgba(31, 110, 80, 0.55) 0%, rgba(14, 59, 46, 0) 55%), linear-gradient(160deg, #11463A 0%, #0E3B2E 55%, #0A2C22 100%)',
-  },
+  screen: { backgroundColor: 'transparent' },
   row: { flex: 1, flexDirection: 'row' },
   side: {
     flex: 2,
     minWidth: 0,
-    justifyContent: 'center',
     paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
+  sideMeasured: { flex: 1, paddingRight: spacing.sm },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  // Médaillon des dos de cartes Le Ter (TatamiCard) : cuivre, anneau et lettre or.
   monogram: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(227, 179, 65, 0.6)',
-    backgroundColor: 'rgba(227, 179, 65, 0.12)',
+    borderWidth: 2,
+    borderColor: tablePalette.goldDeep,
+    backgroundColor: '#6E3218',
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.45)',
   },
-  monogramDense: { width: 28, height: 28, borderRadius: 14 },
-  monogramText: { color: colors.gold, fontWeight: '800', fontSize: 17 },
-  monogramTextDense: { fontSize: 14 },
-  brand: {
-    color: colors.gold,
-    fontWeight: '700',
-    letterSpacing: 4,
-    fontSize: 12,
-  },
-  title: {
-    color: colors.textOnFelt,
-    fontSize: 30,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    marginTop: spacing.md,
-  },
-  titleDense: { fontSize: 24, marginTop: spacing.sm },
-  subtitle: {
-    color: colors.textOnFelt,
-    opacity: 0.78,
-    fontSize: 15,
-    lineHeight: 21,
-    marginTop: spacing.xs,
-  },
+  monogramText: { color: tablePalette.gold, includeFontPadding: false },
+  brand: { color: tablePalette.gold, letterSpacing: 5, ...titleShadow },
+  title: { color: tablePalette.cream, marginTop: spacing.md, ...titleShadow },
+  titleDense: { marginTop: spacing.sm },
+  subtitle: { color: tablePalette.cream, opacity: 0.85, marginTop: spacing.xs },
   steps: { marginTop: spacing.lg, gap: spacing.sm },
-  stepsDense: { marginTop: spacing.md, gap: 6 },
+  stepsDense: { marginTop: spacing.md },
   stepItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   stepDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(244, 241, 230, 0.35)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(247, 241, 225, 0.45)',
   },
-  stepDotCurrent: { backgroundColor: colors.gold, borderColor: colors.gold },
+  stepDotCurrent: { backgroundColor: tablePalette.gold, borderColor: tablePalette.gold },
   stepDotDone: {
-    backgroundColor: 'rgba(227, 179, 65, 0.22)',
-    borderColor: colors.gold,
+    backgroundColor: 'rgba(242, 196, 81, 0.22)',
+    borderColor: tablePalette.gold,
   },
-  stepDotText: {
-    color: 'rgba(244, 241, 230, 0.7)',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  stepDotTextOn: { color: colors.felt },
-  stepLabel: {
-    color: 'rgba(244, 241, 230, 0.7)',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  stepLabelCurrent: { color: colors.textOnFelt },
+  stepDotText: { color: 'rgba(247, 241, 225, 0.8)', fontWeight: '700' },
+  stepDotTextOn: { color: tablePalette.backdrop },
+  stepLabel: { flexShrink: 1, color: 'rgba(247, 241, 225, 0.75)', fontWeight: '600' },
+  stepLabelCurrent: { color: tablePalette.cream },
+  fan: { flex: 1, minHeight: 0, marginTop: spacing.sm, pointerEvents: 'none' },
   formPane: { flex: 3, minWidth: 0 },
+  formPaneFixed: { flexGrow: 0, flexShrink: 0 },
   formContent: { flexGrow: 1, justifyContent: 'center', padding: spacing.md },
   formContentDense: { paddingVertical: spacing.sm },
   card: {
@@ -273,8 +385,10 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 560,
     alignSelf: 'center',
-    boxShadow: '0 14px 36px rgba(0, 0, 0, 0.22)',
+    boxShadow: '0 14px 36px rgba(0, 0, 0, 0.4)',
   },
+  // Volet à 65 % : la carte suit sa largeur (plafond seulement pour les très grands écrans).
+  cardWide: { maxWidth: 820 },
   cardDense: { paddingHorizontal: 20, paddingVertical: 14, borderRadius: 20 },
   formTitle: {
     color: authPalette.ink,

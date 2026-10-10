@@ -197,6 +197,28 @@ export async function seedAdmin(sql: SqlClient, name = 'admin'): Promise<UserId>
   return id;
 }
 
+/**
+ * Réglages ENREGISTRÉS comme par l'administration (D-071 : ils priment sur les valeurs
+ * initiales) : commission 10 %, coefficients 1 et 0,1 (prix 1 000 → 1 000 jetons, mise 100),
+ * poids 50 / 50. Les suites qui comptent jetons, commission et classement gardent leurs montants.
+ */
+export async function saveTournamentSettings(sql: SqlClient): Promise<void> {
+  const values: [string, number][] = [
+    ['tournament_platform_fee_percent', 10],
+    ['tournament_initial_tokens_coefficient', 1],
+    ['tournament_stake_per_game_coefficient', 0.1],
+    ['tournament_ranking_tokens_weight_percent', 50],
+    ['tournament_ranking_games_weight_percent', 50],
+  ];
+  for (const [key, value] of values) {
+    await sql.query(
+      `INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, JSON.stringify(value)],
+    );
+  }
+}
+
 export const balances = (sql: SqlClient, userId: UserId) => readWalletBalances(sql, userId);
 
 /** Tournoi valide commençant `startsInMs` après l'horloge, 2 h, 50/30/20. */

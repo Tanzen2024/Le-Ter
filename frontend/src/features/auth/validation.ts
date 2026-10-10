@@ -1,4 +1,5 @@
-import type { RegisterPayload } from '../../types/auth';
+import { findPhoneCountry, toE164 } from '../../lib/phone-countries';
+import type { ChangePasswordPayload, RegisterPayload } from '../../types/auth';
 
 /**
  * Validation inline, miroir des règles du serveur (backend/src/validators/auth.validators.ts).
@@ -7,17 +8,24 @@ import type { RegisterPayload } from '../../types/auth';
 export type FieldErrors<K extends string> = Partial<Record<K, string>>;
 
 type IdentityField = 'firstName' | 'lastName' | 'username';
-type CredentialsField = 'email' | 'phone' | 'password' | 'confirmPassword';
+type CredentialsField = 'email' | 'country' | 'phone' | 'password' | 'confirmPassword';
 
 const REQUIRED = 'Ce champ est obligatoire.';
 const NAME_PATTERN = /^\p{L}[\p{L}\p{M}' .-]*$/u;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,20}$/;
-const PHONE_PATTERN = /^\+[1-9]\d{7,14}$/;
 
-export function normalizePhone(value: string): string {
-  const compact = value.trim().replace(/[\s.()-]/g, '');
-  return compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+/**
+ * Pays puis numéro NATIONAL (l'indicatif est un élément distinct, jamais saisi) : validé
+ * selon les règles du pays choisi, les mêmes que celles du serveur, qui reconstruit lui-même
+ * le numéro international.
+ */
+function phoneProblem(country: string, phone: string): string | undefined {
+  // Sans pays, le téléphone est désactivé : seule l'erreur du pays est montrée.
+  if (!country) return undefined;
+  if (!phone.trim()) return REQUIRED;
+  const known = findPhoneCountry(country);
+  return known && toE164(known.code, phone) ? undefined : 'Numéro invalide pour ce pays.';
 }
 
 function nameProblem(value: string): string | undefined {
@@ -62,15 +70,32 @@ export function validateCredentialsStep(
   if (!email) errors.email = REQUIRED;
   else if (!EMAIL_PATTERN.test(email)) errors.email = 'Adresse email invalide.';
 
-  if (!values.phone.trim()) errors.phone = REQUIRED;
-  else if (!PHONE_PATTERN.test(normalizePhone(values.phone))) {
-    errors.phone = 'Format international attendu : + indicatif pays et numéro.';
-  }
+  if (!values.country) errors.country = REQUIRED;
+  const phone = phoneProblem(values.country, values.phone);
+  if (phone) errors.phone = phone;
 
   const password = passwordProblem(values.password);
   if (password) errors.password = password;
   if (!values.confirmPassword) errors.confirmPassword = REQUIRED;
   else if (values.confirmPassword !== values.password) {
+    errors.confirmPassword = 'Les mots de passe ne correspondent pas.';
+  }
+  return errors;
+}
+
+/** Changement de mot de passe (Profil) : mêmes règles que le serveur, affichage seulement. */
+export function validatePasswordChange(
+  values: ChangePasswordPayload,
+): FieldErrors<keyof ChangePasswordPayload> {
+  const errors: FieldErrors<keyof ChangePasswordPayload> = {};
+  if (!values.currentPassword) errors.currentPassword = REQUIRED;
+  const password = passwordProblem(values.newPassword);
+  if (password) errors.newPassword = password;
+  else if (values.newPassword === values.currentPassword) {
+    errors.newPassword = 'Le nouveau mot de passe doit être différent de l’actuel.';
+  }
+  if (!values.confirmPassword) errors.confirmPassword = REQUIRED;
+  else if (values.confirmPassword !== values.newPassword) {
     errors.confirmPassword = 'Les mots de passe ne correspondent pas.';
   }
   return errors;

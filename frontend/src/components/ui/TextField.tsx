@@ -20,6 +20,13 @@ interface TextFieldProps extends TextInputProps {
   appearance?: 'default' | 'table' | 'soft';
   /** Hauteur du champ en apparence `table` (44 minimum). */
   controlHeight?: number;
+  /**
+   * Préfixe fixe affiché DANS le champ, avant la saisie (ex. indicatif « +237 ») : un élément
+   * distinct du `TextInput`, que l'utilisateur ne peut ni modifier ni supprimer.
+   */
+  prefix?: string;
+  /** Libellé lu par les lecteurs d'écran pour le préfixe. */
+  prefixAccessibilityLabel?: string;
 }
 
 const TABLE_MIN_HEIGHT = 44;
@@ -33,6 +40,8 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
     dense = false,
     appearance = 'default',
     controlHeight = TABLE_MIN_HEIGHT,
+    prefix,
+    prefixAccessibilityLabel,
     style,
     onFocus,
     onBlur,
@@ -67,9 +76,20 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
                 soft && focused && styles.softRowFocused,
                 error ? styles.inputRowError : null,
                 soft && error ? styles.softRowError : null,
+                inputProps.editable === false && styles.rowDisabled,
               ]
         }
       >
+        {prefix ? (
+          <View
+            testID="text-field-prefix"
+            accessible
+            accessibilityLabel={prefixAccessibilityLabel ?? prefix}
+            style={styles.prefix}
+          >
+            <Text style={styles.prefixText}>{prefix}</Text>
+          </View>
+        ) : null}
         <TextInput
           ref={ref}
           style={[
@@ -138,7 +158,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     minHeight: 52,
   },
-  inputRowDense: { minHeight: 44 },
+  inputRowDense: { minHeight: 48 },
   inputRowFocused: { borderColor: colors.borderFocus },
   inputRowError: { borderColor: colors.danger },
   input: {
@@ -186,4 +206,13 @@ const styles = StyleSheet.create({
     boxShadow: '0 0 0 3px rgba(179, 38, 30, 0.10)',
   },
   softMessage: { fontSize: 12.5, lineHeight: 17 },
+  rowDisabled: { opacity: 0.6 },
+  prefix: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    borderRightWidth: 1.5,
+    borderRightColor: '#E1E7E2',
+  },
+  prefixText: { fontSize: 16, fontWeight: '600', color: colors.text },
 });

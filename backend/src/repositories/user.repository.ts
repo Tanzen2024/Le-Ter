@@ -20,4 +20,14 @@ export interface UserRepository {
   findByEmail(email: string): Promise<User | null>;
   /** Champs déjà utilisés par un autre compte (pseudo comparé sans la casse). */
   findTakenFields(candidate: Pick<User, UniqueUserField>): Promise<UniqueUserField[]>;
+  /**
+   * Remplace le hash du mot de passe SEULEMENT s'il vaut encore `expectedHash` (compte
+   * actif) : deux changements concurrents ne s'écrasent pas. @returns false sinon.
+   */
+  updatePasswordHash(
+    id: UserId,
+    expectedHash: string,
+    newHash: string,
+    now: Date,
+  ): Promise<boolean>;
 }

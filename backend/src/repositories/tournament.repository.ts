@@ -93,7 +93,7 @@ export interface TournamentUnitOfWork {
    * approbation). Libéré au COMMIT / ROLLBACK.
    */
   lockSchedule(): Promise<void>;
-  /** Tournois en attente de démarrage (WAITING_STATUSES), toute la plateforme. */
+  /** Tournois aux inscriptions ouvertes ou à ouvrir (REGISTRATION_LIMIT_STATUSES), plateforme. */
   countWaitingTournaments(): Promise<number>;
   findRegistration(id: TournamentId, userId: UserId): Promise<TournamentRegistration | null>;
   /** Nouvelle inscription, ou réactivation de la ligne existante (désinscrit). */
@@ -194,8 +194,15 @@ export interface TournamentRepository {
    * Tournois PUBLIÉS pour la liste des joueurs (D-065) : `current` → pas encore terminés
    * (à venir, en cours, en clôture), début le plus proche d'abord ; `history` → terminés ou
    * annulés, le plus récent d'abord. Jamais un brouillon ni une proposition non publiée.
+   * `visibleSince` (historique seulement) : terminé dont la fin PRÉVUE (`ends_at`), ou annulé
+   * dont l'annulation RÉELLE (`cancelled_at`), est postérieure à cet instant. Affichage
+   * seulement : aucune ligne n'est modifiée ni supprimée.
    */
-  listPublished(filter: { scope: 'current' | 'history'; limit: number }): Promise<Tournament[]>;
+  listPublished(filter: {
+    scope: 'current' | 'history';
+    limit: number;
+    visibleSince?: Date;
+  }): Promise<Tournament[]>;
   /**
    * Prochain tournoi auquel le joueur est INSCRIT (inscription active), publié, ni annulé ni
    * terminé, qui n'a pas commencé (`starts_at > now`) : le plus proche, ou null.

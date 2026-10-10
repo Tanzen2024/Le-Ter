@@ -11,6 +11,7 @@ import {
 import {
   createTournamentTestStack,
   fillWith,
+  saveTournamentSettings,
   fund,
   HOUR,
   TestClock,
@@ -30,8 +31,9 @@ beforeAll(async () => {
   database = await createMigratedDatabase();
 }, PGLITE_TIMEOUT_MS);
 afterAll(() => database.close());
-beforeEach(() => {
+beforeEach(async () => {
   stack = createTournamentTestStack(database.sql, new TestClock());
+  await saveTournamentSettings(database.sql);
 });
 afterEach(async () => {
   await stack.stop();
@@ -291,10 +293,11 @@ describe('proposition par un joueur et paramètres', () => {
   it('paramètres plateforme : lecture, modification auditée, bornes', async () => {
     const admin = await user(0, 'admin');
     const current = (await admin.get('/api/admin/tournaments/settings').expect(200)).body.settings;
+    // Réglages enregistrés (saveTournamentSettings) : ils priment sur les valeurs initiales.
     expect(current).toEqual({
       platformFeePercent: 10,
-      initialTournamentTokens: 1000,
-      defaultTournamentStake: 100,
+      initialTokensCoefficient: 1,
+      stakePerGameCoefficient: 0.1,
       maximumPendingTournamentsPerPlayer: 1,
       tournamentTransitionMinutes: 0,
       rankingTokensWeightPercent: 50,
@@ -411,7 +414,7 @@ describe('planification et prochain tournoi (D-059)', () => {
     expect([refused.status, refused.body.code, refused.body.message]).toEqual([
       409,
       'TOO_MANY_WAITING_TOURNAMENTS',
-      'Limite atteinte : 5 tournois sont déjà en attente de démarrage. Réessaie dès que l’un d’eux aura commencé.',
+      'Limite atteinte : 5 tournois ont déjà leurs inscriptions ouvertes ou sur le point d’ouvrir. Réessaie dès que les inscriptions de l’un d’eux seront closes.',
     ]);
     const ana = await user();
     const proposal = await ana.post('/api/tournaments', slot(6));
@@ -441,8 +444,7 @@ describe('planification et prochain tournoi (D-059)', () => {
     expect((await ana.get('/api/tournaments/next').expect(200)).body).toEqual({
       tournament: null,
     });
-    const later = (await admin.post('/api/admin/tournaments', slot(3)).expect(201)).body
-      .tournament;
+    const later = (await admin.post('/api/admin/tournaments', slot(3)).expect(201)).body.tournament;
     const sooner = (await admin.post('/api/admin/tournaments', slot(1)).expect(201)).body
       .tournament;
     await admin.post('/api/admin/tournaments', slot(0)).expect(201); // non inscrite
@@ -464,7 +466,9 @@ describe('planification et prochain tournoi (D-059)', () => {
     const ana = await user(5000);
     const created = [];
     for (const i of [1, 2]) {
-      created.push((await admin.post('/api/admin/tournaments', slot(i)).expect(201)).body.tournament);
+      created.push(
+        (await admin.post('/api/admin/tournaments', slot(i)).expect(201)).body.tournament,
+      );
     }
     const [sooner, later] = created;
     for (const t of created) {

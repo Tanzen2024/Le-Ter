@@ -36,7 +36,7 @@ import {
 /**
  * Tables de tournoi (D-065) : tables de 4 créées et attribuées par le serveur, la plus
  * remplie d'abord ; dès le 2e joueur, le premier joueur affecté (créateur de la partie) a
- * 20 s pour démarrer, puis le SERVEUR démarre la partie. Échéance persistée
+ * 15 s pour démarrer, puis le SERVEUR démarre la partie. Échéance persistée
  * (`games.start_deadline_at`), jamais repoussée par les arrivées suivantes, reprise après
  * un redémarrage ; une seule transition waiting → in_progress, même en concurrence.
  * Toutes les échéances sont mesurées sur l'horloge de test (parties comprises).
@@ -135,8 +135,9 @@ describe('affectation automatique', () => {
   });
 });
 
-describe('délai de démarrage de 20 s', () => {
-  it('arrivée du 2e joueur : échéance persistée à +20 s, visible de tous ; démarrage réservé au premier joueur', async () => {
+describe('délai de démarrage de 15 s', () => {
+  it('arrivée du 2e joueur : échéance persistée à +15 s, visible de tous ; démarrage réservé au premier joueur', async () => {
+    expect(TOURNAMENT_TABLE_AUTO_START_MS).toBe(15_000); // D-068 (20 s auparavant)
     const a = await join(ANA);
     const joinedAt = stack.clock.now().getTime();
     await join(BEN);

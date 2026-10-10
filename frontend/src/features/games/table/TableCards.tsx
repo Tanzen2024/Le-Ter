@@ -15,7 +15,7 @@ import { handWidthOf, type GameTableLayout, type SeatSide } from './table-layout
  * ci-dessous ne retardent jamais une commande.
  */
 
-/** Intervalle entre deux lots de la distribution (le tour de J1 dure 20 s, D-034, D-064). */
+/** Intervalle entre deux lots de la distribution (le tour de J1 dure 15 s, D-034, D-068). */
 export const DEAL_STEP_MS = 420;
 /** Vol d'un lot du centre vers son joueur. */
 const DEAL_FLIGHT_MS = 360;

@@ -29,13 +29,13 @@ export function newSessionId(): SessionId {
 /** OPEN : on peut la rejoindre et y créer des parties. CLOSED : historique seulement. */
 export type SessionStatus = 'open' | 'closed';
 
-/** Délai pour choisir Poursuivre ou Quitter après une partie (D-034 ; 20 s depuis D-064). */
-export const SESSION_DECISION_WINDOW_MS = 20_000;
+/** Délai pour choisir Poursuivre ou Quitter après une partie (D-034 ; 15 s depuis D-068). */
+export const SESSION_DECISION_WINDOW_MS = 15_000;
 
 /**
  * Présentation du 5e tour automatique (D-041). Le serveur joue les dernières cartes en une
  * fois ; les écrans les présentent UNE PAR UNE (≈ 3,2 s par carte au centre puis rangée,
- * 2 s entre deux cartes). Les 20 s de Poursuivre/Quitter commencent après cette
+ * 2 s entre deux cartes). Les 15 s de Poursuivre/Quitter commencent après cette
  * présentation, sinon la ronde expirerait avant d'être visible.
  */
 export const LAST_TRICK_CARD_PRESENTATION_MS = 3_200;
@@ -288,7 +288,7 @@ function removePlayer(
  * Met la ronde de décision à jour par rapport à la dernière partie et à l'heure :
  *
  * 1. la dernière partie est terminée et n'a pas encore de ronde → ouverture. L'échéance
- *    vaut fin de la partie + 20 s : elle est la même quel que soit le processus qui ouvre
+ *    vaut fin de la partie + 15 s : elle est la même quel que soit le processus qui ouvre
  *    la ronde (événement de fin, reprise après redémarrage, balayage) ;
  * 2. ronde ouverte et échéance atteinte → les joueurs sans réponse QUITTENT
  *    automatiquement (siège vacant), puis la ronde est résolue ;
@@ -704,7 +704,7 @@ export class SessionGameInProgressError extends Error {
 /**
  * Ronde Poursuivre/Quitter en cours : la partie suivante attend sa résolution, et une
  * arrivée pendant la ronde est refusée (le cas n'est pas défini : le joueur réessaie
- * après au plus 20 s, plutôt que le serveur ne lui attribue un choix).
+ * après au plus 15 s, plutôt que le serveur ne lui attribue un choix).
  */
 export class SessionDecisionInProgressError extends Error {
   constructor(readonly sessionId: SessionId) {

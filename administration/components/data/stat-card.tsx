@@ -21,14 +21,14 @@ export function StatCard({
   loading?: boolean;
 }) {
   return (
-    <div className="border-line bg-surface shadow-card rounded-xl border p-4">
+    <div className="border-line bg-surface shadow-card flex h-full min-w-0 flex-col rounded-xl border p-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-muted text-xs font-medium">{label}</p>
+        <p className="text-muted min-w-0 text-xs leading-snug font-medium">{label}</p>
         {Icon && (
           <span
             aria-hidden
             className={cn(
-              'flex size-8 items-center justify-center rounded-lg [&_svg]:size-4',
+              'flex size-8 shrink-0 items-center justify-center rounded-lg [&_svg]:size-4',
               tone === 'primary' && 'bg-primary-soft text-primary',
               tone === 'accent' && 'bg-accent-soft text-accent',
               tone === 'success' && 'bg-success-soft text-success',
@@ -44,9 +44,11 @@ export function StatCard({
       {loading ? (
         <Skeleton className="mt-2 h-7 w-24" />
       ) : (
-        <p className="text-ink mt-1 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
+        <p className="text-ink mt-2 text-2xl leading-tight font-semibold tracking-tight [overflow-wrap:anywhere] tabular-nums">
+          {value}
+        </p>
       )}
-      {hint && <p className="text-muted mt-1 text-xs">{hint}</p>}
+      {hint && <p className="text-muted mt-1.5 text-xs leading-snug">{hint}</p>}
     </div>
   );
 }

@@ -69,7 +69,7 @@ export function createGameApiTestApp(
     random?: RandomSource;
     bus?: GameEventPublisher & GameEventSubscriber;
     gameWritesPerMinute?: number;
-    /** Durées des timers (20 s par défaut, comme en production, D-034, D-064). */
+    /** Durées des timers (15 s par défaut, comme en production, D-034, D-068). */
     turnDurationMs?: number;
     decisionWindowMs?: number;
     autoCardSelection?: AutomaticCardSelectionStrategy;

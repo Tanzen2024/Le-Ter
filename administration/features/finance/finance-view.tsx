@@ -1,27 +1,60 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { HandCoins, Landmark, ShoppingCart, Wallet } from 'lucide-react';
+import {
+  Clock,
+  HandCoins,
+  Landmark,
+  ShoppingCart,
+  Ticket,
+  Trophy,
+  Wallet,
+  XCircle,
+} from 'lucide-react';
 import Link from 'next/link';
 
 import { DataTable, Pagination } from '@/components/data/data-table';
 import { FilterBar, SearchInput } from '@/components/data/filter-bar';
 import { StatCard } from '@/components/data/stat-card';
-import { StatusBadge } from '@/components/data/status-badge';
 import { ErrorState, InfoNote } from '@/components/feedback/states';
 import { PageHeader } from '@/components/layout/page-header';
-import { Card, CardBody, CardHeader } from '@/components/ui/card';
+import { Card, CardHeader } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/form-controls';
 import { isPeriod, PeriodSelect } from '@/features/shared/period';
 import { useListState } from '@/hooks/use-list-state';
 import { formatNumber, formatTokens, formatXaf, localDayStartIso } from '@/lib/format';
-import { label, LEDGER_KIND, PAYMENT_STATUS, WALLET_KIND, WALLET_STATUS } from '@/lib/labels';
+import { WALLET_KIND, WALLET_STATUS } from '@/lib/labels';
+import type { FinanceOverview } from '@/types/admin';
 
 import { financeOverviewQuery, transactionsQuery } from './api';
 import { transactionColumns } from './columns';
+import {
+  MovementsDetail,
+  PurchasesDetail,
+  ReconciliationDetail,
+  RevenueDetail,
+} from './finance-detail-cards';
 import { UnsupportedOperations } from './unsupported-operations';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Somme de statuts de paiement EXCLUSIFS (un paiement n'a qu'un statut : aucun double compte). */
+function purchasesBy(o: FinanceOverview | undefined, ...statuses: string[]) {
+  if (!o) return undefined;
+  return o.purchases.byStatus
+    .filter((p) => statuses.includes(p.status))
+    .reduce((t, p) => ({ count: t.count + p.count, amount: t.amount + p.amount }), {
+      count: 0,
+      amount: 0,
+    });
+}
+
+/** Mouvements réussis (débit ou crédit effectif) d'une nature (mêmes critères que le rapprochement). */
+function succeededMovements(o: FinanceOverview | undefined, kind: string) {
+  if (!o) return undefined;
+  const m = o.walletMovements.find((w) => w.kind === kind && w.status === 'succeeded');
+  return { count: m?.count ?? 0, tokens: m?.tokens ?? 0 };
+}
 
 function nextDay(day: string) {
   const d = new Date(`${day}T12:00:00Z`);
@@ -53,7 +86,6 @@ export function FinanceView() {
     }),
   );
   const o = overview.data;
-  const succeeded = o?.purchases.byStatus.find((p) => p.status === 'SUCCESS');
 
   return (
     <>
@@ -67,122 +99,122 @@ export function FinanceView() {
           <ErrorState error={overview.error} onRetry={() => overview.refetch()} />
         </Card>
       ) : (
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard
-            label="Achats confirmés (période)"
-            value={formatXaf(succeeded?.amount ?? 0)}
-            hint="Encaissés pour le compte des joueurs : pas un revenu"
-            icon={ShoppingCart}
-            tone="info"
-            loading={!o}
-          />
-          <StatCard
-            label="Soldes des joueurs"
-            value={formatTokens(o?.playerBalances.balance)}
-            hint={
-              o &&
-              `Dont réservé : ${formatTokens(o.playerBalances.reserved)} · ${formatNumber(o.playerBalances.wallets)} comptes`
-            }
-            icon={Wallet}
-            tone="warning"
-            loading={!o}
-          />
-          <StatCard
-            label="Recettes de la plateforme (période)"
-            value={formatXaf(o?.platformRevenue.total)}
-            hint="Commissions comptabilisées"
-            icon={HandCoins}
-            tone="success"
-            loading={!o}
-          />
-          <StatCard
-            label="Solde comptable de la plateforme"
-            value={formatXaf(o?.platformAccountBalance)}
-            hint={
-              <Link href="/compte-plateforme" className="text-info hover:underline">
-                Voir le compte
-              </Link>
-            }
-            icon={Landmark}
-            tone="primary"
-            loading={!o}
-          />
-        </div>
-      )}
-
-      {o && (
-        <div className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
-          <Card>
-            <CardHeader
-              title="Achats CinetPay par statut"
-              description="Paiements créés sur la période."
-            />
-            <CardBody>
-              {o.purchases.byStatus.length === 0 ? (
-                <p className="text-muted text-sm">Aucun paiement sur la période.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {o.purchases.byStatus.map((p) => (
-                    <li key={p.status} className="flex items-center justify-between gap-3 text-sm">
-                      <StatusBadge map={PAYMENT_STATUS} value={p.status} />
-                      <span className="text-ink tabular-nums">
-                        {formatNumber(p.count)} · {formatXaf(p.amount)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardBody>
-          </Card>
-          <Card>
-            <CardHeader
-              title="Mouvements des comptes de jeu"
-              description="Sur la période, en jetons."
-            />
-            <CardBody>
-              {o.walletMovements.length === 0 ? (
-                <p className="text-muted text-sm">Aucun mouvement sur la période.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {o.walletMovements.map((m) => (
-                    <li
-                      key={`${m.kind}-${m.status}`}
-                      className="flex items-center justify-between gap-3 text-sm"
-                    >
-                      <span className="text-ink-soft">
-                        {label(WALLET_KIND, m.kind)}{' '}
-                        <StatusBadge map={WALLET_STATUS} value={m.status} />
-                      </span>
-                      <span className="text-ink tabular-nums">{formatTokens(m.tokens)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardBody>
-          </Card>
-          <Card>
-            <CardHeader
-              title="Recettes par nature"
-              description="Écritures du compte de la plateforme sur la période."
-            />
-            <CardBody>
-              {o.platformRevenue.byKind.length === 0 ? (
-                <p className="text-muted text-sm">Aucune recette enregistrée sur la période.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {o.platformRevenue.byKind.map((k) => (
-                    <li key={k.kind} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="text-ink-soft">{label(LEDGER_KIND, k.kind)}</span>
-                      <span className="text-ink tabular-nums">{formatXaf(k.amount)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-muted mt-3 text-xs">
-                Aucune commission n’existe sur les parties ordinaires (règle non définie).
-              </p>
-            </CardBody>
-          </Card>
+        // 12 cartes : 8 indicateurs principaux (rangées 1 et 2), 4 cartes de détail (rangée 3).
+        // Colonnes selon la largeur de la zone de contenu (et non de la fenêtre).
+        <div className="@container mb-6">
+          <ul
+            aria-label="Indicateurs financiers"
+            className="grid grid-cols-1 gap-4 @xl:grid-cols-2 @4xl:grid-cols-4"
+          >
+            <li>
+              <StatCard
+                label="Achats confirmés (période)"
+                value={formatXaf(purchasesBy(o, 'SUCCESS')?.amount)}
+                hint="Encaissés pour le compte des joueurs : pas un revenu"
+                icon={ShoppingCart}
+                tone="info"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Soldes des joueurs"
+                value={formatTokens(o?.playerBalances.balance)}
+                hint={
+                  o &&
+                  `Dont réservé : ${formatTokens(o.playerBalances.reserved)} · ${formatNumber(o.playerBalances.wallets)} comptes`
+                }
+                icon={Wallet}
+                tone="warning"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Recettes de la plateforme (période)"
+                value={formatXaf(o?.platformRevenue.total)}
+                hint="Écritures du compte de la plateforme (platform_ledger)"
+                icon={HandCoins}
+                tone="success"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Solde comptable de la plateforme"
+                value={formatXaf(o?.platformAccountBalance)}
+                hint={
+                  <Link href="/compte-plateforme" className="text-info hover:underline">
+                    Voir le compte
+                  </Link>
+                }
+                icon={Landmark}
+                tone="primary"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Paiements en attente (période)"
+                value={formatNumber(purchasesBy(o, 'PENDING')?.count)}
+                hint={o && `${formatXaf(purchasesBy(o, 'PENDING')?.amount)} non encore confirmés`}
+                icon={Clock}
+                tone="warning"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Paiements échoués ou expirés (période)"
+                value={formatNumber(purchasesBy(o, 'FAILED', 'EXPIRED')?.count)}
+                hint={
+                  o &&
+                  `${formatXaf(purchasesBy(o, 'FAILED', 'EXPIRED')?.amount)} · aucun crédit effectué`
+                }
+                icon={XCircle}
+                tone="danger"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Inscriptions de tournoi débitées (période)"
+                value={formatTokens(succeededMovements(o, 'tournament_entry')?.tokens)}
+                hint={
+                  o &&
+                  `${formatNumber(succeededMovements(o, 'tournament_entry')?.count)} débits effectifs sur les comptes de jeu (jetons, pas une recette)`
+                }
+                icon={Ticket}
+                tone="info"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <StatCard
+                label="Gains de tournoi versés (période)"
+                value={formatTokens(succeededMovements(o, 'tournament_prize')?.tokens)}
+                hint={
+                  o &&
+                  `${formatNumber(succeededMovements(o, 'tournament_prize')?.count)} crédits effectifs aux joueurs (jetons)`
+                }
+                icon={Trophy}
+                tone="accent"
+                loading={!o}
+              />
+            </li>
+            <li>
+              <PurchasesDetail overview={o} />
+            </li>
+            <li>
+              <MovementsDetail overview={o} />
+            </li>
+            <li>
+              <RevenueDetail overview={o} />
+            </li>
+            <li>
+              <ReconciliationDetail overview={o} />
+            </li>
+          </ul>
         </div>
       )}
 

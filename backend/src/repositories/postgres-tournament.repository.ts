@@ -11,6 +11,7 @@ import type { SessionId } from '../domain/sessions/session';
 import {
   AlreadyRegisteredError,
   DEFAULT_TOURNAMENT_SETTINGS,
+  REGISTRATION_LIMIT_STATUSES,
   TournamentOverlapError,
   WAITING_STATUSES,
   type CancellationReason,
@@ -242,8 +243,8 @@ function toReservation(row: ReservationRow): WalletReservation {
 
 const SETTING_KEYS: Record<keyof TournamentSettings, string> = {
   platformFeePercent: 'tournament_platform_fee_percent',
-  initialTournamentTokens: 'initial_tournament_tokens',
-  defaultTournamentStake: 'default_tournament_stake',
+  initialTokensCoefficient: 'tournament_initial_tokens_coefficient',
+  stakePerGameCoefficient: 'tournament_stake_per_game_coefficient',
   maximumPendingTournamentsPerPlayer: 'maximum_pending_tournaments_per_player',
   tournamentTransitionMinutes: 'tournament_transition_minutes',
   rankingTokensWeightPercent: 'tournament_ranking_tokens_weight_percent',
@@ -414,7 +415,7 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
   async countWaitingTournaments(): Promise<number> {
     const { rows } = await this.tx.query<{ count: number }>(
       'SELECT count(*)::int AS count FROM tournaments WHERE status = ANY($1::text[])',
-      [WAITING_STATUSES],
+      [REGISTRATION_LIMIT_STATUSES],
     );
     return Number(rows[0]?.count ?? 0);
   }
@@ -815,14 +816,19 @@ export class PostgresTournamentRepository implements TournamentRepository {
   async listPublished(filter: {
     scope: 'current' | 'history';
     limit: number;
+    visibleSince?: Date;
   }): Promise<Tournament[]> {
     const history = filter.scope === 'history';
+    const since = history && filter.visibleSince ? filter.visibleSince.toISOString() : null;
     const { rows } = await this.db.query<TournamentRow>(
       `${SELECT_TOURNAMENT}
        WHERE t.published_at IS NOT NULL AND t.status = ANY($1::text[])
+         AND ($3::timestamptz IS NULL
+              OR (t.status = 'COMPLETED' AND t.ends_at > $3)
+              OR (t.status = 'CANCELLED' AND t.cancelled_at > $3))
        ORDER BY t.starts_at ${history ? 'DESC' : 'ASC'}, t.id
        LIMIT $2`,
-      [history ? ['COMPLETED', 'CANCELLED'] : [...UPCOMING, ...LIVE], filter.limit],
+      [history ? ['COMPLETED', 'CANCELLED'] : [...UPCOMING, ...LIVE], filter.limit, since],
     );
     return rows.map(toTournament);
   }

@@ -3,7 +3,7 @@
  * n'est inventée : une valeur absente s'affiche « — ».
  */
 export const TIMEZONE = 'Africa/Douala';
-const LOCALE = 'fr-FR';
+export const LOCALE = 'fr-FR';
 export const EMPTY = '—';
 
 const dateTime = new Intl.DateTimeFormat(LOCALE, {
@@ -36,9 +36,25 @@ export function formatNumber(value: number | null | undefined): string {
   return value === null || value === undefined ? EMPTY : integer.format(value);
 }
 
+/**
+ * Espace insécable (U+00A0), même convention que l'application mobile : « 1 000 » et « FCFA »
+ * ne sont jamais coupés en fin de ligne. `Intl` sépare les milliers par une espace fine
+ * (U+202F) : elle est ramenée à cette même espace.
+ */
+const NBSP = ' ';
+
 /** Montant en francs CFA (XAF), sans décimale ; 1 FCFA = 1 jeton (D-050). */
 export function formatXaf(value: number | null | undefined): string {
-  return value === null || value === undefined ? EMPTY : `${integer.format(value)} FCFA`;
+  return value === null || value === undefined
+    ? EMPTY
+    : `${integer.format(value).replace(/\s/g, NBSP)}${NBSP}FCFA`;
+}
+
+/** Coefficient multiplicateur (D-071) : « 10 », « 0,5 », 2 décimales au plus. */
+export function formatCoefficient(value: number | null | undefined): string {
+  return value === null || value === undefined
+    ? EMPTY
+    : new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(value);
 }
 
 export function formatTokens(value: number | null | undefined): string {

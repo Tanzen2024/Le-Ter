@@ -53,7 +53,7 @@ import type { PlayerId } from './game-id';
 export interface EngineContext {
   rules: TerRuleSet;
   now: Date;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (20 s, D-034, D-064). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (15 s, D-034, D-068). */
   turnDurationMs?: number;
 }
 

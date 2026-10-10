@@ -19,12 +19,12 @@ import { LobbyShell, useLobbyPanels } from './LobbyShell';
 
 /**
  * Accueil connecté (paysage, D-028) : « Choisis ton mode ! » et deux modes.
- * - Privé → Rejoindre : panneau Partie privée (créer / rechercher une session).
+ * - Parties → Rejoindre : panneau Partie privée (créer / rechercher une session).
  * - Tournois → Rejoindre : écran Tournois (route /tournament).
  * - Tournois → « + Proposer un tournoi » : parcours de proposition existant
  *   (route /tournament/propose) ; au centre du panneau, en filigrane, le résumé compact du
  *   prochain tournoi pertinent choisi parmi la liste du serveur (D-065), qui ouvre sa fiche.
- * Le panneau Privé est inchangé.
+ * Le panneau Parties est inchangé.
  */
 export function HomeScreen() {
   return (
@@ -148,7 +148,7 @@ function ModeSelect() {
       >
         <ModeCard
           title={t.home.private}
-          icon="🔒"
+          icon={(size) => <PadlocksIcon size={size} />}
           accent="left"
           layout={layout}
           onJoin={() => openPanel('private')}
@@ -169,6 +169,24 @@ function ModeSelect() {
 }
 
 /**
+ * Icône du panneau Parties : un cadenas ouvert et un cadenas fermé côte à côte, dans la même
+ * emprise `size × size` que l'icône précédente (la mise en page du panneau ne bouge pas).
+ */
+function PadlocksIcon({ size }: { size: number }) {
+  const fontSize = Math.round(size * 0.5);
+  return (
+    <View style={[styles.padlocks, { width: size, height: size }]}>
+      <Text allowFontScaling={false} style={{ fontSize }}>
+        🔓
+      </Text>
+      <Text allowFontScaling={false} style={{ fontSize }}>
+        🔒
+      </Text>
+    </View>
+  );
+}
+
+/**
  * Panneau de mode : titre gravé, icône, carte T inclinée, bouton « Rejoindre ». `action`
  * (sous le titre) et `overlay` (centré PAR-DESSUS l'illustration, en filigrane) sont
  * facultatifs : sans eux, le panneau est exactement celui d'origine. L'overlay ne déplace
@@ -184,7 +202,8 @@ function ModeCard({
   overlay,
 }: {
   title: string;
-  icon: string;
+  /** Emoji, ou rendu d'icône à la taille de l'illustration. */
+  icon: string | ((size: number) => ReactNode);
   /** Côté de la petite carte qui déborde en haut du panneau. */
   accent: 'left' | 'right';
   layout: HomeLayout;
@@ -231,9 +250,13 @@ function ModeCard({
       </Text>
       {action}
       <View style={styles.illustration}>
-        <Text allowFontScaling={false} style={{ fontSize: Math.round(w * 0.27) }}>
-          {icon}
-        </Text>
+        {typeof icon === 'string' ? (
+          <Text allowFontScaling={false} style={{ fontSize: Math.round(w * 0.27) }}>
+            {icon}
+          </Text>
+        ) : (
+          icon(Math.round(w * 0.27))
+        )}
         <View style={{ width: inner, height: inner * 1.36, marginLeft: w * 0.08 }}>
           <TatamiCard
             width={inner}
@@ -335,6 +358,11 @@ const styles = StyleSheet.create({
   },
   illustration: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  padlocks: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

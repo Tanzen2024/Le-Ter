@@ -23,9 +23,9 @@ export function newTournamentId(): TournamentId {
 export const TOURNAMENT_TABLE_SIZE = 4;
 /**
  * Démarrage d'une table de tournoi (D-065) : dès le 2e joueur assis, le premier joueur
- * affecté (créateur de la partie) a 20 s pour démarrer ; ensuite le serveur démarre.
+ * affecté (créateur de la partie) a 15 s pour démarrer (D-068) ; ensuite le serveur démarre.
  */
-export const TOURNAMENT_TABLE_AUTO_START_MS = 20_000;
+export const TOURNAMENT_TABLE_AUTO_START_MS = 15_000;
 export const TOURNAMENT_CURRENCY = 'XAF';
 
 // --- États (D-054) -----------------------------------------------------------------------
@@ -93,15 +93,25 @@ export const BLOCKING_STATUSES: readonly TournamentStatus[] = [
 ];
 
 /**
- * Publiés et pas encore commencés (D-059) : les tournois « en attente de démarrage », comptés
- * dans la limite plateforme `TOURNAMENT_LIMITS.maxWaitingTournaments`. Les propositions non
- * publiées (brouillon, en attente d'approbation) n'y entrent pas : elles ne sont pas planifiées.
+ * Publiés et pas encore commencés (D-059) : les tournois « en attente de démarrage ». Les
+ * propositions non publiées (brouillon, en attente d'approbation) n'en font pas partie.
  */
 export const WAITING_STATUSES: readonly TournamentStatus[] = [
   'SCHEDULED',
   'REGISTRATION_OPEN',
   'REGISTRATION_CLOSED',
   'STARTING',
+];
+
+/**
+ * Comptés dans la limite plateforme `TOURNAMENT_LIMITS.maxWaitingTournaments` (D-072) :
+ * inscriptions ouvertes, ou qui vont s'ouvrir (publié, `SCHEDULED`, ouvert automatiquement à
+ * son heure sans nouveau contrôle). Ainsi jamais plus de 5 tournois aux inscriptions ouvertes ;
+ * une place se libère dès la clôture des inscriptions.
+ */
+export const REGISTRATION_LIMIT_STATUSES: readonly TournamentStatus[] = [
+  'SCHEDULED',
+  'REGISTRATION_OPEN',
 ];
 
 /** Avant la capture : une annulation libère les réservations (jamais de remboursement). */
@@ -150,6 +160,10 @@ export interface Tournament {
   maximumPlayers?: number;
   /** Copié des paramètres à la publication, puis immuable. */
   platformFeeBps?: number;
+  /**
+   * Calculés par le serveur depuis le prix d'entrée et les coefficients des paramètres
+   * (D-071, `tournamentTokenSetup`) tant que le tournoi n'est pas publié, puis figés.
+   */
   initialTournamentTokens: number;
   stakePerGame: number;
   prizeRules: PrizeRule[];
@@ -222,8 +236,10 @@ export interface TournamentResultRow {
 /** Paramètres plateforme (system_settings, D-054). */
 export interface TournamentSettings {
   platformFeePercent: number;
-  initialTournamentTokens: number;
-  defaultTournamentStake: number;
+  /** Jetons de départ = prix d'entrée × coefficient (D-071) ; 2 décimales au plus. */
+  initialTokensCoefficient: number;
+  /** Mise par partie = prix d'entrée × coefficient (D-071) ; 2 décimales au plus. */
+  stakePerGameCoefficient: number;
   maximumPendingTournamentsPerPlayer: number;
   tournamentTransitionMinutes: number;
   /** Poids du classement (D-062), en % ; leur somme vaut exactement 100. */
@@ -231,21 +247,26 @@ export interface TournamentSettings {
   rankingGamesWeightPercent: number;
 }
 
+/**
+ * Valeurs initiales (D-071) : utilisées seulement pour une clé jamais enregistrée dans
+ * `system_settings`. Un réglage enregistré par l'administration n'est jamais écrasé.
+ */
 export const DEFAULT_TOURNAMENT_SETTINGS: TournamentSettings = {
-  platformFeePercent: 10,
-  initialTournamentTokens: 1000,
-  defaultTournamentStake: 100,
+  platformFeePercent: 15,
+  initialTokensCoefficient: 10,
+  stakePerGameCoefficient: 0.5,
   maximumPendingTournamentsPerPlayer: 1,
   tournamentTransitionMinutes: 0,
-  rankingTokensWeightPercent: 50,
-  rankingGamesWeightPercent: 50,
+  rankingTokensWeightPercent: 60,
+  rankingGamesWeightPercent: 40,
 };
 
 /** Bornes des paramètres modifiables par l'administrateur. */
 export const SETTINGS_LIMITS: Record<keyof TournamentSettings, { min: number; max: number }> = {
   platformFeePercent: { min: 0, max: 50 },
-  initialTournamentTokens: { min: 1, max: 1_000_000 },
-  defaultTournamentStake: { min: 1, max: 1_000_000 },
+  // Strictement positifs ; au plus jetons max / prix minimal (1 000 000 / 500).
+  initialTokensCoefficient: { min: 0.01, max: 2000 },
+  stakePerGameCoefficient: { min: 0.01, max: 2000 },
   maximumPendingTournamentsPerPlayer: { min: 0, max: 20 },
   tournamentTransitionMinutes: { min: 0, max: 24 * 60 },
   rankingTokensWeightPercent: { min: 0, max: 100 },
@@ -259,13 +280,15 @@ export const TOURNAMENT_LIMITS = {
   maxDurationMs: 120 * 60 * 1000,
   /** Un joueur propose un tournoi au moins 1 h à l'avance (temps d'approbation). */
   playerMinLeadMs: 60 * 60 * 1000,
+  /** Prix d'entrée : 500 à 100 000 FCFA (D-071 : plus de tournoi gratuit). */
+  minEntryFee: 500,
   maxEntryFee: 100_000,
   /** Participants : 20 à 1 000, pour le minimum comme pour le maximum (D-057). */
   minPlayers: 20,
   maxPlayers: 1000,
   maxPrizeRanks: 10,
   maxInitialTokens: 1_000_000,
-  /** Tournois en attente de démarrage (WAITING_STATUSES) sur toute la plateforme (D-059). */
+  /** Tournois aux inscriptions ouvertes ou à ouvrir (REGISTRATION_LIMIT_STATUSES), plateforme (D-072). */
   maxWaitingTournaments: 5,
 } as const;
 
@@ -298,29 +321,18 @@ export interface TournamentInput {
   entryFee: number;
   minimumPlayers: number;
   maximumPlayers?: number;
-  initialTournamentTokens?: number;
-  stakePerGame?: number;
   prizeRules: PrizeRule[];
 }
 
-/** Paramètres validés : prêts à être enregistrés. */
+/** Paramètres validés : prêts à être enregistrés, jetons de départ et mise calculés. */
 export type ValidTournamentInput = Required<
   Pick<
     TournamentInput,
-    | 'timezone'
-    | 'startsAt'
-    | 'endsAt'
-    | 'entryFee'
-    | 'minimumPlayers'
-    | 'initialTournamentTokens'
-    | 'stakePerGame'
-    | 'prizeRules'
+    'timezone' | 'startsAt' | 'endsAt' | 'entryFee' | 'minimumPlayers' | 'prizeRules'
   >
 > &
-  Pick<
-    TournamentInput,
-    'maximumPlayers' | 'registrationOpensAt' | 'registrationClosesAt'
-  >;
+  Pick<TournamentInput, 'maximumPlayers' | 'registrationOpensAt' | 'registrationClosesAt'> &
+  TournamentTokenSetup;
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
 const validDate = (d: unknown): d is Date => d instanceof Date && !Number.isNaN(d.getTime());
@@ -357,12 +369,19 @@ export function tournamentLabel(startsAt: Date, timezone: string): string {
 }
 
 /**
- * Valide les paramètres d'un tournoi (création ou modification). Jetons initiaux et mise par
- * défaut viennent des paramètres plateforme. Lève InvalidTournamentError (champs fautifs).
+ * Valide les paramètres d'un tournoi (création ou modification). Jetons de départ et mise
+ * sont CALCULÉS depuis le prix d'entrée et les coefficients des paramètres (D-071), sauf
+ * `frozenTokens` : valeurs déjà figées à la publication, conservées telles quelles. Lève
+ * InvalidTournamentError (champs fautifs).
  */
 export function validateTournamentInput(
   input: TournamentInput,
-  context: { now: Date; creatorType: CreatorType; settings: TournamentSettings },
+  context: {
+    now: Date;
+    creatorType: CreatorType;
+    settings: TournamentSettings;
+    frozenTokens?: TournamentTokenSetup;
+  },
 ): ValidTournamentInput {
   const fields: Record<string, string> = {};
   const timezone = input.timezone ?? 'Africa/Douala';
@@ -405,12 +424,12 @@ export function validateTournamentInput(
     }
   }
 
-  if (
-    !isInt(input.entryFee) ||
-    input.entryFee < 0 ||
-    input.entryFee > TOURNAMENT_LIMITS.maxEntryFee
-  ) {
-    fields.entryFee = `Montant entier entre 0 et ${TOURNAMENT_LIMITS.maxEntryFee}.`;
+  const entryFeeValid =
+    isInt(input.entryFee) &&
+    input.entryFee >= TOURNAMENT_LIMITS.minEntryFee &&
+    input.entryFee <= TOURNAMENT_LIMITS.maxEntryFee;
+  if (!entryFeeValid) {
+    fields.entryFee = `Montant entier entre ${TOURNAMENT_LIMITS.minEntryFee} et ${TOURNAMENT_LIMITS.maxEntryFee}.`;
   }
   const { minimumPlayers, maximumPlayers } = input;
   if (
@@ -430,24 +449,25 @@ export function validateTournamentInput(
     fields.maximumPlayers = `Au moins le minimum (${TOURNAMENT_LIMITS.minPlayers} ou plus), au plus ${TOURNAMENT_LIMITS.maxPlayers}.`;
   }
 
-  const initialTournamentTokens =
-    input.initialTournamentTokens ?? context.settings.initialTournamentTokens;
-  if (
-    !isInt(initialTournamentTokens) ||
-    initialTournamentTokens < 1 ||
-    initialTournamentTokens > TOURNAMENT_LIMITS.maxInitialTokens
-  ) {
-    fields.initialTournamentTokens = 'Nombre entier positif.';
-  }
-  const stakePerGame = input.stakePerGame ?? context.settings.defaultTournamentStake;
-  if (
-    !isInt(stakePerGame) ||
-    stakePerGame < 1 ||
-    // Au départ, chacun doit pouvoir jouer : jetons initiaux >= seuil de participation.
-    (isInt(initialTournamentTokens) &&
-      !canPlayTournamentGame(initialTournamentTokens, stakePerGame))
-  ) {
-    fields.stakePerGame = 'Entre 1 et la moitié des jetons initiaux.';
+  const tokens =
+    context.frozenTokens ??
+    (entryFeeValid ? tournamentTokenSetup(input.entryFee, context.settings) : undefined);
+  if (tokens) {
+    const { initialTournamentTokens, stakePerGame } = tokens;
+    if (
+      !isInt(initialTournamentTokens) ||
+      initialTournamentTokens < 1 ||
+      initialTournamentTokens > TOURNAMENT_LIMITS.maxInitialTokens
+    ) {
+      fields.entryFee = `Jetons de départ calculés hors limites (1 à ${TOURNAMENT_LIMITS.maxInitialTokens}).`;
+    } else if (
+      !isInt(stakePerGame) ||
+      stakePerGame < 1 ||
+      // Au départ, chacun doit pouvoir jouer : jetons initiaux >= seuil de participation.
+      !canPlayTournamentGame(initialTournamentTokens, stakePerGame)
+    ) {
+      fields.entryFee = 'Mise calculée hors limites (de 1 à la moitié des jetons de départ).';
+    }
   }
 
   const prizeError = prizeRulesError(input.prizeRules);
@@ -465,10 +485,67 @@ export function validateTournamentInput(
     entryFee: input.entryFee,
     minimumPlayers,
     ...(maximumPlayers !== undefined && { maximumPlayers }),
-    initialTournamentTokens,
-    stakePerGame,
+    // Défini : un prix d'entrée invalide (donc des jetons absents) a déjà levé l'erreur.
+    initialTournamentTokens: tokens!.initialTournamentTokens,
+    stakePerGame: tokens!.stakePerGame,
     prizeRules: [...input.prizeRules].sort((a, b) => a.rank - b.rank),
   };
+}
+
+/**
+ * Statuts où jetons de départ et mise SUIVENT les coefficients en vigueur (D-071) : ils sont
+ * recalculés à chaque lecture et figés à la publication (approbation).
+ */
+export const TOKEN_SETUP_STATUSES: readonly TournamentStatus[] = ['DRAFT', 'PENDING_APPROVAL'];
+
+export interface TournamentTokenSetup {
+  initialTournamentTokens: number;
+  stakePerGame: number;
+}
+
+/**
+ * Coefficient en CENTIÈMES (entier exact) : 0,5 → 50, 10 → 1000. `undefined` si le nombre
+ * n'est pas fini ou a plus de 2 décimales (aucun calcul flottant sur les montants).
+ */
+export function coefficientHundredths(coefficient: number): number | undefined {
+  if (typeof coefficient !== 'number' || !Number.isFinite(coefficient)) return undefined;
+  const hundredths = Math.round(coefficient * 100);
+  return Math.abs(coefficient * 100 - hundredths) < 1e-6 ? hundredths : undefined;
+}
+
+/**
+ * Seule formule des jetons de départ et de la mise (D-071) : prix d'entrée × coefficient des
+ * paramètres, en entiers, arrondi à l'entier INFÉRIEUR (même sens que la commission). Calcul
+ * exact : prix (≤ 100 000) × centièmes (≤ 200 000) reste un entier sûr. Les bornes (au moins
+ * 1, mise au plus la moitié des jetons) sont vérifiées par `validateTournamentInput`.
+ */
+export function tournamentTokenSetup(
+  entryFee: number,
+  settings: Pick<TournamentSettings, 'initialTokensCoefficient' | 'stakePerGameCoefficient'>,
+): TournamentTokenSetup {
+  const times = (coefficient: number) =>
+    Math.floor((entryFee * (coefficientHundredths(coefficient) ?? 0)) / 100);
+  return {
+    initialTournamentTokens: times(settings.initialTokensCoefficient),
+    stakePerGame: times(settings.stakePerGameCoefficient),
+  };
+}
+
+/**
+ * Cohérence des deux coefficients (D-071, D-063) : la mise doit rester au plus la moitié des
+ * jetons de départ pour TOUT prix d'entrée, donc coefficient de mise × 2 ≤ coefficient de
+ * jetons (l'arrondi inférieur conserve l'inégalité).
+ */
+export function tokenCoefficientsError(
+  settings: Pick<TournamentSettings, 'initialTokensCoefficient' | 'stakePerGameCoefficient'>,
+): string | undefined {
+  const tokens = coefficientHundredths(settings.initialTokensCoefficient);
+  const stake = coefficientHundredths(settings.stakePerGameCoefficient);
+  if (tokens === undefined || stake === undefined) return 'Nombre à 2 décimales au plus.';
+  if (stake * TOURNAMENT_MIN_STAKES_TO_PLAY > tokens) {
+    return 'Au plus la moitié du coefficient de jetons (seuil de participation : 2 mises).';
+  }
+  return undefined;
 }
 
 /** Rangs 1..n consécutifs, chacun > 0, somme exactement 100 % (10 000 points de base). */
@@ -561,8 +638,8 @@ export function rankingWeightsError(weights: RankingWeights): string | undefined
 /**
  * Durée de référence d'une partie de tournoi (D-062) : 170 s, calculée à l'origine avec les
  * délais de 10 s (4 plis joués × 4 joueurs × 10 s, le 5e pli est automatique, + 10 s de
- * Continuer/Quitter). FIGÉE par D-064 : le passage des délais à 20 s ne modifie pas le
- * classement des tournois ; seule une nouvelle décision peut l'ajuster.
+ * Continuer/Quitter). FIGÉE par D-064 et D-068 : le passage des délais à 20 s puis à 15 s
+ * ne modifie pas le classement des tournois ; seule une nouvelle décision peut l'ajuster.
  */
 export const RANKING_REFERENCE_GAME_MS = 170_000;
 

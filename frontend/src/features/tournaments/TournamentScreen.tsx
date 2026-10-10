@@ -22,7 +22,7 @@ import {
 import type { TournamentView } from '../../types/tournament';
 import { useLobbyMetrics, type LobbyMetrics } from '../lobby/lobby-metrics';
 import { LobbyShell } from '../lobby/LobbyShell';
-import { useTournamentList } from './hooks';
+import { useMyTournaments, useTournamentList } from './hooks';
 import { StatusChip } from './TournamentDetailPanel';
 import { groupTournaments } from './tournament-groups';
 import { useTournamentMessages } from './tournament-messages';
@@ -194,6 +194,10 @@ function TournamentList({ area }: { area: TournamentArea }) {
   const t = useTournamentMessages();
   const fonts = useTableFonts();
   const { data, isPending, isError, refetch, isRefetching } = useTournamentList();
+  // Mes propositions (GET /api/tournaments/mine : créateur = identité du jeton, côté serveur).
+  // Un simple inscrit n'y figure pas ; la liste publique n'expose jamais le créateur.
+  const myProposals = useMyTournaments();
+  const proposedByMe = new Set(myProposals.data?.map((p) => p.tournamentId));
   // Retour d'une table de tournoi après « Annuler la recherche ».
   const { searchCancelled } = useLocalSearchParams<{ searchCancelled?: string }>();
   const label = [styles.section, fontOf(fonts.button), { fontSize: m.smallSize }];
@@ -273,6 +277,7 @@ function TournamentList({ area }: { area: TournamentArea }) {
               key={tournament.tournamentId}
               tournament={tournament}
               muted={group.key === 'history'}
+              proposedByMe={proposedByMe.has(tournament.tournamentId)}
             />
           ))}
         </View>
@@ -282,17 +287,23 @@ function TournamentList({ area }: { area: TournamentArea }) {
 }
 
 /**
- * Carte d'un tournoi : date et statut, horaires, participation, inscrits / minimum, rangs
- * récompensés, jetons de départ, mon inscription ; flèche à l'extrême droite (zone tactile
- * de 44 dp au moins). Toute la carte ouvre aussi la fiche. Les tournois où le joueur peut
- * agir (s'inscrire, rejoindre, inscrit) sont mis en valeur par un liseré doré.
+ * Carte d'un tournoi : date et statut, horaires, participation, inscrits / capacité et
+ * minimum, rangs récompensés, mon inscription ; flèche à l'extrême droite (zone tactile de
+ * 44 dp au moins). Toute la carte ouvre aussi la fiche. Les tournois où le joueur peut agir
+ * (s'inscrire, rejoindre, inscrit) sont mis en valeur par un liseré doré.
+ *
+ * `proposedByMe` : le joueur connecté est l'initiateur de la proposition (d'après ses
+ * propositions relues sur le serveur). Lui seul voit alors « ✓ Proposition approuvée » en haut
+ * à droite : la liste ne contient que des tournois publiés, donc approuvés.
  */
 export function TournamentCard({
   tournament,
   muted = false,
+  proposedByMe = false,
 }: {
   tournament: TournamentView;
   muted?: boolean;
+  proposedByMe?: boolean;
 }) {
   const m = useLobbyMetrics();
   const t = useTournamentMessages();
@@ -301,6 +312,8 @@ export function TournamentCard({
   const meta = [styles.meta, fontOf(fonts.button), { fontSize: m.smallSize }];
   const highlighted = !muted && isActionable(tournament);
   const registered = tournament.registration !== null || tournament.account !== null;
+  const approvedProposal =
+    proposedByMe && tournament.status !== 'DRAFT' && tournament.status !== 'PENDING_APPROVAL';
   const arrow = Math.max(44, Math.round(m.controlHeight));
   const open = () => router.push(`/tournament/${tournament.tournamentId}`);
   const facts = [
@@ -311,7 +324,6 @@ export function TournamentCard({
       tournament.maximumPlayers,
     ),
     rewardedRanks(tournament) > 0 ? t.ranks(rewardedRanks(tournament)) : undefined,
-    t.list.initialTokens(tournament.initialTournamentTokens),
   ].filter((fact): fact is string => fact !== undefined);
 
   return (
@@ -345,6 +357,19 @@ export function TournamentCard({
               {registered ? t.registered : t.list.notRegistered}
             </Text>
           </View>
+          {approvedProposal ? (
+            <View
+              testID={`tournament-approved-proposal-${tournament.tournamentId}`}
+              style={[styles.badge, styles.approvedBadge]}
+            >
+              <Text
+                numberOfLines={1}
+                style={[styles.approvedText, fontOf(fonts.button), { fontSize: m.smallSize - 1 }]}
+              >
+                {t.list.approvedProposal}
+              </Text>
+            </View>
+          ) : null}
         </View>
         <Text numberOfLines={1} style={meta}>{`🕐 ${t.period(period.start, period.end)}`}</Text>
         <View style={[styles.facts, { columnGap: m.gap }]}>
@@ -514,6 +539,13 @@ const styles = StyleSheet.create({
   },
   badgeOff: { borderColor: 'rgba(247, 241, 225, 0.25)' },
   badgeText: { color: tablePalette.cream },
+  // Ton « Approuvé » de Mes propositions (jade), liseré doré : lisible au premier regard.
+  approvedBadge: {
+    marginLeft: 'auto',
+    borderColor: tablePalette.gold,
+    backgroundColor: tablePalette.jade,
+  },
+  approvedText: { color: '#FFFFFF', fontWeight: '700' },
   arrow: {
     alignItems: 'center',
     justifyContent: 'center',

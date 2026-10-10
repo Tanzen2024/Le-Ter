@@ -79,6 +79,20 @@ export class PostgresUserRepository implements UserRepository {
     const taken = rows[0];
     return (['email', 'username', 'phone'] as const).filter((field) => taken?.[field]);
   }
+
+  async updatePasswordHash(
+    id: UserId,
+    expectedHash: string,
+    newHash: string,
+    now: Date,
+  ): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE users SET password_hash = $3, updated_at = $4
+       WHERE id = $1 AND password_hash = $2 AND status = 'active'`,
+      [id, expectedHash, newHash, now.toISOString()],
+    );
+    return rowCount === 1;
+  }
 }
 
 function toUser(row: UserRow): User {

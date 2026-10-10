@@ -77,12 +77,12 @@ describe('POST /api/auth/register (R-15)', () => {
   it('refuse les champs manquants avec un message par champ', async () => {
     const res = await register({}).expect(400);
     expect(res.body.code).toBe('VALIDATION_ERROR');
-    expect(Object.keys(res.body.fields)).toHaveLength(7);
+    expect(Object.keys(res.body.fields)).toHaveLength(8); // 7 champs + pays
   });
 
   it.each([
     ['email', 'invalide'],
-    ['phone', '699001122'],
+    ['phone', '600001122'],
     ['username', 'a b'],
     ['password', 'faible'],
   ])('refuse un %s invalide', async (field, value) => {
@@ -97,6 +97,21 @@ describe('POST /api/auth/register (R-15)', () => {
   it('refuse une confirmation différente', async () => {
     const res = await register(validRegistration({ confirmPassword: 'Autre1234' })).expect(400);
     expect(res.body.fields).toEqual({ confirmPassword: 'Les mots de passe ne correspondent pas.' });
+  });
+
+  it('pays + numéro national : E.164 reconstruit par le serveur ; indicatif étranger refusé', async () => {
+    const res = await register(validRegistration({ country: 'CM', phone: '6 92 13 02 71' })).expect(
+      201,
+    );
+    expect(res.body.user.phone).toBe('+237692130271');
+
+    const foreign = await register(validRegistration({ country: 'CM', phone: '+33612345678' }));
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.fields).toEqual({ phone: 'Numéro invalide pour le pays sélectionné.' });
+
+    const noCountry = await register(validRegistration({ country: undefined }));
+    expect(noCountry.status).toBe(400);
+    expect(noCountry.body.fields).toEqual({ country: 'Ce champ est obligatoire.' });
   });
 
   it('refuse un email, un pseudo (sans tenir compte de la casse) ou un téléphone déjà utilisés', async () => {

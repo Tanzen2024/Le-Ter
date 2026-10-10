@@ -16,14 +16,24 @@ export interface Migration {
   name: string;
   sql: string;
   checksum: string;
+  /**
+   * Empreinte des octets bruts du fichier, acceptée en plus de `checksum` pour une migration
+   * déjà appliquée : les premières étaient enregistrées ainsi (LF ou CRLF selon l'extraction).
+   */
+  rawChecksum?: string;
 }
+
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 export async function loadMigrations(dir = MIGRATIONS_DIR): Promise<Migration[]> {
   const files = (await readdir(dir)).filter((f) => MIGRATION_FILE.test(f)).sort();
   return Promise.all(
     files.map(async (name) => {
       const sql = await readFile(join(dir, name), 'utf8');
-      return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
+      // Empreinte sur des fins de ligne LF : une extraction Git en CRLF (Windows, autocrlf)
+      // ne doit pas faire passer une migration appliquée pour modifiée.
+      const checksum = sha256(sql.replace(/\r\n/g, '\n'));
+      return { name, sql, checksum, rawChecksum: sha256(sql) };
     }),
   );
 }
@@ -66,7 +76,7 @@ export async function runMigrations(
     for (const migration of migrations) {
       const checksum = applied.get(migration.name);
       if (checksum !== undefined) {
-        if (checksum !== migration.checksum) {
+        if (checksum !== migration.checksum && checksum !== migration.rawChecksum) {
           throw new Error(`Migration déjà appliquée puis modifiée : ${migration.name}`);
         }
         continue;

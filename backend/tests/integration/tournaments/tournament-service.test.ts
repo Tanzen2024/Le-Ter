@@ -27,6 +27,7 @@ import {
   balances,
   createTournamentTestStack,
   fillWith,
+  saveTournamentSettings,
   finishedCopy,
   HOUR,
   MINUTE,
@@ -59,6 +60,7 @@ beforeEach(async () => {
   stack = createTournamentTestStack(database.sql, new TestClock());
   admin = await seedAdmin(database.sql);
   players = await seedPlayers(database.sql, NAMES, 5000);
+  await saveTournamentSettings(database.sql);
 });
 afterEach(async () => {
   await stack.stop();
@@ -455,11 +457,11 @@ describe('jetons de tournoi, classement, gains', () => {
 
   it('sous le seuil (2 × mise, D-063) : OUT_OF_TOKENS, plus de nouvelle table, classement conservé', async () => {
     // 200 jetons, mise 100 : seuil 200 atteint au départ ; une défaite → 100, sous le seuil.
-    const t = await startWith(
-      await published({ initialTournamentTokens: 200, stakePerGame: 100 }),
-      ANA,
-      BEN,
-    );
+    await stack.tournaments.updateSettings(admin, {
+      initialTokensCoefficient: 0.2,
+      stakePerGameCoefficient: 0.1,
+    });
+    const t = await startWith(await published(), ANA, BEN);
     await playGame(t, ANA, [ANA, BEN]);
     expect(await stack.repository.findAccount(t.id, p(BEN))).toMatchObject({
       currentTokens: 100,
@@ -574,7 +576,10 @@ describe('jetons de tournoi, classement, gains', () => {
     );
 
     // Les nouveaux tournois reçoivent la configuration courante.
-    const next = await stack.tournaments.createAsAdmin(admin, tournamentInput(stack.clock, 5 * HOUR));
+    const next = await stack.tournaments.createAsAdmin(
+      admin,
+      tournamentInput(stack.clock, 5 * HOUR),
+    );
     expect(next.rankingWeights).toEqual({ tokensBps: 10_000, gamesBps: 0 });
   });
 
@@ -716,7 +721,7 @@ describe('règles revérifiées à la soumission, à l’approbation et à la mo
   });
 });
 
-describe('limite de 5 tournois en attente de démarrage (D-059)', () => {
+describe('limite de 5 tournois aux inscriptions ouvertes ou à ouvrir (D-059, D-072)', () => {
   /** Créneau n°i : début dans (1 + 3i) h, durée 1 h, jamais de chevauchement entre créneaux. */
   const slot = (i: number, extra = {}) => {
     const startsIn = HOUR + i * 3 * HOUR;
@@ -725,12 +730,57 @@ describe('limite de 5 tournois en attente de démarrage (D-059)', () => {
       ...extra,
     });
   };
+  /** Tournois comptés dans la limite (D-072) : inscriptions ouvertes, ou à ouvrir. */
   const waiting = () =>
     count(
       `SELECT count(*)::int AS n FROM tournaments
-       WHERE status IN ('SCHEDULED', 'REGISTRATION_OPEN', 'REGISTRATION_CLOSED', 'STARTING')`,
+       WHERE status IN ('SCHEDULED', 'REGISTRATION_OPEN')`,
       [],
     );
+  const statusOf = async (id: string) => (await stack.repository.findById(id as never))?.status;
+
+  it('inscriptions closes (REGISTRATION_CLOSED) ou démarrage (STARTING) : place libérée', async () => {
+    const created: Tournament[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      // Créneau 0 : inscriptions closes 30 min avant le début.
+      const closes = i === 0 ? { registrationClosesAt: new Date(stack.clock.now().getTime() + 30 * MINUTE) } : {};
+      created.push(await stack.tournaments.createAsAdmin(admin, slot(i, closes)));
+    }
+    expect(await waiting()).toBe(5);
+    await expect(stack.tournaments.createAsAdmin(admin, slot(5))).rejects.toBeInstanceOf(
+      TooManyWaitingTournamentsError,
+    );
+
+    stack.clock.advance(30 * MINUTE);
+    expect((await stack.tournaments.advance(created[0]!.id)).status).toBe('REGISTRATION_CLOSED');
+    expect(await waiting()).toBe(4);
+    await expect(stack.tournaments.createAsAdmin(admin, slot(5))).resolves.toBeDefined();
+
+    // STARTING (donnée de test : état transitoire du démarrage) ne compte pas non plus.
+    await database.sql.query(`UPDATE tournaments SET status = 'STARTING' WHERE id = $1`, [
+      created[1]!.id,
+    ]);
+    await expect(stack.tournaments.createAsAdmin(admin, slot(6))).resolves.toBeDefined();
+    expect(await waiting()).toBe(5);
+  });
+
+  it('tournoi publié dont les inscriptions s’ouvriront plus tard (SCHEDULED) : compté', async () => {
+    const later = await stack.tournaments.createAsAdmin(
+      admin,
+      slot(0, { registrationOpensAt: new Date(stack.clock.now().getTime() + 30 * MINUTE) }),
+    );
+    expect(await statusOf(later.id)).toBe('SCHEDULED');
+    for (let i = 1; i < 5; i += 1) await stack.tournaments.createAsAdmin(admin, slot(i));
+    await expect(stack.tournaments.createAsAdmin(admin, slot(5))).rejects.toBeInstanceOf(
+      TooManyWaitingTournamentsError,
+    );
+    // Il s'ouvre à son heure, sans dépasser la limite : jamais plus de 5 ouverts.
+    stack.clock.advance(30 * MINUTE);
+    expect((await stack.tournaments.advance(later.id)).status).toBe('REGISTRATION_OPEN');
+    expect(
+      await count(`SELECT count(*)::int AS n FROM tournaments WHERE status = 'REGISTRATION_OPEN'`, []),
+    ).toBe(5);
+  });
 
   it('4 en attente : le 5e est accepté ; le 6e est refusé', async () => {
     for (let i = 0; i < 4; i += 1) await stack.tournaments.createAsAdmin(admin, slot(i));
@@ -789,6 +839,91 @@ describe('limite de 5 tournois en attente de démarrage (D-059)', () => {
       expect((r as PromiseRejectedResult).reason).toBeInstanceOf(TooManyWaitingTournamentsError);
     }
     expect(await waiting()).toBe(5);
+  });
+});
+
+describe('liste des joueurs : terminés et annulés visibles 7 jours (D-072)', () => {
+  const DAY = 24 * HOUR;
+  const historyIds = async () =>
+    (await stack.tournaments.listForPlayer(p(ANA))).history.map((s) => s.tournament.id);
+  const stillStored = async (id: string) =>
+    count('SELECT count(*)::int AS n FROM tournaments WHERE id = $1', [id]);
+
+  it('COMPLETED : visible jusqu’à 7 jours après la fin PRÉVUE, puis retiré (jamais supprimé)', async () => {
+    const t = await published();
+    // Donnée de test : tournoi terminé (le cycle complet est couvert ailleurs). Fin réelle
+    // (completed_at) postérieure à la fin prévue : c'est la fin PRÉVUE qui compte.
+    await database.sql.query(
+      `UPDATE tournaments SET status = 'COMPLETED', completed_at = $2 WHERE id = $1`,
+      [t.id, new Date(t.endsAt.getTime() + 2 * DAY).toISOString()],
+    );
+    stack.clock.set(new Date(t.endsAt.getTime() + 7 * DAY - MINUTE));
+    expect(await historyIds()).toContain(t.id);
+    stack.clock.set(new Date(t.endsAt.getTime() + 7 * DAY + MINUTE));
+    expect(await historyIds()).not.toContain(t.id);
+    expect(await stillStored(t.id)).toBe(1);
+    expect((await stack.repository.findById(t.id))?.status).toBe('COMPLETED');
+  });
+
+  it('CANCELLED : visible jusqu’à 7 jours après l’annulation RÉELLE, puis retiré (jamais supprimé)', async () => {
+    // Début dans 10 jours : la fin prévue est postérieure au délai, seule l'annulation compte.
+    const t = await stack.tournaments.createAsAdmin(admin, tournamentInput(stack.clock, 10 * DAY));
+    await registerWith(t, ANA);
+    const cancelledAt = stack.clock.now().getTime();
+    await stack.tournaments.cancel(t.id, { userId: admin, isAdmin: true });
+    stack.clock.set(new Date(cancelledAt + 7 * DAY - MINUTE));
+    expect(await historyIds()).toContain(t.id);
+    stack.clock.set(new Date(cancelledAt + 7 * DAY + MINUTE));
+    expect(await historyIds()).not.toContain(t.id);
+    // Rien n'est supprimé : tournoi, inscriptions, réservations libérées.
+    expect(await stillStored(t.id)).toBe(1);
+    expect((await stack.repository.findById(t.id))?.status).toBe('CANCELLED');
+    expect(
+      await count(
+        'SELECT count(*)::int AS n FROM tournament_registrations WHERE tournament_id = $1',
+        [t.id],
+      ),
+    ).toBeGreaterThanOrEqual(20);
+  });
+
+  it('résultats ou gains en traitement : jamais traités comme COMPLETED', async () => {
+    const t = await published();
+    await database.sql.query(`UPDATE tournaments SET status = 'DISTRIBUTING_PRIZES' WHERE id = $1`, [
+      t.id,
+    ]);
+    // Bien au-delà des 7 jours après la fin prévue : toujours dans la liste courante.
+    const since = new Date(t.endsAt.getTime() + 30 * DAY);
+    const history = await stack.repository.listPublished({
+      scope: 'history',
+      limit: 10,
+      visibleSince: since,
+    });
+    const current = await stack.repository.listPublished({ scope: 'current', limit: 20 });
+    expect(history.map((x) => x.id)).not.toContain(t.id);
+    expect(current.map((x) => x.id)).toContain(t.id);
+  });
+
+  it('inscription refusée : tournoi annulé, ou fin prévue atteinte', async () => {
+    const cancelled = await published();
+    await stack.tournaments.cancel(cancelled.id, { userId: admin, isAdmin: true });
+    await expect(stack.tournaments.register(cancelled.id, p(ANA))).rejects.toBeInstanceOf(
+      TournamentRegistrationClosedError,
+    );
+
+    const ended = await stack.tournaments.createAsAdmin(
+      admin,
+      tournamentInput(stack.clock, 4 * HOUR),
+    );
+    stack.clock.set(ended.endsAt);
+    await expect(stack.tournaments.register(ended.id, p(BEN))).rejects.toBeInstanceOf(
+      TournamentRegistrationClosedError,
+    );
+    expect(
+      await count(
+        'SELECT count(*)::int AS n FROM tournament_registrations WHERE tournament_id = $1',
+        [ended.id],
+      ),
+    ).toBe(0);
   });
 });
 

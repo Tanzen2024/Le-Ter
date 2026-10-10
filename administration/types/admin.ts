@@ -204,6 +204,7 @@ export interface GameDetail extends GameRow {
 
 export type WalletKind = 'deposit' | 'withdrawal' | 'tournament_entry' | 'tournament_prize';
 export type WalletStatus = 'pending' | 'succeeded' | 'failed';
+export type ReservationStatus = 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
 export type PaymentStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED';
 
 export interface WalletTransaction {
@@ -261,7 +262,16 @@ export interface FinanceOverview {
   period: { from: string; to: string };
   currency: 'XAF';
   purchases: { label: string; byStatus: StatusAmount[] };
-  walletMovements: { kind: WalletKind; status: WalletStatus; count: number; tokens: number }[];
+  /** `withoutPayment` : achat (`deposit`) sans paiement CinetPay rattaché ; `false` sinon. */
+  walletMovements: {
+    kind: WalletKind;
+    status: WalletStatus;
+    withoutPayment: boolean;
+    count: number;
+    tokens: number;
+  }[];
+  /** Réservations de tournoi créées sur la période : jamais des débits. */
+  reservations: { status: ReservationStatus; count: number; amount: number }[];
   playerBalances: { label: string; wallets: number; balance: number; reserved: number };
   platformRevenue: {
     label: string;
@@ -395,8 +405,14 @@ export interface TournamentSummary {
   maximumPlayers?: number;
   platformFeePercent?: number;
   rankingWeights?: { tokensPercent: number; gamesPercent: number };
+  /** Calculés par le serveur : prix d'entrée × coefficient des paramètres (D-071). */
   initialTournamentTokens: number;
   stakePerGame: number;
+  /**
+   * Détail admin, tournoi non publié (D-071) : coefficients en vigueur du calcul. Absent une
+   * fois publié : les valeurs sont figées.
+   */
+  tokenCoefficients?: { initialTokensCoefficient: number; stakePerGameCoefficient: number };
   prizeRules: { rank: number; percent: number }[];
   cancellationReason?: string;
   pool?: {
@@ -434,8 +450,8 @@ export interface TournamentResult {
 
 export interface TournamentSettings {
   platformFeePercent: number;
-  initialTournamentTokens: number;
-  defaultTournamentStake: number;
+  initialTokensCoefficient: number;
+  stakePerGameCoefficient: number;
   maximumPendingTournamentsPerPlayer: number;
   tournamentTransitionMinutes: number;
   rankingTokensWeightPercent: number;

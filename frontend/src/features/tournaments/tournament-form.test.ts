@@ -14,7 +14,7 @@ const values = (overrides: Partial<TournamentFormValues> = {}): TournamentFormVa
 });
 
 describe('valeurs par défaut', () => {
-  it('demain 18:00, 60 min, 1 000 FCFA, 20 joueurs minimum, 50 / 30 / 20', () => {
+  it('demain 18:00, 60 min, 1 000 FCFA, 20 joueurs minimum, 50 / 30 / 20', () => {
     expect(defaultTournamentForm(new Date(2026, 9, 8, 10, 0))).toMatchObject({
       date: '09/10/2026',
       startTime: '18:00',
@@ -147,5 +147,33 @@ describe('fieldErrorsFromApi', () => {
       shares: 'La somme des parts doit être exactement 100 %.',
       entryFee: 'Montant entier entre 0 et 100000.',
     });
+  });
+});
+
+describe('toTournamentPayload : changement de jour, de mois et d’année', () => {
+  it.each([
+    ['31/12/2026', '23:30', 60, [2026, 12, 31, 23, 30], [2027, 1, 1, 0, 30]],
+    ['31/10/2026', '23:45', 30, [2026, 10, 31, 23, 45], [2026, 11, 1, 0, 15]],
+    ['28/02/2027', '23:00', 120, [2027, 2, 28, 23, 0], [2027, 3, 1, 1, 0]],
+    ['01/01/2027', '00:00', 60, [2027, 1, 1, 0, 0], [2027, 1, 1, 1, 0]],
+  ] as const)(
+    '%s %s (%i min) : début et fin locaux exacts, aucun décalage de fuseau',
+    (date, startTime, duration, startParts, endParts) => {
+      const result = toTournamentPayload(
+        values({ date, startTime, durationMinutes: String(duration) }),
+      );
+      if (!result.ok) throw new Error('payload attendu');
+      const local = (iso: string) => {
+        const d = new Date(iso);
+        return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes()];
+      };
+      expect(local(result.payload.startsAt)).toEqual(startParts);
+      expect(local(result.payload.endsAt)).toEqual(endParts);
+    },
+  );
+
+  it('29/02 d’une année non bissextile : refusé', () => {
+    const result = toTournamentPayload(values({ date: '29/02/2027' }));
+    expect(result.ok).toBe(false);
   });
 });

@@ -7,11 +7,11 @@ import type { GameView } from '../../../types/game';
 export const TURN_SIGNAL_MS = 2000;
 
 /**
- * Durée d'un tour (D-034, 20 s depuis D-064), seulement pour l'échelle de l'anneau quand le
+ * Durée d'un tour (D-034, 15 s depuis D-068), seulement pour l'échelle de l'anneau quand le
  * serveur n'envoie pas le début du tour. Le compte à rebours suit TOUJOURS `turnDeadlineAt`
  * du serveur (`TURN_DURATION_MS` côté backend) : le client ne décide jamais du délai.
  */
-export const DEFAULT_TURN_MS = 20_000;
+export const DEFAULT_TURN_MS = 15_000;
 
 /**
  * Identité d'UN tour de jeu, tirée de l'état synchronisé : joueur attendu + échéance fixée par

@@ -1,7 +1,7 @@
 import { DEPOSIT_AMOUNTS, formatFcfa, formatTokens, paymentDisplay } from './payment-state';
 
 describe('payment-state (D-050)', () => {
-  it('montants proposés : 500, 1 000, 2 000, 5 000 FCFA', () => {
+  it('montants proposés : 500, 1 000, 2 000, 5 000 FCFA', () => {
     expect(DEPOSIT_AMOUNTS.map(formatFcfa)).toEqual([
       '500 FCFA',
       '1 000 FCFA',
@@ -10,7 +10,7 @@ describe('payment-state (D-050)', () => {
     ]);
   });
 
-  it('1 FCFA = 1 jeton', () => {
+  it('1 FCFA = 1 jeton', () => {
     expect(formatTokens(1)).toBe('1 jeton');
     expect(formatTokens(1000)).toBe('1 000 jetons');
   });

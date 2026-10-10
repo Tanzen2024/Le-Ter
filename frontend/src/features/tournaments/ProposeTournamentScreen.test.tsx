@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactElement } from 'react';
 
 import { ApiError } from '../../lib/api-client';
+import { addMonths, formatLongDate, todayOf } from '../../lib/date-time';
 import { tournamentsApi } from '../../services/tournaments-api';
 import { useAuthStore } from '../../stores/auth-store';
 import type { TournamentSummary } from '../../types/tournament';
@@ -69,7 +70,7 @@ describe('formulaire de proposition', () => {
     expect(screen.queryByLabelText('Nom du tournoi')).toBeNull();
     expect(screen.queryByLabelText('Description (facultatif)')).toBeNull();
     for (const label of [
-      'Date (JJ/MM/AAAA)',
+      'Date',
       'Heure de début',
       'Durée (minutes)',
       'Participation (FCFA)',
@@ -92,10 +93,40 @@ describe('formulaire de proposition', () => {
 
   it('validation du format avant envoi : aucun appel API', async () => {
     await renderWith(<ProposalForm onSaved={jest.fn()} />);
-    await type('Date (JJ/MM/AAAA)', '31/02/2026');
+    await type('Participation (FCFA)', '10 €');
     await fireEvent.press(screen.getByText('Proposer'));
-    expect(screen.getByText('Date au format JJ/MM/AAAA.')).toBeTruthy();
+    expect(screen.getByText('Montant entier en FCFA.')).toBeTruthy();
     expect(api.propose).not.toHaveBeenCalled();
+  });
+
+  it('date et heure choisies dans les sélecteurs : début local exact dans la requête', async () => {
+    api.propose.mockResolvedValue({ tournament: summary() });
+    await renderWith(<ProposalForm onSaved={jest.fn()} />);
+    // Champs non saisissables au clavier : ce sont des boutons qui ouvrent un sélecteur.
+    expect(screen.getByLabelText('Date').props.accessibilityRole).toBe('button');
+    expect(screen.getByLabelText('Heure de début').props.accessibilityRole).toBe('button');
+
+    const target = { ...addMonths(todayOf(), 1), day: 1 };
+    await fireEvent.press(screen.getByLabelText('Date'));
+    await fireEvent.press(screen.getByLabelText('Mois suivant'));
+    await fireEvent.press(screen.getByLabelText(formatLongDate(target, 'fr-FR')));
+    await fireEvent.press(screen.getByLabelText('Heure de début'));
+    await fireEvent.press(screen.getByLabelText('Heures 20'));
+    await fireEvent.press(screen.getByLabelText('Minutes 30'));
+    await fireEvent.press(screen.getByLabelText('Valider'));
+    expect(screen.getByLabelText('Heure de début').props.accessibilityValue).toEqual({
+      text: '20:30',
+    });
+
+    await fireEvent.press(screen.getByText('Enregistrer le brouillon'));
+    await waitFor(() => expect(api.propose).toHaveBeenCalled());
+    const start = new Date(api.propose.mock.calls[0][1].startsAt);
+    expect([start.getFullYear(), start.getMonth() + 1, start.getDate()]).toEqual([
+      target.year,
+      target.month,
+      1,
+    ]);
+    expect([start.getHours(), start.getMinutes()]).toEqual([20, 30]);
   });
 
   it.each(['29', '121'])(

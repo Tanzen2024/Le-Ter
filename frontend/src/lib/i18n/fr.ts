@@ -51,7 +51,7 @@ export const fr = {
   },
   home: {
     chooseMode: 'Choisis ton mode !',
-    private: 'Privé',
+    private: 'Parties',
     tournaments: 'Tournois',
     join: 'Rejoindre',
     joinA11y: (mode: string) => `Rejoindre : ${mode}`,
@@ -63,6 +63,21 @@ export const fr = {
     nextTournamentEnd: 'Fin',
     nextTournamentA11y: (date: string, start: string, end: string) =>
       `Ton prochain tournoi : ${date}, de ${start} à ${end}`,
+  },
+  /** Sélecteurs de date (calendrier) et d'heure (heures, minutes, AM/PM). */
+  pickers: {
+    chooseDate: 'Choisir une date',
+    chooseTime: 'Choisir une heure',
+    previousMonth: 'Mois précédent',
+    nextMonth: 'Mois suivant',
+    previousYear: 'Année précédente',
+    nextYear: 'Année suivante',
+    hours: 'Heures',
+    minutes: 'Minutes',
+    period: 'Période',
+    cancel: 'Annuler',
+    confirm: 'Valider',
+    unavailableDay: (date: string) => `${date}, indisponible`,
   },
 };
 

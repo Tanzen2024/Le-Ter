@@ -143,7 +143,7 @@ export interface GameServiceDependencies {
   random?: RandomSource;
   /** Obligatoire pour les parties rattachées à une session (D-033). */
   sessionSeats?: SessionSeatLookup;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (20 s, D-034, D-064). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (15 s, D-034, D-068). */
   turnDurationMs?: number;
   /**
    * Choix de la carte jouée automatiquement après TURN_TIMEOUT (tours 1 à 4). Par défaut :

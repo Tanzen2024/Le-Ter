@@ -7,6 +7,7 @@ import {
 import {
   CLOSING_REFRESH_MS,
   formatFcfa,
+  formatTournamentDuration,
   formatTournamentPeriod,
   formatTournamentSchedule,
   hasResults,
@@ -101,9 +102,22 @@ describe('affichage', () => {
   });
 
   it('montants en FCFA', () => {
-    expect(formatFcfa(45000)).toBe('45 000 FCFA');
-    expect(formatFcfa(1000)).toBe('1 000 FCFA');
-    expect(formatFcfa(0)).toBe('0 FCFA');
+    expect(formatFcfa(45000)).toBe('45 000 FCFA');
+    expect(formatFcfa(1000)).toBe('1 000 FCFA');
+    expect(formatFcfa(0)).toBe('0 FCFA');
+  });
+
+  it('durée réelle du tournoi (fin − début), jamais confondue avec un nombre de joueurs', () => {
+    const at = (start: string, end: string) =>
+      formatTournamentDuration({
+        startsAt: `2026-10-12T${start}:00.000Z`,
+        endsAt: `2026-10-12T${end}:00.000Z`,
+      });
+    expect(at('15:00', '15:30')).toBe('30 min');
+    expect(at('15:00', '15:45')).toBe('45 min');
+    expect(at('15:00', '16:00')).toBe('1 h');
+    expect(at('15:00', '16:30')).toBe('1 h 30');
+    expect(at('15:00', '17:00')).toBe('2 h');
   });
 
   it('compte à rebours corrigé par serverNow', () => {

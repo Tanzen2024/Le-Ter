@@ -14,6 +14,17 @@ export class InvalidCredentialsError extends Error {
   }
 }
 
+/**
+ * Changement de mot de passe : mot de passe actuel incorrect. Distinct d'INVALID_CREDENTIALS
+ * (401) : l'utilisateur reste connecté, seule sa saisie est refusée.
+ */
+export class CurrentPasswordIncorrectError extends Error {
+  constructor() {
+    super('Le mot de passe actuel est incorrect.');
+    this.name = 'CurrentPasswordIncorrectError';
+  }
+}
+
 export class AccountDisabledError extends Error {
   constructor() {
     super('Ce compte est désactivé.');

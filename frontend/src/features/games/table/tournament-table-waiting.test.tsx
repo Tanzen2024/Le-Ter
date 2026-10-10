@@ -39,7 +39,7 @@ function waitingGame(overrides: Partial<GameView> = {}): GameView {
       { playerId: OTHER, seat: 0, joinedAt: NOW, username: 'Kofi' },
       { playerId: ME, seat: 1, joinedAt: NOW, username: 'Roly_237' },
     ],
-    startDeadlineAt: '2026-10-09T10:00:20.000Z',
+    startDeadlineAt: '2026-10-09T10:00:15.000Z',
     ...overrides,
   } as GameView;
 }

@@ -75,6 +75,7 @@ import {
   AccountDisabledError,
   AuthenticationRequiredError,
   CONFLICT_MESSAGES,
+  CurrentPasswordIncorrectError,
   InvalidCredentialsError,
   InvalidRefreshTokenError,
   RegistrationConflictError,
@@ -237,6 +238,11 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   if (err instanceof InvalidCredentialsError) {
     return apiError(401, 'INVALID_CREDENTIALS', err.message);
+  }
+  if (err instanceof CurrentPasswordIncorrectError) {
+    return apiError(400, 'INVALID_CURRENT_PASSWORD', err.message, {
+      fields: { currentPassword: err.message },
+    });
   }
   if (err instanceof InvalidRefreshTokenError) {
     return apiError(401, 'INVALID_REFRESH_TOKEN', err.message);

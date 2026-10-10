@@ -103,6 +103,10 @@ describe('périodes et formats', () => {
 
   it('montants et durées lisibles ; valeur absente affichée « — »', () => {
     expect(formatXaf(1500).replace(/\s/g, ' ')).toBe('1 500 FCFA');
+    // Même convention que le mobile : espaces insécables U+00A0 (milliers et avant FCFA).
+    expect(formatXaf(1500)).toBe('1 500 FCFA');
+    expect(formatXaf(1250000)).toBe('1 250 000 FCFA');
+    expect(formatXaf(0)).toBe('0 FCFA');
     expect(formatXaf(null)).toBe('—');
     expect(formatDuration(45)).toBe('45 s');
     expect(formatDuration(150)).toBe('2 min 30 s');

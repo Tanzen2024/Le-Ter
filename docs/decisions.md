@@ -2003,8 +2003,8 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   Chaque tournoi non terminé est d'abord avancé (transitions dues) : jamais un tournoi
   commencé présenté « à venir ». Brouillons et propositions non publiées exclus.
 - **Interface** : Accueil → Tournois → Rejoindre = liste (carte : date, horaires, statut,
-  participation, inscrits / min / max, rangs récompensés, jetons de départ, mon inscription,
-  flèche à droite) → fiche `/tournament/[tournamentId]` (actions autorisées par le serveur ;
+  participation, inscrits / min / max, rangs récompensés, jetons de départ (retirés de la
+  carte par D-066), mon inscription, flèche à droite) → fiche `/tournament/[tournamentId]` (actions autorisées par le serveur ;
   « Rejoindre le Tournoi » affiche « Recherche d'une partie en cours… » pendant la requête,
   puis la table). Statuts affichés : À venir, Inscriptions ouvertes, Inscriptions clôturées,
   Démarrage, En cours, Résultats, Terminé, Annulé. Accueil : résumé compact du prochain
@@ -2058,3 +2058,223 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
     passer à la table suivante ou à une nouvelle table.
   - Tests sans PostgreSQL réel : `tests/integration/tournaments/tournament-two-instances.test.ts`
     (deux piles sur la même base PGlite).
+
+## D-066 — Tournois : carte sans jetons de départ, sélecteurs de date et d'heure
+
+- **Date** : 2026-10-09 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Modifie** : l'interface de D-065 (contenu de la carte) ·
+  **Ne modifie pas** : `initialTournamentTokens` (modèle, API, base, attribution réelle des
+  jetons de tournoi), règles de création (D-054, D-058), API et backend.
+- **Carte de la liste** : la ligne « 🪙 N jetons de départ » est retirée. Les jetons de
+  départ restent visibles sur la fiche du tournoi (`TournamentDetailPanel`).
+- **Application mobile** (proposition `ProposalForm`, création admin intégrée
+  `AdminTournamentFormScreen`) : la date et l'heure de début ne se saisissent plus au
+  clavier. `DatePickerField` (calendrier : jour, mois, année ; jours avant aujourd'hui non
+  sélectionnables, le serveur reste juge du délai d'1 h) et `TimePickerField` (colonnes
+  Heures, Minutes, AM/PM) sont des composants JS (`src/components/ui/`), sans dépendance
+  native : le sélecteur natif Android suit la langue du système et non celle de l'app, et
+  n'existe pas sur le web. Affichage selon la langue de l'app (`lib/date-time.ts`) :
+  français `fr-FR`, 24 h ; anglais `en-GB` (variante configurée), date jour en premier,
+  heure sur 12 h avec AM/PM. Valeur interne inchangée : `JJ/MM/AAAA` et `HH:MM` sur 24 h,
+  lues en heure locale du téléphone par composantes numériques (aucune chaîne ISO lue par
+  `Date`, donc aucun décalage d'un jour), puis envoyées en instants UTC comme avant.
+- **Administration Next.js** : « Heure de début » utilise `TimePicker`
+  (`components/ui/time-picker.tsx`, Popover Radix déjà installé) au lieu de
+  `<input type="time">`, dont l'affichage suit la langue du NAVIGATEUR. Format selon la
+  locale de l'administration (`fr-FR` : 24 h ; une locale anglaise en 12 h l'affiche en
+  AM/PM) ; valeur toujours `HH:mm`, interprétée en Africa/Douala comme avant. Le champ Date
+  reste `<input type="date">`.
+- **Tests** : `src/lib/date-time.test.ts`, `src/components/ui/DateTimePickers.test.tsx`,
+  `tournament-form.test.ts` (passages de jour, mois, année), `ProposeTournamentScreen.test.tsx`,
+  `TournamentScreen.test.tsx` ; administration : `tests/time-picker.test.tsx`.
+
+## D-067 — Finances (administration) : 12 cartes, achats sans paiement CinetPay séparés
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Ne modifie pas** : règles de paiement CinetPay, comptabilisation
+  des inscriptions (débit effectif) et des gains (crédit effectif), soldes, écritures
+  comptables, données existantes, migrations.
+- **Anomalie « 2 070 128 947 jetons d'achats échoués »** : le panneau « Mouvements des
+  comptes de jeu » additionnait tous les `deposit` en échec. Sur la période, 9 étaient
+  rattachés à un paiement CinetPay `FAILED` (7 500 jetons = 7 500 FCFA) et 4 n'avaient
+  AUCUN paiement : tentatives refusées avant l'appel au fournisseur
+  (`PROVIDER_UNAVAILABLE`, 2026-10-08), dont 3 × 690 040 149 jetons (un numéro de téléphone
+  saisi comme montant, avant l'application du barème D-050). Ni jointure multiplicatrice,
+  ni dépassement numérique : `sum(bigint)` est exact et reste sous 2^53. Ces lignes n'ont
+  jamais rien crédité (un achat n'est crédité qu'à `succeeded`) ; elles sont conservées
+  telles quelles (historique) et déjà signalées par le rapprochement
+  (`DEPOSIT_WITHOUT_PAYMENT`). Aucune réparation de données n'est nécessaire.
+- **Correction (backend, lecture seule)** : `finance/overview` renvoie
+  `walletMovements[].withoutPayment` (jointure `LEFT JOIN payments` sur
+  `wallet_transaction_id`, UNIQUE : aucune ligne multipliée) et `reservations` (réservations
+  de tournoi de la période par statut, jamais des débits). Champs ajoutés : contrat
+  rétrocompatible.
+- **Écran Finances** : 12 cartes dans une liste (4 colonnes selon la largeur de la zone de
+  contenu, 2 puis 1 sur tablette et mobile) : 8 indicateurs (achats confirmés, soldes des
+  joueurs, recettes, solde comptable avec « Voir le compte », paiements en attente,
+  échoués ou expirés, inscriptions débitées, gains versés), puis 4 cartes de détail qui
+  remplacent les 3 panneaux : achats CinetPay par statut (4 statuts exclusifs), mouvements
+  des comptes de jeu (crédits et débits effectifs, attente, échecs, achats refusés avant
+  CinetPay, réservations), recettes par nature (`platform_ledger`), rapprochement (paiements
+  ↔ achats rattachés par statut, achats sans paiement, cohérence des recettes, montants
+  au-delà de 2^53, anomalies ouvertes de `reconciliation/anomalies`). Contrôle en lecture
+  seule : aucune correction déclenchée.
+- **Tests** : `backend/tests/integration/admin/admin-api.test.ts` (achats sans paiement,
+  montants > 2^31) ; `administration/tests/finance.test.tsx`.
+
+## D-069 — Tournois : jetons de départ et mise d'une proposition, modifiables avant approbation
+
+> **Remplacée par D-071** pour le calcul des valeurs par défaut (10 × prix, moitié du prix),
+> la personnalisation par l'administration et le tournoi gratuit. Conservée pour l'historique.
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Complète** : D-054, D-063 · **Ne modifie pas** : classement,
+  répartition des gains, commission, paiements, réservations, tournois créés par
+  l'administration (valeurs des paramètres plateforme ou saisies, comme avant), tournois
+  déjà approuvés ou démarrés. (D-068 est déjà cité par le code des délais de 15 s : cette
+  décision prend le numéro suivant.)
+- **Valeurs par défaut d'une proposition de joueur** (`defaultTournamentTokens`) : jetons de
+  départ = 10 × prix d'entrée ; mise par partie = moitié du prix d'entrée, en entiers,
+  arrondie à l'entier INFÉRIEUR (même sens que la commission, `computePool`), au moins 1.
+  Prix 1 000 → 10 000 et 500 ; prix 1 001 → 10 010 et 500. Tournoi gratuit (prix 0) :
+  paramètres plateforme, comme avant. Ces deux valeurs sont des jetons de tournoi : affichées
+  sans devise.
+- **Personnalisation** : `PATCH /api/admin/tournaments/:id` (route, audit et rôle `admin`
+  existants) accepte `initialTournamentTokens` et `stakePerGame` tant que le tournoi est
+  `DRAFT` ou `PENDING_APPROVAL` ; ensuite `409 TOURNAMENT_LOCKED`. Un joueur ne les fixe
+  jamais (`400`, champ « Réservé à l'administration. »), ni à la création ni en modifiant
+  sa proposition. Validation serveur inchangée : entiers, jetons de 1 à 1 000 000, mise de 1
+  à la moitié des jetons (D-063, donc jamais au-delà des jetons de départ), revérifiée à
+  l'approbation.
+- **Recalcul** : drapeaux `initial_tokens_customized` et `stake_customized` (migration 0027).
+  Un champ envoyé par l'administration devient personnalisé et n'est plus recalculé ; un
+  changement du prix d'entrée avant l'approbation recalcule seulement les champs restés par
+  défaut. Le prix d'entrée n'est jamais modifié par les jetons ou la mise. La migration
+  aligne les propositions non approuvées existantes (prix ≥ 1) sur les valeurs par défaut ;
+  aucun autre tournoi n'est touché.
+- **Moteur** : inchangé. Les valeurs enregistrées sont celles copiées dans les comptes de
+  tournoi au démarrage et utilisées au règlement de chaque partie.
+- **Administration Next.js** : sur le détail d'un tournoi `DRAFT`/`PENDING_APPROVAL`, la carte
+  « Calendrier et règles » remplace les deux lignes par deux champs (préremplis avec les
+  valeurs enregistrées, aide « Par défaut : … » ou « Valeur personnalisée. ») et un bouton
+  « Enregistrer » ; seuls les champs changés sont envoyés. Après l'approbation, affichage
+  en lecture seule comme avant.
+- **Tests** : `backend/tests/integration/tournaments/tournament-token-setup.test.ts` ;
+  `administration/tests/token-setup.test.tsx`.
+
+## D-070 — Inscription : champ Pays obligatoire avant le téléphone
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  R-15, D-029 (l'inscription passe de 7 à 8 champs : le Pays s'ajoute) · **Ne modifie pas** :
+  connexion, sessions, profil, portefeuilles, devise du compte (XAF, D-050), CinetPay,
+  numéros déjà enregistrés, colonne `users.phone` (toujours E.164, unique).
+- **Contrat** `POST /api/auth/register` : nouveau champ obligatoire `country` (ISO 3166-1
+  alpha-2) ; `phone` est le numéro NATIONAL. Le serveur valide le pays (régions connues de
+  libphonenumber), valide le numéro selon les règles de CE pays et **reconstruit** le numéro
+  E.164, seul format stocké. Un indicatif fourni par le client n'est accepté que s'il est
+  celui du pays choisi (`+33…` avec `CM` → refusé). Erreurs par champ : `country`
+  (« Ce champ est obligatoire. », « Pays non pris en charge. »), `phone` (« Numéro invalide
+  pour le pays sélectionné. »).
+- **Bibliothèque** : `libphonenumber-js` (métadonnées `max`), dans le backend et le frontend
+  (mêmes règles des deux côtés ; JavaScript pur, compatible Expo Go). Aucune autre
+  dépendance.
+- **Pays non stocké** : le numéro E.164 suffit à l'usage actuel ; aucune colonne ni
+  migration. Limite connue : un indicatif partagé (`+1`, `+7`, `+44`…) ne désigne pas un
+  pays unique ; une colonne sera nécessaire si le pays doit être relu sans ambiguïté.
+- **Application** (étape 2 de l'inscription) : Email, puis Pays et Téléphone côte à côte.
+  Liste des pays : noms français seuls (ni drapeau, ni indicatif, ni code, ni devise),
+  recherche sans casse ni accents. Téléphone désactivé tant qu'aucun pays n'est choisi
+  (« Sélectionnez d'abord votre pays ») ; ensuite l'indicatif s'affiche dans une zone
+  distincte du champ, non modifiable, et seuls chiffres et séparateurs sont saisissables.
+  Changer de pays efface le numéro saisi. Le pays et le numéro sont conservés entre les
+  étapes.
+- **Devise** : le pays ne change ni la devise du compte de jeu (XAF), ni les soldes, ni les
+  paiements ; aucune conversion. Une devise locale n'est connue que pour les zones franc CFA
+  (XAF, XOF : « FCFA ») et n'est pas affichée à l'inscription.
+- **Tests** : `backend/tests/unit/auth/auth-validators.test.ts`,
+  `backend/tests/integration/auth/register-login.test.ts` ; `frontend/src/lib/phone-countries.test.ts`,
+  `frontend/src/features/auth/RegisterScreen.test.tsx`.
+
+## D-071 — Tournois : jetons de départ et mise calculés par coefficients du prix d'entrée
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Remplace** : D-069 (valeurs par défaut, personnalisation, prix 0)
+  · **Complète** : D-054, D-062, D-063 · **Ne modifie pas** : règlement des parties, seuil de
+  participation (2 × mise), calcul de la commission (`computePool`), classement pondéré,
+  répartition des gains, réservations, paiements, tournois déjà publiés ou démarrés.
+- **Formule unique, serveur seul** (`tournamentTokenSetup`) : jetons de départ = prix
+  d'entrée × coefficient de jetons ; mise par partie = prix d'entrée × coefficient de mise.
+  Coefficients multiplicateurs (pas des pourcentages), strictement positifs, 2 décimales au
+  plus, bornes 0,01 à 2 000. Calcul exact en entiers (coefficient en centièmes), résultat
+  arrondi à l'entier INFÉRIEUR (même sens que la commission). Prix 1 000 → 10 000 et 500 ;
+  prix 2 000 → 20 000 et 1 000 ; prix 501 → 5 010 et 250.
+- **Cohérence** : `PATCH /api/admin/tournaments/settings` refuse un coefficient de mise
+  supérieur à la moitié du coefficient de jetons (D-063 : chacun peut jouer au départ quel
+  que soit le prix ; l'arrondi inférieur conserve l'inégalité). Jetons calculés au-delà de
+  1 000 000 : tournoi refusé (champ `entryFee`), revérifié à l'approbation.
+- **Prix d'entrée** : entier de **500** à 100 000 FCFA (décision du propriétaire du projet) ;
+  plus de tournoi gratuit, donc plus de valeurs fixes de repli.
+- **Cycle de vie** : `DRAFT` / `PENDING_APPROVAL` : les valeurs SUIVENT les coefficients en
+  vigueur (recalculées à la lecture, à la soumission et à l'approbation ; le détail admin
+  renvoie `tokenCoefficients`). Elles sont **figées à la publication** (approbation, ou
+  création par l'administration) comme la commission et les poids ; un changement ultérieur
+  des coefficients ne les modifie jamais. Exception : un nouveau prix d'entrée sur un tournoi
+  publié sans inscrit (seul cas où le prix change encore) recalcule les deux valeurs avec les
+  coefficients en vigueur, pour que la formule reste vraie.
+- **Aucune saisie** : `initialTournamentTokens` et `stakePerGame` envoyés à une route de
+  création ou de modification (joueur ou administration) → `400` « Calculé par le serveur à
+  partir du prix d'entrée. ». Options `--stake` / `--tokens` retirées de
+  `npm run tournament:create`.
+- **Paramètres** (`system_settings`, migration 0028) : nouvelles clés
+  `tournament_initial_tokens_coefficient` et `tournament_stake_per_game_coefficient` (API :
+  `initialTokensCoefficient`, `stakePerGameCoefficient`). Les anciennes clés
+  `initial_tournament_tokens` / `default_tournament_stake` (nombres FIXES de jetons) ne sont
+  pas converties : 1 000 jetons fixes ne signifient pas un coefficient 1 000. Elles restent en
+  base, ne sont plus lues ni modifiables. Colonnes `initial_tokens_customized` /
+  `stake_customized` (0027) conservées, plus utilisées.
+- **Valeurs initiales** (clé jamais enregistrée seulement ; un réglage enregistré n'est jamais
+  écrasé) : commission 15 %, coefficient de jetons 10, coefficient de mise 0,5, poids 60 % /
+  40 % ; propositions en attente 1 et transition 0 inchangées. Les tournois sans poids copiés
+  gardent le repli historique 50 % / 50 % (`DEFAULT_RANKING_WEIGHTS`).
+- **Administration Next.js** : `/parametres` affiche « Coefficient de jetons de tournoi au
+  départ » et « Coefficient de mise par partie de tournoi » (décimales à la virgule). Le
+  détail d'un tournoi affiche jetons et mise en lecture seule avec leur origine (« Prix
+  d'entrée × 10 (Paramètres) · figé à l'approbation. » ou « Figé à la publication. ») ; le
+  formulaire et le bouton « Enregistrer » de D-069 sont supprimés. Application mobile
+  (écran admin des paramètres) alignée sur les mêmes clés.
+- **Tests** : `backend/tests/integration/tournaments/tournament-token-setup.test.ts`,
+  `backend/tests/unit/tournaments/tournament-domain.test.ts` ;
+  `administration/tests/token-setup.test.tsx` ;
+  `frontend/src/features/admin/tournaments/AdminTournaments.test.tsx`.
+
+## D-072 — Tournois : terminés et annulés visibles 7 jours ; limite de 5 sur les inscriptions
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet (option de
+  comptage choisie par lui) · **Modifie** : D-059 (statuts comptés, message), D-065 (contenu
+  de l'historique de la liste) · **Ne modifie pas** : statuts, transitions, horaires
+  d'ouverture et de clôture, inscriptions, réservations, paiements, gains, mise en avant de
+  l'accueil (24 h, `RECENT_TOURNAMENT_VISIBILITY_MS`), administration.
+- **Liste des tournois (joueurs)** : un tournoi `COMPLETED` reste dans le groupe historique
+  7 jours après sa fin PRÉVUE (`ends_at`) ; un tournoi `CANCELLED` 7 jours après son
+  annulation RÉELLE (`cancelled_at`, toujours renseignée pour un tournoi annulé). Ensuite il
+  n'est plus renvoyé par `GET /api/tournaments` (`LIST_HISTORY_VISIBILITY_MS`, filtre SQL sur
+  l'horloge du serveur). Affichage seulement : aucune ligne supprimée ni modifiée. Les
+  tournois dont les résultats ou les gains sont en traitement (`CALCULATING_RESULTS`,
+  `RESULTS_VALIDATED`, `DISTRIBUTING_PRIZES`) ne sont pas `COMPLETED` : règle non appliquée.
+  Aucun onglet ni page d'historique ajouté.
+- **Limite de 5** (globale à la plateforme, inchangée) : sont comptés les tournois aux
+  inscriptions OUVERTES ou À OUVRIR, `REGISTRATION_OPEN` et `SCHEDULED`
+  (`REGISTRATION_LIMIT_STATUSES`). `SCHEDULED` reste compté car un tournoi publié s'ouvre
+  automatiquement à son heure, sans nouveau contrôle : sans lui, plus de 5 tournois pourraient
+  avoir leurs inscriptions ouvertes en même temps. `REGISTRATION_CLOSED` et `STARTING` ne
+  comptent plus : une place se libère dès la clôture des inscriptions. Contrôle et
+  concurrence inchangés (verrou de planification, puis comptage, à la publication).
+  `WAITING_STATUSES` est conservé pour le prochain tournoi inscrit de l'accueil (D-059).
+- **Erreur** : `409 TOO_MANY_WAITING_TOURNAMENTS` (code inchangé), « Limite atteinte : 5
+  tournois ont déjà leurs inscriptions ouvertes ou sur le point d'ouvrir. Réessaie dès que
+  les inscriptions de l'un d'eux seront closes. ».
+- **Inscription** : inchangée et vérifiée par test : refusée si le tournoi est annulé ou si
+  la fin prévue est atteinte (statut `REGISTRATION_OPEN` ET horloge avant la clôture, elle-même
+  au plus tard au début).
+- **Tests** : `backend/tests/integration/tournaments/tournament-service.test.ts`,
+  `backend/tests/integration/tournaments/tournament-api.test.ts`.

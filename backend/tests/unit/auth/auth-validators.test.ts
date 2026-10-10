@@ -14,6 +14,7 @@ const valid = {
   lastName: "N'Diaye",
   email: '  Jean.Marc@Example.COM ',
   username: 'JeanMarc_237',
+  country: 'CM',
   phone: '+237 6 99-12.34.56',
   password: 'Secret123',
   confirmPassword: 'Secret123',
@@ -43,9 +44,10 @@ describe('Inscription — validation et normalisation (R-15)', () => {
     });
   });
 
-  it('exige les 7 champs', () => {
+  it('exige les 8 champs (pays compris)', () => {
     expect(Object.keys(fieldErrors({})).sort()).toEqual([
       'confirmPassword',
+      'country',
       'email',
       'firstName',
       'lastName',
@@ -53,7 +55,7 @@ describe('Inscription — validation et normalisation (R-15)', () => {
       'phone',
       'username',
     ]);
-    expect(Object.keys(fieldErrors(null))).toHaveLength(7);
+    expect(Object.keys(fieldErrors(null))).toHaveLength(8);
   });
 
   it.each([
@@ -62,7 +64,8 @@ describe('Inscription — validation et normalisation (R-15)', () => {
     ['username', 'ab'],
     ['username', 'pseudo avec espace'],
     ['username', 'p'.repeat(21)],
-    ['phone', '699123456'],
+    ['phone', '600000001'],
+    ['phone', '69912345'],
     ['phone', '+0123456789'],
     ['phone', '+12'],
     ['phone', '+237abc'],
@@ -99,6 +102,36 @@ describe('Inscription — validation et normalisation (R-15)', () => {
       'phone',
       'username',
     ]);
+  });
+
+  it.each([
+    ['CM', '692130271', '+237692130271'],
+    ['CM', '6 92 13 02 71', '+237692130271'],
+    ['CM', '+237692130271', '+237692130271'],
+    ['cm', '692-13-02-71', '+237692130271'],
+    ['FR', '06 12 34 56 78', '+33612345678'],
+    ['CI', '07 07 07 07 07', '+2250707070707'],
+    ['SN', '77 123 45 67', '+221771234567'],
+  ])('pays %s + numéro %j → %s (E.164 reconstruit)', (country, phone, e164) => {
+    expect(parseRegisterInput({ ...valid, country, phone }).phone).toBe(e164);
+  });
+
+  it('refuse un indicatif d’un autre pays que celui choisi', () => {
+    expect(fieldErrors({ ...valid, country: 'CM', phone: '+33612345678' })).toEqual({
+      phone: 'Numéro invalide pour le pays sélectionné.',
+    });
+    expect(fieldErrors({ ...valid, country: 'FR', phone: '692130271' })).toEqual({
+      phone: 'Numéro invalide pour le pays sélectionné.',
+    });
+  });
+
+  it('pays absent ou inconnu : erreur sur le pays, jamais d’indicatif deviné', () => {
+    expect(fieldErrors({ ...valid, country: undefined })).toEqual({
+      country: 'Ce champ est obligatoire.',
+    });
+    expect(fieldErrors({ ...valid, country: 'ZZ' })).toEqual({
+      country: 'Pays non pris en charge.',
+    });
   });
 
   it('accepte le préfixe international « 00 »', () => {

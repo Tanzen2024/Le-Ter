@@ -329,6 +329,7 @@ export class AdminQueryService {
         byStatus: overview.purchases,
       },
       walletMovements: overview.walletMovements,
+      reservations: overview.reservations,
       playerBalances: {
         label: 'Soldes des comptes de jeu (jetons dus aux joueurs)',
         ...overview.liabilities,

@@ -11,11 +11,16 @@ import {
 import type { AuthSessionRepository } from '../../repositories/auth-session.repository';
 import { DuplicateUserError, type UserRepository } from '../../repositories/user.repository';
 import type { Logger } from '../../utils/logger';
-import type { LoginInput, RegisterInput } from '../../validators/auth.validators';
+import type {
+  ChangePasswordInput,
+  LoginInput,
+  RegisterInput,
+} from '../../validators/auth.validators';
 import { AccessTokenService, InvalidAccessTokenError } from './access-token.service';
 import {
   AccountDisabledError,
   AuthenticationRequiredError,
+  CurrentPasswordIncorrectError,
   InvalidCredentialsError,
   InvalidRefreshTokenError,
   RegistrationConflictError,
@@ -259,6 +264,43 @@ export class AuthService {
       throw new AuthenticationRequiredError('account_disabled');
     }
     return { userId: claims.userId, role: session.role, sessionId: claims.sessionId };
+  }
+
+  /**
+   * Changement du mot de passe de l'utilisateur AUTHENTIFIÉ (identité du JWT). Le mot de
+   * passe actuel est vérifié avec bcrypt ; le nouveau est haché au coût du projet puis
+   * écrit dans PostgreSQL seulement si le hash n'a pas changé entre-temps.
+   *
+   * Sessions : R-32 n'autorise qu'UNE session active, celle de cette requête. Elle est
+   * conservée (l'utilisateur n'est pas déconnecté) ; aucune autre session ne peut exister.
+   */
+  async changePassword(
+    userId: UserId,
+    input: ChangePasswordInput,
+    meta: CallMeta = {},
+  ): Promise<void> {
+    const log = this.deps.logger.child({ requestId: meta.requestId, action: 'CHANGE_PASSWORD' });
+    const user = await this.deps.users.findById(userId);
+    if (!user || user.status !== 'active') {
+      throw new AuthenticationRequiredError('user_unavailable');
+    }
+    if (!(await this.deps.passwords.verifyPassword(input.currentPassword, user.passwordHash))) {
+      log.warn('password change rejected', { reason: 'invalid_current_password', userId });
+      throw new CurrentPasswordIncorrectError();
+    }
+    const newHash = await this.deps.passwords.hashPassword(input.newPassword);
+    const updated = await this.deps.users.updatePasswordHash(
+      userId,
+      user.passwordHash,
+      newHash,
+      this.clock(),
+    );
+    if (!updated) {
+      // Changé ou compte désactivé entre la lecture et l'écriture : rien n'est écrit.
+      log.warn('password change rejected', { reason: 'concurrent_change', userId });
+      throw new CurrentPasswordIncorrectError();
+    }
+    log.info('password changed', { userId });
   }
 
   async getCurrentUser(userId: UserId): Promise<PublicUser> {

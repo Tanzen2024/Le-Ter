@@ -68,7 +68,9 @@ export function validRegistration(overrides: Record<string, unknown> = {}) {
     lastName: 'Ndiaye',
     email: `awa${sequence}@example.com`,
     username: `awa_${sequence}`,
-    phone: `+237 6${String(sequence).padStart(8, '0')}`,
+    // Pays + numéro NATIONAL (inscription avec pays) : 67 + 7 chiffres, mobile camerounais valide.
+    country: 'CM',
+    phone: `67${String(sequence).padStart(7, '0')}`,
     password: 'Secret123',
     confirmPassword: 'Secret123',
     ...overrides,

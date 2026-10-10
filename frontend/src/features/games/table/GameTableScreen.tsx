@@ -760,7 +760,7 @@ function TableCenter({
 
 /**
  * Fin de partie, telle que le serveur l'a décidée : gagnant, égalité de priorité (partie
- * rejouée aussitôt) ou arrêt. La ronde Poursuivre/Quitter (20 s) s'affiche sur la table ;
+ * rejouée aussitôt) ou arrêt. La ronde Poursuivre/Quitter (15 s) s'affiche sur la table ;
  * ensuite la partie suivante se crée ou se rejoint d'ici même. La session qui enchaîne les
  * parties reste technique : elle n'est ni nommée ni affichée.
  */

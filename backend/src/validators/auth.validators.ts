@@ -1,3 +1,5 @@
+import { getCountries, parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/max';
+
 import { BCRYPT_MAX_PASSWORD_BYTES } from '../services/auth/password.service';
 import { ValidationError } from './validation-error';
 
@@ -25,8 +27,8 @@ export interface LoginInput {
 const NAME_PATTERN = /^\p{L}[\p{L}\p{M}' .-]*$/u;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,20}$/;
-/** E.164 : « + », indicatif pays, 8 à 15 chiffres au total. */
-const PHONE_PATTERN = /^\+[1-9]\d{7,14}$/;
+/** Pays acceptés à l'inscription : ceux dont les règles de numérotation sont connues. */
+const SUPPORTED_COUNTRIES: ReadonlySet<string> = new Set(getCountries());
 const MAX_NAME_LENGTH = 50;
 const MAX_EMAIL_LENGTH = 254;
 const MIN_PASSWORD_LENGTH = 8;
@@ -50,12 +52,7 @@ export function parseRegisterInput(body: unknown): RegisterInput {
     fields.username = 'Le pseudo doit contenir 3 à 20 lettres, chiffres ou « _ ».';
   }
 
-  const phone = normalizePhone(text(source.phone));
-  if (!text(source.phone)) {
-    fields.phone = REQUIRED;
-  } else if (!PHONE_PATTERN.test(phone)) {
-    fields.phone = 'Numéro invalide. Utilisez le format international, ex. +XXX XXXXXXXX.';
-  }
+  const phone = parsePhone(source.country, source.phone, fields);
 
   const password = typeof source.password === 'string' ? source.password : '';
   const passwordProblem = checkPasswordStrength(password);
@@ -94,6 +91,43 @@ export function parseLoginInput(body: unknown): LoginInput {
   return { email, password };
 }
 
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+/**
+ * Corps de POST /api/auth/password : mot de passe actuel, nouveau (même politique qu'à
+ * l'inscription), confirmation identique, nouveau différent de l'actuel. Aucun identifiant
+ * d'utilisateur n'est lu : le compte est celui du JWT.
+ */
+export function parseChangePasswordInput(body: unknown): ChangePasswordInput {
+  const source = asRecord(body);
+  const fields: Record<string, string> = {};
+  const currentPassword = typeof source.currentPassword === 'string' ? source.currentPassword : '';
+  if (!currentPassword) {
+    fields.currentPassword = REQUIRED;
+  } else if (currentPassword.length > MAX_LOGIN_PASSWORD_LENGTH) {
+    fields.currentPassword = 'Mot de passe trop long.';
+  }
+  const newPassword = typeof source.newPassword === 'string' ? source.newPassword : '';
+  const strength = checkPasswordStrength(newPassword);
+  if (strength) {
+    fields.newPassword = strength;
+  } else if (newPassword === currentPassword) {
+    fields.newPassword = 'Le nouveau mot de passe doit être différent de l’actuel.';
+  }
+  if (typeof source.confirmPassword !== 'string' || source.confirmPassword === '') {
+    fields.confirmPassword = REQUIRED;
+  } else if (source.confirmPassword !== newPassword) {
+    fields.confirmPassword = 'Les mots de passe ne correspondent pas.';
+  }
+  if (Object.keys(fields).length > 0) {
+    throw new ValidationError(fields);
+  }
+  return { currentPassword, newPassword };
+}
+
 /** Corps `{ refreshToken }` de /refresh et /logout. Le format est vérifié par le service. */
 export function parseRefreshTokenInput(body: unknown): string {
   const { refreshToken } = asRecord(body);
@@ -118,6 +152,33 @@ export function checkPasswordStrength(password: string): string | undefined {
     return 'Le mot de passe doit contenir au moins une lettre et un chiffre.';
   }
   return undefined;
+}
+
+/**
+ * Pays (ISO 3166-1 alpha-2) et numéro NATIONAL → numéro E.164 reconstruit par le serveur,
+ * seul format stocké. Le numéro est validé selon les règles du pays choisi (métadonnées
+ * libphonenumber) : un indicatif fourni par le client n'est accepté que s'il est celui de ce
+ * pays (`+33…` avec `CM` est refusé).
+ */
+function parsePhone(rawCountry: unknown, rawPhone: unknown, fields: Record<string, string>) {
+  const country = text(rawCountry).toUpperCase();
+  const input = text(rawPhone);
+  if (!country) {
+    fields.country = REQUIRED;
+  } else if (!SUPPORTED_COUNTRIES.has(country)) {
+    fields.country = 'Pays non pris en charge.';
+  }
+  if (!input) {
+    fields.phone = REQUIRED;
+    return '';
+  }
+  if (fields.country) return '';
+  const parsed = parsePhoneNumberFromString(normalizePhone(input), country as CountryCode);
+  if (!parsed || !parsed.isValid() || parsed.country !== country) {
+    fields.phone = 'Numéro invalide pour le pays sélectionné.';
+    return '';
+  }
+  return parsed.number;
 }
 
 /** Retire espaces, points, tirets et parenthèses ; « 00 » initial devient « + ». */

@@ -3,6 +3,7 @@ import {
   canPlayTournamentGame,
   minimumTokensToPlay,
   canTransition,
+  coefficientHundredths,
   computePool,
   computePrizes,
   DEFAULT_TOURNAMENT_SETTINGS,
@@ -10,9 +11,11 @@ import {
   percentToBps,
   prizeRulesError,
   settleGameTokens,
+  tokenCoefficientsError,
   TOURNAMENT_DURATION_ERROR,
   TOURNAMENT_STATUSES,
   tournamentLabel,
+  tournamentTokenSetup,
   validateTournamentInput,
   type TournamentInput,
 } from '../../../src/domain/tournaments/tournament';
@@ -127,7 +130,8 @@ describe('règles de durée (D-058) et de participants (D-057)', () => {
   });
 
   it('une seconde de part et d’autre des bornes suffit à refuser', () => {
-    const lastingMs = (ms: number) => input({ startsAt: START, endsAt: new Date(START.getTime() + ms) });
+    const lastingMs = (ms: number) =>
+      input({ startsAt: START, endsAt: new Date(START.getTime() + ms) });
     expect(fieldsOf(() => validate(lastingMs(30 * 60_000 - 1000)))).toContain('endsAt');
     expect(fieldsOf(() => validate(lastingMs(120 * 60_000 + 1000)))).toContain('endsAt');
   });
@@ -169,10 +173,10 @@ describe('validation', () => {
     );
   });
 
-  it('accepte un tournoi valide et applique les valeurs par défaut de la plateforme', () => {
+  it('accepte un tournoi valide ; jetons et mise calculés avec les coefficients (D-071)', () => {
     const v = validate(input());
-    expect(v.initialTournamentTokens).toBe(1000);
-    expect(v.stakePerGame).toBe(100);
+    expect(v.initialTournamentTokens).toBe(10_000);
+    expect(v.stakePerGame).toBe(500);
     expect(v.timezone).toBe('Africa/Douala');
   });
 
@@ -190,22 +194,41 @@ describe('validation', () => {
     [{ endsAt: at('2026-10-12T18:10:00Z') }, 'endsAt'],
     [{ endsAt: at('2026-10-14T18:00:00Z') }, 'endsAt'],
     [{ entryFee: -1 }, 'entryFee'],
-    [{ entryFee: 10.5 }, 'entryFee'],
+    [{ entryFee: 0 }, 'entryFee'],
+    [{ entryFee: 499 }, 'entryFee'],
+    [{ entryFee: 100_001 }, 'entryFee'],
+    [{ entryFee: 1000.5 }, 'entryFee'],
     [{ minimumPlayers: 1 }, 'minimumPlayers'],
     [{ maximumPlayers: 10 }, 'maximumPlayers'],
-    [{ stakePerGame: 2000 }, 'stakePerGame'],
-    // Jetons initiaux 1 000 : au-delà de 500, personne ne pourrait jouer (seuil 2 × mise).
-    [{ stakePerGame: 501 }, 'stakePerGame'],
     [{ timezone: 'Mars/Olympus' }, 'timezone'],
     [{ registrationClosesAt: at('2026-10-12T19:00:00Z') }, 'registrationClosesAt'],
   ] as const)('refuse %j (%s)', (overrides, field) => {
     expect(fieldsOf(() => validate(input(overrides as Partial<TournamentInput>)))).toContain(field);
   });
 
-  it('mise de la moitié des jetons initiaux acceptée : chacun peut jouer au départ', () => {
-    expect(validate(input({ initialTournamentTokens: 1000, stakePerGame: 500 })).stakePerGame).toBe(
-      500,
-    );
+  it('valeurs figées (tournoi publié) conservées, revérifiées : mise ≤ moitié des jetons', () => {
+    const frozen = (initialTournamentTokens: number, stakePerGame: number) =>
+      validateTournamentInput(input({ entryFee: 2000 }), {
+        now: NOW,
+        creatorType: 'ADMIN',
+        settings: DEFAULT_TOURNAMENT_SETTINGS,
+        frozenTokens: { initialTournamentTokens, stakePerGame },
+      });
+    expect(frozen(1000, 500)).toMatchObject({ initialTournamentTokens: 1000, stakePerGame: 500 });
+    expect(fieldsOf(() => frozen(1000, 501))).toContain('entryFee');
+  });
+
+  it('jetons calculés au-delà du plafond : prix refusé', () => {
+    const settings = { ...DEFAULT_TOURNAMENT_SETTINGS, initialTokensCoefficient: 20 };
+    expect(
+      fieldsOf(() =>
+        validateTournamentInput(input({ entryFee: 60_000 }), {
+          now: NOW,
+          creatorType: 'ADMIN',
+          settings,
+        }),
+      ),
+    ).toEqual(['entryFee']);
   });
 
   it.each([
@@ -372,5 +395,64 @@ describe('règlement des jetons d’une partie', () => {
       expect(canPlayTournamentGame(tokens, stake)).toBe(can);
       expect(accountStatusFor(tokens, stake)).toBe(status);
     });
+  });
+});
+
+describe('coefficients des jetons de départ et de la mise (D-071)', () => {
+  const settings = DEFAULT_TOURNAMENT_SETTINGS;
+
+  it('valeurs initiales : commission 15, coefficients 10 et 0,5, poids 60 / 40', () => {
+    expect(settings).toMatchObject({
+      platformFeePercent: 15,
+      initialTokensCoefficient: 10,
+      stakePerGameCoefficient: 0.5,
+      rankingTokensWeightPercent: 60,
+      rankingGamesWeightPercent: 40,
+      maximumPendingTournamentsPerPlayer: 1,
+      tournamentTransitionMinutes: 0,
+    });
+  });
+
+  it('prix 1 000 → 10 000 jetons, mise 500', () => {
+    expect(tournamentTokenSetup(1000, settings)).toEqual({
+      initialTournamentTokens: 10_000,
+      stakePerGame: 500,
+    });
+  });
+
+  it('prix 2 000 → 20 000 jetons, mise 1 000', () => {
+    expect(tournamentTokenSetup(2000, settings)).toEqual({
+      initialTournamentTokens: 20_000,
+      stakePerGame: 1000,
+    });
+  });
+
+  it('coefficients décimaux : calcul exact en centièmes, arrondi à l’entier inférieur', () => {
+    const decimal = { initialTokensCoefficient: 2.35, stakePerGameCoefficient: 0.29 };
+    // 1001 × 2,35 = 2352,35 → 2352 ; 1001 × 0,29 = 290,29 → 290 (0,29 × 100 n'est pas exact en flottant).
+    expect(tournamentTokenSetup(1001, decimal)).toEqual({
+      initialTournamentTokens: 2352,
+      stakePerGame: 290,
+    });
+    expect(tournamentTokenSetup(501, settings).stakePerGame).toBe(250);
+    expect(coefficientHundredths(0.5)).toBe(50);
+    expect(coefficientHundredths(0.29)).toBe(29);
+    expect(coefficientHundredths(10)).toBe(1000);
+  });
+
+  it('coefficients invalides détectés : plus de 2 décimales, non finis, mise > moitié', () => {
+    expect(coefficientHundredths(0.125)).toBeUndefined();
+    expect(coefficientHundredths(Number.NaN)).toBeUndefined();
+    expect(coefficientHundredths(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(tokenCoefficientsError(settings)).toBeUndefined();
+    expect(
+      tokenCoefficientsError({ initialTokensCoefficient: 10, stakePerGameCoefficient: 5 }),
+    ).toBeUndefined();
+    expect(
+      tokenCoefficientsError({ initialTokensCoefficient: 10, stakePerGameCoefficient: 5.01 }),
+    ).toBeDefined();
+    expect(
+      tokenCoefficientsError({ initialTokensCoefficient: 0.001, stakePerGameCoefficient: 0.5 }),
+    ).toBeDefined();
   });
 });

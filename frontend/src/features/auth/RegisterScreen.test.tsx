@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react-native';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
 
 import RegisterScreen from '../../../app/(auth)/register';
@@ -46,9 +46,17 @@ async function fillIdentity() {
   await fireEvent.press(screen.getByText('Continuer →'));
 }
 
+/** Ouvre le menu Pays, cherche par nom puis choisit l'option. */
+async function selectCountry(name: string, query = name) {
+  await fireEvent.press(screen.getByTestId('country-select'));
+  await type('Rechercher un pays', query);
+  await fireEvent.press(within(screen.getByTestId('country-options')).getByText(name));
+}
+
 async function fillCredentials() {
   await type('Email', ' roly@example.com ');
-  await type('Téléphone', '+237 6 99 99 99 99');
+  await selectCountry('Cameroun');
+  await type('Téléphone', '6 99 99 99 99');
   await type('Mot de passe', 'secret123');
   await type('Confirmer le mot de passe', 'secret123');
 }
@@ -101,13 +109,125 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
       lastName: 'Nwameh',
       username: 'Roly_237',
       email: 'roly@example.com',
-      phone: '+237699999999',
+      country: 'CM',
+      phone: '699999999',
       password: 'secret123',
       confirmPassword: 'secret123',
     });
     expect(await screen.findByText('Compte créé ! Connexion en cours…')).toBeTruthy();
     expect(api.login).toHaveBeenCalledWith({ email: 'roly@example.com', password: 'secret123' });
     expect(storeSession).toHaveBeenCalledWith({ accessToken: 'a', refreshToken: 'r' });
+  });
+
+  describe('pays puis téléphone', () => {
+    const phoneInput = () => screen.getByLabelText('Téléphone');
+    const prefix = () => screen.queryByTestId('text-field-prefix');
+
+    it('le champ Pays précède le Téléphone, désactivé tant qu’aucun pays n’est choisi', async () => {
+      await renderScreen();
+      await fillIdentity();
+      expect(screen.getAllByText(/^(Pays|Téléphone)$/).map((n) => n.props.children)).toEqual([
+        'Pays',
+        'Téléphone',
+      ]);
+      expect(phoneInput().props.editable).toBe(false);
+      expect(phoneInput().props.placeholder).toBe("Sélectionnez d'abord votre pays");
+      expect(prefix()).toBeNull();
+    });
+
+    it('sans pays : erreur sur le pays, aucun appel au serveur', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await type('Email', 'roly@example.com');
+      await type('Mot de passe', 'secret123');
+      await type('Confirmer le mot de passe', 'secret123');
+      await fireEvent.press(screen.getByText('Créer mon compte'));
+      expect(screen.getByText('Ce champ est obligatoire.')).toBeTruthy();
+      expect(api.register).not.toHaveBeenCalled();
+    });
+
+    it('les options n’affichent que des noms de pays (ni drapeau, ni indicatif, ni devise)', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await fireEvent.press(screen.getByTestId('country-select'));
+      const options = within(screen.getByTestId('country-options')).getAllByRole('button');
+      expect(options.length).toBeGreaterThan(5);
+      for (const option of options) {
+        const label = String(option.props.accessibilityLabel);
+        expect(label).not.toMatch(/[+\d]|XAF|XOF|FCFA|[\u{1F1E6}-\u{1F1FF}]/u);
+        expect(within(option).getByText(label)).toBeTruthy();
+      }
+    });
+
+    it('recherche sans accent : « cote d’ivoire » trouve Côte d’Ivoire', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await selectCountry("Côte d'Ivoire", "cote d'ivoire");
+      expect(prefix()).toBeTruthy();
+      expect(within(prefix()!).getByText('+225')).toBeTruthy();
+    });
+
+    it('Cameroun : +237 dans une zone distincte et non modifiable ; seul le numéro national est saisi', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await selectCountry('Cameroun', 'CAMER');
+      expect(within(prefix()!).getByText('+237')).toBeTruthy();
+      expect(prefix()!.props.accessibilityLabel).toBe('Indicatif +237, non modifiable');
+      expect(phoneInput().props.editable).toBe(true);
+      expect(phoneInput().props.placeholder).toBe('6 71 23 45 67');
+      // Un « + » ou un indicatif tapé ne remplace pas la zone fixe.
+      await type('Téléphone', '+33 6a92');
+      expect(phoneInput().props.value).toBe('33 692');
+      expect(within(prefix()!).getByText('+237')).toBeTruthy();
+    });
+
+    it('changement de pays : indicatif remplacé, ancien numéro effacé (jamais validé à tort)', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await selectCountry('Cameroun');
+      await type('Téléphone', '692130271');
+      await selectCountry('France');
+      expect(within(prefix()!).getByText('+33')).toBeTruthy();
+      expect(screen.queryByText('+237')).toBeNull();
+      expect(phoneInput().props.value).toBe('');
+    });
+
+    it('numéro invalide pour le pays choisi : message, aucun appel au serveur', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await fillCredentials();
+      await type('Téléphone', '600000001');
+      await fireEvent.press(screen.getByText('Créer mon compte'));
+      expect(screen.getByText('Numéro invalide pour ce pays.')).toBeTruthy();
+      expect(api.register).not.toHaveBeenCalled();
+    });
+
+    it('pays et numéro conservés entre les étapes', async () => {
+      await renderScreen();
+      await fillIdentity();
+      await selectCountry('Sénégal', 'senegal');
+      await type('Téléphone', '77 123 45 67');
+      await fireEvent.press(screen.getByText('← Retour'));
+      expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
+      await fireEvent.press(screen.getByText('Continuer →'));
+      expect(screen.getByText('Sénégal')).toBeTruthy();
+      expect(within(prefix()!).getByText('+221')).toBeTruthy();
+      expect(phoneInput().props.value).toBe('77 123 45 67');
+    });
+
+    it('envoie le pays et le numéro national ; le serveur reconstruit le numéro international', async () => {
+      api.register.mockResolvedValue({ user: {} } as never);
+      api.login.mockResolvedValue({ user: {}, accessToken: 'a', refreshToken: 'r' } as never);
+      await renderScreen();
+      await fillIdentity();
+      await fillCredentials();
+      await selectCountry('France');
+      await type('Téléphone', '06 12 34 56 78');
+      await fireEvent.press(screen.getByText('Créer mon compte'));
+      expect(api.register).toHaveBeenCalledWith(
+        expect.objectContaining({ country: 'FR', phone: '0612345678' }),
+      );
+    });
   });
 
   it('pseudo déjà pris (erreur du serveur) : retour à l’étape 1 avec le message du champ', async () => {

@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { countryOfPhone, toNationalPhone } from '../../lib/country';
 import { useCurrentUser, useLogout } from '../auth/hooks';
 import { useLobbyMetrics } from './lobby-metrics';
-import { announceComingSoon, InnerFrame, LobbyPanel, PanelButton } from './LobbyUi';
+import { InnerFrame, LobbyPanel, PanelButton } from './LobbyUi';
+import { PasswordChangeForm } from './PasswordChangeForm';
 
 /** Profil : données du compte renvoyées par /api/auth/me, et déconnexion. */
 export function ProfilePanel({ onClose }: { onClose: () => void }) {
@@ -11,14 +14,21 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
   const fonts = useTableFonts();
   const { data: user, isPending } = useCurrentUser();
   const logout = useLogout();
+  // Formulaire du mot de passe ouvert ; confirmation affichée après un succès du serveur.
+  const [editingPassword, setEditingPassword] = useState(false);
+  const [passwordChanged, setPasswordChanged] = useState(false);
 
   const label = [styles.label, fontOf(fonts.button), { fontSize: Math.round(m.bodySize * 1.1) }];
   const value = [styles.value, { fontSize: m.smallSize }];
+  // Lecture seule : seul le mot de passe se modifie ici. Le téléphone s'affiche sans
+  // indicatif ; le pays se déduit de cet indicatif (inconnu → « — », jamais deviné).
+  const country = user ? countryOfPhone(user.phone) : undefined;
   const rows: [string, string | undefined][] = [
     ['ID', user?.id],
     ['Prénom', user?.firstName],
     ['Nom', user?.lastName],
-    ['Téléphone', user?.phone],
+    ['Pays', user ? (country?.name.fr ?? '—') : undefined],
+    ['Téléphone', user ? toNationalPhone(user.phone) : undefined],
     ['Email', user?.email],
   ];
 
@@ -44,34 +54,45 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
         <View style={styles.row}>
           <Text style={[label, styles.labelColumn]}>Mot de passe</Text>
           <View style={styles.valueColumn}>
-            {/* Aucun endpoint de changement de mot de passe n'existe encore. */}
-            <View style={styles.start}>
-              <PanelButton
-                title="Modifier"
-                accessibilityLabel="Modifier le mot de passe"
-                onPress={() =>
-                  announceComingSoon(
-                    'Mot de passe',
-                    'La modification du mot de passe sera bientôt disponible.',
-                  )
-                }
-              />
-            </View>
+            {editingPassword ? null : (
+              <View style={styles.start}>
+                <PanelButton
+                  title="Modifier"
+                  accessibilityLabel="Modifier le mot de passe"
+                  onPress={() => {
+                    setPasswordChanged(false);
+                    setEditingPassword(true);
+                  }}
+                />
+              </View>
+            )}
           </View>
         </View>
-        <View style={[styles.row, styles.footer, { marginTop: m.gap }]}>
+        {editingPassword ? (
+          <PasswordChangeForm
+            onCancel={() => setEditingPassword(false)}
+            onChanged={() => {
+              setEditingPassword(false);
+              setPasswordChanged(true);
+            }}
+          />
+        ) : null}
+        {passwordChanged ? (
+          <Text
+            style={[styles.success, { fontSize: m.smallSize }]}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+          >
+            Mot de passe modifié.
+          </Text>
+        ) : null}
+        <View style={[styles.row, styles.end, { marginTop: m.gap }]}>
           <PanelButton
             title="Déconnexion"
             tone="danger"
             loading={logout.isPending}
             onPress={() => logout.mutate()}
           />
-          {user ? (
-            <Text style={[styles.certified, fontOf(fonts.button), { fontSize: m.bodySize }]}>
-              {user.phoneVerified ? 'Certifié ' : 'Non certifié'}
-              {user.phoneVerified ? <Text style={styles.check}>✓</Text> : null}
-            </Text>
-          ) : null}
         </View>
       </InnerFrame>
     </LobbyPanel>
@@ -84,9 +105,8 @@ const styles = StyleSheet.create({
   labelColumn: { width: '38%' },
   valueColumn: { flex: 1, minWidth: 0 },
   start: { alignSelf: 'flex-start' },
+  end: { justifyContent: 'flex-end' },
   label: { color: '#FFFFFF' },
   value: { color: '#FFFFFF', fontWeight: '600' },
-  footer: { justifyContent: 'space-between' },
-  certified: { color: '#FFFFFF' },
-  check: { color: '#3FD06A' },
+  success: { color: '#3FD06A', fontWeight: '600' },
 });

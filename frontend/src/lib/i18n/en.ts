@@ -49,7 +49,7 @@ export const en: Messages = {
   },
   home: {
     chooseMode: 'Choose your mode!',
-    private: 'Private',
+    private: 'Games',
     tournaments: 'Tournaments',
     join: 'Join',
     joinA11y: (mode: string) => `Join: ${mode}`,
@@ -60,5 +60,19 @@ export const en: Messages = {
     nextTournamentEnd: 'End',
     nextTournamentA11y: (date: string, start: string, end: string) =>
       `Your next tournament: ${date}, ${start} to ${end}`,
+  },
+  pickers: {
+    chooseDate: 'Choose a date',
+    chooseTime: 'Choose a time',
+    previousMonth: 'Previous month',
+    nextMonth: 'Next month',
+    previousYear: 'Previous year',
+    nextYear: 'Next year',
+    hours: 'Hours',
+    minutes: 'Minutes',
+    period: 'Period',
+    cancel: 'Cancel',
+    confirm: 'OK',
+    unavailableDay: (date: string) => `${date}, unavailable`,
   },
 };

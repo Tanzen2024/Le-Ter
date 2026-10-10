@@ -12,6 +12,7 @@ import { identityRandom } from '../../fixtures/random';
 import {
   createTournamentTestStack,
   fillWith,
+  saveTournamentSettings,
   HOUR,
   MINUTE,
   seedAdmin,
@@ -43,6 +44,7 @@ beforeEach(async () => {
     random: identityRandom,
   });
   players = await seedPlayers(database.sql, ['ana', 'ben'], 5000);
+  await saveTournamentSettings(database.sql);
 });
 afterEach(async () => {
   await stack.stop();

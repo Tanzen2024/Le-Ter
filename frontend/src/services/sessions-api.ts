@@ -56,7 +56,7 @@ export const sessionsApi = {
       accessToken,
     }),
 
-  /** Poursuivre ou Quitter pendant la ronde de décision (20 s). */
+  /** Poursuivre ou Quitter pendant la ronde de décision (15 s). */
   decide: (accessToken: string, sessionId: string, choice: 'continue' | 'leave') =>
     apiRequest<{ session: SessionView }>(`/api/sessions/${sessionId}/decision`, {
       method: 'POST',

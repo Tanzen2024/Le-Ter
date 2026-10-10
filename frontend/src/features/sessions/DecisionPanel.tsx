@@ -6,7 +6,7 @@ import type { SessionView } from '../../types/session';
 import { PanelButton } from '../lobby/LobbyUi';
 
 /**
- * Ronde Poursuivre / Quitter (20 s, D-034, D-064), posée sur la table à la fin de la partie : le
+ * Ronde Poursuivre / Quitter (15 s, D-034, D-068), posée sur la table à la fin de la partie : le
  * joueur répond sans changer d'écran. Le compte à rebours est calculé à partir de l'échéance
  * du serveur ; à zéro, l'écran annonce le départ automatique et attend que le serveur
  * l'applique (il ne quitte rien lui-même). La session qui porte la ronde n'est jamais nommée.

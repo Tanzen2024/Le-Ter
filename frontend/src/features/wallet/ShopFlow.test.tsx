@@ -82,7 +82,7 @@ const pendingDeposit = (amount: number) => ({
   payment: { ...payment('PENDING'), amount },
 });
 
-/** Choisit 1 000 FCFA : le serveur crée le paiement CinetPay (en attente). */
+/** Choisit 1 000 FCFA : le serveur crée le paiement CinetPay (en attente). */
 async function payThousand() {
   api.deposit.mockResolvedValue(pendingDeposit(1000));
   fireEvent.press(await screen.findByLabelText(PAY_1000));
@@ -190,10 +190,10 @@ describe('Boutique → Acheter (CinetPay, D-050)', () => {
   });
 
   it.each([
-    [500, '500 FCFA'],
+    [500, '500 FCFA'],
     [1000, FCFA_1000],
-    [2000, '2 000 FCFA'],
-    [5000, '5 000 FCFA'],
+    [2000, '2 000 FCFA'],
+    [5000, '5 000 FCFA'],
   ])('%i FCFA : bouton cliquable → POST /api/wallet/deposits pour ce montant, page ouverte', async (amount, label) => {
     api.deposit.mockResolvedValue(pendingDeposit(amount));
     api.payment.mockResolvedValue({ payment: { ...payment('PENDING'), amount } });

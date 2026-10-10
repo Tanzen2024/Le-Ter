@@ -39,6 +39,20 @@ export function useListState<K extends string>(keys: readonly K[]) {
     [params, replace],
   );
 
+  /** Plusieurs filtres liés en UNE navigation (deux `setFilter` successifs s'écraseraient). */
+  const setFilters = useCallback(
+    (values: Partial<Record<K, string>>) => {
+      const next = new URLSearchParams(params.toString());
+      for (const [key, value] of Object.entries(values) as [K, string | undefined][]) {
+        if (value) next.set(key, value);
+        else next.delete(key);
+      }
+      next.delete('page');
+      replace(next);
+    },
+    [params, replace],
+  );
+
   const setPage = useCallback(
     (value: number) => {
       const next = new URLSearchParams(params.toString());
@@ -51,5 +65,5 @@ export function useListState<K extends string>(keys: readonly K[]) {
 
   const reset = useCallback(() => replace(new URLSearchParams()), [replace]);
 
-  return { filters, page, setFilter, setPage, reset };
+  return { filters, page, setFilter, setFilters, setPage, reset };
 }

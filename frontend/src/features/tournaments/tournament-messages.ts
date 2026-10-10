@@ -1,4 +1,5 @@
 import { useLanguage } from '../../lib/i18n';
+import { formatFcfa } from '../../lib/money';
 import type { Language } from '../../stores/preferences-store';
 import type { AppNotification, TournamentCancellationReason } from '../../types/tournament';
 
@@ -45,11 +46,17 @@ const fr = {
     error: 'Impossible de charger les tournois.',
     retry: 'Réessayer',
     open: (date: string) => `Ouvrir le tournoi du ${date}`,
+    /** « 👥 Inscrits : 12 / 100 · minimum 20 » : jamais « 20 min », lu comme une durée. */
     registeredCount: (count: number, min: number, max?: number) =>
-      `👥 ${count} inscrit${count > 1 ? 's' : ''} · ${min} min${max !== undefined ? ` · ${max} max` : ''}`,
-    initialTokens: (tokens: number) => `🪙 ${tokens} jetons de départ`,
+      `👥 Inscrits : ${count}${max !== undefined ? ` / ${max}` : ''} · minimum ${min}`,
     notRegistered: 'Non inscrit',
+    approvedProposal: '✓ Proposition approuvée',
     back: 'Retour à la liste',
+  },
+  /** Formulaire de création / proposition : champs Date et Heure de début (sélecteurs). */
+  form: {
+    date: 'Date',
+    startTime: 'Heure de début',
   },
   /** Recherche d'une table de tournoi (D-065) : uniquement des états réels. */
   matchmaking: {
@@ -64,16 +71,27 @@ const fr = {
     cancelled: 'Recherche annulée. Votre inscription au tournoi est conservée.',
   },
   period: (start: string, end: string) => `${start} — ${end}`,
+  /** Informations essentielles de la fiche : libellé explicite au-dessus de chaque valeur. */
+  facts: {
+    entry: '💰 Inscription',
+    players: '👥 Inscrits',
+    duration: '⏱️ Durée',
+    rewards: '🏆 Récompenses',
+    registered: (count: number, max?: number) =>
+      max !== undefined ? `${count} / ${max}` : String(count),
+    minimum: (min: number) => `minimum ${min} joueurs`,
+    ranks: (count: number) => (count > 1 ? `${count} premiers rangs` : '1er rang'),
+  },
   entry: (fee: string) => `💰 ${fee}`,
   players: (min: number, max?: number) =>
     max !== undefined ? `👥 ${min} à ${max} joueurs` : `👥 ${min} joueurs minimum`,
   ranks: (count: number) =>
-    `🏆 ${count} rang${count > 1 ? 's' : ''} récompensé${count > 1 ? 's' : ''}`,
+    count > 1 ? `🏆 ${count} premiers rangs récompensés` : '🏆 1er rang récompensé',
   panelA11y: (date: string) => `Tournoi du ${date}, voir le tournoi`,
   viewTournament: 'Voir le tournoi',
   notRegistered: "Vous n'êtes pas encore inscrit.",
   reservationInfo: (fee: string) =>
-    `${fee} seront réservés sur votre compte de jeu et débités seulement au démarrage. Annulation : montant libéré.`,
+    `Les frais d'inscription de ${fee} seront réservés sur votre compte de jeu. Le débit aura lieu uniquement au démarrage du tournoi. En cas d'annulation, le montant réservé sera libéré.`,
   register: "S'inscrire",
   registeredNow: 'Inscription confirmée.',
   registered: '✓ Inscrit',
@@ -125,7 +143,7 @@ const fr = {
       case 'TOURNAMENT_RESULTS_AVAILABLE':
         return `${name} : les résultats sont disponibles.`;
       case 'TOURNAMENT_PRIZE_CREDITED':
-        return `${name} : gain de ${n.payload.amount ?? 0} FCFA crédité.`;
+        return `${name} : gain de ${formatFcfa(n.payload.amount ?? 0)} crédité.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name} : le tournoi est terminé, plus de nouvelle partie à cette table.`;
     }
@@ -163,10 +181,14 @@ const en: TournamentMessages = {
     retry: 'Try again',
     open: (date) => `Open the tournament on ${date}`,
     registeredCount: (count, min, max) =>
-      `👥 ${count} registered · ${min} min${max !== undefined ? ` · ${max} max` : ''}`,
-    initialTokens: (tokens) => `🪙 ${tokens} starting tokens`,
+      `👥 Registered: ${count}${max !== undefined ? ` / ${max}` : ''} · minimum ${min}`,
     notRegistered: 'Not registered',
+    approvedProposal: '✓ Proposal approved',
     back: 'Back to the list',
+  },
+  form: {
+    date: 'Date',
+    startTime: 'Start time',
   },
   matchmaking: {
     title: 'Looking for a game…',
@@ -180,15 +202,24 @@ const en: TournamentMessages = {
     cancelled: 'Search cancelled. Your tournament registration is kept.',
   },
   period: (start, end) => `${start} — ${end}`,
+  facts: {
+    entry: '💰 Entry fee',
+    players: '👥 Registered',
+    duration: '⏱️ Duration',
+    rewards: '🏆 Prizes',
+    registered: (count, max) => (max !== undefined ? `${count} / ${max}` : String(count)),
+    minimum: (min) => `minimum ${min} players`,
+    ranks: (count) => (count > 1 ? `Top ${count} ranks` : '1st place'),
+  },
   entry: (fee) => `💰 ${fee}`,
   players: (min, max) =>
     max !== undefined ? `👥 ${min} to ${max} players` : `👥 ${min} players minimum`,
-  ranks: (count) => `🏆 ${count} rewarded rank${count > 1 ? 's' : ''}`,
+  ranks: (count) => (count > 1 ? `🏆 Top ${count} rewarded ranks` : '🏆 1st place rewarded'),
   panelA11y: (name) => `Tournament ${name}, view the tournament`,
   viewTournament: 'View the tournament',
   notRegistered: 'You are not registered yet.',
   reservationInfo: (fee) =>
-    `${fee} will be reserved on your game account and only charged when the tournament starts. If cancelled, the amount is released.`,
+    `The ${fee} entry fee will be reserved on your game account. It is only charged when the tournament starts. If it is cancelled, the reserved amount is released.`,
   register: 'Register',
   registeredNow: 'Registration confirmed.',
   registered: '✓ Registered',
@@ -237,7 +268,7 @@ const en: TournamentMessages = {
       case 'TOURNAMENT_RESULTS_AVAILABLE':
         return `${name}: results are available.`;
       case 'TOURNAMENT_PRIZE_CREDITED':
-        return `${name}: prize of ${n.payload.amount ?? 0} FCFA credited.`;
+        return `${name}: prize of ${formatFcfa(n.payload.amount ?? 0)} credited.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name}: the tournament is over, no new game at this table.`;
     }

@@ -3,7 +3,10 @@ import { useState } from 'react';
 import { StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { DatePickerField } from '../../components/ui/DatePickerField';
+import { TimePickerField } from '../../components/ui/TimePickerField';
 import { ApiError } from '../../lib/api-client';
+import { todayOf } from '../../lib/date-time';
 import type { TournamentSummary } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { LobbyShell } from '../lobby/LobbyShell';
@@ -21,6 +24,7 @@ import {
   type TournamentFormField,
   type TournamentFormValues,
 } from './tournament-form';
+import { useTournamentMessages } from './tournament-messages';
 import { formatFcfa, formatTournamentPeriod } from './tournament-state';
 
 type Tab = 'new' | 'mine';
@@ -60,6 +64,7 @@ export function ProposeTournamentScreen() {
 export function ProposalForm({ onSaved }: { onSaved: () => void }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
+  const t = useTournamentMessages();
   const [values, setValues] = useState<TournamentFormValues>(() => defaultTournamentForm());
   const [errors, setErrors] = useState<TournamentFormErrors>({});
   const propose = useProposeTournament();
@@ -123,11 +128,46 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
     </View>
   );
 
+  // Sélecteurs Date et Heure : même apparence que les champs texte du panneau.
+  const pickerStyle = (key: 'date' | 'startTime') => [
+    styles.input,
+    { height: Math.max(40, m.controlHeight * 0.85) },
+    Boolean(errors[key]) && styles.inputInvalid,
+  ];
+  const pickerText = [styles.pickerText, { fontSize: m.smallSize }];
+  const fieldError = (key: 'date' | 'startTime') =>
+    errors[key] ? (
+      <Text style={[styles.error, { fontSize: m.smallSize }]}>{errors[key]}</Text>
+    ) : null;
+
   return (
     <InnerFrame style={{ gap: m.gap * 0.7 }}>
       <View style={[styles.row, { gap: m.gap }]}>
-        {field('date', 'Date (JJ/MM/AAAA)', { placeholder: '12/10/2026' })}
-        {field('startTime', 'Heure de début', { placeholder: '18:00' })}
+        <View style={styles.field}>
+          <Text style={label}>{t.form.date}</Text>
+          <DatePickerField
+            label={t.form.date}
+            value={values.date}
+            onChange={set('date')}
+            minDate={todayOf()}
+            invalid={Boolean(errors.date)}
+            style={pickerStyle('date')}
+            textStyle={pickerText}
+          />
+          {fieldError('date')}
+        </View>
+        <View style={styles.field}>
+          <Text style={label}>{t.form.startTime}</Text>
+          <TimePickerField
+            label={t.form.startTime}
+            value={values.startTime}
+            onChange={set('startTime')}
+            invalid={Boolean(errors.startTime)}
+            style={pickerStyle('startTime')}
+            textStyle={pickerText}
+          />
+          {fieldError('startTime')}
+        </View>
         {field('durationMinutes', 'Durée (minutes)', {
           keyboardType: 'number-pad',
         })}
@@ -352,5 +392,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   inputInvalid: { borderColor: tablePalette.error },
+  pickerText: { color: '#FFFFFF', fontWeight: '600' },
   error: { color: tablePalette.error },
 });

@@ -24,7 +24,7 @@ import { deckForHands, decksRandom } from '../../fixtures/random';
 
 /**
  * D-036 sur l'infrastructure RÉELLE (HTTP + PostgreSQL + Redis, Docker), timer de
- * PRODUCTION (20 s) :
+ * PRODUCTION (15 s) :
  *
  *   A (J1) : 5♠ 10♣ 8♥ 9⭐ 10♥
  *   B      : 7♠ 9♠ 4♥ 6♣ 8♠
@@ -144,7 +144,7 @@ describeWithInfra(
 
       // --- Tour 2 : B OUVRE et ne joue pas → timeout réel → plus petite carte : 4♥ ---------
       const deadlineB = Date.parse(afterManual.body.game.turnDeadlineAt as string);
-      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(20_000);
+      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(15_000);
       await sleep(Math.max(0, deadlineB - Date.now()));
       const viewA = await until(
         () => expectStatus(A.api.get(`/api/games/${gameId}`), 200),

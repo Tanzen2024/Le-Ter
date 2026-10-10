@@ -80,11 +80,11 @@ describe('accueil : panneau Tournois (D-059, D-065)', () => {
     expect(push).toHaveBeenCalledWith('/tournament/propose');
   });
 
-  it('boutons existants inchangés : Rejoindre Privé et Rejoindre Tournois (liste complète)', async () => {
+  it('boutons existants inchangés : Rejoindre Parties et Rejoindre Tournois (liste complète)', async () => {
     serve([]);
     await renderHome();
     expect(screen.getByText('Choisis ton mode !')).toBeTruthy();
-    await fireEvent.press(screen.getByRole('button', { name: 'Rejoindre : Privé' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Rejoindre : Parties' }));
     expect(mockOpenPanel).toHaveBeenCalledWith('private');
     await fireEvent.press(screen.getByRole('button', { name: 'Rejoindre : Tournois' }));
     expect(push).toHaveBeenCalledWith('/tournament');
@@ -97,7 +97,7 @@ describe('accueil : panneau Tournois (D-059, D-065)', () => {
     expect(screen.getByText('12/10/2026')).toBeTruthy();
     expect(screen.getByText('🕐 18:00 — 19:30')).toBeTruthy();
     expect(screen.getByText('Inscriptions ouvertes')).toBeTruthy();
-    expect(screen.getByText('💰 1 000 FCFA  👥 12/20  🏆 3')).toBeTruthy();
+    expect(screen.getByText('💰 1 000 FCFA  👥 12/20  🏆 3 premiers rangs')).toBeTruthy();
     expect(screen.getByText('Non inscrit')).toBeTruthy();
     expect(api.list).toHaveBeenCalledWith('jeton');
     // Un appui ouvre la fiche (inscription) ; les boutons du panneau restent utilisables.

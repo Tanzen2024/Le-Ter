@@ -10,14 +10,14 @@ import { createLogger } from '../utils/logger';
 /**
  * `npm run tournament:create -- --admin admin@le-ter.cm \
  *    --starts-at 2026-10-12T18:00:00+01:00 --ends-at 2026-10-12T20:00:00+01:00 \
- *    --entry-fee 1000 --min-players 20 --max-players 100 --prizes 50,30,20 \
- *    [--stake 100] [--tokens 1000]`
+ *    --entry-fee 1000 --min-players 20 --max-players 100 --prizes 50,30,20`
  *
  * Les tournois n'ont ni nom ni description (D-060).
  *
  * Outil d'exploitation (D-054) : crée un tournoi PUBLIÉ au nom d'un compte `admin`, par le
  * MÊME chemin que l'API d'administration (validation, commission copiée, non-chevauchement,
- * audit). Les dates exigent un fuseau explicite (`Z` ou `±hh:mm`).
+ * audit). Les dates exigent un fuseau explicite (`Z` ou `±hh:mm`). Jetons de départ et mise
+ * sont calculés depuis le prix d'entrée et les coefficients des paramètres (D-071).
  */
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -57,8 +57,6 @@ async function main(): Promise<void> {
       'min-players': { type: 'string' },
       'max-players': { type: 'string' },
       prizes: { type: 'string' },
-      stake: { type: 'string' },
-      tokens: { type: 'string' },
       timezone: { type: 'string' },
     },
     strict: true,
@@ -71,8 +69,6 @@ async function main(): Promise<void> {
     entryFee: parseInteger(values['entry-fee'], 'entry-fee') ?? 0,
     minimumPlayers: parseInteger(values['min-players'], 'min-players') ?? 20,
     maximumPlayers: parseInteger(values['max-players'], 'max-players'),
-    stakePerGame: parseInteger(values.stake, 'stake'),
-    initialTournamentTokens: parseInteger(values.tokens, 'tokens'),
     prizeRules: parsePrizes(values.prizes),
   };
 

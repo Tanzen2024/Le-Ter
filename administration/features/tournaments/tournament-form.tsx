@@ -6,7 +6,7 @@ import { ArrowLeft, Minus, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { useFieldArray, useForm } from 'react-hook-form';
+import { Controller, useFieldArray, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/feedback/confirm-dialog';
@@ -15,6 +15,7 @@ import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Field, Input } from '@/components/ui/form-controls';
+import { TimePicker } from '@/components/ui/time-picker';
 import { api } from '@/lib/api/client';
 import { ApiError, messageOf } from '@/lib/api/errors';
 import {
@@ -116,11 +117,19 @@ export function TournamentForm() {
                 />
               </Field>
               <Field id="time" label="Heure de début" error={errors.time?.message}>
-                <Input
-                  id="time"
-                  type="time"
-                  aria-invalid={Boolean(errors.time)}
-                  {...register('time')}
+                <Controller
+                  control={control}
+                  name="time"
+                  render={({ field }) => (
+                    <TimePicker
+                      id="time"
+                      value={field.value}
+                      onChange={field.onChange}
+                      onBlur={field.onBlur}
+                      aria-invalid={Boolean(errors.time)}
+                      aria-describedby={errors.time ? 'time-error' : undefined}
+                    />
+                  )}
                 />
               </Field>
               <Field
@@ -140,7 +149,12 @@ export function TournamentForm() {
           <Card>
             <CardHeader title="Participation" />
             <CardBody className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <Field id="entryFee" label="Prix d’entrée (FCFA)" error={errors.entryFee?.message}>
+              <Field
+                id="entryFee"
+                label="Prix d’entrée (FCFA)"
+                hint="Au moins 500 FCFA. Jetons de départ et mise calculés avec les coefficients des Paramètres."
+                error={errors.entryFee?.message}
+              >
                 <Input
                   id="entryFee"
                   inputMode="numeric"

@@ -81,7 +81,7 @@ describe('annuler la recherche (table de tournoi en attente)', () => {
     expect(after.reservation).toEqual(before.reservation);
     expect(after.account).toEqual(before.account);
     expect(await wallet(BEN)).toEqual(walletBefore);
-    // L'autre joueur reste assis ; l'échéance de 20 s est retirée (moins de 2 joueurs).
+    // L'autre joueur reste assis ; l'échéance de 15 s est retirée (moins de 2 joueurs).
     expect((await stack.games.findGame(a.gameId))!.startDeadlineAt).toBeUndefined();
   });
 

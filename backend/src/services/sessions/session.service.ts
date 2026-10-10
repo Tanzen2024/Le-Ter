@@ -100,7 +100,7 @@ export interface SessionServiceDependencies {
   clock?: () => Date;
   /** Timers de décision (un par session). */
   timers?: SessionTimerRegistry;
-  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (20 s, D-034, D-064). */
+  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (15 s, D-034, D-068). */
   decisionWindowMs?: number;
   /** Mots de passe de partie (D-039). Par défaut bcrypt au coût des comptes. */
   passwords?: TablePasswordHasher;
@@ -180,7 +180,7 @@ export class SessionService {
     this.autoNextGame = deps.autoNextGame ?? true;
     // Fin d'une partie → ronde Poursuivre/Quitter. Si ce processus s'arrête avant, la
     // reprise (`recoverDecisionTimers`) ou la prochaine mutation de la session l'ouvre,
-    // avec la même échéance (fin de partie + 20 s).
+    // avec la même échéance (fin de partie + 15 s).
     deps.games.onGameFinished((game) => {
       const { sessionId } = game;
       if (sessionId) {

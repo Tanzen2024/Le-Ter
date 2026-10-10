@@ -35,10 +35,13 @@ import {
   START_FAILURE_ALERT_THRESHOLD,
   START_RECOVERY_MS,
   SETTINGS_LIMITS,
+  coefficientHundredths,
+  tokenCoefficientsError,
   settleGameTokens,
   STARTED_STATUSES,
   TooManyPendingTournamentsError,
   TooManyWaitingTournamentsError,
+  TOKEN_SETUP_STATUSES,
   TOURNAMENT_LIMITS,
   tournamentLabel,
   TOURNAMENT_TABLE_AUTO_START_MS,
@@ -58,6 +61,7 @@ import {
   TournamentTableAvailableError,
   TournamentTableRefusedError,
   tournamentRankingWeights,
+  tournamentTokenSetup,
   validateTournamentInput,
   type CancellationReason,
   type CreatorType,
@@ -68,6 +72,7 @@ import {
   type TournamentRegistration,
   type TournamentSettings,
   type TournamentStatus,
+  type TournamentTokenSetup,
 } from '../../domain/tournaments/tournament';
 import { playerIdOf, type UserId } from '../../domain/users/user';
 import type {
@@ -88,6 +93,12 @@ import type { SessionService } from '../sessions/session.service';
 
 /** Un tournoi terminé ou annulé reste mis en avant ce temps-là (résultats, information). */
 export const RECENT_TOURNAMENT_VISIBILITY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Liste des tournois : un tournoi terminé (COMPLETED) y reste 7 jours après sa fin PRÉVUE, un
+ * tournoi annulé 7 jours après son annulation RÉELLE. Affichage seulement : rien n'est supprimé.
+ */
+export const LIST_HISTORY_VISIBILITY_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Tables candidates essayées avant d'en ouvrir une nouvelle. */
 const JOIN_CANDIDATES = 5;
@@ -112,6 +123,8 @@ const RESULT_STATUSES: readonly TournamentStatus[] = [
   'COMPLETED',
 ];
 const WEIGHT_SETTING_KEYS = ['rankingTokensWeightPercent', 'rankingGamesWeightPercent'] as const;
+/** Coefficients des jetons de départ et de la mise (D-071) : 2 décimales au plus. */
+const COEFFICIENT_SETTING_KEYS = ['initialTokensCoefficient', 'stakePerGameCoefficient'] as const;
 const SETTLEABLE_STATUSES: readonly TournamentStatus[] = ['IN_PROGRESS', 'CALCULATING_RESULTS'];
 
 export interface TournamentServiceDependencies {
@@ -144,6 +157,14 @@ export interface TournamentSnapshot {
   /** Les trois premiers, dès que les résultats sont validés. */
   podium: TournamentResultRow[];
   now: Date;
+  /**
+   * Tournoi non publié (D-071) : coefficients en vigueur ayant servi à calculer jetons de
+   * départ et mise. Absent une fois publiés : les valeurs sont figées.
+   */
+  tokenCoefficients?: Pick<
+    TournamentSettings,
+    'initialTokensCoefficient' | 'stakePerGameCoefficient'
+  >;
 }
 
 /** Table attribuée par `join` : l'écran de jeu s'ouvre sur `gameId`. */
@@ -189,6 +210,7 @@ export class TournamentService {
       const settings = await uow.readSettings();
       const valid = validateTournamentInput(input, { now, creatorType: 'ADMIN', settings });
       await assertWaitingCapacity(uow);
+      // Jetons de départ et mise calculés depuis les coefficients, figés par la publication.
       const tournament = publish(draftOf(valid, 'ADMIN', adminId, now), settings, now, adminId);
       await uow.insertTournament(tournament);
       await uow.audit({
@@ -212,6 +234,7 @@ export class TournamentService {
     const now = this.clock();
     const created = await this.deps.tournaments.transaction(async (uow) => {
       const settings = await uow.readSettings();
+      // Jetons de départ et mise suivent les coefficients jusqu'à l'approbation (D-071).
       const valid = validateTournamentInput(input, { now, creatorType: 'PLAYER', settings });
       const pending = await uow.countPendingByCreator(userId);
       if (pending >= settings.maximumPendingTournamentsPerPlayer) {
@@ -239,14 +262,14 @@ export class TournamentService {
       const now = this.clock();
       assertPlayerLeadTime(t, now);
       // Règles en vigueur revérifiées (un brouillon a pu être créé sous d'autres limites).
-      validateTournamentInput(inputOf(t), {
+      const valid = validateTournamentInput(inputOf(t), {
         now,
         creatorType: t.creatorType,
         settings: await uow.readSettings(),
       });
       // Information au plus tôt (D-059) ; la garantie est à l'approbation, sous verrou.
       await assertWaitingCapacity(uow);
-      return this.transition(uow, t, 'PENDING_APPROVAL', {});
+      return this.transition(uow, t, 'PENDING_APPROVAL', tokensOf(valid));
     });
   }
 
@@ -262,10 +285,17 @@ export class TournamentService {
       assertTransition(id, t.status, 'SCHEDULED');
       assertPlayerLeadTime(t, now);
       const settings = await uow.readSettings();
-      // Règles en vigueur revérifiées avant publication (durée, joueurs, répartition…).
-      validateTournamentInput(inputOf(t), { now, creatorType: t.creatorType, settings });
+      // Règles en vigueur revérifiées avant publication (durée, joueurs, répartition…) ;
+      // jetons de départ et mise calculés avec les coefficients en vigueur, figés ici (D-071).
+      const valid = validateTournamentInput(inputOf(t), {
+        now,
+        creatorType: t.creatorType,
+        settings,
+      });
       await assertWaitingCapacity(uow);
-      const saved = await uow.saveTournament(publish(t, settings, now, adminId));
+      const saved = await uow.saveTournament(
+        publish({ ...t, ...tokensOf(valid) }, settings, now, adminId),
+      );
       if (t.creatorId) {
         await uow.notify(
           [notice(t.creatorId, 'TOURNAMENT_APPROVED', saved, `approved:${id}`)],
@@ -340,7 +370,9 @@ export class TournamentService {
   /**
    * Modification avant verrouillage. Dès qu'une inscription est active, plus rien ne change
    * (les inscrits ont réservé à ces conditions). Joueur : son brouillon ou sa proposition en
-   * attente seulement.
+   * attente seulement. Jetons de départ et mise ne sont jamais saisis (D-071) : calculés
+   * depuis les coefficients avant la publication ; ensuite figés, sauf si le prix d'entrée
+   * change (possible seulement sans inscrit), qui les recalcule avec les coefficients en vigueur.
    */
   update(id: TournamentId, actor: TournamentActor, patch: TournamentPatch): Promise<Tournament> {
     return this.deps.tournaments.transaction(async (uow) => {
@@ -357,12 +389,18 @@ export class TournamentService {
       );
       if (registered > 0 && changed.length > 0) throw new TournamentLockedError(id, changed);
       const settings = await uow.readSettings();
-      const merged: TournamentInput = { ...inputOf(t), ...stripUndefined(patch) };
-      const valid = validateTournamentInput(merged, {
-        now,
-        creatorType: actor.isAdmin ? 'ADMIN' : 'PLAYER',
-        settings,
-      });
+      const frozen =
+        !TOKEN_SETUP_STATUSES.includes(t.status) &&
+        (patch.entryFee === undefined || patch.entryFee === t.entryFee);
+      const valid = validateTournamentInput(
+        { ...inputOf(t), ...stripUndefined(patch) },
+        {
+          now,
+          creatorType: actor.isAdmin ? 'ADMIN' : 'PLAYER',
+          settings,
+          ...(frozen && { frozenTokens: tokensOf(t) }),
+        },
+      );
       const next: Tournament = {
         ...t,
         ...fieldsOf(valid),
@@ -1048,8 +1086,8 @@ export class TournamentService {
   /**
    * Nouvelle table : session de 4 places, sans mise réelle, dont le joueur est le créateur.
    * Création ET rattachement au tournoi dans UNE transaction (jamais de table ordinaire
-   * intermédiaire, jamais visible dans les tables ouvertes). Démarrage automatique 20 s
-   * après l'arrivée du 2e joueur (D-065).
+   * intermédiaire, jamais visible dans les tables ouvertes). Démarrage automatique 15 s
+   * après l'arrivée du 2e joueur (D-065, D-068).
    */
   private async openTable(
     t: Tournament,
@@ -1120,14 +1158,19 @@ export class TournamentService {
     })) {
       await this.advance(t.id);
     }
+    const now = this.clock();
     const [current, history] = await Promise.all([
       this.deps.tournaments.listPublished({ scope: 'current', limit: LIST_CURRENT_LIMIT }),
-      this.deps.tournaments.listPublished({ scope: 'history', limit: LIST_HISTORY_LIMIT }),
+      this.deps.tournaments.listPublished({
+        scope: 'history',
+        limit: LIST_HISTORY_LIMIT,
+        visibleSince: new Date(now.getTime() - LIST_HISTORY_VISIBILITY_MS),
+      }),
     ]);
     return {
       current: await Promise.all(current.map((t) => this.snapshot(t, viewerId))),
       history: await Promise.all(history.map((t) => this.snapshot(t, viewerId))),
-      now: this.clock(),
+      now,
     };
   }
 
@@ -1152,7 +1195,16 @@ export class TournamentService {
     viewerId: UserId,
     { isAdmin = false }: { isAdmin?: boolean } = {},
   ): Promise<TournamentSnapshot> {
-    return this.snapshot(await this.loadVisible(id, viewerId, isAdmin), viewerId);
+    const t = await this.loadVisible(id, viewerId, isAdmin);
+    if (!TOKEN_SETUP_STATUSES.includes(t.status)) return this.snapshot(t, viewerId);
+    const settings = await this.deps.tournaments.readSettings();
+    return {
+      ...(await this.snapshot(withTokenSetup(t, settings), viewerId)),
+      tokenCoefficients: {
+        initialTokensCoefficient: settings.initialTokensCoefficient,
+        stakePerGameCoefficient: settings.stakePerGameCoefficient,
+      },
+    };
   }
 
   /** Classement en direct (pendant le tournoi) ou final. */
@@ -1194,12 +1246,23 @@ export class TournamentService {
     return { tournament: t, rows: await this.deps.tournaments.listResults(id) };
   }
 
-  listForAdmin(statuses?: TournamentStatus[]): Promise<AdminTournamentListItem[]> {
-    return this.deps.tournaments.listForAdmin({ ...(statuses && { statuses }), limit: 100 });
+  async listForAdmin(statuses?: TournamentStatus[]): Promise<AdminTournamentListItem[]> {
+    const [items, settings] = await Promise.all([
+      this.deps.tournaments.listForAdmin({ ...(statuses && { statuses }), limit: 100 }),
+      this.deps.tournaments.readSettings(),
+    ]);
+    return items.map((item) => ({
+      ...item,
+      tournament: withTokenSetup(item.tournament, settings),
+    }));
   }
 
-  listMine(userId: UserId): Promise<Tournament[]> {
-    return this.deps.tournaments.list({ creatorId: userId, limit: 50 });
+  async listMine(userId: UserId): Promise<Tournament[]> {
+    const [list, settings] = await Promise.all([
+      this.deps.tournaments.list({ creatorId: userId, limit: 50 }),
+      this.deps.tournaments.readSettings(),
+    ]);
+    return list.map((t) => withTokenSetup(t, settings));
   }
 
   async registrations(id: TournamentId): Promise<RegistrationListItem[]> {
@@ -1214,8 +1277,9 @@ export class TournamentService {
   }
 
   /**
-   * Les tournois déjà publiés gardent le taux et les poids de classement copiés à leur
-   * publication. Les deux poids sont validés ensemble : leur somme vaut exactement 100 %.
+   * Les tournois déjà publiés gardent le taux, les poids de classement, les jetons de départ
+   * et la mise copiés à leur publication. Les deux poids sont validés ensemble (somme
+   * exactement 100 %), les deux coefficients aussi (mise ≤ moitié des jetons, D-071).
    */
   updateSettings(adminId: UserId, patch: Partial<TournamentSettings>): Promise<TournamentSettings> {
     const fields: Record<string, string> = {};
@@ -1225,11 +1289,16 @@ export class TournamentService {
         fields[key] = 'Paramètre inconnu.';
         continue;
       }
-      const integer = key !== 'platformFeePercent';
+      const coefficient = (COEFFICIENT_SETTING_KEYS as readonly string[]).includes(key);
+      const integer = key !== 'platformFeePercent' && !coefficient;
       const ok =
         typeof value === 'number' &&
         Number.isFinite(value) &&
-        (integer ? Number.isSafeInteger(value) : Number.isInteger(value * 100)) &&
+        (integer
+          ? Number.isSafeInteger(value)
+          : coefficient
+            ? coefficientHundredths(value) !== undefined
+            : Number.isInteger(value * 100)) &&
         value >= limits.min &&
         value <= limits.max;
       if (!ok) fields[key] = `Entre ${limits.min} et ${limits.max}.`;
@@ -1247,6 +1316,10 @@ export class TournamentService {
             (keys.length > 0 ? keys : WEIGHT_SETTING_KEYS).map((k) => [k, weightsError]),
           ),
         );
+      }
+      const coefficientsError = tokenCoefficientsError(next);
+      if (coefficientsError) {
+        throw new InvalidTournamentError({ stakePerGameCoefficient: coefficientsError });
       }
       await uow.writeSettings(next, adminId, now);
       await uow.audit({
@@ -1416,6 +1489,19 @@ function fieldsOf(valid: ReturnType<typeof validateTournamentInput>) {
   };
 }
 
+function tokensOf(t: TournamentTokenSetup): TournamentTokenSetup {
+  return { initialTournamentTokens: t.initialTournamentTokens, stakePerGame: t.stakePerGame };
+}
+
+/**
+ * Tournoi non publié : jetons de départ et mise relus avec les coefficients EN VIGUEUR (D-071),
+ * pour l'affichage ; l'approbation les recalcule et les fige. Publié : inchangé (figé).
+ */
+function withTokenSetup(t: Tournament, settings: TournamentSettings): Tournament {
+  if (!TOKEN_SETUP_STATUSES.includes(t.status)) return t;
+  return { ...t, ...tournamentTokenSetup(t.entryFee, settings) };
+}
+
 function inputOf(t: Tournament): TournamentInput {
   return {
     timezone: t.timezone,
@@ -1426,8 +1512,6 @@ function inputOf(t: Tournament): TournamentInput {
     entryFee: t.entryFee,
     minimumPlayers: t.minimumPlayers,
     maximumPlayers: t.maximumPlayers,
-    initialTournamentTokens: t.initialTournamentTokens,
-    stakePerGame: t.stakePerGame,
     prizeRules: t.prizeRules,
   };
 }
@@ -1449,7 +1533,10 @@ function assertPlayerLeadTime(t: Tournament, now: Date): void {
   }
 }
 
-/** Au plus `maxWaitingTournaments` tournois en attente de démarrage sur la plateforme (D-059). */
+/**
+ * Au plus `maxWaitingTournaments` tournois aux inscriptions ouvertes ou à ouvrir sur la
+ * plateforme (D-059, comptage D-072), sous le verrou de planification.
+ */
 async function assertWaitingCapacity(uow: TournamentUnitOfWork): Promise<void> {
   const limit = TOURNAMENT_LIMITS.maxWaitingTournaments;
   if ((await uow.countWaitingTournaments()) >= limit) {

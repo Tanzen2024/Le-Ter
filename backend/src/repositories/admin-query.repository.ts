@@ -197,9 +197,24 @@ export interface StatusAmount {
   amount: number;
 }
 
+export type ReservationStatus = 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
+
 export interface FinanceOverview {
   purchases: StatusAmount[];
-  walletMovements: { kind: WalletKind; status: WalletStatus; count: number; tokens: number }[];
+  /**
+   * Mouvements des comptes de jeu par nature et statut. `withoutPayment` sépare les achats
+   * (`deposit`) sans paiement CinetPay rattaché (tentative refusée avant l'appel au
+   * fournisseur) des achats CinetPay : toujours `false` pour les autres natures.
+   */
+  walletMovements: {
+    kind: WalletKind;
+    status: WalletStatus;
+    withoutPayment: boolean;
+    count: number;
+    tokens: number;
+  }[];
+  /** Réservations de tournoi créées sur la période (jamais des débits). */
+  reservations: { status: ReservationStatus; count: number; amount: number }[];
   liabilities: { wallets: number; balance: number; reserved: number };
   platformRevenue: { kind: string; count: number; amount: number }[];
 }

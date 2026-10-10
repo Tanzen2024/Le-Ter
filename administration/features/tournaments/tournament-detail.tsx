@@ -30,6 +30,7 @@ import {
   tournamentQuery,
   type TournamentAction,
 } from './api';
+import { TokenSetupValue } from './token-setup-value';
 
 const ACTIONS: Record<
   TournamentAction,
@@ -240,8 +241,22 @@ export function TournamentDetailView({ id }: { id: string }) {
                   ['Fin', formatDateTime(t.endsAt)],
                   ['Clôture des inscriptions', formatDateTime(t.registrationClosesAt)],
                   ['Prix d’entrée', formatXaf(t.entryFee)],
-                  ['Jetons de tournoi au départ', formatNumber(t.initialTournamentTokens)],
-                  ['Mise par partie', formatNumber(t.stakePerGame)],
+                  [
+                    'Jetons de tournoi au départ',
+                    <TokenSetupValue
+                      key="tokens"
+                      value={t.initialTournamentTokens}
+                      coefficient={t.tokenCoefficients?.initialTokensCoefficient}
+                    />,
+                  ],
+                  [
+                    'Mise par partie',
+                    <TokenSetupValue
+                      key="stake"
+                      value={t.stakePerGame}
+                      coefficient={t.tokenCoefficients?.stakePerGameCoefficient}
+                    />,
+                  ],
                   [
                     'Classement',
                     t.rankingWeights

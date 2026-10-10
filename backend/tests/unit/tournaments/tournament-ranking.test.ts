@@ -45,10 +45,17 @@ const order = (accounts: ReturnType<typeof acc>[], weights = HALF) =>
   rankAccounts(accounts, REFS, weights).map((a) => a.playerId);
 
 describe('poids', () => {
-  it('configuration initiale : 50 % / 50 %, aucun critère privilégié', () => {
+  it('tournoi sans poids copiés : 50 % / 50 %, aucun critère privilégié', () => {
     expect(DEFAULT_RANKING_WEIGHTS).toEqual({ tokensBps: 5000, gamesBps: 5000 });
-    expect(rankingWeightsOf(DEFAULT_TOURNAMENT_SETTINGS)).toEqual(DEFAULT_RANKING_WEIGHTS);
     expect(rankingWeightsError(DEFAULT_RANKING_WEIGHTS)).toBeUndefined();
+  });
+
+  it('paramètres jamais enregistrés : 60 % / 40 % pour les prochains publiés (D-071)', () => {
+    expect(rankingWeightsOf(DEFAULT_TOURNAMENT_SETTINGS)).toEqual({
+      tokensBps: 6000,
+      gamesBps: 4000,
+    });
+    expect(rankingWeightsError(rankingWeightsOf(DEFAULT_TOURNAMENT_SETTINGS))).toBeUndefined();
   });
 
   it.each([
@@ -151,7 +158,9 @@ describe('les deux critères contribuent au score', () => {
         for (const games of [0, 1, 9, 10, 40, 200, 10_000]) {
           expect(higher([tokens, games + 1], [tokens, games], weights)).toBe(true);
           if (games <= 200) {
-            expect(score(tokens, games + 1, weights)).toBeGreaterThan(score(tokens, games, weights));
+            expect(score(tokens, games + 1, weights)).toBeGreaterThan(
+              score(tokens, games, weights),
+            );
           }
         }
       }
@@ -168,7 +177,10 @@ describe('classement', () => {
   it('peut favoriser moins de jetons mais davantage de parties', () => {
     // A : 1 300 jetons, 3 parties → 39,7993 ; B : 1 100 jetons, 8 parties → 48,4127.
     const ranked = rankAccounts(
-      [acc('A', { currentTokens: 1300, gamesPlayed: 3 }), acc('B', { currentTokens: 1100, gamesPlayed: 8 })],
+      [
+        acc('A', { currentTokens: 1300, gamesPlayed: 3 }),
+        acc('B', { currentTokens: 1100, gamesPlayed: 8 }),
+      ],
       REFS,
       HALF,
     );
@@ -181,7 +193,10 @@ describe('classement', () => {
   it('peut aussi favoriser davantage de jetons mais moins de parties', () => {
     // C : 2 000 jetons, 5 parties → 50 ; D : 1 000 jetons, 7 parties → 45,5882.
     expect(
-      order([acc('D', { currentTokens: 1000, gamesPlayed: 7 }), acc('C', { currentTokens: 2000, gamesPlayed: 5 })]),
+      order([
+        acc('D', { currentTokens: 1000, gamesPlayed: 7 }),
+        acc('C', { currentTokens: 2000, gamesPlayed: 5 }),
+      ]),
     ).toEqual(['C', 'D']);
   });
 
@@ -208,7 +223,11 @@ describe('classement', () => {
     const a = acc('a', { currentTokens: 1250, gamesPlayed: 6 });
     const alone = rankAccounts([a], REFS, HALF)[0]!.score;
     const crowd = rankAccounts(
-      [a, acc('b', { currentTokens: 9000, gamesPlayed: 60 }), acc('c', { currentTokens: 0, gamesPlayed: 1 })],
+      [
+        a,
+        acc('b', { currentTokens: 9000, gamesPlayed: 60 }),
+        acc('c', { currentTokens: 0, gamesPlayed: 1 }),
+      ],
       REFS,
       HALF,
     ).find((r) => r.playerId === 'a')!.score;

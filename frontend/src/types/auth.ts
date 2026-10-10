@@ -24,6 +24,9 @@ export interface RegisterPayload {
   lastName: string;
   email: string;
   username: string;
+  /** Pays (ISO 3166-1 alpha-2) : le serveur en déduit l'indicatif et les règles du numéro. */
+  country: string;
+  /** Numéro NATIONAL, sans indicatif : le serveur reconstruit le numéro international. */
   phone: string;
   password: string;
   confirmPassword: string;
@@ -32,4 +35,11 @@ export interface RegisterPayload {
 export interface LoginPayload {
   email: string;
   password: string;
+}
+
+/** Corps de POST /api/auth/password (compte du jeton, aucun identifiant envoyé). */
+export interface ChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
 }

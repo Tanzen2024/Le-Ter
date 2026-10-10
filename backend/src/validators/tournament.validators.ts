@@ -50,13 +50,12 @@ export function parseTournamentInput(
     }
   }
 
-  const intKeys = [
-    'entryFee',
-    'minimumPlayers',
-    'maximumPlayers',
-    'initialTournamentTokens',
-    'stakePerGame',
-  ] as const;
+  // Jetons de départ et mise : toujours calculés par le serveur (D-071), jamais reçus.
+  for (const key of ['initialTournamentTokens', 'stakePerGame']) {
+    if (b[key] !== undefined) fields[key] = 'Calculé par le serveur à partir du prix d’entrée.';
+  }
+
+  const intKeys = ['entryFee', 'minimumPlayers', 'maximumPlayers'] as const;
   for (const key of intKeys) {
     const v = b[key];
     if (v === undefined || v === null) continue;
@@ -84,13 +83,7 @@ export function parseTournamentInput(
   }
 
   if (!partial) {
-    for (const key of [
-      'startsAt',
-      'endsAt',
-      'entryFee',
-      'minimumPlayers',
-      'prizeRules',
-    ] as const) {
+    for (const key of ['startsAt', 'endsAt', 'entryFee', 'minimumPlayers', 'prizeRules'] as const) {
       if (out[key] === undefined && !fields[key]) fields[key] = 'Champ obligatoire.';
     }
   }
@@ -100,8 +93,8 @@ export function parseTournamentInput(
 
 const SETTINGS_KEYS: (keyof TournamentSettings)[] = [
   'platformFeePercent',
-  'initialTournamentTokens',
-  'defaultTournamentStake',
+  'initialTokensCoefficient',
+  'stakePerGameCoefficient',
   'maximumPendingTournamentsPerPlayer',
   'tournamentTransitionMinutes',
   'rankingTokensWeightPercent',

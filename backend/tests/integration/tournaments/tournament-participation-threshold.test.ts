@@ -69,10 +69,13 @@ const SECOND_WINS: [0 | 1, string][] = [
 
 async function startedTournament(initialTournamentTokens: number): Promise<Tournament> {
   const admin = await seedAdmin(database.sql);
-  const t = await stack.tournaments.createAsAdmin(
-    admin,
-    tournamentInput(stack.clock, HOUR, { initialTournamentTokens, stakePerGame: 100 }),
-  );
+  // Prix d'entrée 1000 : jetons et mise calculés depuis les coefficients (D-071), mise 100.
+  await stack.tournaments.updateSettings(admin, {
+    initialTokensCoefficient: initialTournamentTokens / 1000,
+    stakePerGameCoefficient: 0.1,
+  });
+  const t = await stack.tournaments.createAsAdmin(admin, tournamentInput(stack.clock, HOUR));
+  expect(t).toMatchObject({ initialTournamentTokens, stakePerGame: 100 });
   for (const p of players) await stack.tournaments.register(t.id, p);
   await fillWith(stack, database.sql, t.id); // minimum de 20 participants (D-057)
   stack.clock.set(t.startsAt);

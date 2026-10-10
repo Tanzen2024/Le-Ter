@@ -25,6 +25,7 @@ import type {
   OrphanDepositRow,
   PaymentQuery,
   PaymentReconciliationRow,
+  ReservationStatus,
   Period,
   TournamentLedgerFacts,
   TournamentReportRow,
@@ -581,15 +582,33 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
        GROUP BY status ORDER BY status`,
       params,
     );
+    // `payments.wallet_transaction_id` est UNIQUE : la jointure ne multiplie aucune ligne.
+    // Un achat sans paiement (refusé avant l'appel à CinetPay, ex. montant hors barème) n'est
+    // pas un paiement CinetPay : il est compté à part, jamais avec les achats du fournisseur.
     const movements = await this.db.query<{
       kind: WalletKind;
       status: WalletStatus;
+      without_payment: boolean;
       count: number;
       tokens: unknown;
     }>(
-      `SELECT kind, status, count(*)::int AS count, COALESCE(sum(tokens), 0) AS tokens
-       FROM wallet_transactions WHERE created_at >= $1 AND created_at < $2
-       GROUP BY kind, status ORDER BY kind, status`,
+      `SELECT wt.kind, wt.status,
+              (wt.kind = 'deposit' AND p.id IS NULL) AS without_payment,
+              count(*)::int AS count, COALESCE(sum(wt.tokens), 0) AS tokens
+       FROM wallet_transactions wt
+       LEFT JOIN payments p ON p.wallet_transaction_id = wt.id
+       WHERE wt.created_at >= $1 AND wt.created_at < $2
+       GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+      params,
+    );
+    const reservations = await this.db.query<{
+      status: ReservationStatus;
+      count: number;
+      amount: unknown;
+    }>(
+      `SELECT status, count(*)::int AS count, COALESCE(sum(amount), 0) AS amount
+       FROM wallet_reservations WHERE created_at >= $1 AND created_at < $2
+       GROUP BY status ORDER BY status`,
       params,
     );
     const liabilities = await this.db.query<{
@@ -617,8 +636,14 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       walletMovements: movements.rows.map((r) => ({
         kind: r.kind,
         status: r.status,
+        withoutPayment: r.without_payment,
         count: r.count,
         tokens: n(r.tokens),
+      })),
+      reservations: reservations.rows.map((r) => ({
+        status: r.status,
+        count: r.count,
+        amount: n(r.amount),
       })),
       liabilities: { wallets: n(l?.wallets), balance: n(l?.balance), reserved: n(l?.reserved) },
       platformRevenue: revenue.rows.map((r) => ({

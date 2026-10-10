@@ -7,7 +7,7 @@
 | Règle | Contenu |
 |---|---|
 | **R-10** | Le mode invité est **supprimé**. Aucun compte invité, anonyme ou temporaire, aucune session invitée, aucune identité de repli. Toute action de joueur exige un compte authentifié. |
-| **R-15** | Inscription : **Prénom, Nom, Email, Pseudo, Téléphone, Mot de passe, Confirmation**. Le téléphone est obligatoire. Connexion : **email + mot de passe**. Le pseudo est le nom visible en jeu, pas un identifiant de connexion. |
+| **R-15** | Inscription : **Prénom, Nom, Email, Pseudo, Pays, Téléphone, Mot de passe, Confirmation** (Pays : D-070). Le pays et le téléphone sont obligatoires. Connexion : **email + mot de passe**. Le pseudo est le nom visible en jeu, pas un identifiant de connexion. |
 | **R-32** | **Une seule session active par utilisateur.** Une nouvelle connexion révoque toute session précédente. Cette règle ne limite pas le nombre de parties d'un joueur (R-18 reste ouverte). |
 
 ## 2. Vue d'ensemble
@@ -99,10 +99,12 @@ le client se connecte ensuite. `confirmPassword` n'est jamais stocké. Les champ
 `phoneVerified` envoyés par le client sont ignorés.
 
 Normalisation : email en minuscules ; téléphone sans espaces, points, tirets ni parenthèses,
-« 00 » initial remplacé par « + » ; noms sans espaces superflus.
+« 00 » initial remplacé par « + », puis numéro E.164 reconstruit par le serveur à partir du
+pays (`country`, ISO alpha-2) et du numéro national (D-070) ; noms sans espaces superflus.
 
 Règles : prénom et nom (lettres, espaces, apostrophes, tirets, 50 max) ; email valide ; pseudo
-3 à 20 `[A-Za-z0-9_]` ; téléphone au format international ; mot de passe de 8 caractères
+3 à 20 `[A-Za-z0-9_]` ; pays connu de libphonenumber ; téléphone valide selon les règles de
+ce pays (un indicatif d'un autre pays est refusé) ; mot de passe de 8 caractères
 minimum et 72 octets maximum (limite de bcrypt), avec au moins une lettre et un chiffre ;
 confirmation identique.
 

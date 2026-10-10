@@ -10,7 +10,7 @@ import { PageHeader } from '@/components/layout/page-header';
 import { Card } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/form-controls';
 import { useListState } from '@/hooks/use-list-state';
-import { localDayStartIso } from '@/lib/format';
+import { formatXaf, localDayStartIso } from '@/lib/format';
 import { PAYMENT_STATUS } from '@/lib/labels';
 
 import { paymentsQuery } from './api';
@@ -84,7 +84,7 @@ export function PaymentsList() {
             <option value="">Tous les montants</option>
             {AMOUNTS.map((a) => (
               <option key={a} value={a}>
-                {Number(a).toLocaleString('fr-FR')} FCFA
+                {formatXaf(Number(a))}
               </option>
             ))}
           </Select>

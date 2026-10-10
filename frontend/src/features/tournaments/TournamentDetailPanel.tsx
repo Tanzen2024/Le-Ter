@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -31,6 +31,7 @@ import {
 } from './tournament-messages';
 import {
   formatFcfa,
+  formatTournamentDuration,
   formatTournamentPeriod,
   hasResults,
   isFull,
@@ -92,9 +93,25 @@ export function TournamentDetailPanel({
   const error = toDisplayError(actionError);
   const period = formatTournamentPeriod(tournament, t.locale);
   const small = [styles.meta, fontOf(fonts.button), { fontSize: m.smallSize }];
-  const body = [styles.detailText, fontOf(fonts.button), { fontSize: m.bodySize }];
+  const body = [
+    styles.detailText,
+    fontOf(fonts.button),
+    { fontSize: m.bodySize, lineHeight: Math.round(m.bodySize * 1.45) },
+  ];
+  const noteSize = m.smallSize + 1;
   const busy = register.isPending || unregister.isPending;
   const joinable = state === 'IN_PROGRESS' && tournament.canJoin;
+  /** Espace entre les groupes (en-tête, informations, inscription, frais, action). */
+  const sectionGap = Math.round(m.gap * 1.2);
+  const showReservation = state === 'UPCOMING' && tournament.canRegister && !isFull(tournament);
+  const details = tournamentDetails({
+    tournament,
+    state,
+    receivedAt,
+    messages: t,
+    fullNoticeShown: error?.code === FULL,
+    textStyle: body,
+  });
 
   // Recherche annulée avant la réponse : place attribuée → libérée ; échec → rien à libérer.
   const startSearch = () => {
@@ -156,9 +173,24 @@ export function TournamentDetailPanel({
     );
   }
 
+  const canRegisterNow = state === 'UPCOMING' && tournament.canRegister;
+  const errorNotice =
+    error?.code === FULL ? (
+      // Capacité atteinte : information conviviale, pas une alerte (D-057).
+      <FullNotice variant="register" />
+    ) : error ? (
+      <Text
+        accessibilityRole="alert"
+        style={[styles.error, fontOf(fonts.button), { fontSize: m.smallSize }]}
+      >
+        {errorText(error, t)}
+      </Text>
+    ) : null;
+
   return (
-    <View testID="tournament-details" style={{ gap: Math.round(m.gap * 0.6) }}>
-      <View style={styles.summary}>
+    <View testID="tournament-details" style={{ gap: sectionGap }}>
+      {/* A. En-tête : la date domine, le statut l'accompagne, l'horaire sur sa ligne. */}
+      <View style={[styles.summary, { gap: Math.round(m.gap * 0.4) }]}>
         <View style={styles.row}>
           <Text
             numberOfLines={1}
@@ -169,31 +201,42 @@ export function TournamentDetailPanel({
           <StatusChip tournament={tournament} size={m.smallSize} fontFamily={fonts.button} />
         </View>
         <Text style={small}>{`🕐 ${t.period(period.start, period.end)}`}</Text>
-        <Text style={[small, styles.centerText]}>
-          {[
-            t.entry(formatFcfa(tournament.entryFee)),
-            t.list.registeredCount(
-              tournament.registeredCount,
-              tournament.minimumPlayers,
-              tournament.maximumPlayers,
-            ),
-            rewardedRanks(tournament) > 0 ? t.ranks(rewardedRanks(tournament)) : undefined,
-            t.list.initialTokens(tournament.initialTournamentTokens),
-          ]
-            .filter(Boolean)
-            .join('   ')}
-        </Text>
       </View>
-      <TournamentDetails
-        tournament={tournament}
-        state={state}
-        receivedAt={receivedAt}
-        messages={t}
-        fullNoticeShown={error?.code === FULL}
-        textStyle={body}
-      />
-      {state === 'UPCOMING' && tournament.canRegister && (
+      {/* B. Informations essentielles, chacune avec un libellé explicite. */}
+      <TournamentFacts tournament={tournament} />
+      {/* C. État de MON inscription, séparé des caractéristiques du tournoi. */}
+      {details ? (
+        <View
+          testID="tournament-registration-state"
+          style={[styles.status, { paddingTop: sectionGap, gap: Math.round(m.gap * 0.6) }]}
+        >
+          {details}
+        </View>
+      ) : null}
+      {/* D. Engagement financier (secondaire mais lisible), puis l'action. */}
+      {showReservation ? (
+        <View
+          style={[
+            styles.reservation,
+            { paddingVertical: m.gap, paddingHorizontal: Math.round(m.gap * 1.4) },
+          ]}
+        >
+          <Text
+            style={[
+              styles.reservationText,
+              fontOf(fonts.button),
+              { fontSize: noteSize, lineHeight: Math.round(noteSize * 1.55) },
+            ]}
+          >
+            {t.reservationInfo(formatFcfa(tournament.entryFee))}
+          </Text>
+        </View>
+      ) : null}
+      {/* Échec d'inscription : juste au-dessus du bouton, visible sans défiler. */}
+      {canRegisterNow ? errorNotice : null}
+      {canRegisterNow && (
         <PillButton
+          style={{ marginTop: Math.round(m.gap * 0.4) }}
           title={t.register}
           onPress={() =>
             register.mutate(tournament.tournamentId, {
@@ -201,7 +244,7 @@ export function TournamentDetailPanel({
             })
           }
           loading={busy}
-          height={m.controlHeight}
+          height={Math.max(44, m.controlHeight)}
           fontSize={m.bodySize + 2}
           fontFamily={fonts.button}
         />
@@ -236,17 +279,7 @@ export function TournamentDetailPanel({
           {t.matchmaking.cancelled}
         </Text>
       ) : null}
-      {error?.code === FULL ? (
-        // Capacité atteinte : information conviviale, pas une alerte (D-057).
-        <FullNotice variant="register" />
-      ) : error ? (
-        <Text
-          accessibilityRole="alert"
-          style={[styles.error, fontOf(fonts.button), { fontSize: m.smallSize }]}
-        >
-          {errorText(error, t)}
-        </Text>
-      ) : null}
+      {canRegisterNow ? null : errorNotice}
       <TournamentNotices textStyle={small} />
     </View>
   );
@@ -427,7 +460,12 @@ function FullNotice({ variant }: { variant: 'register' | 'join' }) {
   );
 }
 
-function TournamentDetails({
+/**
+ * Contenu du groupe « mon inscription », selon l'état RÉEL renvoyé par le serveur ; `null`
+ * quand il n'y a rien à dire (le groupe n'est alors pas affiché). Fonction et non composant :
+ * le panneau doit savoir si le groupe est vide.
+ */
+function tournamentDetails({
   tournament,
   state,
   receivedAt,
@@ -442,18 +480,12 @@ function TournamentDetails({
   textStyle: StyleProp<TextStyle>;
   /** Le refus « complet » est déjà affiché : pas de second bloc. */
   fullNoticeShown?: boolean;
-}) {
-  const fee = formatFcfa(tournament.entryFee);
+}): ReactNode {
   const account = tournament.account;
   switch (state) {
     case 'UPCOMING':
       if (isFull(tournament)) return fullNoticeShown ? null : <FullNotice variant="join" />;
-      return (
-        <>
-          <Text style={textStyle}>{t.notRegistered}</Text>
-          {tournament.canRegister && <Text style={textStyle}>{t.reservationInfo(fee)}</Text>}
-        </>
-      );
+      return <Text style={textStyle}>{t.notRegistered}</Text>;
     case 'REGISTERED':
     case 'WAITING':
       return (
@@ -512,12 +544,86 @@ function TournamentDetails({
   }
 }
 
-/** Notifications non lues (dans l'application, sans push) ; un appui les marque lues. */
+/** Au-delà de cette largeur, les quatre informations tiennent sur une seule rangée. */
+const FACTS_ONE_ROW_WIDTH = 520;
+
+/**
+ * Informations essentielles (groupe B) : participation, inscrits / capacité (et le minimum
+ * requis), durée réelle, rangs récompensés. Une grille 2 × 2 sur un écran étroit, une rangée
+ * de 4 sinon ; chaque valeur porte son libellé, sans abréviation ambiguë.
+ */
+function TournamentFacts({ tournament }: { tournament: TournamentView }) {
+  const m = useLobbyMetrics();
+  const t = useTournamentMessages();
+  const fonts = useTableFonts();
+  const [width, setWidth] = useState(0);
+  const gap = Math.round(m.gap * 0.6);
+  const columns = width >= FACTS_ONE_ROW_WIDTH ? 4 : 2;
+  const tileWidth = width > 0 ? Math.floor((width - gap * (columns - 1)) / columns) : '48%';
+  const ranks = rewardedRanks(tournament);
+  const facts: { key: string; label: string; value: string; detail?: string }[] = [
+    { key: 'entry', label: t.facts.entry, value: formatFcfa(tournament.entryFee) },
+    {
+      key: 'players',
+      label: t.facts.players,
+      value: t.facts.registered(tournament.registeredCount, tournament.maximumPlayers),
+      detail: t.facts.minimum(tournament.minimumPlayers),
+    },
+    { key: 'duration', label: t.facts.duration, value: formatTournamentDuration(tournament) },
+  ];
+  if (ranks > 0)
+    facts.push({ key: 'rewards', label: t.facts.rewards, value: t.facts.ranks(ranks) });
+  const label = [styles.factLabel, fontOf(fonts.button), { fontSize: m.smallSize }];
+  return (
+    <View
+      testID="tournament-facts"
+      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+      style={[styles.facts, { rowGap: gap, columnGap: gap }]}
+    >
+      {facts.map((fact) => (
+        <View
+          key={fact.key}
+          testID={`tournament-fact-${fact.key}`}
+          accessible
+          accessibilityLabel={[fact.label, fact.value, fact.detail].filter(Boolean).join(' : ')}
+          style={[
+            styles.fact,
+            {
+              width: tileWidth,
+              paddingVertical: Math.round(m.gap * 0.7),
+              paddingHorizontal: Math.round(m.gap * 0.6),
+            },
+          ]}
+        >
+          <Text style={label}>{fact.label}</Text>
+          <Text
+            style={[
+              styles.factValue,
+              fontOf(fonts.button),
+              { fontSize: m.bodySize + 1, lineHeight: Math.round((m.bodySize + 1) * 1.3) },
+            ]}
+          >
+            {fact.value}
+          </Text>
+          {fact.detail ? <Text style={label}>{fact.detail}</Text> : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Notifications non lues (dans l'application, sans push) ; un appui les marque lues.
+ * L'approbation d'une proposition n'y figure plus : son initiateur la voit sur la carte du
+ * tournoi dans la liste (« ✓ Proposition approuvée »).
+ */
 function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
   const t = useTournamentMessages();
   const { data } = useNotifications();
   const markRead = useMarkNotificationRead();
-  const unread = (data?.notifications ?? []).filter((n) => !n.readAt).slice(0, NOTICES_SHOWN);
+  const unread = (data?.notifications ?? [])
+    .filter((n) => !n.readAt && n.type !== 'TOURNAMENT_APPROVED')
+    .slice(0, NOTICES_SHOWN);
   if (unread.length === 0) return null;
   return (
     <View style={styles.notices} accessibilityLabel={t.notifications}>
@@ -584,7 +690,20 @@ export function StatusChip({
 }
 
 const styles = StyleSheet.create({
-  summary: { alignItems: 'center', gap: 2 },
+  summary: { alignItems: 'center' },
+  facts: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
+  fact: { alignItems: 'center', gap: 2, borderRadius: 10, backgroundColor: 'rgba(0, 0, 0, 0.2)' },
+  factLabel: { color: tablePalette.cream, opacity: 0.72, textAlign: 'center' },
+  factValue: { color: tablePalette.cream, textAlign: 'center' },
+  /** Filet discret : sépare MON inscription des caractéristiques du tournoi. */
+  status: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: tablePalette.panelBorder },
+  reservation: {
+    alignSelf: 'center',
+    maxWidth: 560,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
+  },
+  reservationText: { color: tablePalette.cream, opacity: 0.88, textAlign: 'center' },
   centerText: { textAlign: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: '100%' },
   date: { flexShrink: 1, color: tablePalette.gold, letterSpacing: 0.5 },

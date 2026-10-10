@@ -101,16 +101,23 @@ beforeEach(() => {
 });
 
 describe('fiche d’un tournoi à venir', () => {
-  it('date, début — fin, participation, inscrits / min / max, rangs, jetons, statut (sans nom)', async () => {
+  it('date, début — fin, participation, inscrits / capacité / minimum, durée, rangs, statut (sans nom ni jetons de départ)', async () => {
     serve(view());
     await renderDetail();
     expect(screen.getByText('12 octobre 2026')).toBeTruthy();
     expect(screen.queryByText(/Tournoi du samedi/)).toBeNull();
     expect(screen.getByText(/18:00 — 20:00/)).toBeTruthy();
-    expect(screen.getByText(/💰 1 000 FCFA/)).toBeTruthy();
-    expect(screen.getByText(/12 inscrits · 20 min · 100 max/)).toBeTruthy();
-    expect(screen.getByText(/3 rangs récompensés/)).toBeTruthy();
-    expect(screen.getByText(/1000 jetons de départ/)).toBeTruthy();
+    const fact = (key: string) =>
+      screen.getByTestId(`tournament-fact-${key}`).props.accessibilityLabel;
+    expect(fact('entry')).toBe('💰 Inscription : 1 000 FCFA');
+    expect(fact('players')).toBe('👥 Inscrits : 12 / 100 : minimum 20 joueurs');
+    expect(fact('duration')).toBe('⏱️ Durée : 2 h');
+    expect(fact('rewards')).toBe('🏆 Récompenses : 3 premiers rangs');
+    expect(screen.getByText('12 / 100')).toBeTruthy();
+    expect(screen.getByText('minimum 20 joueurs')).toBeTruthy();
+    expect(screen.getByText('2 h')).toBeTruthy();
+    expect(screen.queryByText(/jetons de départ/)).toBeNull();
+    expect(screen.queryByText(/\d+ min\b/)).toBeNull();
     expect(screen.getByText('Inscriptions ouvertes')).toBeTruthy();
   });
 
@@ -126,13 +133,15 @@ describe('fiche d’un tournoi à venir', () => {
     await renderDetail();
     expect(screen.getByText("Vous n'êtes pas encore inscrit.")).toBeTruthy();
     expect(
-      screen.getByText(/réservés sur votre compte de jeu et débités seulement au démarrage/),
+      screen.getByText(
+        "Les frais d'inscription de 1 000 FCFA seront réservés sur votre compte de jeu. Le débit aura lieu uniquement au démarrage du tournoi. En cas d'annulation, le montant réservé sera libéré.",
+      ),
     ).toBeTruthy();
     serve(registered); // l'état relu ensuite est celui du serveur
     await fireEvent.press(screen.getByText("S'inscrire"));
 
     expect(api.register).toHaveBeenCalledWith('jeton', ID);
-    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
     expect(screen.getByText('En attente du début du tournoi')).toBeTruthy();
     expect(screen.queryByText("S'inscrire")).toBeNull();
   });
@@ -141,7 +150,7 @@ describe('fiche d’un tournoi à venir', () => {
     serve(view({ registration, canRegister: false, canUnregister: true }));
     api.unregister.mockResolvedValue({ tournament: view() });
     await renderDetail();
-    expect(screen.getByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    expect(screen.getByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
     expect(screen.queryByText("S'inscrire")).toBeNull();
     serve(view()); // l'état relu ensuite est celui du serveur
     await fireEvent.press(screen.getByText('Se désinscrire'));
@@ -164,6 +173,11 @@ describe('fiche d’un tournoi à venir', () => {
     expect(
       await screen.findByText('Solde disponible insuffisant pour réserver la participation.'),
     ).toBeTruthy();
+    // Juste au-dessus du bouton, visible sans défiler.
+    const tree = JSON.stringify(screen.toJSON());
+    expect(tree.indexOf('Solde disponible insuffisant')).toBeLessThan(
+      tree.indexOf("S'inscrire"),
+    );
   });
 
   it('double inscription refusée par le serveur : l’état réel est relu', async () => {
@@ -174,7 +188,7 @@ describe('fiche d’un tournoi à venir', () => {
     await renderDetail();
     serve(view({ registration, canRegister: false }));
     await fireEvent.press(screen.getByText("S'inscrire"));
-    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
     expect(api.register).toHaveBeenCalledTimes(1);
   });
 });
@@ -334,10 +348,10 @@ describe('tournoi terminé ou annulé', () => {
     await renderDetail();
     expect(screen.getByText('Terminé')).toBeTruthy();
     expect(screen.getByText('🏆 TOURNOI TERMINÉ')).toBeTruthy();
-    expect(screen.getByText('🥇 Ana — 45 000 FCFA')).toBeTruthy();
-    expect(screen.getByText('🥈 Ben — 27 000 FCFA')).toBeTruthy();
-    expect(screen.getByText('🥉 Cid — 18 000 FCFA')).toBeTruthy();
-    expect(screen.getByText('Votre rang : 2 · gain : 27 000 FCFA')).toBeTruthy();
+    expect(screen.getByText('🥇 Ana — 45 000 FCFA')).toBeTruthy();
+    expect(screen.getByText('🥈 Ben — 27 000 FCFA')).toBeTruthy();
+    expect(screen.getByText('🥉 Cid — 18 000 FCFA')).toBeTruthy();
+    expect(screen.getByText('Votre rang : 2 · gain : 27 000 FCFA')).toBeTruthy();
     expect(screen.queryByText("S'inscrire")).toBeNull();
     expect(screen.queryByText('Rejoindre le Tournoi')).toBeNull();
   });
@@ -368,10 +382,34 @@ describe('notifications', () => {
     api.markNotificationRead.mockResolvedValue({ read: true });
     await renderDetail();
     const line = await screen.findByText(
-      '🔔 Tournoi du 12/10/2026 18:00 : gain de 27000 FCFA crédité.',
+      '🔔 Tournoi du 12/10/2026 18:00 : gain de 27 000 FCFA crédité.',
     );
     await fireEvent.press(line);
     expect(api.markNotificationRead).toHaveBeenCalledWith('jeton', notice.id);
+  });
+
+  it('approbation de proposition : plus affichée sous « S’inscrire », les autres restent', async () => {
+    const startsAt = new Date(2026, 9, 12, 18, 0).toISOString();
+    const approved: AppNotification = {
+      id: '66666666-6666-4666-8666-666666666666',
+      type: 'TOURNAMENT_APPROVED',
+      payload: { startsAt },
+      createdAt: '2026-10-10T09:00:00.000Z',
+    };
+    const prize: AppNotification = {
+      id: '77777777-7777-4777-8777-777777777777',
+      type: 'TOURNAMENT_PRIZE_CREDITED',
+      payload: { startsAt, amount: 27000 },
+      createdAt: '2026-10-12T19:05:00.000Z',
+    };
+    serve(view());
+    api.notifications.mockResolvedValue({ notifications: [approved, prize], unread: 2 });
+    await renderDetail();
+    expect(
+      await screen.findByText('🔔 Tournoi du 12/10/2026 18:00 : gain de 27 000 FCFA crédité.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/^S.inscrire$/)).toBeTruthy();
+    expect(screen.queryByText(/votre proposition est approuvée/)).toBeNull();
   });
 });
 

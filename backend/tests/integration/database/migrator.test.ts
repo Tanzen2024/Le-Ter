@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { PGlite } from '@electric-sql/pglite';
 
 import { loadMigrations, runMigrations, type Migration } from '../../../src/database/migrator';
@@ -98,6 +102,14 @@ describe('runMigrations', () => {
     ).rejects.toThrow('Migration déjà appliquée puis modifiée : 0001_a.sql');
   });
 
+  it('accepte une migration appliquée sous son empreinte brute (avant la normalisation LF)', async () => {
+    const sql = pgliteSqlClient(db);
+    await runMigrations(sql, [migration('0001_a.sql', 'CREATE TABLE a (id int)')]);
+
+    const reloaded = { ...migration('0001_a.sql', 'x'), rawChecksum: 'sum-CREATE TABLE a (id int)' };
+    expect(await runMigrations(sql, [reloaded])).toEqual([]);
+  });
+
   it('refuse une base migrée par une version plus récente du code', async () => {
     const sql = pgliteSqlClient(db);
     await runMigrations(sql, [
@@ -108,5 +120,20 @@ describe('runMigrations', () => {
     await expect(
       runMigrations(sql, [migration('0001_a.sql', 'CREATE TABLE a (id int)')]),
     ).rejects.toThrow('Migrations appliquées absentes du code : 0002_b.sql');
+  });
+});
+
+describe('loadMigrations', () => {
+  it('calcule la même empreinte en LF et en CRLF (extraction Git sous Windows)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'migrations-'));
+    try {
+      await writeFile(join(dir, '0001_a.sql'), 'CREATE TABLE a (id int);\nSELECT 1;\n');
+      const [lf] = await loadMigrations(dir);
+      await writeFile(join(dir, '0001_a.sql'), 'CREATE TABLE a (id int);\r\nSELECT 1;\r\n');
+      const [crlf] = await loadMigrations(dir);
+      expect(crlf!.checksum).toBe(lf!.checksum);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

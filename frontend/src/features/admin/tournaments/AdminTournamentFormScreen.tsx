@@ -3,9 +3,12 @@ import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../../components/ui/Button';
+import { DatePickerField } from '../../../components/ui/DatePickerField';
 import { TextField } from '../../../components/ui/TextField';
-import { spacing } from '../../../constants/theme';
+import { TimePickerField } from '../../../components/ui/TimePickerField';
+import { colors, radius, spacing } from '../../../constants/theme';
 import { ApiError } from '../../../lib/api-client';
+import { todayOf } from '../../../lib/date-time';
 import {
   defaultShares,
   defaultTournamentForm,
@@ -61,18 +64,31 @@ function AdminTournamentForm() {
 
   return (
     <AdminPage title="Créer un tournoi" backTo="/admin/tournaments">
-      <TextField
-        label="Date (JJ/MM/AAAA)"
-        value={values.date}
-        onChangeText={set('date')}
-        error={errors.date}
-      />
-      <TextField
-        label="Heure de début (HH:MM)"
-        value={values.startTime}
-        onChangeText={set('startTime')}
-        error={errors.startTime}
-      />
+      <View style={styles.field}>
+        <Text style={styles.label}>Date</Text>
+        <DatePickerField
+          label="Date"
+          value={values.date}
+          onChange={set('date')}
+          minDate={todayOf()}
+          invalid={Boolean(errors.date)}
+          style={[styles.picker, errors.date ? styles.pickerInvalid : null]}
+          textStyle={styles.pickerText}
+        />
+        {errors.date ? <Text style={adminStyles.error}>{errors.date}</Text> : null}
+      </View>
+      <View style={styles.field}>
+        <Text style={styles.label}>Heure de début</Text>
+        <TimePickerField
+          label="Heure de début"
+          value={values.startTime}
+          onChange={set('startTime')}
+          invalid={Boolean(errors.startTime)}
+          style={[styles.picker, errors.startTime ? styles.pickerInvalid : null]}
+          textStyle={styles.pickerText}
+        />
+        {errors.startTime ? <Text style={adminStyles.error}>{errors.startTime}</Text> : null}
+      </View>
       <TextField
         label="Durée (minutes)"
         keyboardType="number-pad"
@@ -148,6 +164,19 @@ function AdminTournamentForm() {
   );
 }
 
+/** Sélecteurs Date et Heure : même apparence que `TextField`. */
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: spacing.sm },
+  field: { marginBottom: spacing.md, gap: spacing.xs },
+  label: { fontSize: 14, fontWeight: '600', color: colors.text },
+  picker: {
+    minHeight: 52,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+  },
+  pickerInvalid: { borderColor: colors.danger },
+  pickerText: { fontSize: 16, color: colors.text },
 });

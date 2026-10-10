@@ -133,7 +133,7 @@ export const ADMIN_THRESHOLDS = {
   stalePendingPaymentMinutes: 30,
   /** Partie en attente de joueurs depuis longtemps. */
   staleWaitingGameHours: 24,
-  /** Partie en cours depuis longtemps (5 plis × 20 s : quelques minutes en temps normal). */
+  /** Partie en cours depuis longtemps (5 plis × 15 s : quelques minutes en temps normal). */
   longRunningGameMinutes: 60,
   /** Échéance de tour dépassée sans traitement (minuteur bloqué ?). */
   overdueTurnSeconds: 60,
