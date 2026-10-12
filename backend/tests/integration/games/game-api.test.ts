@@ -369,10 +369,14 @@ describe('Actions de jeu', () => {
     expect((await alice.api.get(`/api/games/${gameId}`)).body.game.version).toBe(3);
   });
 
-  it('une règle non tranchée reste refusée : fuite laissant un seul joueur → 501 R-30', async () => {
-    const { bob, gameId } = await startedGame();
-    const res = await bob.api.post(`/api/games/${gameId}/actions`, action('FLEE')).expect(501);
-    expect(res.body.details).toEqual({ ruleRef: 'R-30' });
+  it('partie à 2 (R-30, D-086) : se coucher termine la partie, l’adversaire gagne', async () => {
+    const { alice, bob, gameId } = await startedGame();
+    await bob.api.post(`/api/games/${gameId}/actions`, action('FLEE')).expect(200);
+    const seen = (await alice.api.get(`/api/games/${gameId}`).expect(200)).body.game;
+    expect(seen).toMatchObject({ status: 'finished', endReason: 'OPPONENT_FLED' });
+    expect(seen.result).toMatchObject({ winnerId: alice.userId, victoryType: 'SIMPLE' });
+    // Une nouvelle fuite (ou toute action) n'est plus acceptée.
+    await bob.api.post(`/api/games/${gameId}/actions`, action('FLEE')).expect(409);
   });
 
   it('idempotence : le même commandId renvoyé deux fois n’est appliqué qu’une fois', async () => {

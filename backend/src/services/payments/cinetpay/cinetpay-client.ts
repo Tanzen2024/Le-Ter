@@ -1,4 +1,5 @@
 import type { Logger } from '../../../utils/logger';
+import { MobileMoneyProviderError } from '../../wallet/mobile-money.gateway';
 
 /**
  * Client HTTP de la NOUVELLE API CinetPay v1 (D-050). Contrats relevés dans le code source des
@@ -39,7 +40,7 @@ export type CinetPayErrorKind =
   | 'malformed_response';
 
 /** Erreur du fournisseur : jamais de secret dans le message (seulement codes et statuts). */
-export class CinetPayError extends Error {
+export class CinetPayError extends MobileMoneyProviderError {
   constructor(
     readonly kind: CinetPayErrorKind,
     message: string,
@@ -75,16 +76,38 @@ export interface CinetPayPaymentRequest {
   failedUrl: string;
   notifyUrl: string;
   channel: 'PUSH' | 'OTP' | 'QRCODE';
+  /**
+   * Paiement DIRECT (sans redirection, SDK officiel) : `direct_pay: true`, `payment_method`,
+   * `client_phone_number`. Jamais d'`otp_code` (collecte non autorisée). Le numéro n'est
+   * jamais journalisé (le corps des requêtes ne l'est pas).
+   */
+  direct?: { paymentMethod: string; phoneNumber: string };
+  /**
+   * Numéro du payeur (`client_phone_number`, format `+237…`) pour TOUT paiement (D-088), page
+   * hébergée comprise. En paiement direct, `direct.phoneNumber` (le même numéro) prévaut.
+   */
+  clientPhoneNumber?: string;
+  /**
+   * Page hébergée : opérateur présélectionné (`payment_method` seul, sans `direct_pay`). Absent :
+   * toutes les méthodes du pays sont proposées (SDK officiels). Ignoré en paiement direct.
+   */
+  pagePaymentMethod?: string;
 }
 
 export interface CinetPayPaymentCreated {
   transactionId: string;
   merchantTransactionId: string;
-  paymentUrl: string;
+  /** Page de paiement : toujours présente hors paiement direct, ou si une redirection est exigée. */
+  paymentUrl?: string;
   /** Secret de notification : à hacher immédiatement, jamais stocké ni journalisé en clair. */
   notifyToken: string;
-  /** `details.status` (INITIATED…), si présent. */
+  /** `details.status` (INITIATED…), si présent. Jamais une preuve de paiement. */
   initialStatus?: string;
+  /**
+   * `details.must_be_redirected` : vrai si le joueur doit ouvrir `paymentUrl` (paiement
+   * classique, ou paiement direct que CinetPay n'a pas pu lancer sur le téléphone).
+   */
+  mustBeRedirected: boolean;
 }
 
 export interface CinetPayPaymentStatus {
@@ -100,6 +123,90 @@ export interface CinetPayPaymentStatus {
   amount?: number;
   currency?: string;
 }
+
+/** Corps de POST /v1/transfer (noms de champs du SDK officiel, `serializeTransferRequest`). */
+export interface CinetPayTransferRequest {
+  merchantTransactionId: string;
+  /** Numéro du bénéficiaire, format international (`+237…`). Jamais journalisé. */
+  phoneNumber: string;
+  amount: number;
+  currency: string;
+  /** Opérateur (`OM_CM`, `MTN_CM`…). */
+  paymentMethod: string;
+  reason: string;
+  notifyUrl: string;
+}
+
+/** Réponse d'un transfert créé : statut INITIAL (PENDING, SUCCESS…), jamais une preuve. */
+export interface CinetPayTransferCreated {
+  code: number;
+  status: string;
+  transactionId: string;
+  merchantTransactionId: string;
+  /** Secret de notification : à hacher immédiatement, jamais stocké ni journalisé en clair. */
+  notifyToken?: string;
+  feeAmount?: number;
+}
+
+/** GET /v1/transfer/{id} : statut réel d'un transfert, ou absence du transfert chez CinetPay. */
+export type CinetPayTransferLookup =
+  | {
+      found: true;
+      code: number;
+      status: string;
+      transactionId: string;
+      merchantTransactionId: string;
+      amount?: number;
+      feeAmount?: number;
+      currency?: string;
+    }
+  | { found: false };
+
+/** GET /v1/balances : solde disponible pour les transferts, tel que renvoyé (non interprété). */
+export interface CinetPayBalance {
+  code: number;
+  status: string;
+  availableBalance: string;
+  currency?: string;
+}
+
+/** Codes API d'une demande de transfert REFUSÉE (rien n'a été créé chez CinetPay). */
+export const CINETPAY_TRANSFER_REJECTION_CODES: ReadonlySet<number> = new Set([
+  1002, // INVALID_TOKEN
+  1004, // INVALID_PARAMS
+  1005, // INVALID_CREDENTIALS
+  2005, // INSUFFICIENT_BALANCE (solde marchand)
+  2006, // USER_NOT_FOUND
+  2007, // USER_IS_BLOCKED
+  2010, // FAILED
+  2011, // NOT_ALLOWED (IP non autorisée)
+]);
+/**
+ * Échec survenu AVANT l'envoi de `POST /v1/transfer` (authentification refusée ou
+ * injoignable) : aucune demande de transfert n'a quitté le serveur. Fait local certain, à la
+ * différence d'un refus annoncé par CinetPay.
+ */
+export class CinetPayTransferNotSentError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Demande de transfert non envoyée à CinetPay");
+    this.name = 'CinetPayTransferNotSentError';
+  }
+}
+
+/**
+ * Création de paiement JAMAIS envoyée (authentification refusée, CinetPay injoignable avant
+ * l'envoi) : aucune demande n'a quitté le serveur, le paiement n'existe pas chez CinetPay.
+ */
+export class CinetPayPaymentNotSentError extends MobileMoneyProviderError {
+  constructor(override readonly cause: unknown) {
+    super('Demande de paiement non envoyée à CinetPay');
+    this.name = 'CinetPayPaymentNotSentError';
+  }
+}
+
+/** Référence marchande déjà utilisée : le transfert existe, il faut le relire. */
+export const CINETPAY_TRANSACTION_EXIST = 1200;
+const API_CODE_NOT_FOUND = 404;
 
 type Json = Record<string, unknown>;
 
@@ -161,19 +268,37 @@ export class CinetPayClient {
       failed_url: request.failedUrl,
       notify_url: request.notifyUrl,
       channel: request.channel,
+      ...((request.direct?.phoneNumber ?? request.clientPhoneNumber) && {
+        client_phone_number: request.direct?.phoneNumber ?? request.clientPhoneNumber,
+      }),
+      ...(request.direct
+        ? { payment_method: request.direct.paymentMethod, direct_pay: true }
+        : request.pagePaymentMethod && { payment_method: request.pagePaymentMethod }),
     };
-    const data = await this.withToken((token) =>
-      this.request('POST', '/v1/payment', { body, token }),
-    );
+    // Vrai dès que POST /v1/payment est émis : au-delà, l'issue n'est plus connue localement.
+    let sent = false;
+    let data: Json;
+    try {
+      data = await this.withToken((token) => {
+        sent = true;
+        return this.request('POST', '/v1/payment', { body, token });
+      });
+    } catch (err) {
+      if (!sent) throw new CinetPayPaymentNotSentError(err);
+      throw err;
+    }
     if (data.code !== API_CODE_OK) {
       throw apiError('POST /v1/payment', data);
     }
     const details = isObject(data.details) ? data.details : undefined;
+    // Paiement classique : redirection toujours. Direct : seulement si CinetPay l'exige.
+    const mustBeRedirected = !request.direct || details?.must_be_redirected === true;
+    const paymentUrl = nonEmptyString(data.payment_url) ? data.payment_url : undefined;
     if (
       !nonEmptyString(data.transaction_id) ||
       !nonEmptyString(data.notify_token) ||
-      !nonEmptyString(data.payment_url) ||
-      !isHttpsUrl(data.payment_url) ||
+      (paymentUrl !== undefined && !isHttpsUrl(paymentUrl)) ||
+      (mustBeRedirected && paymentUrl === undefined) ||
       data.merchant_transaction_id !== request.merchantTransactionId
     ) {
       throw new CinetPayError('malformed_response', 'Réponse CinetPay invalide (POST /v1/payment)');
@@ -181,9 +306,10 @@ export class CinetPayClient {
     return {
       transactionId: data.transaction_id,
       merchantTransactionId: data.merchant_transaction_id,
-      paymentUrl: data.payment_url,
+      ...(paymentUrl && { paymentUrl }),
       notifyToken: data.notify_token,
       ...(details && nonEmptyString(details.status) && { initialStatus: details.status }),
+      mustBeRedirected,
     };
   }
 
@@ -214,6 +340,123 @@ export class CinetPayClient {
       merchantTransactionId: data.merchant_transaction_id,
       ...(amount !== undefined && { amount }),
       ...(nonEmptyString(data.currency) && { currency: data.currency }),
+    };
+  }
+
+  /**
+   * POST /v1/transfer : transfert SORTANT vers un numéro Mobile Money (API de transfert, pas
+   * la collecte). La réponse porte le statut initial du transfert (PENDING le plus souvent,
+   * `code` 2002) : ce n'est jamais une preuve de réussite.
+   *
+   * Erreurs : `CinetPayError` (refus avec `apiCode`, ou incertitude : délai, réseau, réponse
+   * illisible). Le numéro n'apparaît dans aucun journal ni message d'erreur.
+   */
+  async createTransfer(request: CinetPayTransferRequest): Promise<CinetPayTransferCreated> {
+    const body = {
+      currency: request.currency,
+      merchant_transaction_id: request.merchantTransactionId,
+      phone_number: request.phoneNumber,
+      amount: request.amount,
+      payment_method: request.paymentMethod,
+      reason: request.reason,
+      notify_url: request.notifyUrl,
+    };
+    // Vrai dès que POST /v1/transfer est émis : au-delà, l'issue n'est plus connue localement.
+    let sent = false;
+    let data: Json;
+    try {
+      data = await this.withToken((token) => {
+        sent = true;
+        return this.request('POST', '/v1/transfer', { body, token });
+      });
+    } catch (err) {
+      if (!sent) throw new CinetPayTransferNotSentError(err);
+      throw err;
+    }
+    if (typeof data.code !== 'number' || !nonEmptyString(data.status)) {
+      throw new CinetPayError('malformed_response', 'Réponse CinetPay invalide (POST /v1/transfer)');
+    }
+    if (!nonEmptyString(data.transaction_id)) {
+      // Ex. { code: 1200, status: 'TRANSACTION_EXIST' } : aucun transfert décrit.
+      throw apiError('POST /v1/transfer', data);
+    }
+    if (data.merchant_transaction_id !== request.merchantTransactionId) {
+      throw new CinetPayError('malformed_response', 'Réponse CinetPay invalide (POST /v1/transfer)');
+    }
+    const feeAmount = parseAmount(data.fee_amount);
+    return {
+      code: data.code,
+      status: data.status,
+      transactionId: data.transaction_id,
+      merchantTransactionId: data.merchant_transaction_id,
+      ...(nonEmptyString(data.notify_token) && { notifyToken: data.notify_token }),
+      ...(feeAmount !== undefined && { feeAmount }),
+    };
+  }
+
+  /**
+   * GET /v1/transfer/{identifier} : statut réel d'un transfert, de serveur à serveur.
+   * `identifier` : `transaction_id` CinetPay OU notre `merchant_transaction_id` (SDK), ce qui
+   * permet de relire un transfert dont la réponse de création a été perdue. Un transfert
+   * inconnu de CinetPay renvoie `{ found: false }`.
+   */
+  async getTransferStatus(identifier: string): Promise<CinetPayTransferLookup> {
+    const path = `/v1/transfer/${encodeURIComponent(identifier)}`;
+    let data: Json;
+    try {
+      data = await this.withToken((token) => this.request('GET', path, { token }));
+    } catch (err) {
+      if (err instanceof CinetPayError && isNotFound(err.details)) return { found: false };
+      throw err;
+    }
+    if (isNotFound({ apiCode: data.code, apiStatus: data.status })) return { found: false };
+    if (
+      typeof data.code !== 'number' ||
+      !nonEmptyString(data.status) ||
+      !nonEmptyString(data.transaction_id) ||
+      !nonEmptyString(data.merchant_transaction_id)
+    ) {
+      if (typeof data.code === 'number' && nonEmptyString(data.status)) {
+        throw apiError('GET /v1/transfer/{id}', data);
+      }
+      throw new CinetPayError('malformed_response', 'Réponse CinetPay invalide (GET /v1/transfer)');
+    }
+    const amount = parseAmount(data.amount);
+    const feeAmount = parseAmount(data.fee_amount);
+    return {
+      found: true,
+      code: data.code,
+      status: data.status,
+      transactionId: data.transaction_id,
+      merchantTransactionId: data.merchant_transaction_id,
+      ...(amount !== undefined && { amount }),
+      ...(feeAmount !== undefined && { feeAmount }),
+      ...(nonEmptyString(data.currency) && { currency: data.currency }),
+    };
+  }
+
+  /**
+   * GET /v1/balances (Bearer) : solde du compte marchand DISPONIBLE pour les transferts (SDK
+   * officiel `cinetpay-js`, `src/api/balance.ts` et `src/types/balance.ts` :
+   * `{ code, status, available_balance (chaîne), currency }`). Lecture seule : n'initie aucun
+   * mouvement. Le montant est renvoyé tel quel (chaîne) ; son interprétation revient à
+   * l'appelant (D-078), qui refuse tout montant non entier ou d'une autre devise.
+   */
+  async getBalance(): Promise<CinetPayBalance> {
+    const data = await this.withToken((token) => this.request('GET', '/v1/balances', { token }));
+    const raw = data.available_balance;
+    // Le code de succès n'est pas documenté par le SDK : seule la présence des champs compte.
+    if (typeof raw !== 'string' && typeof raw !== 'number') {
+      if (typeof data.code === 'number' || typeof data.status === 'string') {
+        throw apiError('GET /v1/balances', data);
+      }
+      throw new CinetPayError('malformed_response', 'Réponse CinetPay invalide (GET /v1/balances)');
+    }
+    return {
+      code: typeof data.code === 'number' ? data.code : 0,
+      status: typeof data.status === 'string' ? data.status : '',
+      availableBalance: String(raw),
+      ...(typeof data.currency === 'string' && { currency: data.currency }),
     };
   }
 
@@ -337,6 +580,11 @@ function apiError(operation: string, data: Json): CinetPayError {
     ...(typeof data.code === 'number' && { apiCode: data.code }),
     ...(typeof data.status === 'string' && { apiStatus: data.status }),
   });
+}
+
+/** NOT_FOUND (code 404) : la ressource n'existe pas chez CinetPay. */
+function isNotFound(details: { apiCode?: unknown; apiStatus?: unknown }): boolean {
+  return details.apiCode === API_CODE_NOT_FOUND || details.apiStatus === 'NOT_FOUND';
 }
 
 function isHttpsUrl(value: string): boolean {

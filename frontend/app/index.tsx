@@ -2,15 +2,18 @@ import { Redirect } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 import { tablePalette } from '../src/components/table/TableDecor';
+import { useReturnToActiveGame } from '../src/features/games/use-return-to-active-game';
 import { HomeScreen } from '../src/features/lobby/HomeScreen';
 import { useAuthStore } from '../src/stores/auth-store';
 
 /**
  * Accueil connecté (D-028, paysage) : choix du mode Privé ou Tournois, HUD, Profil et
- * Réglages. Sans session, retour à la connexion (R-10, aucun mode invité).
+ * Réglages. Sans session, retour à la connexion (R-10, aucun mode invité). Un joueur qui a
+ * une partie active est renvoyé automatiquement dans son aire de jeu.
  */
 export default function Home() {
   const status = useAuthStore((s) => s.status);
+  useReturnToActiveGame(status === 'signedIn');
 
   if (status === 'loading') {
     return (

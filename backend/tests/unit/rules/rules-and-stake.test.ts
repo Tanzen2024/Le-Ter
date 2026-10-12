@@ -2,7 +2,7 @@ import { cardFromId } from '../../../src/domain/cards/card';
 import { toPlayerId } from '../../../src/domain/game/game-id';
 import {
   declareBeforeFirstCard,
-  fleeBeforeFirstCardOfFirstTrick,
+  fleeBeforeSecondCard,
   mustFollowLeadColorWhenPossible,
   sameSuit,
 } from '../../../src/domain/rules/official-rules';
@@ -16,12 +16,18 @@ const [a, b, c] = ['a', 'b', 'c'].map(toPlayerId) as [
 ];
 
 describe('Règles officielles (D-035)', () => {
-  it('fuir et déclarer : seulement au tour 1, avant sa première carte', () => {
-    for (const rule of [fleeBeforeFirstCardOfFirstTrick, declareBeforeFirstCard]) {
-      expect(rule({ cardsPlayed: 0, trickNumber: 1 })).toBe(true);
-      expect(rule({ cardsPlayed: 1, trickNumber: 1 })).toBe(false);
-      expect(rule({ cardsPlayed: 1, trickNumber: 2 })).toBe(false);
-    }
+  it('déclarer : seulement au tour 1, avant sa première carte', () => {
+    expect(declareBeforeFirstCard({ cardsPlayed: 0, trickNumber: 1 })).toBe(true);
+    expect(declareBeforeFirstCard({ cardsPlayed: 1, trickNumber: 1 })).toBe(false);
+    expect(declareBeforeFirstCard({ cardsPlayed: 1, trickNumber: 2 })).toBe(false);
+  });
+
+  it('se coucher (D-089) : tant que le joueur n’a pas joué sa deuxième carte (tours 1 et 2)', () => {
+    expect(fleeBeforeSecondCard({ cardsPlayed: 0, trickNumber: 1 })).toBe(true);
+    expect(fleeBeforeSecondCard({ cardsPlayed: 1, trickNumber: 1 })).toBe(true);
+    expect(fleeBeforeSecondCard({ cardsPlayed: 1, trickNumber: 2 })).toBe(true);
+    expect(fleeBeforeSecondCard({ cardsPlayed: 2, trickNumber: 2 })).toBe(false);
+    expect(fleeBeforeSecondCard({ cardsPlayed: 2, trickNumber: 3 })).toBe(false);
   });
 
   it('« même couleur » = même famille', () => {

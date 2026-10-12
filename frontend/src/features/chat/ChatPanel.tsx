@@ -34,6 +34,8 @@ export interface ChatPanelProps {
   onLoadOlder: () => void;
   /** Faux : partie terminée, historique en lecture seule (décision du serveur). */
   canSend: boolean;
+  /** Chat restreint par l'administration (D-079) : lecture seule pour ce joueur. */
+  restricted?: boolean;
   /** Limite du serveur ; absente tant que l'historique n'est pas chargé. */
   maxLength?: number;
   connection: RealtimeStatus;
@@ -116,7 +118,12 @@ export function ChatPanel(props: ChatPanelProps) {
           gap: m.gap * 0.6,
           opacity: appear,
           transform: [
-            { translateX: appear.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
+            {
+              translateX: appear.interpolate({
+                inputRange: [0, 1],
+                outputRange: [16, 0],
+              }),
+            },
           ],
         },
       ]}
@@ -167,7 +174,10 @@ export function ChatPanel(props: ChatPanelProps) {
             ListFooterComponent={
               props.loadingOlder ? <ActivityIndicator color={palette.gold} /> : null
             }
-            contentContainerStyle={{ gap: m.gap * 0.5, paddingVertical: m.gap * 0.3 }}
+            contentContainerStyle={{
+              gap: m.gap * 0.5,
+              paddingVertical: m.gap * 0.3,
+            }}
             renderItem={({ item }) => (
               <Bubble message={item} mine={item.senderId === myId} fontSize={m.smallSize} />
             )}
@@ -198,7 +208,10 @@ export function ChatPanel(props: ChatPanelProps) {
             onSubmitEditing={submit}
             style={[
               styles.input,
-              { height: Math.max(40, m.controlHeight * 0.8), fontSize: m.smallSize },
+              {
+                height: Math.max(40, m.controlHeight * 0.8),
+                fontSize: m.smallSize,
+              },
             ]}
           />
           <Pressable
@@ -210,7 +223,10 @@ export function ChatPanel(props: ChatPanelProps) {
             hitSlop={6}
             style={({ pressed }) => [
               styles.send,
-              { width: Math.max(40, m.controlHeight * 0.8), height: Math.max(40, m.controlHeight * 0.8) },
+              {
+                width: Math.max(40, m.controlHeight * 0.8),
+                height: Math.max(40, m.controlHeight * 0.8),
+              },
               !canSubmit && styles.sendDisabled,
               pressed && styles.pressed,
             ]}
@@ -225,7 +241,11 @@ export function ChatPanel(props: ChatPanelProps) {
           </Pressable>
         </View>
       ) : (
-        <Text style={[styles.closed, small]}>Partie terminée : le chat est en lecture seule.</Text>
+        <Text style={[styles.closed, small]}>
+          {props.restricted
+            ? 'Votre accès au chat est restreint : vous pouvez lire les messages, mais pas en envoyer.'
+            : 'Partie terminée : le chat est en lecture seule.'}
+        </Text>
       )}
     </Animated.View>
   );
@@ -275,7 +295,11 @@ const styles = StyleSheet.create({
   title: { color: '#FFFFFF', flex: 1 },
   connection: { color: palette.gold, opacity: 0.85 },
   close: { padding: 4 },
-  closeText: { color: 'rgba(255, 255, 255, 0.75)', fontSize: 16, fontWeight: '700' },
+  closeText: {
+    color: 'rgba(255, 255, 255, 0.75)',
+    fontSize: 16,
+    fontWeight: '700',
+  },
   body: { flex: 1, minHeight: 0, justifyContent: 'center' },
   center: { alignSelf: 'center' },
   empty: { color: 'rgba(255, 255, 255, 0.6)', textAlign: 'center' },
@@ -304,7 +328,11 @@ const styles = StyleSheet.create({
   text: { color: '#FFFFFF' },
   time: { color: 'rgba(255, 255, 255, 0.55)', alignSelf: 'flex-end' },
   error: { color: palette.error, fontWeight: '600', textAlign: 'center' },
-  closed: { color: 'rgba(255, 255, 255, 0.6)', textAlign: 'center', fontStyle: 'italic' },
+  closed: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
   composer: { flexDirection: 'row', alignItems: 'center' },
   input: {
     flex: 1,

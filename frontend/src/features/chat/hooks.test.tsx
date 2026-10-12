@@ -12,7 +12,9 @@ import { useGameChat, useSendChatMessage } from './hooks';
 jest.mock('../../services/chat-api', () => ({
   chatApi: { list: jest.fn(), send: jest.fn() },
 }));
-jest.mock('expo-crypto', () => ({ randomUUID: () => jest.requireActual('crypto').randomUUID() }));
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => jest.requireActual('crypto').randomUUID(),
+}));
 
 const list = chatApi.list as jest.MockedFunction<typeof chatApi.list>;
 const send = chatApi.send as jest.MockedFunction<typeof chatApi.send>;
@@ -74,12 +76,18 @@ describe('useGameChat', () => {
   it('charge l’historique, puis ajoute les messages temps réel sans doublon', async () => {
     list.mockResolvedValueOnce(page([message('a', 1)]));
     const { client, handlers } = fakeRealtime();
-    const { result } = await renderHook(() => useGameChat(GAME, client), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useGameChat(GAME, client), {
+      wrapper: wrapper(),
+    });
     await waitFor(() => expect(result.current.history.data?.messages).toHaveLength(1));
     expect(list).toHaveBeenCalledWith('jeton', GAME);
     expect(client.subscribeChat).toHaveBeenCalledWith(GAME, expect.any(Object));
 
-    const live = { type: 'chat:message', gameId: GAME, message: message('b', 2) };
+    const live = {
+      type: 'chat:message',
+      gameId: GAME,
+      message: message('b', 2),
+    };
     await act(async () => {
       handlers.get(GAME)!.onEvent(live);
       handlers.get(GAME)!.onEvent(live); // reçu deux fois (ex. reconnexion)
@@ -92,7 +100,9 @@ describe('useGameChat', () => {
   it('ignore un événement appartenant à une autre partie', async () => {
     list.mockResolvedValueOnce(page([]));
     const { client, handlers } = fakeRealtime();
-    const { result } = await renderHook(() => useGameChat(GAME, client), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useGameChat(GAME, client), {
+      wrapper: wrapper(),
+    });
     await waitFor(() => expect(result.current.history.data).toBeDefined());
     await act(async () => {
       handlers.get(GAME)!.onEvent({
@@ -107,7 +117,9 @@ describe('useGameChat', () => {
   it('après reconnexion : rattrape les messages manqués avec `after`, sans doublon', async () => {
     list.mockResolvedValueOnce(page([message('a', 1)]));
     const { client, handlers } = fakeRealtime();
-    const { result } = await renderHook(() => useGameChat(GAME, client), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useGameChat(GAME, client), {
+      wrapper: wrapper(),
+    });
     await waitFor(() => expect(result.current.history.data?.messages).toHaveLength(1));
 
     list.mockResolvedValueOnce(page([message('a', 1), message('b', 2), message('c', 3)]));
@@ -117,13 +129,18 @@ describe('useGameChat', () => {
     await waitFor(() =>
       expect(result.current.history.data?.messages.map((m) => m.id)).toEqual(['a', 'b', 'c']),
     );
-    expect(list).toHaveBeenLastCalledWith('jeton', GAME, { after: 'a', limit: 50 });
+    expect(list).toHaveBeenLastCalledWith('jeton', GAME, {
+      after: 'a',
+      limit: 50,
+    });
   });
 
   it('charge les messages plus anciens', async () => {
     list.mockResolvedValueOnce(page([message('c', 3)], { hasMore: true }));
     const { client } = fakeRealtime();
-    const { result } = await renderHook(() => useGameChat(GAME, client), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useGameChat(GAME, client), {
+      wrapper: wrapper(),
+    });
     await waitFor(() => expect(result.current.history.data).toBeDefined());
     list.mockResolvedValueOnce(page([message('a', 1), message('b', 2)]));
     await act(() => result.current.loadOlder());
@@ -135,7 +152,9 @@ describe('useGameChat', () => {
 
 describe('useSendChatMessage', () => {
   it('même texte renvoyé après un échec : même clé d’envoi (aucun doublon côté serveur)', async () => {
-    const { result } = await renderHook(() => useSendChatMessage(GAME), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useSendChatMessage(GAME), {
+      wrapper: wrapper(),
+    });
     send.mockRejectedValueOnce(new Error('réseau'));
     await act(async () => result.current.send('salut'));
     await waitFor(() => expect(result.current.error).toBeTruthy());
@@ -153,7 +172,9 @@ describe('useSendChatMessage', () => {
   it('double appui pendant l’envoi : une seule requête', async () => {
     let resolve: (v: { message: ChatMessage }) => void = () => undefined;
     send.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
-    const { result } = await renderHook(() => useSendChatMessage(GAME), { wrapper: wrapper() });
+    const { result } = await renderHook(() => useSendChatMessage(GAME), {
+      wrapper: wrapper(),
+    });
     await act(async () => result.current.send('vite'));
     await waitFor(() => expect(result.current.isPending).toBe(true));
     await act(async () => result.current.send('vite'));

@@ -2278,3 +2278,618 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   au plus tard au début).
 - **Tests** : `backend/tests/integration/tournaments/tournament-service.test.ts`,
   `backend/tests/integration/tournaments/tournament-api.test.ts`.
+
+## D-073 — Parties ordinaires : mise obligatoire couverte par 2 × la mise
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet.
+- Une partie ordinaire n'est créée ou rejointe que si sa mise est un entier > 0 et si le solde
+  DISPONIBLE du joueur (compte de jeu, solde − réservations) vaut au moins 2 × la mise
+  (perte maximale : la Kora, D-074). Mise et solde sont relus côté serveur.
+- Arrivée à une table (`POST /api/sessions/:id/join`) : vérifiée avant d'occuper un siège,
+  avec la mise de la dernière partie de la table. « Poursuivre » : la partie suivante reprend
+  la mise ; les joueurs qui ne la couvrent plus quittent la table par le chemin normal.
+- Tables de tournoi exclues (jetons de tournoi, D-054, D-063).
+- **Code** : `backend/src/services/game/stake-policies.ts`, `backend/src/domain/rules/stake.ts`.
+
+## D-074 — Parties ordinaires : séquestre, règlement et commission par tranche de mise
+
+- **Date** : 2026-10-10 · **Statut** : demandé par le propriétaire du projet (Kora à 2 × la
+  mise, bornes du barème rendues contiguës et barème modifiable : choix confirmés par lui) ·
+  **Tranche** : R-37 ; R-02 en partie · **Révisée par D-080** : plus de séquestre visible
+  (engagement sans changement de solde) et taux NON doublé en Kora.
+- **Séquestre** : au démarrage, 2 × M réservés sur le compte de jeu de chaque joueur
+  (`wallet_reservations`) ; le taux de la tranche de M est figé dans
+  `game_settlements.commission_bps`.
+- **Règlement** (dans la transaction qui termine la partie, une seule fois) : la commission
+  est prélevée sur les mises des PERDANTS ; le gagnant récupère sa mise.
+  - Victoire simple : chaque perdant perd M ; brut = M × (N − 1) ; taux = C.
+  - Victoire par Kora (le gagnant remporte le 5e tour avec un 3) : chaque perdant perd 2M ;
+    brut = 2M × (N − 1) ; taux = 2C.
+  - Commission = floor(brut × taux) ; le gagnant reçoit brut − commission (`game_winnings`) ;
+    la commission va au compte de la plateforme (`platform_ledger`, `GAME_COMMISSION`, avec
+    le taux appliqué dans `fee_bps`).
+  - Sans gagnant : tout est libéré, aucune commission. Fuyards : ni débités ni comptés dans
+    N (le coût de la fuite, R-05, reste ouvert).
+  - Exemple : 3 joueurs, M = 50, C = 2 % → simple : commission 2, gagnant +98 ; Kora :
+    commission 4 % × 200 = 8, gagnant +192.
+- **Barème initial** (`DEFAULT_GAME_COMMISSION_SCHEDULE`) : 1-5 : 0 % · 6-100 : 1 % ·
+  101-200 : 2 % · 201-300 : 3 % · 301-400 : 4 % · 401-500 : 6 % · 501-700 : 7 % ·
+  701-999 : 8 % · 1 000 et plus : 10 %. Le tableau d'origine omettait 100 et chevauchait
+  351-400 et 1 000 ; le propriétaire a validé ces bornes.
+- **Administration** : `GET/PATCH /api/admin/settings/game-commission` (`{ tiers }`), audité
+  (`GAME_COMMISSION_UPDATED`). Tranches contiguës depuis 1, la dernière sans plafond, taux de
+  0 à 50 % (doublé par la Kora, jamais plus de 100 %). Un changement vaut pour les parties
+  démarrées ensuite ; aucun recalcul rétroactif.
+- **Migrations** : 0029 (séquestre, règlement), 0030 (barème, `applied_commission_bps`,
+  brut sur les seuls perdants).
+- **Tests** : `backend/tests/unit/rules/game-settlement.test.ts`,
+  `backend/tests/integration/games/game-settlement.test.ts`.
+
+## D-075 — Retraits Mobile Money par l'API de transfert CinetPay v1
+
+- **Date** : 2026-10-10 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-040 (compte de jeu), D-050 (CinetPay) · **Tranche pour le RETRAIT** : R-13 (1 jeton =
+  1 FCFA), R-16 (minimum 1 000 jetons) · **Ne tranche pas** : R-34 (téléphone vérifié, non
+  exigé : aucune vérification SMS n'existe), T-07 (licence), frais de retrait Le Ter (aucun).
+- **Règles** :
+  - Montant : entier de jetons, **≥ 1 000**, ≤ 1 500 000 (plafond d'un transfert CinetPay
+    d'après le SDK officiel). Toute autre valeur (0, négatif, décimal, chaîne, absente, non
+    finie) est refusée, jamais convertie. Vérifié dans l'application ET par le serveur.
+  - Destinataire : **numéro d'inscription** du joueur (D-040), jamais un numéro saisi. Le
+    joueur choisit seulement l'opérateur : Orange Money (`OM_CM`) ou MTN Mobile Money
+    (`MTN_CM`), seuls opérateurs CinetPay en XAF. Numéro hors +237 : retrait refusé.
+  - Quota configurable (`withdrawal_limit_count`, `withdrawal_limit_period` en minutes,
+    `system_settings`) : `null` = ∞ (valeur par défaut des deux). n fini et t fini : au plus
+    n retraits dans toute fenêtre glissante de t ; n fini et t = ∞ : au plus n au total ;
+    n = ∞ : aucune limite. **Comptent** les retraits enregistrés non échoués (CREATED,
+    PROCESSING, SUCCEEDED) ; **ne comptent pas** les demandes refusées avant création ni les
+    retraits FAILED (jetons remboursés). Aucune annulation n'existe (un transfert envoyé ne
+    se rappelle pas).
+- **Décisions techniques** :
+  - API de **transfert** CinetPay v1, distincte de la collecte : `POST /v1/transfer`,
+    `GET /v1/transfer/{merchant_transaction_id}`, notification sur une URL dédiée
+    (`POST /api/withdrawals/cinetpay/notify`). Désactivée par défaut
+    (`CINETPAY_TRANSFERS_ENABLED=false`) : sans activation, refus 503 avant toute écriture.
+  - Création atomique (une transaction SQL) : verrou du portefeuille → quota compté sous ce
+    verrou → solde DISPONIBLE → transaction `withdrawal` `pending` + débit → ligne
+    `withdrawals` (CREATED). Deux demandes simultanées ne dépassent jamais le quota ni le solde.
+  - Cycle : CREATED → PROCESSING (accepté, référence CinetPay) → SUCCEEDED | FAILED, uniquement
+    sur un statut FINAL relu chez CinetPay (SUCCESS ; FAILED / INSUFFICIENT_BALANCE). Un refus
+    explicite à l'envoi (code API connu, rien créé) → FAILED. Un échec est remboursé une seule
+    fois par le règlement idempotent du compte de jeu (`settleWalletTransaction`).
+  - Issue incertaine (délai, réseau, réponse illisible) : le retrait reste ouvert, jamais
+    tranché ni renvoyé à l'aveugle. Relecture par la référence marchande. **Aucun renvoi
+    automatique par défaut** (`CINETPAY_TRANSFER_MAX_SUBMISSIONS=1`, audit du 2026-10-10) : la
+    fiabilité de `NOT_FOUND` et le refus d'une référence réutilisée (`TRANSACTION_EXIST`) ne
+    sont pas encore confirmés chez CinetPay. Une fois confirmés, jusqu'à 3 envois : seulement
+    si CinetPay répond « introuvable », après 10 min, toujours avec la MÊME référence marchande.
+  - Un envoi différé (reprise après arrêt, renvoi) relit le numéro d'inscription ; s'il ne
+    correspond plus au numéro masqué enregistré à la création, rien n'est envoyé
+    (`RECIPIENT_CHANGED`, rapprochement administratif).
+  - Réconciliation (`WithdrawalReconciler`) : retraits ouverts relus dans PostgreSQL au
+    démarrage puis périodiquement ; un retrait créé mais jamais envoyé (arrêt) est envoyé.
+  - Administration : `GET /api/admin/withdrawals` (filtres statut, période, référence),
+    détail audité, revérification auditée et idempotente ; `GET|PATCH
+    /api/admin/settings/withdrawal-limit` (audité). **Aucune** action ne déclare un retrait
+    réussi ou échoué.
+  - Migration **0031_withdrawals** (table `withdrawals`, clés de quota, actions d'audit).
+  - Détail : `docs/withdrawals.md`.
+
+## D-076 — Retraits : récupération sûre et rapprochement à double validation
+
+- **Date** : 2026-10-10 · **Statut** : proposée par l'audit des retraits, à valider par le
+  propriétaire du projet · **Complète** : D-075 · **Ne change pas** : montant minimum,
+  conversion, quota, destinataire.
+- **Règles de sécurité** :
+  - Aucun remboursement automatique d'un retrait dont l'issue est inconnue. Seul un statut
+    FINAL relu chez CinetPay (`FAILED`, `INSUFFICIENT_BALANCE`) rembourse automatiquement.
+  - Un refus annoncé à la création (`INVALID_PARAMS`, `INSUFFICIENT_BALANCE`…) n'est plus une
+    preuve : le retrait reste ouvert (`PROVIDER_REJECTED`), le transfert est relu.
+  - Seul fait local certain : un échec AVANT l'émission de `POST /v1/transfer`
+    (authentification refusée ou injoignable) → `not_sent` : l'envoi n'est pas compté et sera
+    retenté avec la même référence.
+  - Aucun renvoi automatique par défaut (`CINETPAY_TRANSFER_MAX_SUBMISSIONS=1`, D-075).
+  - Aucune voie ne déclare un retrait réussi sans statut `SUCCESS` relu chez CinetPay.
+- **Séparation** : `CINETPAY_TRANSFERS_ENABLED=false` interdit toute NOUVELLE demande et tout
+  envoi (même d'un retrait déjà créé), mais la relecture continue dès que les identifiants
+  CinetPay sont configurés : réconciliation, notifications, revérifications.
+- **Rapprochement administratif** (migration **0032**, `withdrawal_refund_requests`) :
+  1. Revérification (existante) et **escalade** vers CinetPay (ticket, note), auditées.
+  2. **Proposition** de remboursement : retrait ouvert depuis ≥ 24 h (création ou dernier envoi),
+     référence de la **confirmation écrite** de CinetPay, justification, relecture fraîche
+     « introuvable ». Un succès relu est appliqué (refus) ; un échec final relu est réglé
+     normalement (aucune demande).
+  3. **Approbation par un AUTRE administrateur** (contrainte SQL `decided_by <> proposed_by`),
+     nouvelle relecture « introuvable », puis remboursement unique dans la même transaction
+     que la décision et son audit (`failure_code = MANUAL_REFUND_CONFIRMED`). Rejet motivé.
+  - Rôles : seul le rôle `admin` existe (session d'administration bornée) ; la double
+    validation en tient lieu. Un rôle financier dédié serait une décision distincte.
+  - Textes libres (justification, notes) : refus de toute suite de chiffres ressemblant à un
+    numéro de téléphone.
+- **Détection** : un retrait remboursé que CinetPay annonce ensuite réussi (notification,
+  revérification) est marqué `PAID_AFTER_REFUND` et journalisé ; rien n'est débité
+  rétroactivement (rapprochement manuel).
+- **Tests sur PostgreSQL réel** : `backend/tests/integration/withdrawals/postgres-withdrawal-concurrency.test.ts`
+  (`TEST_DATABASE_URL` vers une base de test DÉDIÉE ; refus si hôte, port et nom sont ceux de
+  `DATABASE_URL`).
+
+## D-077 — Retraits : trois états (indisponible, sandbox, production)
+
+- **Date** : 2026-10-11 · **Statut** : proposée par l'audit de disponibilité des retraits, à
+  valider par le propriétaire du projet · **Complète** : D-075, D-076 · **Ne change pas** :
+  montant minimum, quota, destinataire, protections financières (réservation, idempotence,
+  aucun remboursement sur réponse ambiguë, double validation, `PAID_AFTER_REFUND`).
+- **Constat** : l'application affichait en permanence « Les retraits Mobile Money seront
+  bientôt disponibles » parce que `GET /api/wallet` renvoyait `withdrawalAvailable: false`,
+  c'est-à-dire `CinetPayTransferGateway.canSubmit = false` faute de
+  `CINETPAY_TRANSFERS_ENABLED=true`. Le message ne distinguait ni le motif ni un mode test.
+  `CinetPayGateway.disbursementAvailable` (collecte) n'intervient pas dans les retraits.
+- **Décision** : l'état des NOUVEAUX retraits est décidé au démarrage par
+  `resolveWithdrawalAvailability` (fonction pure, `services/withdrawals/withdrawal-availability.ts`) :
+  - `unavailable` + motif stable : `PROVIDER_NOT_CONFIGURED`, `TRANSFERS_DISABLED`,
+    `LIVE_NOT_CONFIRMED`, `LIVE_OUTSIDE_PRODUCTION`, `SANDBOX_IN_PRODUCTION`,
+    `ENVIRONMENT_MISMATCH`, `NOTIFY_URL_NOT_PUBLIC`, `SCHEMA_OUTDATED` ;
+  - `sandbox` : clé `sk_test_` + `CINETPAY_TRANSFERS_ENABLED=true`, serveur hors production ;
+  - `live` : clé `sk_live_` + `CINETPAY_TRANSFERS_ENABLED=true` +
+    **`CINETPAY_TRANSFERS_LIVE_CONFIRMED=true`** (attestation de l'exploitant : transfert activé
+    et approvisionné chez CinetPay, notification testée, parcours validé en sandbox) +
+    `NODE_ENV=production` + URL de notification HTTPS publique.
+  - Les identifiants CinetPay seuls n'autorisent JAMAIS un transfert. Une clé sandbox sur un
+    serveur de production est refusée : des jetons réels partiraient vers un transfert simulé.
+  - Migrations des retraits (0031, 0032) non appliquées : indisponible (`SCHEMA_OUTDATED`) ;
+    toute migration en attente est journalisée au démarrage (lecture seule, rien n'est appliqué).
+- **Contrat** : `GET /api/wallet` ajoute `withdrawalMode` et `withdrawalUnavailableReason`
+  (`withdrawalAvailable` conservé) ; `GET /api/wallet/withdrawals` ajoute `policy.mode` et
+  `policy.unavailableReason` ; `GET /api/admin/system` ajoute `services.withdrawals`
+  (mode, motif, avertissements). Le joueur ne voit jamais les avertissements d'exploitation.
+- **Interface** : message permanent supprimé ; motif compréhensible quand indisponible ;
+  bandeau « Environnement de test » et « Retrait effectué (test) » en sandbox ; « Retrait
+  effectué » uniquement sur `SUCCEEDED` (statut final relu chez CinetPay et réglé).
+- **Limite** : un retrait ne mémorise pas l'environnement dans lequel il a été créé ; la
+  mention « test » de l'historique suit l'état actuel du serveur.
+
+## D-078 — Retraits des revenus de la plateforme vers MTN Mobile Money (CinetPay)
+
+- **Date** : 2026-10-11 · **Statut** : implémentée, **exécution désactivée** ; à valider par le
+  propriétaire du projet · **Complète** : D-060, D-074, D-075, D-077 · **Ne change pas** :
+  commissions, mises, gains, règlement des parties, retraits des joueurs.
+- **Décision** : flux distinct (`PlatformPayoutService`) : demande → approbation par un AUTRE
+  administrateur avec réservation sous verrou → mise en exécution → un seul envoi → statut
+  final relu chez CinetPay. Détails : [platform-payouts.md](platform-payouts.md).
+- **Comptabilité** : `platform_ledger` inchangé (recettes seulement) ; retraits tracés dans
+  `platform_payouts` et déduits au calcul, pour ne fausser aucune somme existante.
+- **Trésorerie** : seule une relecture `GET /v1/balances` (SDK officiel) VALIDE de moins de
+  15 minutes confirme un solde ; aucune saisie manuelle ; inconnu ≠ 0.
+- **Retirable** : min(revenu distribuable, trésorerie libre après obligations envers les
+  joueurs et retraits engagés), frais estimés compris ; barème des frais = configuration
+  contractuelle, absent = blocage.
+- **Sécurité** : trois verrous cumulés pour l'exécution (`PLATFORM_PAYOUTS_ENABLED`, D-077,
+  URL dédiée) ; `submission_attempts ≤ 1` en base ; données figées par déclencheur.
+- **Ouverts** : R-38 à R-41 (`docs/TODO.md`).
+
+## D-079 — Gestion des joueurs dans l'administration : compte, suspension, sessions, modération
+
+- **Contexte** : demande produit (octobre 2026). La section Administration → Joueurs devient un
+  module de gestion des comptes et de modération. Remplace la décision « Suspension des joueurs
+  désactivée en V1 » (`docs/admin/DECISIONS.md`). **Tranche R-14** (la modération du chat est
+  faite par l'administration ; une modération par les joueurs est hors périmètre) et **R-25
+  pour un joueur** (pas pour une partie ou une session bloquée par un admin, qui reste ouvert).
+- **Désactivation / activation** : mécanisme existant `users.status` (D-029). Désactiver
+  révoque les sessions dans la même transaction ; la connexion, le renouvellement et chaque
+  requête sont refusés. Réactiver ne restaure aucune session (nouvelle connexion normale).
+  Idempotent (`changed: false`, aucun audit). Aucune donnée n'est supprimée.
+- **Protections** : un administrateur ne peut ni se désactiver, ni se suspendre, ni révoquer
+  ses propres sessions (`403 SELF_ACTION_FORBIDDEN`) ; le dernier super administrateur
+  accessible (actif et non suspendu) ne peut pas perdre l'accès (`409 LAST_ADMIN`). Les comptes
+  admin puis le compte ciblé sont verrouillés (`FOR UPDATE`, ordre fixe) : deux
+  administrateurs qui se désactivent mutuellement ne laissent jamais la plateforme sans admin.
+- **Suspension** (décision du porteur : elle bloque TOUT l'accès) : temporaire (5 min à 365 j)
+  ou indéterminée, toujours levable, motif obligatoire, commentaire interne facultatif.
+  Sessions révoquées ; `AuthService` refuse la connexion (`403 ACCOUNT_SUSPENDED`, avec
+  `suspendedUntil`), le renouvellement et chaque requête HTTP ou WebSocket. Échéance évaluée à
+  l'heure du serveur à chaque contrôle : aucun minuteur, aucune écriture ; l'expiration ne
+  modifie jamais `users.status` (un compte désactivé le reste). Une seule suspension en cours.
+- **Partie en cours d'un joueur suspendu, désactivé ou déconnecté par un admin** (décision du
+  porteur) : traitée comme une déconnexion. Aucune règle nouvelle : le minuteur de 20 s joue
+  ses cartes (D-036), la partie se termine et se règle normalement, puis la manche
+  Poursuivre/Quitter le retire (départ automatique). Ni fuite, ni défaite, ni mouvement
+  financier ajouté. Inscriptions aux tournois, achats et retraits déjà lancés : inchangés.
+- **Révocation des sessions** : jetons de renouvellement révoqués (`revoked_reason =
+  'admin_revoked' | 'account_disabled' | 'account_suspended'`) ; les access tokens (JWT) sont
+  refusés dès la requête suivante car `requireAuth` et la passerelle WebSocket relisent la
+  session en base à chaque requête ou commande. Les jetons ne sont jamais journalisés.
+- **Restriction du chat** : par joueur, toutes ses parties, motif, durée déterminée ou
+  indéterminée, levable. Vérifiée dans `ChatService.sendMessage` (chemin unique HTTP et
+  WebSocket) puis dans l'insertion SQL ; `403 CHAT_RESTRICTED`. Le compte reste actif.
+- **Avertissement** (décision du porteur : transmis) : motif interne obligatoire ; message
+  visible facultatif écrit dans `notifications` (type `MODERATION_WARNING`, D-054) dans la même
+  transaction et affiché à l'accueil de l'application mobile. `delivered = true` signifie
+  « notification enregistrée », jamais « lue ». Sans message visible : enregistrement seul,
+  affiché « non transmis ». `Idempotency-Key` obligatoire.
+- **Notes internes** : jamais exposées au joueur ; auteur = administrateur authentifié ; pas de
+  modification, suppression LOGIQUE avec motif (triggers en base) ; `Idempotency-Key`.
+- **Journal de modération** : `admin_audit_log` (cible USER) reste la source unique ; 10
+  nouvelles actions. Le texte des notes n'est pas copié dans le journal.
+- **Données** : migration 0034 — `user_sanctions` (SUSPENSION, CHAT_RESTRICTION, WARNING dans
+  une table ; seule la levée est modifiable, aucune suppression) et `user_admin_notes`.
+- **Hors périmètre** : aucun crédit, débit, modification de solde, de transaction, de partie ni
+  de `platform_ledger`. Les connexions WebSocket déjà ouvertes d'un joueur révoqué restent
+  abonnées au chat de leurs parties jusqu'à l'expiration de l'access token (15 min) ; toute
+  commande est refusée.
+- **Code** : `backend/src/services/admin/player-moderation.service.ts`,
+  `backend/src/repositories/postgres-moderation.repository.ts`,
+  `backend/src/controllers/player-moderation.controller.ts`,
+  `administration/features/players/`, `frontend/src/features/lobby/ModerationNotice.tsx`.
+- **Tests** : `backend/tests/integration/admin/player-moderation.test.ts`,
+  `backend/tests/integration/chat/chat-api.test.ts`, `administration/tests/player-moderation.test.tsx`,
+  `frontend/src/features/lobby/HomeScreen.test.tsx`. Détails : `docs/admin/MODERATION.md`.
+
+## D-080 — Parties ordinaires : aucun mouvement pendant le jeu ; Kora sans doublement du taux
+
+- **Date** : 2026-10-11 · **Statut** : validée par le propriétaire du projet (choix confirmés
+  explicitement : « taux inchangé en Kora », « engagement invisible ») · **Révise** : D-074
+  (séquestre visible et taux doublé en Kora) · **Ne change pas** : barème par tranche, taux
+  figé au démarrage, commission sur les seules pertes, arrondi à l'entier inférieur, parties
+  sans gagnant, fuyards (R-05 ouvert), Double Kora (R-02 ouvert).
+- **Anomalies corrigées** :
+  1. *Solde « débité » au démarrage* : le séquestre de D-074 ajoutait 2 × M à
+     `wallets.reserved` ; le disponible affiché (`solde − réservé`) baissait de 2 × M dès le
+     démarrage (ex. 3 682 → 2 682 pour M = 500).
+  2. *Commission Kora* : D-074 doublait le TAUX (`KORA_COMMISSION_MULTIPLIER`) en plus de la
+     perte : 12 % × 1 000 = 120 au lieu de 6 % × 1 000 = 60.
+- **Engagement (remplace le séquestre)** : au démarrage, une ligne `wallet_reservations`
+  ACTIVE avec `game_id` (2 × M, perte maximale) est écrite, mais ni `wallets.balance` ni
+  `wallets.reserved` ne changent : solde et disponible affichés restent identiques pendant
+  toute la partie. Les engagements actifs sont déduits des seuls contrôles de DÉPENSE faits
+  sous le verrou du portefeuille (`lockWalletBalances` : retrait, inscription à un tournoi,
+  démarrage d'une autre partie) : le perdant peut toujours payer au règlement. Un retrait qui
+  entamerait l'engagement est refusé (`InsufficientBalanceError`).
+- **Règlement** (inchangé hors Kora, dans la transaction qui termine la partie, une seule fois) :
+  - Simple : chaque perdant perd M ; commission = floor(M × (N − 1) × C).
+  - Kora : chaque perdant perd 2M (`KORA_LOSS_MULTIPLIER`) ; commission =
+    floor(2M × (N − 1) × C). Le taux reste C : `applied_commission_bps = commission_bps`.
+  - Gagnant : + (brut − commission) ; plateforme (`platform_ledger`, `GAME_COMMISSION`) :
+    + commission. Seul le perdant est débité, et seulement au règlement.
+  - Exemple de référence (M = 500, C = 6 %, Roly 3 682, Lamat 7 710, Lamat gagne) : simple →
+    Roly 3 182, Lamat 8 180, plateforme +30 ; Kora → Roly 2 682, Lamat 8 650, plateforme +60.
+- **Bornes du taux** : 0 % à 100 % par tranche (le plafond de 50 % n'existait que pour que le
+  taux doublé reste ≤ 100 %). À 100 %, le gain net vaut 0, jamais négatif.
+- **API** : `GET /api/admin/settings/game-commission` expose `koraLossMultiplier` (perte) au
+  lieu de `koraMultiplier` (taux) ; la simulation de l'administration suit la même formule.
+- **Migration** : 0035 (`0035_game_stake_commitments.sql`) retire de `wallets.reserved` les
+  engagements des parties EN COURS au moment du déploiement (aucun solde, aucune écriture,
+  aucune partie réglée n'est modifiée) et indexe les engagements actifs par portefeuille.
+- **Historique** : les parties Kora réglées sous D-074 (`outcome = 'KORA'` et
+  `applied_commission_bps = 2 × commission_bps`) ont prélevé une commission double. Elles ne
+  sont PAS recalculées ; toute régularisation exige une décision et une procédure comptable
+  explicites. Diagnostic :
+  `SELECT game_id, winner_id, gross_amount, commission_amount,
+     commission_amount - (gross_amount * commission_bps / 10000) AS excess
+   FROM game_settlements WHERE status = 'SETTLED' AND outcome = 'KORA'
+     AND applied_commission_bps = 2 * commission_bps AND commission_bps > 0;`
+- **Code** : `backend/src/domain/rules/game-settlement.ts`,
+  `backend/src/repositories/game-stake-ledger.ts`,
+  `backend/src/repositories/wallet-reservations.ts`,
+  `administration/features/settings/game-commission.ts`.
+- **Tests** : `backend/tests/unit/rules/game-settlement.test.ts`,
+  `backend/tests/integration/games/game-settlement.test.ts`,
+  `administration/tests/game-commission.test.tsx`.
+
+## D-081 — Détection anti-collusion coupée : option masquée aux joueurs
+
+- **Date** : 2026-10-11 · **Statut** : demandé par le propriétaire du projet (« si au niveau
+  de l'administration la détection est désactivée, le bouton "Détection anti-collusion" ne
+  doit pas être visible ») · **Révise** : D-053, point « Joueurs : rien n'est exposé ».
+- **Règle** : quand l'interrupteur global (D-053) est désactivé, l'option « Détection
+  anti-collusion » n'est plus proposée à la création d'une partie privée et la colonne
+  bouclier 🛡️ de la liste des tables disparaît. Activée : comportement inchangé (option
+  désactivée par défaut, choisie par le créateur, immuable, D-043).
+- **Exposition** : `GET /api/sessions/open` renvoie `detectionAvailable` (booléen, relu dans
+  PostgreSQL à chaque appel, aucun cache). C'est la seule information donnée aux joueurs :
+  ni date, ni acteur, ni historique du réglage. La réponse de géolocalisation d'une partie
+  reste celle d'une table non surveillée (D-053).
+- **Serveur** : interrupteur coupé, une demande `suspicionDetectionEnabled: true` (ancien
+  client) crée une table NON surveillée ; réactiver plus tard l'interrupteur ne la rend pas
+  surveillée (option immuable, D-043). Les tables créées détection active et coupée ensuite
+  gardent leur réglage, sans aucune détection tant que l'interrupteur reste coupé (D-053).
+- **Client** : champ absent (ancien serveur) ou réponse pas encore reçue : option non
+  proposée, jamais affichée par défaut.
+- **Code** : `backend/src/services/sessions/session.service.ts` (`isDetectionAvailable`,
+  création), `backend/src/controllers/session.controller.ts`,
+  `backend/src/services/game/create-game-service.ts`,
+  `frontend/src/features/sessions/hooks.ts` (`useDetectionAvailable`),
+  `frontend/src/features/lobby/PrivateGamePanel.tsx`.
+- **Tests** : `backend/tests/integration/detection/detection-global-switch.test.ts`,
+  `frontend/src/features/lobby/PrivateGamePanel.test.tsx`.
+
+## D-082 — Joueur absent : la partie continue sans lui ; reprise automatique au retour
+
+- **Contexte** : demande produit (octobre 2026). **Tranche R-24** : le minuteur de tour n'est
+  JAMAIS mis en pause pour un joueur absent (application en arrière-plan ou fermée, réseau
+  coupé, écran quitté) et la partie ne l'attend pas davantage.
+- **Règle** : la partie continue jusqu'à sa fin normale, que le joueur revienne ou non. À
+  chaque échéance (20 s, D-064), le serveur joue sa carte par l'algorithme existant (D-036) ;
+  le 5e tour est automatique (D-035) ; après la fin, la ronde Poursuivre/Quitter s'applique
+  (départ automatique à l'échéance, D-034). Aucun « état d'absence » n'est stocké : un joueur
+  absent est un joueur qui ne joue pas avant l'échéance ; il reste membre de sa partie.
+- **Serveur (inchangé, vérifié)** : échéances dans PostgreSQL (`games.turn_deadline_at`),
+  minuteurs reconstruits au démarrage et balayage toutes les 5 s (`DeadlineSupervisor`),
+  commandes idempotentes (un `commandId` par tour, version sous verrou) : ni double carte, ni
+  dépendance au téléphone, reprise après redémarrage.
+- **Mobile** :
+  - premier plan = « focus » de TanStack Query (`installAppFocusManager`) : relecture
+    immédiate au retour, aucune relecture en arrière-plan ;
+  - reprise au lancement et au retour au premier plan, sur tout écran sauf celui d'une partie
+    (`ActiveGameRestorer`, `restoreActiveGame`) : `GET /api/games/me/active` (partie en cours,
+    sinon en attente), sinon `GET /api/sessions/me/active` (partie terminée pendant l'absence
+    dont la ronde est encore ouverte AVANT son échéance → écran de fin) ; une seule
+    vérification et une seule navigation à la fois ; vers `/game/:id?reprise=1` ;
+  - écran d'une partie (`useGameReconnection`) : une relecture en échec ne remplace plus la
+    table (données avant erreur) ; panneau « Reconnexion » pendant la restauration réelle,
+    « Réessayer » après 3 échecs consécutifs ; un refus (403/404) affiche son message ;
+  - panneau `ReconnectionPanel` : « Reconnexion » / « Veuillez patienter pendant la
+    reconnexion. », voile qui bloque les appuis, marges de sécurité.
+- **Limites** : aucune détection native du réseau (pas de NetInfo, module natif non installé) :
+  la perte de réseau est constatée par l'échec des relectures et du WebSocket du chat ; l'état
+  de la partie est relu toutes les 3 s (pas d'événements de partie sur le WebSocket, T-01).
+- **Tests** : `backend/tests/integration/games/game-resume.test.ts`,
+  `frontend/src/features/games/use-return-to-active-game.test.tsx`,
+  `frontend/src/features/games/use-game-reconnection.test.tsx`.
+
+## D-083 — Achat de jetons : paiement CinetPay DIRECT (sans redirection), MTN Mobile Money
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet ; **activation
+  soumise à confirmation de CinetPay** (mode direct ouvert sur le compte marchand) ·
+  **Complète** : D-050 · **Ne change pas** : montants, conversion 1 FCFA = 1 jeton, règlement
+  idempotent du compte de jeu, notifications, réconciliation, règles de jeu.
+- **Mécanisme compatible** (vérifié dans le code source du SDK officiel `cinetpay/cinetpay-js` :
+  `src/types/payment.ts`, `src/validation.ts`, `examples/direct-pay`) : le MÊME
+  `POST /v1/payment` de l'API v1, même OAuth, même `GET /v1/payment/{id}`, même notification,
+  avec `direct_pay: true`, `payment_method` (`MTN_CM`) et `client_phone_number` (+237…).
+  Réponse : `details { code, status, message, must_be_redirected }`. Aucune autre API, aucun
+  SDK client (`cinetpay-seamless` est une fenêtre de paiement hébergée : hors périmètre).
+- **Opérateurs** : `CINETPAY_DIRECT_PAY_METHODS`, vide par défaut (désactivé). Seul **MTN_CM** :
+  Orange Money exige en direct un `otp_code` saisi par le payeur ; sa collecte n'est pas
+  autorisée, `OM_CM` est refusé au démarrage et reste payable par la page CinetPay. Aucun OTP
+  n'est jamais demandé, transmis ni journalisé.
+- **Numéro** : celui de l'inscription (D-040), jamais saisi ni envoyé par l'application ;
+  +237 exigé (sinon `PHONE_UNSUPPORTED`). Jamais journalisé.
+- **Sécurité** : le statut annoncé à la création (même `SUCCESS`) est noté, jamais une preuve ;
+  seul le statut RELU serveur à serveur règle le paiement (D-050 inchangé). `must_be_redirected`
+  → la page est proposée comme une page (mode `REDIRECT`), jamais présentée comme directe.
+- **Erreurs** : refus explicite de CinetPay (code API, ex. `422 NOT_ALLOWED`) → achat clos sans
+  crédit (`DIRECT_PAYMENT_REFUSED`), `409 DIRECT_PAYMENT_UNAVAILABLE`, repli page CinetPay
+  (nouvelle demande). Demande jamais partie (authentification refusée) → `503` comme avant.
+  **Issue inconnue** (délai, réseau, 5xx après l'envoi : la demande a pu atteindre le
+  téléphone) → paiement **laissé en attente** (`metadata.initialization = UNCERTAIN`), ni
+  crédit ni échec ; la réconciliation le recherche par `merchant_transaction_id` : trouvé → sa
+  référence est posée puis contrôle normal ; introuvable 30 min après → clos sans crédit.
+- **API** : `POST /api/wallet/deposits { tokens, method?: "MTN_CM" }` ; vue de paiement
+  `mode: DIRECT | REDIRECT`, `operator` ; `GET /api/wallet` ajoute `directPayOperators`.
+- **Migration** : 0036 (une référence peut exister sans empreinte de `notify_token` : paiement
+  retrouvé par la réconciliation, réglé par relecture du statut seulement).
+- **Détail** : `docs/payments.md` §Paiement direct.
+
+## D-084 — Visibilité des boutons « Main spéciale » et « Se coucher »
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet · **Révise** :
+  D-035, seulement la visibilité des boutons (« le bouton disparaît ensuite »).
+- **« Main spéciale »** : visible tant que le joueur n'a joué AUCUNE carte de la partie, puis
+  masqué. Un appui envoie la déclaration (DECLARE_WIN) seulement si le serveur a reconnu une
+  main gagnante (`myActions.canDeclareInstantWin`) ; sinon un court message explique que ses
+  5 cartes ne forment aucune combinaison gagnante, sans rien envoyer au serveur.
+- **« Se coucher »** : visible tant que le joueur n'a pas joué sa DEUXIÈME carte, puis masqué.
+  Actif seulement si le serveur autorise la fuite (`myActions.canFlee`) ; sinon affiché
+  inactif, en teintes ternes opaques (jamais d'opacité ni de filtre).
+- **Fuyard** : aucun des deux boutons. **Cartes jouées** : celles du joueur dans les tours
+  terminés et le tour en cours (`cardsPlayedBy`).
+- **Inchangé (D-035)** : quand une action est permise (fuite avant sa deuxième carte, D-089,
+  un fuyard par partie ; à 2 joueurs l’adversaire gagne, D-086 ; victoire instantanée pour le seul
+  détenteur d'une main gagnante avant sa première carte), validation par le serveur à chaque
+  commande, conséquences de la fuite et règlement unique de la victoire instantanée.
+- **Code** : `frontend/src/features/games/table/TurnHud.tsx` (`TurnActions`, `cardsPlayedBy`).
+- **Tests** : `frontend/src/features/games/table/game-table.test.tsx`,
+  `frontend/src/features/games/table/card-legibility.test.tsx`.
+
+## D-085 — Achat de jetons : montant saisi par le joueur (fin des montants fixes)
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet · **Révise** : D-050
+  (montants fixes 500 / 1 000 / 2 000 / 5 000 FCFA, R-16 pour l'achat) · **Ne change pas** :
+  devise XAF, 1 FCFA = 1 jeton, crédit uniquement après `SUCCESS` relu par le serveur,
+  idempotence, réconciliation, paiement direct MTN (D-083), Orange Money par la page CinetPay,
+  retraits, règles de jeu et commissions.
+- **Règle** : le joueur saisit le montant de la recharge, **entier en FCFA, de 100 à
+  2 500 000**. Ces bornes sont celles du contrat de l'API CinetPay v1 pour un paiement (validation
+  des SDK officiels `cinetpay-js` — `assertAmount('amount', …, 100, 2_500_000)` et tableau du
+  README — et `cinetpay-go`), déjà relevées dans `docs/payments.md`. Aucune autre limite n'est
+  inventée.
+- **Serveur seul juge** : `POST /api/wallet/deposits { tokens }` (inchangé) revalide le montant
+  avant toute écriture et tout appel CinetPay ; hors limites, décimal, nul, négatif, texte, absent →
+  `400 VALIDATION_ERROR` avec un message explicite (`fields.tokens`). `GET /api/wallet` annonce
+  `depositLimits { min, max, currency }` ; l'application s'y règle (pré-validation d'affichage).
+- **Application** : champ « Montant de la recharge (FCFA) », clavier numérique, montant et jetons
+  affichés, bouton « Recharger » indisponible tant que le montant est vide ou invalide, message du
+  serveur affiché, saisie bloquée pendant la création. Plus aucun montant prédéfini.
+- **Administration** : l'anomalie de rapprochement `PAYMENT_AMOUNT_OUT_OF_RANGE` compare aux
+  limites (« Montant hors limites »). Aucune configuration de montants n'est ajoutée.
+- **À confirmer par CinetPay** : un plafond ou plancher plus strict propre au compte marchand ou
+  à l'opérateur (MTN, Orange Money). Le cas échéant, CinetPay refuse la création : rien n'est
+  crédité, le joueur voit un refus.
+- **Migration** : aucune (les montants existants restent dans les limites).
+
+## D-086 — Se coucher dans une partie à 2 : défaite du fuyard (R-30, R-05 partiel)
+
+- **Date** : 2026-10-12 · **Statut** : tranché par le propriétaire du projet (« L'autre
+  gagne », « Sa mise normale ») · **Tranche** : R-30 · **Tranche en partie** : R-05 (partie à
+  2 seulement) · **Ne change pas** : D-035 hors partie à 2 (fuite avant sa deuxième carte,
+  D-089 ; un fuyard par partie, contrôleur autorisé ; à 3 ou 4 joueurs la partie continue sans
+  le fuyard, qui n'est ni débité ni compté — R-05 reste ouvert pour ce cas).
+- **Règle** : dans une partie à 2, le joueur qui se couche (avant sa deuxième carte, D-089)
+  perd immédiatement ; l'autre joueur gagne. Victoire SIMPLE (jamais Kora), raison de
+  fin `OPPONENT_FLED` (avec gagnant), événements `game:player_fled` puis `game:finished`.
+- **Règlement** (transaction qui termine la partie, une seule fois, D-080) : le fuyard paie sa
+  mise M comme un perdant ; commission de la tranche figée au démarrage ; le gagnant reçoit
+  M − commission. Ex. M = 100, tranche 1 % : fuyard −100, gagnant +99, plateforme +1.
+- **Interface** : « Se coucher » est actif dans une partie à 2 dans la même fenêtre qu'à 3 ou
+  4 joueurs (`myActions.canFlee`).
+- **Schéma** : migration `0037_game_opponent_fled.sql` (contraintes `games_end_reason_check`
+  et `games_winner_iff_victory` élargies ; aucune donnée modifiée).
+- **Code** : `backend/src/domain/game/ter-engine.ts` (`flee`, `canFlee`),
+  `backend/src/domain/game/game.ts`, `backend/src/domain/rules/game-settlement.ts`
+  (`settledParticipants`), `administration/features/games/game-outcome.ts`,
+  `administration/lib/labels.ts`, `frontend/src/types/game.ts`, `frontend/src/types/session.ts`.
+- **Tests** : `backend/tests/unit/game/ter-engine.test.ts`,
+  `backend/tests/integration/games/game-api.test.ts`,
+  `backend/tests/integration/games/game-settlement.test.ts`,
+  `administration/tests/game-outcome.test.tsx`.
+
+## D-087 — Recharge : fenêtre « Recharger mon portefeuille », MTN / Orange Money hybride
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  D-050, D-083, D-085 · **Ne change pas** : `POST /api/wallet/deposits`, XAF, 1 FCFA = 1 jeton,
+  montant saisi (100 à 2 500 000), crédit seulement après `SUCCESS` relu, idempotence,
+  réconciliation, retraits, règles financières du jeu.
+- **Interface** : fenêtre centrée « Recharger mon portefeuille » (icône, fermeture discrète),
+  montant saisi, deux boutons d'importance égale **MTN Mobile Money** et **Orange Money**
+  (« Paiement mobile sécurisé »), mention de sécurité, zone d'état. Supprimés : « Autre moyen
+  (page CinetPay) », le nombre de jetons promis, toute trace de montants fixes. Le projet ne
+  contient aucun logo officiel MTN / Orange : pastilles textuelles aux couleurs des opérateurs,
+  à remplacer par des ressources officielles autorisées.
+- **MTN** : paiement DIRECT s'il est proposé (`CINETPAY_DIRECT_PAY_METHODS`) ; repli automatique
+  vers la page CinetPay, même montant, SEULEMENT sur un refus certain du serveur
+  (`409 DIRECT_PAYMENT_UNAVAILABLE` : rien créé, ou paiement clos sans crédit). Issue incertaine
+  (`202` en attente) : le même paiement est suivi, aucun second paiement. Indisponibilité du
+  service (`503`) : message, aucun repli.
+- **Orange Money** : page CinetPay hébergée, jamais de paiement direct ni d'OTP (D-083, D-086 :
+  `OM_CM` reste refusé dans `CINETPAY_DIRECT_PAY_METHODS`).
+- **Opérateur sur la page** : nouveau champ `operator` (exclusif de `method`) du même
+  `POST /api/wallet/deposits`. L'opérateur est PRÉSÉLECTIONNÉ (`payment_method` sans
+  `direct_pay`, contrat des SDK officiels) seulement s'il figure dans
+  `CINETPAY_PAGE_PRESELECT_METHODS` (vide par défaut, à renseigner après confirmation par
+  CinetPay) ; sinon page générique, et l'application l'annonce (« Sur la page CinetPay,
+  choisissez Orange Money. »), sans garantir l'opérateur. `GET /api/wallet` ajoute
+  `pageOperators`. Extensible : un paiement direct Orange Money ne pourra être ajouté qu'après
+  confirmation officielle de CinetPay et décision sur la collecte de l'OTP.
+- **Migration** : aucune.
+
+## D-088 — Recharge : numéro du payeur = numéro d'inscription, avec indicatif, non modifiable
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  D-050, D-083, D-087 · **Ne change pas** : montant, opérateurs, crédit après `SUCCESS` relu.
+- Pour TOUTE recharge (page CinetPay hébergée, paiement direct MTN, Orange Money), le serveur
+  transmet à CinetPay `client_phone_number` = le numéro d'INSCRIPTION du compte, au format
+  international avec l'indicatif du pays (ex. `+237692130271`). Avant D-088, la page hébergée ne
+  recevait aucun numéro.
+- Le numéro vient TOUJOURS du compte (`users.phone`, format garanti par la base depuis 0002 :
+  `^\+[1-9][0-9]{7,14}$`) ; l'application n'en envoie aucun, et tout numéro présent dans la
+  requête est ignoré. Défense supplémentaire : un numéro non transmissible est refusé avant
+  toute écriture (`422 PAYMENT_PROFILE_INCOMPLETE`, champ `phone`).
+- L'application affiche ce numéro dans la fenêtre de recharge, « Numéro de paiement »,
+  `+237 692130271`, en lecture seule. Il n'est jamais journalisé.
+
+## D-089 — Se coucher jusqu'à la deuxième carte ; bouton masqué pour tous après une fuite
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet (« au deuxième
+  tour, le joueur peut encore fuir » ; « un seul joueur peut fuir : dès qu'il le fait, le bouton
+  ne doit plus être visible chez les autres ») · **Révise** : D-035 (« tour 1 seulement, avant
+  la première carte »).
+- **Règle** : un joueur peut se coucher tant qu'il n'a pas joué sa DEUXIÈME carte, donc aux
+  tours 1 et 2 (`fleeBeforeSecondCard`), qu'il ait la main ou non. Toujours un seul fuyard par
+  partie (le premier) ; le joueur qui a le contrôle peut se coucher.
+- **Effets** (inchangés) : à 3 ou 4 joueurs, la partie continue sans lui (sa carte du tour 1
+  reste jouée ; s'il menait le tour, le suivant antihoraire mène ; s'il était le dernier
+  attendu, le tour se termine) ; à 2 joueurs, l'adversaire gagne et le fuyard paie sa mise
+  (D-086).
+- **Interface** : « Se coucher » visible tant que le joueur n'a pas joué sa deuxième carte ET
+  que personne n'a fui ; dès la première fuite, il disparaît chez tous les joueurs.
+- **Code** : `backend/src/domain/rules/official-rules.ts`, `backend/src/domain/game/ter-engine.ts`
+  (refus, numéro de tour de `game:control_changed`), `frontend/src/features/games/table/TurnHud.tsx`.
+- **Tests** : `backend/tests/unit/rules/rules-and-stake.test.ts`,
+  `backend/tests/unit/game/ter-engine.test.ts`,
+  `frontend/src/features/games/table/game-table.test.tsx`.
+
+## D-090 — Recharge automatique : moyen de paiement déduit du numéro du compte
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet ; choix confirmés
+  par lui (opérateur par préfixe camerounais ; numéro vérifié NON exigé tant que la vérification
+  SMS n'existe pas, R-34) · **Révise** : D-087 (choix MTN / Orange par le joueur) · **Ne change
+  pas** : montant saisi (D-085), numéro transmis (D-088), crédit seulement après `SUCCESS` relu,
+  idempotence, réconciliation, retraits.
+- **Interface** : un champ « Montant de la recharge (FCFA) », le montant à payer, un SEUL bouton
+  « Payer avec MTN Mobile Money » (jaune) ou « Payer avec Orange Money » (orange) selon le compte.
+  Plus de numéro affiché ni de choix d'opérateur. Numéro non pris en charge : aucun bouton, message
+  renvoyant vers l'assistance (le numéro n'est pas modifiable dans le profil).
+- **Opérateur** : déduit par le SERVEUR du numéro d'inscription (`operatorOfPhone`) : MTN = 650-654,
+  67x, 680-684 ; Orange = 655-659, 69x, 685-689 ; sinon aucun (`409 PAYMENT_OPERATOR_UNSUPPORTED`).
+  `GET /api/wallet` ajoute `paymentOperator`. CinetPay n'offre aucune recherche d'opérateur ;
+  limite : un numéro porté serait mal identifié (CinetPay refuserait, rien crédité). Bornes
+  684/685 et plan à confirmer auprès de l'ARCEP / des opérateurs.
+- **Paiement** : l'application n'envoie QUE le montant. Le serveur tente le paiement direct si
+  l'opérateur y est ouvert, puis, sur un refus CERTAIN seulement, la page CinetPay du même
+  opérateur, sous une clé d'idempotence dérivée (`:page-fallback`) : un rejeu retrouve la même
+  page. Issue incertaine : paiement en attente, aucun repli. Indisponibilité : erreur, aucun repli.
+  Un `method` / `operator` envoyé par l'application et différent du compte : `400`.
+- **Numéro sur la page CinetPay** : transmis (`client_phone_number`, D-088), donc prérempli si la
+  page l'utilise. L'API v1 (SDK officiels) n'offre AUCUN paramètre de verrouillage : le champ
+  n'est pas garanti non modifiable sur la page CinetPay ; aucun paramètre n'est inventé.
+- **Crédit de 1 000 jetons** : aucun crédit fictif ou automatique n'existe (vérifié dans le code et
+  en base : les transactions de 1 000 jetons sont des achats payés ou des mises).
+
+## D-091 — Recharge : erreur interne ≠ fournisseur indisponible ; issue inconnue annoncée comme telle
+
+- **Date** : 2026-10-12 · **Statut** : correction d'un défaut constaté · **Complète** : D-050,
+  D-083, D-090 · **Ne change pas** : règles financières, crédit seulement après `SUCCESS` relu,
+  idempotence, réconciliation.
+- **Constat** : « Service de paiement momentanément indisponible. Aucun montant n'a été débité »
+  (`503 MOBILE_MONEY_UNAVAILABLE`) venait le 2026-10-12 d'un refus d'AUTHENTIFICATION CinetPay
+  (`2011 NOT_ALLOWED`, IP publique du poste non autorisée après un changement de réseau) : demande
+  jamais envoyée, aucun paiement créé, message exact. Les erreurs PostgreSQL (« Connection
+  terminated… ») venaient de la mise en veille du poste (03:45 → 08:18 UTC) puis du redémarrage
+  des conteneurs (08:28 UTC) ; aucune recharge n'a eu lieu pendant cette fenêtre.
+- **Défaut corrigé** : `WalletService` transformait TOUTE erreur de création (base de données
+  comprise, y compris APRÈS l'appel à CinetPay) en « fournisseur indisponible, rien débité » et
+  déclarait l'achat échoué. Désormais :
+  - seules les erreurs du fournisseur (`MobileMoneyProviderError` : `CinetPayError`,
+    `CinetPayPaymentNotSentError`, fournisseur non configuré) → `503 MOBILE_MONEY_UNAVAILABLE`,
+    achat clos sans crédit ;
+  - toute autre erreur → `503 PAYMENT_VERIFICATION_PENDING` (« vérification en cours, ne relancez
+    pas »), rien déclaré échoué ni crédité ;
+  - un paiement DIRECT est marqué « initialisation incertaine » dès sa création (avant l'appel) ;
+    la marque disparaît avec la référence CinetPay. Une panne entre l'appel et l'enregistrement
+    laisse un paiement que la réconciliation recherche par `merchant_transaction_id` (D-083).
+  - connexion PostgreSQL perdue sur n'importe quelle route → `503 SERVICE_TEMPORARILY_UNAVAILABLE`
+    (plutôt qu'un 500) ; pool `pg` avec keep-alive TCP (connexions mortes détectées après une
+    veille).
+- **Application** : messages distincts (indisponibilité du fournisseur, vérification en cours,
+  service momentanément indisponible, refus, numéro non pris en charge) ; « aucun montant débité »
+  seulement pour un refus certain ; après « vérification en cours », pas de relance immédiate du
+  même montant. Fenêtre « Recharger mon portefeuille » redessinée (plus douce).
+
+## D-092 — Délais de jeu ramenés à 10 s
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet (« ramener le
+  timing de toute l'application à 10 secondes ») · **Révise** : D-064, D-065 et D-068 (délais
+  passés de 10 s à 20 s, puis à 15 s).
+- **Règle** : les trois délais de jeu visibles des joueurs valent 10 s, fixés par le serveur
+  (échéances en PostgreSQL, D-034) :
+  - tour de jeu (`TURN_DURATION_MS`) : ensuite TURN_TIMEOUT et carte automatique (D-036) ;
+  - ronde Poursuivre/Quitter après une partie (`SESSION_DECISION_WINDOW_MS`) : sans réponse,
+    départ automatique ;
+  - démarrage d'une table de tournoi par son premier joueur (`TOURNAMENT_TABLE_AUTO_START_MS`) :
+    ensuite le serveur démarre.
+  Le téléphone n'affiche que le temps restant (`DEFAULT_TURN_MS` ne sert qu'à l'échelle de
+  l'anneau du chrono).
+- **Inchangé** : délais techniques (requêtes réseau, rapprochements de paiements, balayage des
+  échéances, planificateur de tournois), présentation des cartes (2 s), signaux visuels.
+  `RANKING_REFERENCE_GAME_MS` (170 s, D-062) reste figé ; il avait été calculé avec ces mêmes
+  délais de 10 s.
+- **Parties en cours** : une échéance déjà fixée garde sa valeur ; les suivantes durent 10 s.
+- **Code** : `backend/src/domain/rules/rule-set.ts`, `backend/src/domain/sessions/session.ts`,
+  `backend/src/domain/tournaments/tournament.ts`, `frontend/src/features/games/table/turn-signal.ts`.
+- **Tests** : `backend/tests/integration/game/turn-timer.test.ts`,
+  `backend/tests/integration/games/turn-timeout-http.test.ts`,
+  `backend/tests/integration/timers/deadline-recovery.test.ts`,
+  `backend/tests/integration/tournaments/tournament-table-auto-start.test.ts`,
+  `backend/tests/unit/sessions/session-domain.test.ts`,
+  `frontend/src/features/games/table/table-timings.test.ts`,
+  `frontend/src/hooks/use-server-countdown.test.ts`.

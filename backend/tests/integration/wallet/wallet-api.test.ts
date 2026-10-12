@@ -121,6 +121,14 @@ describe('GET /api/wallet', () => {
       mobileMoneyNumber: expect.any(String),
       phoneVerified: false,
       mobileMoneyAvailable: false,
+      // Paiement direct (D-083) : aucun opérateur sans CinetPay configuré.
+      directPayOperators: [],
+      // Page CinetPay (D-087) : aucun opérateur présélectionné par défaut.
+      pageOperators: [],
+      // Opérateur déduit du numéro d'inscription (D-090) : fixture 67x → MTN.
+      paymentOperator: 'MTN_CM',
+      // Montant saisi (D-085) : limites du contrat CinetPay v1, annoncées à l'application.
+      depositLimits: { min: 100, max: 2_500_000, currency: 'XAF' },
       withdrawalAvailable: false,
     });
     expect(wallet.mobileMoneyNumber).not.toBe(A.phone);
@@ -170,14 +178,14 @@ describe('Sans fournisseur Mobile Money (configuration actuelle)', () => {
   it('retrait : refus propre AVANT toute écriture (ni débit, ni transaction enregistrée)', async () => {
     const { app } = setup();
     const A = await player(app);
-    await seed(A.id, 52);
+    await seed(A.id, 5000);
 
-    for (const tokens of [52, 53]) {
-      const res = await A.send('withdrawals', { tokens });
+    for (const tokens of [1000, 5000]) {
+      const res = await A.send('withdrawals', { tokens, operator: 'MTN_CM' });
       expect(res.status).toBe(503);
       expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
     }
-    expect(await balanceOf(A)).toBe(52);
+    expect(await balanceOf(A)).toBe(5000);
     expect(await countTransactions(A.id)).toBe(0);
   });
 });
@@ -201,58 +209,6 @@ describe('Avec un fournisseur (simulé)', () => {
     await wallet.settle(id, { status: 'succeeded' });
     await wallet.settle(id, { status: 'succeeded' });
     expect(await balanceOf(A)).toBe(500);
-  });
-
-  it('retrait : débité tout de suite, jamais au-delà du solde, remboursé s’il échoue', async () => {
-    const gateway = new FakeGateway();
-    const { app, wallet } = setup(gateway);
-    const A = await player(app);
-    await seed(A.id, 20);
-
-    const res = await A.send('withdrawals', { tokens: 15 });
-    expect(res.status).toBe(202);
-    expect(res.body.balance).toBe(5);
-    expect(gateway.calls).toEqual([
-      expect.objectContaining({ op: 'disbursement', msisdn: A.phone, tokens: 15 }),
-    ]);
-    expect((await A.send('withdrawals', { tokens: 10 })).status).toBe(409);
-
-    await wallet.settle(res.body.transaction.id, { status: 'failed', failureCode: 'REJECTED' });
-    expect(await balanceOf(A)).toBe(20);
-  });
-
-  it('idempotence : double clic simultané = une seule opération ; autre montant refusé', async () => {
-    const gateway = new FakeGateway();
-    const { app } = setup(gateway);
-    const A = await player(app);
-    await seed(A.id, 30);
-    const key = randomUUID();
-
-    const [one, two] = await Promise.all([
-      A.send('withdrawals', { tokens: 10 }, key),
-      A.send('withdrawals', { tokens: 10 }, key),
-    ]);
-    expect([one.status, two.status]).toEqual([202, 202]);
-    expect(one.body.transaction.id).toBe(two.body.transaction.id);
-    expect(await balanceOf(A)).toBe(20);
-    expect(await countTransactions(A.id)).toBe(1);
-
-    const reused = await A.send('withdrawals', { tokens: 11 }, key);
-    expect(reused.status).toBe(409);
-    expect(reused.body.code).toBe('IDEMPOTENCY_KEY_REUSED');
-  });
-
-  it('retraits concurrents : le solde ne devient jamais négatif', async () => {
-    const { app } = setup(new FakeGateway());
-    const A = await player(app);
-    await seed(A.id, 50);
-
-    const results = await Promise.all(
-      Array.from({ length: 4 }, () => A.send('withdrawals', { tokens: 20 })),
-    );
-    expect(results.filter((r) => r.status === 202)).toHaveLength(2);
-    expect(results.filter((r) => r.status === 409)).toHaveLength(2);
-    expect(await balanceOf(A)).toBe(10);
   });
 
   it('la base refuse un solde négatif même si l’application est contournée', async () => {

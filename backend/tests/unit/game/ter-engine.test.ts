@@ -24,7 +24,6 @@ import {
   startGame,
   tableOrder,
 } from '../../../src/domain/game/ter-engine';
-import { UnresolvedRuleError } from '../../../src/domain/rules/unresolved-rule';
 import { NOW, startedGame, waitingGame } from '../../fixtures/game-builders';
 import { deckForHands, decksRandom, identityRandom, seededRandom } from '../../fixtures/random';
 import { testRules } from '../../fixtures/rules';
@@ -348,15 +347,63 @@ describe('Fuir (D-035)', () => {
     expect(() => play(game, 'p3', 'TREFLE-3')).toThrow(PlayerHasFledError);
   });
 
-  it('refusé après sa première carte (même au tour 1), et au tour 2', () => {
+  /** Tour 1 joué par tous (p1 mène et garde le contrôle : seul à avoir du ♥). */
+  const afterFirstTrick = () => {
     const { game } = startedGame(FOUR);
     play(game, 'p1', 'COEUR-3');
-    expect(() => flee(game, p('p1'), ctx)).toThrow(FleeNotAllowedError);
     play(game, 'p2', 'PIQUE-3');
     play(game, 'p3', 'TREFLE-3');
     play(game, 'p4', 'ETOILE-3');
     expect(game.play!.trickNumber).toBe(2);
-    expect(() => flee(game, p('p2'), ctx)).toThrow(FleeNotAllowedError);
+    expect(game.play!.nextPlayerId).toBe('p1');
+    return game;
+  };
+
+  it('D-089 : au tour 2, avant sa deuxième carte, se coucher est encore permis', () => {
+    const game = afterFirstTrick();
+    const events = flee(game, p('p3'), ctx);
+    expect(events.map((e) => e.type)).toEqual(['game:player_fled']);
+    expect(game.status).toBe('in_progress');
+    // Le tour 2 continue sans lui, puis le tour 3 ne le compte plus.
+    play(game, 'p1', 'COEUR-4');
+    play(game, 'p2', 'PIQUE-4');
+    play(game, 'p4', 'ETOILE-4');
+    expect(game.play!.completedTricks[1]!.plays.map((x) => x.playerId)).toEqual([
+      'p1',
+      'p2',
+      'p4',
+    ]);
+    expect(game.play!.trickOrder).not.toContain('p3');
+  });
+
+  it('D-089 : le meneur du tour 2 se couche, le suivant antihoraire mène (tour 2 annoncé)', () => {
+    const game = afterFirstTrick();
+    const events = flee(game, p('p1'), ctx);
+    expect(game.play!.control).toEqual({ playerId: 'p2' });
+    expect(game.play!.nextPlayerId).toBe('p2');
+    expect(events).toContainEqual({
+      type: 'game:control_changed',
+      payload: { controllerId: 'p2', trickNumber: 2 },
+    });
+  });
+
+  it('D-089 : le dernier attendu du tour 2 se couche, le tour se termine', () => {
+    const game = afterFirstTrick();
+    play(game, 'p1', 'COEUR-4');
+    play(game, 'p2', 'PIQUE-4');
+    play(game, 'p3', 'TREFLE-4');
+    expect(game.play!.nextPlayerId).toBe('p4');
+    const events = flee(game, p('p4'), ctx);
+    expect(events.map((e) => e.type)).toContain('game:trick_completed');
+    expect(game.play!.trickNumber).toBe(3);
+  });
+
+  it('refusé après sa deuxième carte (tour 2 joué), et ensuite', () => {
+    const game = afterFirstTrick();
+    play(game, 'p1', 'COEUR-4');
+    expect(() => flee(game, p('p1'), ctx)).toThrow(FleeNotAllowedError);
+    expect(toPlayerView(game, p('p1')).myActions.canFlee).toBe(false);
+    expect(toPlayerView(game, p('p2')).myActions.canFlee).toBe(true);
   });
 
   it('un seul joueur peut fuir par partie', () => {
@@ -378,18 +425,39 @@ describe('Fuir (D-035)', () => {
     ]);
   });
 
-  it('partie à 2 : fuir laisserait un seul joueur — non défini, refusé (R-30)', () => {
+  it('partie à 2 (R-30, D-086) : se coucher = défaite, l’autre gagne aussitôt (victoire simple)', () => {
     const { game } = startedGame(TWO_PLAYER_HANDS);
-    expect(() => flee(game, p('p2'), ctx)).toThrow(UnresolvedRuleError);
-    expect(toPlayerView(game, p('p2')).myActions.canFlee).toBe(false);
+    expect(toPlayerView(game, p('p2')).myActions.canFlee).toBe(true);
+    const events = flee(game, p('p2'), ctx);
+    expect(events.map((e) => e.type)).toEqual(['game:player_fled', 'game:finished']);
+    expect(game.status).toBe('finished');
+    expect(game.endReason).toBe('OPPONENT_FLED');
+    expect(game.result).toMatchObject({
+      winnerId: 'p1',
+      method: 'OPPONENT_FLED',
+      victoryType: 'SIMPLE',
+      remainingOpponentIds: [],
+      fledPlayerIds: ['p2'],
+    });
+    // Plus aucune action possible : la partie est terminée.
+    expect(toPlayerView(game, p('p1')).myActions.canFlee).toBe(false);
+    expect(() => flee(game, p('p1'), ctx)).toThrow();
   });
 
-  it('vue : bouton Fuir présent au tour 1, absent après la première carte du joueur', () => {
+  it('vue : « Se coucher » permis avant la première carte ET après elle (D-089)', () => {
     const { game } = startedGame(FOUR);
     expect(toPlayerView(game, p('p1')).myActions.canFlee).toBe(true);
     play(game, 'p1', 'COEUR-3');
-    expect(toPlayerView(game, p('p1')).myActions.canFlee).toBe(false);
+    expect(toPlayerView(game, p('p1')).myActions.canFlee).toBe(true);
     expect(toPlayerView(game, p('p2')).myActions.canFlee).toBe(true);
+  });
+
+  it('vue : dès qu’un joueur a fui, plus personne ne peut se coucher', () => {
+    const { game } = startedGame(FOUR);
+    flee(game, p('p3'), ctx);
+    for (const id of ['p1', 'p2', 'p4']) {
+      expect(toPlayerView(game, p(id)).myActions.canFlee).toBe(false);
+    }
   });
 });
 

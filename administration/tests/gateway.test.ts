@@ -229,6 +229,89 @@ describe('connexion et déconnexion', () => {
     expect(res.cookies).toEqual([]);
   });
 
+  it('connexion : corps invalide relayé tel quel (400 et champs), aucun cookie', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      json(400, {
+        code: 'VALIDATION_ERROR',
+        message: 'Certaines informations sont invalides.',
+        fields: { email: 'Ce champ est obligatoire.' },
+      }),
+    );
+    const res = await loginAdmin(
+      request({
+        method: 'POST',
+        body: '{"identifier":"x","password":"y"}',
+        cookies: {},
+        headers: { origin: 'https://admin.test' },
+      }),
+      config,
+      fetchImpl,
+    );
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text(res.body))).toMatchObject({ fields: { email: expect.any(String) } });
+    expect(res.cookies).toEqual([]);
+  });
+
+  it('connexion : panne du backend (500, schéma en retard) relayée, aucun cookie posé', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(json(500, { error: 'Internal Server Error', requestId: 'req-1' }));
+    const res = await loginAdmin(
+      request({
+        method: 'POST',
+        body: '{"email":"x","password":"y"}',
+        cookies: {},
+        headers: { origin: 'https://admin.test' },
+      }),
+      config,
+      fetchImpl,
+    );
+    expect(res.status).toBe(500);
+    expect(res.cookies).toEqual([]);
+    expect(text(res.body)).not.toMatch(/token|password/i);
+  });
+
+  it('connexion : backend injoignable, 502 BACKEND_UNAVAILABLE lisible', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const res = await loginAdmin(
+      request({
+        method: 'POST',
+        body: '{"email":"x","password":"y"}',
+        cookies: {},
+        headers: { origin: 'https://admin.test' },
+      }),
+      config,
+      fetchImpl,
+    );
+    expect(res.status).toBe(502);
+    expect(JSON.parse(text(res.body))).toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
+    expect(res.cookies).toEqual([]);
+  });
+
+  it('connexion : cookies httpOnly, SameSite=Strict, Secure, chemin /, 8 h au plus', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      json(200, { accessToken: 'a', refreshToken: 'r', user: {}, displayRole: 'X', session: {} }),
+    );
+    const res = await loginAdmin(
+      request({
+        method: 'POST',
+        body: '{"email":"x","password":"y"}',
+        cookies: {},
+        headers: { origin: 'https://admin.test' },
+      }),
+      config,
+      fetchImpl,
+    );
+    for (const cookie of res.cookies) {
+      expect(cookie.options).toMatchObject({
+        secure: true,
+        sameSite: 'strict',
+        path: '/',
+        maxAge: 8 * 3600,
+      });
+    }
+  });
+
   it('déconnexion : session terminée côté serveur (après renouvellement si besoin), cookies effacés', async () => {
     const fetchImpl = vi
       .fn()

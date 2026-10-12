@@ -32,6 +32,21 @@ export class AccountDisabledError extends Error {
   }
 }
 
+/**
+ * Compte suspendu par l'administration (D-079). Comme ACCOUNT_DISABLED, n'est renvoyé
+ * qu'après un mot de passe correct ; `endsAt` (null : indéterminée) est montré au joueur.
+ */
+export class AccountSuspendedError extends Error {
+  constructor(readonly endsAt: Date | null) {
+    super(
+      endsAt
+        ? 'Ce compte est suspendu temporairement.'
+        : 'Ce compte est suspendu pour une durée indéterminée.',
+    );
+    this.name = 'AccountSuspendedError';
+  }
+}
+
 export class InvalidRefreshTokenError extends Error {
   constructor(readonly reason: string) {
     super('Session expirée. Veuillez vous reconnecter.');

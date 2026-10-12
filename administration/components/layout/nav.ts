@@ -1,11 +1,13 @@
 import {
   ArrowLeftRight,
+  Banknote,
   BarChart3,
   CreditCard,
   FileText,
   Gamepad2,
   Landmark,
   LayoutDashboard,
+  PiggyBank,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -49,8 +51,10 @@ export const NAV: NavGroup[] = [
     items: [
       { href: '/finances', label: 'Finances', icon: Wallet },
       { href: '/paiements', label: 'Paiements', icon: CreditCard },
+      { href: '/retraits', label: 'Retraits', icon: Banknote },
       { href: '/rapprochement', label: 'Rapprochement', icon: ArrowLeftRight },
       { href: '/compte-plateforme', label: 'Compte de la plateforme', icon: Landmark },
+      { href: '/retraits-plateforme', label: 'Retraits de la plateforme', icon: PiggyBank },
     ],
   },
   {

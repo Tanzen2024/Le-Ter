@@ -15,7 +15,12 @@ import { ApiError, isAlreadyPlaying } from '../../lib/api-client';
 import { useCurrentUser } from '../auth/hooks';
 import { MAX_PLAYER_CHOICES, type MaxPlayers } from '../games/hooks';
 import type { OpenTable } from '../../types/session';
-import { useCreateSession, useMySessions, useOpenTables } from '../sessions/hooks';
+import {
+  useCreateSession,
+  useDetectionAvailable,
+  useMySessions,
+  useOpenTables,
+} from '../sessions/hooks';
 import { useLobbyMetrics, type LobbyMetrics } from './lobby-metrics';
 import { Coin, InnerFrame, LobbyPanel, PanelButton } from './LobbyUi';
 import { SHIELD_LABELS, ShieldGlyph, ShieldIndicator } from './ShieldIndicator';
@@ -64,18 +69,22 @@ function CreateColumn({
   const [stake, setStake] = useState('');
   const [password, setPassword] = useState('');
   const [maxPlayers, setMaxPlayers] = useState<MaxPlayers>(4);
-  // Détection anti-collusion (D-043) : désactivée par défaut ; fixée à la création.
+  // Détection anti-collusion (D-043) : désactivée par défaut ; fixée à la création. Proposée
+  // seulement si l'administration l'a activée globalement (D-053, D-081).
+  const detectionAvailable = useDetectionAvailable();
   const [detection, setDetection] = useState(false);
   const [formError, setFormError] = useState<string>();
   const defaultName = user ? `Partie de ${user.username}` : '';
   const shownName = name ?? defaultName;
   const failure =
     formError ?? (create.error instanceof ApiError ? create.error.message : undefined);
-  // Une seule partie à la fois par joueur (R-18, D-034) : c'est un refus du SERVEUR,
-  // présenté comme une erreur métier avec la possibilité de reprendre sa partie — jamais
-  // comme un blocage préalable du formulaire.
-  const myTable = mine.data?.[0];
-  const canResume = isAlreadyPlaying(create.error) && myTable;
+  // Une seule partie à la fois par joueur (R-18, D-034) : c'est un refus du SERVEUR, jamais
+  // un blocage préalable du formulaire. Le joueur est alors renvoyé automatiquement à sa
+  // table (relue sur le serveur), sans bouton « Reprendre ma partie ».
+  const returnToMyTable = async () => {
+    const myTable = (await mine.refetch()).data?.[0];
+    if (myTable) enter({ kind: 'resume', sessionId: myTable.sessionId });
+  };
 
   const label = [styles.label, fontOf(fonts.button), { fontSize: m.bodySize }];
   const nextCapacity = () =>
@@ -104,7 +113,7 @@ function CreateColumn({
         maxPlayers,
         name: trimmed,
         stakeAmount,
-        suspicionDetectionEnabled: detection,
+        suspicionDetectionEnabled: detectionAvailable && detection,
         ...(password !== '' && { password }),
       },
       {
@@ -112,6 +121,9 @@ function CreateColumn({
         onSuccess: ({ game }) => {
           onClose();
           router.push(`/game/${game.gameId}`);
+        },
+        onError: (err) => {
+          if (isAlreadyPlaying(err)) void returnToMyTable();
         },
       },
     );
@@ -189,30 +201,26 @@ function CreateColumn({
           onSubmitEditing={submit}
         />
       </View>
-      <Pressable
-        onPress={() => setDetection((v) => !v)}
-        accessibilityRole="switch"
-        accessibilityLabel="Détection anti-collusion"
-        accessibilityState={{ checked: detection }}
-        accessibilityHint={detection ? SHIELD_LABELS.on : SHIELD_LABELS.off}
-        hitSlop={6}
-        style={({ pressed }) => [styles.row, { gap: m.gap * 0.6 }, pressed && styles.pressed]}
-      >
-        <ShieldGlyph enabled={detection} size={Math.round(m.bodySize * 1.15)} />
-        <Text style={[label, !detection && styles.dimmed]}>Détection anti-collusion</Text>
-      </Pressable>
+      {detectionAvailable ? (
+        <Pressable
+          onPress={() => setDetection((v) => !v)}
+          accessibilityRole="switch"
+          accessibilityLabel="Détection anti-collusion"
+          accessibilityState={{ checked: detection }}
+          accessibilityHint={detection ? SHIELD_LABELS.on : SHIELD_LABELS.off}
+          hitSlop={6}
+          style={({ pressed }) => [styles.row, { gap: m.gap * 0.6 }, pressed && styles.pressed]}
+        >
+          <ShieldGlyph enabled={detection} size={Math.round(m.bodySize * 1.15)} />
+          <Text style={[label, !detection && styles.dimmed]}>Détection anti-collusion</Text>
+        </Pressable>
+      ) : null}
       {failure ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {failure}
         </Text>
       ) : null}
       <View style={[styles.row, styles.centeredRow, { gap: m.gap }]}>
-        {canResume ? (
-          <PanelButton
-            title="Reprendre ma partie"
-            onPress={() => enter({ kind: 'resume', sessionId: myTable.sessionId })}
-          />
-        ) : null}
         <PanelButton title="Créer" loading={create.isPending} onPress={submit} />
       </View>
     </InnerFrame>
@@ -233,12 +241,17 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const open = useOpenTables();
+  // Détection coupée par l'administration (D-081) : aucune colonne « bouclier ».
+  const detectionAvailable = useDetectionAvailable();
   const inputRef = useRef<TextInput>(null);
   const [query, setQuery] = useState('');
   // Partie 🔒 choisie : le mot de passe est demandé sous sa ligne.
   const [locked, setLocked] = useState<OpenTable>();
   const [secret, setSecret] = useState('');
   const [tableWidth, setTableWidth] = useState(0);
+  // Actualisation demandée par le joueur : distincte de la relecture automatique (3 s),
+  // qui ne doit pas faire clignoter le bouton.
+  const [refreshing, setRefreshing] = useState(false);
   const columns = tableColumns(m, tableWidth);
   const needle = query.trim().toLowerCase();
   const tables = (open.data ?? [])
@@ -261,6 +274,11 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
     } else {
       table.enter({ kind: 'join', table: t });
     }
+  };
+  const refresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    void open.refetch().finally(() => setRefreshing(false));
   };
   const joinLocked = () => {
     if (locked && secret !== '') table.enter({ kind: 'join', table: locked, password: secret });
@@ -295,7 +313,12 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
             <Magnifier size={m.controlHeight * 0.48} />
           </Pressable>
         </View>
-        <SquareButton label="Actualiser" glyph="↻" onPress={() => void open.refetch()} />
+        <SquareButton
+          label="Actualiser la liste des parties"
+          glyph="↻"
+          busy={refreshing}
+          onPress={refresh}
+        />
       </View>
       {failure ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
@@ -303,7 +326,7 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
         </Text>
       ) : null}
       <View onLayout={(e) => setTableWidth(Math.round(e.nativeEvent.layout.width))}>
-        <TableHeader c={columns} />
+        <TableHeader c={columns} shield={detectionAvailable} />
       </View>
       <View style={[styles.list, { minHeight: m.controlHeight * 2 }]}>
         {open.isPending ? <ActivityIndicator color={palette.gold} /> : null}
@@ -349,10 +372,10 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
               name={t.name}
               mine={t.mine}
               locked={t.hasPassword}
-              guarded={t.suspicionDetectionEnabled}
+              guarded={detectionAvailable ? t.suspicionDetectionEnabled : undefined}
               stake={t.stakeAmount}
               players={`${t.playerCount}/${t.maxPlayers}`}
-              label={t.mine ? 'Reprendre ma partie' : `Rejoindre : ${t.name}`}
+              label={t.mine ? `Retourner à ma table : ${t.name}` : `Rejoindre : ${t.name}`}
               busy={t.mine ? busyResume : busyJoin(t.sessionId)}
               onOpen={() => select(t)}
             />
@@ -422,13 +445,13 @@ function tableColumns(m: LobbyMetrics, width: number) {
 
 type TableColumns = ReturnType<typeof tableColumns>;
 
-function TableHeader({ c }: { c: TableColumns }) {
+function TableHeader({ c, shield }: { c: TableColumns; shield: boolean }) {
   const fonts = useTableFonts();
   const header = [styles.header, fontOf(fonts.button), { fontSize: c.font }];
   return (
     <View style={[styles.row, { gap: c.gap }]}>
       <View style={c.lock} />
-      <View style={c.shield} />
+      {shield ? <View style={c.shield} /> : null}
       <Text numberOfLines={1} style={[header, styles.left, c.name]}>
         Nom
       </Text>
@@ -459,8 +482,11 @@ function GameRow({
   name: string;
   mine: boolean;
   locked: boolean;
-  /** Réglage « détection anti-collusion » de la partie, valeur du serveur (D-043). */
-  guarded: boolean;
+  /**
+   * Réglage « détection anti-collusion » de la partie, valeur du serveur (D-043). Absent :
+   * détection coupée par l'administration, aucun bouclier affiché (D-081).
+   */
+  guarded?: boolean;
   /** Absente : aucune mise enregistrée (jamais remplacée par 0). */
   stake?: number;
   players: string;
@@ -479,9 +505,11 @@ function GameRow({
       >
         {locked ? '🔒' : '🔓'}
       </Text>
-      <View style={[styles.capacity, c.shield]}>
-        <ShieldIndicator enabled={guarded} size={Math.round(c.font * 0.95)} fontSize={c.font} />
-      </View>
+      {guarded !== undefined ? (
+        <View style={[styles.capacity, c.shield]}>
+          <ShieldIndicator enabled={guarded} size={Math.round(c.font * 0.95)} fontSize={c.font} />
+        </View>
+      ) : null}
       <Text numberOfLines={1} ellipsizeMode="tail" style={[cell, styles.left, c.name]}>
         {mine ? '⭐ ' : ''}
         {name}
@@ -555,10 +583,13 @@ function SquareButton({
   label,
   glyph,
   size: forcedSize,
+  busy = false,
   onPress,
 }: {
   label: string;
   glyph: string;
+  /** Action en cours : indicateur à la place du glyphe, bouton inactif. */
+  busy?: boolean;
   /** Côté visible ; la zone tactile est étendue à 44 dp au moins (Android). */
   size?: number;
   onPress: () => void;
@@ -568,8 +599,10 @@ function SquareButton({
   return (
     <Pressable
       onPress={onPress}
+      disabled={busy}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ busy, disabled: busy }}
       hitSlop={Math.max(6, Math.ceil((44 - size) / 2))}
       style={({ pressed }) => [
         styles.square,
@@ -577,9 +610,13 @@ function SquareButton({
         pressed && styles.pressed,
       ]}
     >
-      <Text allowFontScaling={false} style={[styles.squareGlyph, { fontSize: size * 0.6 }]}>
-        {glyph}
-      </Text>
+      {busy ? (
+        <ActivityIndicator color="#FFD84A" />
+      ) : (
+        <Text allowFontScaling={false} style={[styles.squareGlyph, { fontSize: size * 0.6 }]}>
+          {glyph}
+        </Text>
+      )}
     </Pressable>
   );
 }

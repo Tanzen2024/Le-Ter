@@ -25,11 +25,11 @@ import {
 import { deckForHands, decksRandom } from '../../fixtures/random';
 import { testRules } from '../../fixtures/rules';
 
-/** Durée de production d'un tour (D-034, 15 s depuis D-068) : les scénarios en dépendent. */
+/** Durée de production d'un tour (D-034, 10 s depuis D-092) : les scénarios en dépendent. */
 const TURN = TURN_DURATION_MS;
 
 /**
- * Timer de tour (D-034) et coup automatique (D-036) : 15 s par tour, SERVER-AUTHORITATIVE,
+ * Timer de tour (D-034) et coup automatique (D-036) : 10 s par tour, SERVER-AUTHORITATIVE,
  * échéance persistée ; à l'échéance, TURN_TIMEOUT puis le serveur joue la plus petite
  * carte de la famille du contrôle si le joueur en possède, sinon la plus petite de sa main,
  * par le MÊME chemin qu'un coup manuel.
@@ -123,10 +123,10 @@ beforeEach(() => {
 });
 afterEach(() => jest.useRealTimers());
 
-describe('Timer de tour — 15 secondes, autorité du serveur (D-034)', () => {
+describe('Timer de tour — 10 secondes, autorité du serveur (D-034)', () => {
   it('le démarrage arme le timer de J1 ; début, échéance et joueur attendu sont persistés', async () => {
     const { game, repository, timers } = await startedGame();
-    expect(TURN_DURATION_MS).toBe(15_000);
+    expect(TURN_DURATION_MS).toBe(10_000);
     const stored = await repository.findById(game.id);
     expect(stored).toMatchObject({
       turnStartedAt: T0,
@@ -137,7 +137,7 @@ describe('Timer de tour — 15 secondes, autorité du serveur (D-034)', () => {
     expect(timers.has(game.id)).toBe(true);
   });
 
-  it('jouer AVANT l’échéance : accepté, le tour suivant reçoit sa propre échéance de 15 s', async () => {
+  it('jouer AVANT l’échéance : accepté, le tour suivant reçoit sa propre échéance de 10 s', async () => {
     const { service, game, events } = await startedGame();
     jest.setSystemTime(new Date(T0.getTime() + TURN - 1));
     const after = await service.playCard(game.id, p1, 'PIQUE-5');
@@ -147,7 +147,7 @@ describe('Timer de tour — 15 secondes, autorité du serveur (D-034)', () => {
       nextPlayerId: p2,
       turnDeadlineAt: new Date(T0.getTime() + 2 * TURN - 1).toISOString(),
     });
-    // L'ancienne échéance (T0 + 15 s) passe sans effet : seule la nouvelle compte.
+    // L'ancienne échéance (T0 + 10 s) passe sans effet : seule la nouvelle compte.
     await jest.advanceTimersByTimeAsync(TURN - 1);
     expect(events.filter((e) => e.type === 'game:turn_timeout')).toHaveLength(0);
     await jest.advanceTimersByTimeAsync(1);
@@ -278,7 +278,7 @@ describe('Coup automatique après TURN_TIMEOUT — règle D-036 (stratégie par 
     jest.setSystemTime(new Date(T0.getTime() + TURN - 1_000));
     await service.playCard(game.id, p1, 'PIQUE-5');
     const before = (await repository.findById(game.id))!;
-    // Le TURN_TIMEOUT du tour de p1 (échéance T0 + 15 s) arrive en retard.
+    // Le TURN_TIMEOUT du tour de p1 (échéance T0 + 10 s) arrive en retard.
     jest.setSystemTime(new Date(T0.getTime() + TURN));
     const after = await service.handleTurnTimeout(game.id);
     expect(after.version).toBe(before.version);
@@ -384,7 +384,7 @@ describe('D-036 — jeu manuel vs jeu automatique (le système ne choisit qu’a
   it('TEST 5 — partie entièrement jouée à la main dans les délais : la stratégie n’est JAMAIS appelée', async () => {
     const spy = new SpySelection();
     const { service, game, repository, events } = await startedGame({ autoCardSelection: spy });
-    // Chaque joueur choisit lui-même sa carte, à 14 s (avant l'échéance de 15 s).
+    // Chaque joueur choisit lui-même sa carte, à 9 s (avant l'échéance de 10 s).
     const manual: [PlayerId, CardId][] = [
       [p1, 'PIQUE-5'],
       [p2, 'PIQUE-9'], // p2 prend le contrôle

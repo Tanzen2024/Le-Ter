@@ -9,7 +9,7 @@ import {
   type AuditEntry,
 } from '../../domain/admin/admin';
 import {
-  DEPOSIT_AMOUNTS_XAF,
+  DEPOSIT_LIMITS_XAF,
   PaymentNotFoundError,
   PaymentVerificationError,
   TOKENS_PER_XAF,
@@ -82,6 +82,8 @@ function userListView(u: AdminUserRow) {
     reserved: u.reserved,
     gamesPlayed: u.gamesPlayed,
     lastGameAt: iso(u.lastGameAt),
+    suspension: u.suspension ? { endsAt: iso(u.suspension.endsAt) } : null,
+    chatRestriction: u.chatRestriction ? { endsAt: iso(u.chatRestriction.endsAt) } : null,
   };
 }
 
@@ -132,9 +134,11 @@ function gameView(g: AdminGameRow, now: Date) {
       g.startedAt && end
         ? Math.max(0, Math.round((end.getTime() - g.startedAt.getTime()) / 1000))
         : null,
+    turnTimedOutAt: iso(g.turnTimedOutAt),
     endReason: g.endReason,
     winner: g.winnerId ? { id: g.winnerId, username: g.winnerUsername } : null,
     replayOfGameId: g.replayOfGameId,
+    replayedByGameId: g.replayedByGameId,
     players: g.players.map((p) => ({
       playerId: p.playerId,
       username: p.username,
@@ -194,7 +198,9 @@ function ledgerView(e: LedgerEntry) {
     currency: e.currency,
     feeBps: e.feeBps,
     createdAt: iso(e.createdAt),
-    origin: { type: 'TOURNAMENT' as const, id: e.tournamentId, name: e.tournamentName },
+    origin: e.gameId
+      ? { type: 'GAME' as const, id: e.gameId, name: `Partie ${e.gameId.slice(0, 8)}` }
+      : { type: 'TOURNAMENT' as const, id: e.tournamentId, name: e.tournamentName },
     participants: e.participants,
     grossPool: e.grossPool,
   };
@@ -252,12 +258,12 @@ export class AdminQueryService {
   // --- Joueurs --------------------------------------------------------------------------------
 
   async listUsers(query: UserListQuery) {
-    const { total, items } = await this.deps.queries.listUsers(query);
+    const { total, items } = await this.deps.queries.listUsers(query, this.clock());
     return { page: query.page, limit: query.limit, total, items: items.map(userListView) };
   }
 
   async getUser(id: string, actorId: UserId) {
-    const user = await this.deps.queries.findUser(id);
+    const user = await this.deps.queries.findUser(id, this.clock());
     if (!user) throw new AdminResourceNotFoundError('USER');
     await this.auditView_('USER_VIEWED', 'USER', id, actorId);
     return {
@@ -270,13 +276,6 @@ export class AdminQueryService {
       activeSessionId: user.activeSessionId,
       tournamentRegistrations: user.tournamentRegistrations,
       payments: user.payments,
-      actions: {
-        suspend: {
-          available: false,
-          reason:
-            'Suspension désactivée en V1 : règles non définies pour une partie en cours, une table, un tournoi ou un achat en attente.',
-        },
-      },
     };
   }
 
@@ -426,7 +425,7 @@ export class AdminQueryService {
       this.deps.queries.paymentReconciliation({
         now,
         staleMinutes: ADMIN_THRESHOLDS.stalePendingPaymentMinutes,
-        allowedAmounts: DEPOSIT_AMOUNTS_XAF,
+        depositLimits: DEPOSIT_LIMITS_XAF,
         tokensPerUnit: TOKENS_PER_XAF,
         limit: RECONCILIATION_LIMIT,
       }),
@@ -493,8 +492,9 @@ export class AdminQueryService {
         label: 'Aucune sortie (versement, retrait) n’est prise en charge',
       },
       ordinaryGamesCommission: {
-        defined: false,
-        label: 'Aucune commission sur les parties ordinaires : règle non définie (R-37)',
+        defined: true,
+        label:
+          'Commission sur les mises des perdants, au taux de la tranche de la mise (doublé par la Kora), D-074',
       },
       reconciliation: {
         tournamentAnomalies: tournamentAnomalyCount,
@@ -569,6 +569,7 @@ export class AdminQueryService {
             feeBps: e.feeBps,
             tournamentId: e.tournamentId,
             tournamentName: e.tournamentName,
+            gameId: e.gameId,
             participants: e.participants,
             grossPool: e.grossPool,
           })),
@@ -686,11 +687,6 @@ export const UNSUPPORTED_OPERATIONS = [
     reason: 'Non pris en charge par l’intégration CinetPay (achats seulement, D-050).',
   },
   {
-    operation: 'WITHDRAWAL',
-    label: 'Retrait vers Mobile Money',
-    reason: 'Aucun fournisseur de décaissement ; montants et conversion non définis (R-13, R-16).',
-  },
-  {
     operation: 'MANUAL_CREDIT',
     label: 'Crédit ou débit manuel d’un solde',
     reason: 'Aucune règle métier ne l’autorise.',
@@ -700,17 +696,14 @@ export const UNSUPPORTED_OPERATIONS = [
     label: 'Sortie du compte financier de la plateforme',
     reason: 'Aucune règle de versement définie.',
   },
-  {
-    operation: 'GAME_COMMISSION',
-    label: 'Commission sur les parties ordinaires',
-    reason: 'Règle non définie (R-37).',
-  },
 ] as const;
 
 const LEDGER_KIND_DESCRIPTIONS = {
   TOURNAMENT_PLATFORM_FEE:
     'Commission d’un tournoi : floor(cagnotte brute × taux / 10 000), au démarrage.',
   UNALLOCATED_PRIZE: 'Part des gains des rangs payés non occupés, au calcul des résultats.',
+  GAME_COMMISSION:
+    'Commission d’une partie : floor(mises des perdants × taux de la tranche, doublé par la Kora / 10 000), au règlement.',
 } as const;
 
 const REPORT_COLUMNS: Record<ReportName, readonly string[]> = {
@@ -737,6 +730,7 @@ const REPORT_COLUMNS: Record<ReportName, readonly string[]> = {
     'feeBps',
     'tournamentId',
     'tournamentName',
+    'gameId',
     'participants',
     'grossPool',
   ],

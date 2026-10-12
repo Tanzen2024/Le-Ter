@@ -439,3 +439,68 @@ describe('Chat de partie : partie terminée', () => {
     await expectStatus(history(C, gameId), 403);
   });
 });
+
+describe('Chat de partie : restriction par l’administration (D-079)', () => {
+  /** Restriction insérée comme le fait PlayerModerationService (heure réelle du serveur). */
+  async function restrict(userId: string, by: string, endsAt: Date | null, startsAt = new Date()) {
+    const id = randomUUID();
+    await database.sql.query(
+      `INSERT INTO user_sanctions (id, user_id, kind, reason, starts_at, ends_at, created_by, created_at)
+       VALUES ($1, $2, 'CHAT_RESTRICTION', 'Propos injurieux', $3, $4, $5, $3)`,
+      [id, userId, startsAt.toISOString(), endsAt?.toISOString() ?? null, by],
+    );
+    return id;
+  }
+
+  it('refuse l’envoi (403 CHAT_RESTRICTED) sans rien enregistrer ni diffuser, lecture conservée', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const gameId = await gameWith(A, B);
+    const events = capture(gameId);
+    await restrict(A.id, B.id, null);
+
+    const res = await expectStatus(send(A, gameId, { content: 'insulte' }), 403);
+    expect(res.body.code).toBe('CHAT_RESTRICTED');
+    expect(res.body.details).toEqual({ restrictedUntil: null });
+    expect(events).toHaveLength(0);
+    const { rows } = await database.sql.query(
+      'SELECT 1 FROM game_chat_messages WHERE sender_id = $1',
+      [A.id],
+    );
+    expect(rows).toHaveLength(0);
+
+    const read = await expectStatus(history(A, gameId), 200);
+    expect(read.body.canSend).toBe(false);
+    expect(read.body.restriction).toEqual({ endsAt: null });
+    // Les autres joueurs de la partie ne sont pas touchés.
+    await expectStatus(send(B, gameId, { content: 'Bonjour' }), 201);
+    const other = await expectStatus(history(B, gameId), 200);
+    expect(other.body.canSend).toBe(true);
+    expect(other.body.restriction).toBeNull();
+  });
+
+  it('s’applique au chemin commun HTTP et WebSocket (ChatService.sendMessage)', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const gameId = await gameWith(A, B);
+    await restrict(A.id, B.id, null);
+    await expect(
+      chat.sendMessage(gameId, A.id, { content: 'contournement', clientMessageId: randomUUID() }),
+    ).rejects.toMatchObject({ name: 'ChatRestrictedError' });
+  });
+
+  it('expire à l’heure du serveur et se lève avant échéance', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const gameId = await gameWith(A, B);
+    // Restriction déjà échue : l'envoi est de nouveau permis, sans aucune écriture.
+    await restrict(A.id, B.id, new Date(Date.now() - 1000), new Date(Date.now() - 60_000));
+    await expectStatus(send(A, gameId, { content: 'de retour' }), 201);
+
+    const id = await restrict(A.id, B.id, new Date(Date.now() + 3_600_000));
+    const refused = await expectStatus(send(A, gameId, { content: 'encore' }), 403);
+    expect(refused.body.details.restrictedUntil).toEqual(expect.any(String));
+    await database.sql.query(
+      `UPDATE user_sanctions SET lifted_at = now(), lifted_by = $2, lift_reason = 'Levée' WHERE id = $1`,
+      [id, B.id],
+    );
+    await expectStatus(send(A, gameId, { content: 'après levée' }), 201);
+  });
+});

@@ -5,12 +5,12 @@ import { useServerCountdown } from './use-server-countdown';
 
 /**
  * Compte à rebours vers une échéance FIXÉE PAR LE SERVEUR (tour, Poursuivre/Quitter, départ
- * d'une table de tournoi : 15 s depuis D-068). Le téléphone n'affiche que le temps restant ;
+ * d'une table de tournoi : 10 s depuis D-092). Le téléphone n'affiche que le temps restant ;
  * il ne déclenche jamais lui-même la fin du délai.
  */
 const T0 = Date.parse('2026-10-09T10:00:00.000Z');
 const iso = (ms: number) => new Date(ms).toISOString();
-const DEADLINE = iso(T0 + 15_000);
+const DEADLINE = iso(T0 + 10_000);
 
 type Props = { deadlineAt?: string; serverNow?: string; receivedAt: number };
 
@@ -31,13 +31,13 @@ function renderCountdown(initial: Props) {
   );
 }
 
-describe('compte à rebours serveur — délai de 15 s (D-068)', () => {
-  it('affiche 15 s au début, décompte, puis reste à 0 sans jamais devenir négatif', async () => {
+describe('compte à rebours serveur — délai de 10 s (D-092)', () => {
+  it('affiche 10 s au début, décompte, puis reste à 0 sans jamais devenir négatif', async () => {
     const { result } = await renderCountdown({ deadlineAt: DEADLINE, serverNow: iso(T0), receivedAt: T0 });
-    expect(result.current).toBe(15);
+    expect(result.current).toBe(10);
     await act(() => jest.advanceTimersByTime(1_000));
-    expect(result.current).toBe(14);
-    await act(() => jest.advanceTimersByTime(13_500));
+    expect(result.current).toBe(9);
+    await act(() => jest.advanceTimersByTime(8_500));
     expect(result.current).toBe(1);
     await act(() => jest.advanceTimersByTime(500));
     expect(result.current).toBe(0);
@@ -45,14 +45,14 @@ describe('compte à rebours serveur — délai de 15 s (D-068)', () => {
     expect(result.current).toBe(0);
   });
 
-  it('reconnexion : reprend le temps restant du serveur, sans repartir à 15 s', async () => {
-    // Horloge du téléphone en avance de 5 s ; la vue relue après reconnexion arrive à T0 + 9 s.
+  it('reconnexion : reprend le temps restant du serveur, sans repartir à 10 s', async () => {
+    // Horloge du téléphone en avance de 5 s ; la vue relue après reconnexion arrive à T0 + 4 s.
     const skew = 5_000;
-    jest.setSystemTime(T0 + 9_000 + skew);
+    jest.setSystemTime(T0 + 4_000 + skew);
     const { result } = await renderCountdown({
       deadlineAt: DEADLINE,
-      serverNow: iso(T0 + 9_000),
-      receivedAt: T0 + 9_000 + skew,
+      serverNow: iso(T0 + 4_000),
+      receivedAt: T0 + 4_000 + skew,
     });
     expect(result.current).toBe(6);
   });
@@ -77,16 +77,16 @@ describe('compte à rebours serveur — délai de 15 s (D-068)', () => {
       serverNow: iso(T0),
       receivedAt: T0,
     });
-    await act(() => jest.advanceTimersByTime(10_000));
+    await act(() => jest.advanceTimersByTime(5_000));
     expect(result.current).toBe(5);
-    await rerender({ deadlineAt: iso(T0 + 25_000), serverNow: iso(T0 + 10_000), receivedAt: T0 + 10_000 });
-    expect(result.current).toBe(15);
+    await rerender({ deadlineAt: iso(T0 + 15_000), serverNow: iso(T0 + 5_000), receivedAt: T0 + 5_000 });
+    expect(result.current).toBe(10);
     // Un seul intervalle par échéance, retiré avec elle : pas d'accumulation de minuteurs.
     expect(active.size).toBe(1);
-    await rerender({ deadlineAt: undefined, serverNow: iso(T0 + 10_000), receivedAt: T0 + 10_000 });
+    await rerender({ deadlineAt: undefined, serverNow: iso(T0 + 5_000), receivedAt: T0 + 5_000 });
     expect(result.current).toBeNull();
     expect(active.size).toBe(0);
-    await rerender({ deadlineAt: iso(T0 + 25_000), serverNow: iso(T0 + 10_000), receivedAt: T0 + 10_000 });
+    await rerender({ deadlineAt: iso(T0 + 15_000), serverNow: iso(T0 + 5_000), receivedAt: T0 + 5_000 });
     expect(active.size).toBe(1);
     await unmount();
     expect(active.size).toBe(0);

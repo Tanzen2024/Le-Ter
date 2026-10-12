@@ -20,7 +20,10 @@ export const SESSION_CODES = new Set([
 /** Message compréhensible pour l'utilisateur, quel que soit l'incident. */
 export function messageOf(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return "Vous n'avez pas accès à cette ressource.";
+    // Refus métier explicite (D-079) : le message du serveur dit pourquoi.
+    if (error.status === 403 && error.code !== 'SELF_ACTION_FORBIDDEN') {
+      return "Vous n'avez pas accès à cette ressource.";
+    }
     if (error.message) return error.message;
     if (error.status >= 500) return 'Le serveur rencontre un problème. Réessayez dans un instant.';
     return 'Une erreur est survenue.';

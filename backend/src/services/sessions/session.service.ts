@@ -45,6 +45,7 @@ import type {
 import { BackgroundTasks } from '../../utils/background-tasks';
 import type { Logger } from '../../utils/logger';
 import type { SessionEventPublisher } from '../../websocket/session-event-publisher';
+import type { DetectionGlobalSwitch } from '../detection/detection-settings.service';
 import type { CreateGameOptions, GameService } from '../game/game.service';
 import { SessionTimerRegistry } from '../game/game-timer-registry';
 
@@ -100,7 +101,7 @@ export interface SessionServiceDependencies {
   clock?: () => Date;
   /** Timers de décision (un par session). */
   timers?: SessionTimerRegistry;
-  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (15 s, D-034, D-068). */
+  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (10 s, D-034, D-092). */
   decisionWindowMs?: number;
   /** Mots de passe de partie (D-039). Par défaut bcrypt au coût des comptes. */
   passwords?: TablePasswordHasher;
@@ -122,6 +123,12 @@ export interface SessionServiceDependencies {
    * égalité) ; absente : toujours permise. Tables de tournoi : rien après la fin (D-056).
    */
   continuation?: SessionContinuationPolicy;
+  /**
+   * Interrupteur GLOBAL de la détection (D-053), relu dans PostgreSQL. Désactivé : l'option
+   * « Détection anti-collusion » n'est ni proposée aux joueurs ni enregistrée (D-081).
+   * Absent (tests) : l'option est toujours proposée.
+   */
+  detectionSwitch?: DetectionGlobalSwitch;
 }
 
 /** Politique FACULTATIVE de création d'une nouvelle partie dans une session existante. */
@@ -180,7 +187,7 @@ export class SessionService {
     this.autoNextGame = deps.autoNextGame ?? true;
     // Fin d'une partie → ronde Poursuivre/Quitter. Si ce processus s'arrête avant, la
     // reprise (`recoverDecisionTimers`) ou la prochaine mutation de la session l'ouvre,
-    // avec la même échéance (fin de partie + 15 s).
+    // avec la même échéance (fin de partie + 10 s).
     deps.games.onGameFinished((game) => {
       const { sessionId } = game;
       if (sessionId) {
@@ -220,10 +227,13 @@ export class SessionService {
       }
       const passwordHash =
         password !== undefined ? await this.passwords.hashPassword(password) : undefined;
+      // Détection coupée par l'administration (D-081) : l'option n'est pas proposée ; une
+      // demande venant d'un ancien client n'active jamais la table.
+      const detection = suspicionDetectionEnabled === true && (await this.isDetectionAvailable());
       const session = newSession(creatorId, options.maxPlayers, this.clock(), {
         name,
         passwordHash,
-        suspicionDetectionEnabled: suspicionDetectionEnabled ?? false,
+        suspicionDetectionEnabled: detection,
       });
       let game: Game;
       try {
@@ -232,6 +242,8 @@ export class SessionService {
           sessionId: session.id,
           firstPlayerId: creatorId, // première partie : J1 = créateur de la session
           creatorTablePosition: 0,
+          // Table de tournoi : jetons de tournoi, hors mise du compte de jeu (D-073).
+          ...(tournamentId !== undefined && { tournamentTable: true }),
         });
         await this.deps.sessions.createWithFirstGame(
           session,
@@ -693,6 +705,14 @@ export class SessionService {
    */
   listOpenTables(viewerId: PlayerId): Promise<OpenTableSummary[]> {
     return this.deps.sessions.findOpenTables(viewerId, OPEN_TABLES_LIMIT);
+  }
+
+  /**
+   * L'option « Détection anti-collusion » peut-elle être proposée aux joueurs ? Suit
+   * l'interrupteur global de l'administration (D-053, D-081), relu à chaque appel.
+   */
+  async isDetectionAvailable(): Promise<boolean> {
+    return this.deps.detectionSwitch ? this.deps.detectionSwitch.isGloballyEnabled() : true;
   }
 
   /**

@@ -3,6 +3,7 @@ import { ADMIN_THRESHOLDS } from '../domain/admin/admin';
 import type { PaymentStatus } from '../domain/payments/payment';
 import { STARTED_STATUSES, type TournamentStatus } from '../domain/tournaments/tournament';
 import type { UserRole, UserStatus } from '../domain/users/user';
+import { activeSanctionSql } from './user-sanctions.sql';
 import type {
   AdminGameDetail,
   AdminGamePlayer,
@@ -117,7 +118,9 @@ type UserRow = {
   last_game_at: Date | null;
 };
 
-function userOf(row: UserRow): AdminUserRow {
+type Restrictions = Map<string, Pick<AdminUserRow, 'suspension' | 'chatRestriction'>>;
+
+function userOf(row: UserRow, restrictions: Restrictions = new Map()): AdminUserRow {
   return {
     id: row.id,
     username: row.username,
@@ -133,13 +136,17 @@ function userOf(row: UserRow): AdminUserRow {
     reserved: n(row.reserved),
     gamesPlayed: n(row.games_played),
     lastGameAt: dOrNull(row.last_game_at),
+    suspension: restrictions.get(row.id)?.suspension ?? null,
+    chatRestriction: restrictions.get(row.id)?.chatRestriction ?? null,
   };
 }
 
 // Colonnes en liste blanche : `g.state` (mains, paquet, plis) n'est JAMAIS lu.
 const GAME_COLUMNS = `
   g.id, g.status, g.session_id, g.max_players, g.stake_amount, g.created_at, g.started_at,
-  g.finished_at, g.turn_deadline_at, g.end_reason, g.winner_id, g.replay_of_game_id,
+  g.finished_at, g.turn_deadline_at, g.turn_timed_out_at, g.end_reason, g.winner_id,
+  g.replay_of_game_id,
+  (SELECT r.id FROM games r WHERE r.replay_of_game_id = g.id) AS replayed_by_game_id,
   wu.username AS winner_username, ts.tournament_id, ${TOURNAMENT_LABEL} AS tournament_name,
   (SELECT COALESCE(json_agg(json_build_object(
             'playerId', gp.player_id, 'username', pu.username, 'seat', gp.seat,
@@ -163,9 +170,11 @@ type GameRow = {
   started_at: Date | null;
   finished_at: Date | null;
   turn_deadline_at: Date | null;
+  turn_timed_out_at: Date | null;
   end_reason: string | null;
   winner_id: string | null;
   replay_of_game_id: string | null;
+  replayed_by_game_id: string | null;
   winner_username: string | null;
   tournament_id: string | null;
   tournament_name: string | null;
@@ -204,10 +213,12 @@ function gameOf(row: GameRow): AdminGameRow {
     startedAt: dOrNull(row.started_at),
     finishedAt: dOrNull(row.finished_at),
     turnDeadlineAt: dOrNull(row.turn_deadline_at),
+    turnTimedOutAt: dOrNull(row.turn_timed_out_at),
     endReason: row.end_reason,
     winnerId: row.winner_id,
     winnerUsername: row.winner_username,
     replayOfGameId: row.replay_of_game_id,
+    replayedByGameId: row.replayed_by_game_id,
     players: playersOf(row.players),
   };
 }
@@ -288,7 +299,37 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
 
   // --- Joueurs --------------------------------------------------------------------------------
 
-  async listUsers(query: UserListQuery) {
+  /**
+   * Suspensions et restrictions du chat EN COURS à `now` (heure du serveur) des comptes
+   * listés (D-079) : une requête pour toute la page.
+   */
+  private async restrictionsOf(ids: string[], now: Date): Promise<Restrictions> {
+    const map: Restrictions = new Map();
+    if (ids.length === 0) return map;
+    const { rows } = await this.db.query<{
+      user_id: string;
+      kind: 'SUSPENSION' | 'CHAT_RESTRICTION';
+      indefinite: boolean;
+      ends_at: Date | null;
+    }>(
+      `SELECT s.user_id, s.kind, bool_or(s.ends_at IS NULL) AS indefinite, max(s.ends_at) AS ends_at
+       FROM user_sanctions s
+       WHERE s.user_id = ANY($1::uuid[]) AND s.kind IN ('SUSPENSION', 'CHAT_RESTRICTION')
+         AND s.lifted_at IS NULL AND (s.ends_at IS NULL OR s.ends_at > $2)
+       GROUP BY s.user_id, s.kind`,
+      [ids, iso(now)],
+    );
+    for (const row of rows) {
+      const entry = map.get(row.user_id) ?? { suspension: null, chatRestriction: null };
+      const value = { endsAt: row.indefinite ? null : dOrNull(row.ends_at) };
+      if (row.kind === 'SUSPENSION') entry.suspension = value;
+      else entry.chatRestriction = value;
+      map.set(row.user_id, entry);
+    }
+    return map;
+  }
+
+  async listUsers(query: UserListQuery, now: Date) {
     const where = new Where();
     if (query.q) {
       const like = likePattern(query.q);
@@ -302,7 +343,11 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
         like,
       );
     }
-    if (query.status) where.add('u.status = ?', query.status);
+    if (query.status === 'suspended') {
+      where.add(activeSanctionSql('u.id', 'SUSPENSION', '?::timestamptz'), iso(now));
+    } else if (query.status) {
+      where.add('u.status = ?', query.status);
+    }
     if (query.role) where.add('u.role = ?', query.role);
     const { total, rows } = await this.page<UserRow>(
       USER_COLUMNS,
@@ -311,10 +356,14 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       USER_ORDER[query.sort],
       query,
     );
-    return { total, items: rows.map(userOf) };
+    const restrictions = await this.restrictionsOf(
+      rows.map((r) => r.id),
+      now,
+    );
+    return { total, items: rows.map((r) => userOf(r, restrictions)) };
   }
 
-  async findUser(id: string): Promise<AdminUserDetail | null> {
+  async findUser(id: string, now: Date): Promise<AdminUserDetail | null> {
     const { rows } = await this.db.query<
       UserRow & {
         games_won: number;
@@ -354,7 +403,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
     const row = rows[0];
     if (!row) return null;
     return {
-      ...userOf(row),
+      ...userOf(row, await this.restrictionsOf([row.id], now)),
       updatedAt: d(row.updated_at),
       gamesWon: n(row.games_won),
       activeGameId: row.active_game_id,
@@ -606,7 +655,10 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       count: number;
       amount: unknown;
     }>(
-      `SELECT status, count(*)::int AS count, COALESCE(sum(amount), 0) AS amount
+      // Partie (D-074) : seule la mise due est capturée (`captured_amount`), le reste libéré.
+      `SELECT status, count(*)::int AS count,
+              COALESCE(sum(CASE WHEN status = 'CAPTURED' THEN COALESCE(captured_amount, amount)
+                                ELSE amount END), 0) AS amount
        FROM wallet_reservations WHERE created_at >= $1 AND created_at < $2
        GROUP BY status ORDER BY status`,
       params,
@@ -687,8 +739,9 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
     if (query.to) where.add('l.created_at < ?', iso(query.to));
     const { total, rows } = await this.page<{
       id: string;
-      tournament_id: string;
-      name: string;
+      tournament_id: string | null;
+      name: string | null;
+      game_id: string | null;
       kind: LedgerKind;
       amount: unknown;
       fee_bps: number | null;
@@ -697,9 +750,13 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       participants: number | null;
       gross_pool: unknown;
     }>(
-      `l.id, l.tournament_id, ${TOURNAMENT_LABEL} AS name, l.kind, l.amount, l.fee_bps, l.currency, l.created_at,
-       t.participants, t.gross_pool`,
-      'FROM platform_ledger l JOIN tournaments t ON t.id = l.tournament_id',
+      `l.id, l.tournament_id, CASE WHEN t.id IS NULL THEN NULL ELSE ${TOURNAMENT_LABEL} END AS name,
+       l.game_id, l.kind, l.amount, l.fee_bps, l.currency, l.created_at,
+       COALESCE(t.participants, gs.participants) AS participants,
+       COALESCE(t.gross_pool, gs.gross_amount) AS gross_pool`,
+      `FROM platform_ledger l
+       LEFT JOIN tournaments t ON t.id = l.tournament_id
+       LEFT JOIN game_settlements gs ON gs.game_id = l.game_id`,
       where,
       'l.created_at DESC, l.id DESC',
       query,
@@ -710,6 +767,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
         id: row.id,
         tournamentId: row.tournament_id,
         tournamentName: row.name,
+        gameId: row.game_id,
         kind: row.kind,
         amount: n(row.amount),
         feeBps: nOrNull(row.fee_bps),
@@ -726,7 +784,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
   async paymentReconciliation(options: {
     now: Date;
     staleMinutes: number;
-    allowedAmounts: readonly number[];
+    depositLimits: { min: number; max: number };
     tokensPerUnit: number;
     limit: number;
   }): Promise<PaymentReconciliationRow[]> {
@@ -736,7 +794,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
           OR (p.status IN ('FAILED', 'EXPIRED') AND wt.status <> 'failed')
           OR (p.status = 'PENDING' AND wt.status <> 'pending')
           OR p.amount * $3 <> wt.tokens
-          OR NOT (p.amount = ANY($4::bigint[]))
+          OR p.amount < $4 OR p.amount > $6
           OR (p.status = 'PENDING'
               AND p.created_at < $1::timestamptz - make_interval(mins => $2))
        ORDER BY p.created_at DESC
@@ -745,8 +803,9 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
         iso(options.now),
         options.staleMinutes,
         options.tokensPerUnit,
-        [...options.allowedAmounts],
+        options.depositLimits.min,
         options.limit,
+        options.depositLimits.max,
       ],
     );
     return rows.map((row) => {

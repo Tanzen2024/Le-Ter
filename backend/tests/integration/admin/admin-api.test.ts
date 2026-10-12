@@ -109,11 +109,11 @@ describe('joueurs', () => {
     expect(await audit('USER_VIEWED')).toEqual([]);
   });
 
-  it('détail d’un joueur : audité USER_VIEWED, suspension indisponible', async () => {
+  it('détail d’un joueur : audité USER_VIEWED, état de modération (D-079)', async () => {
     const player = await registerAndLogin(ctx.app);
     const res = await api.get(`/api/admin/users/${player.userId}`).expect(200);
     expect(res.body.user).toMatchObject({ id: player.userId, gamesPlayed: 0, balance: 0 });
-    expect(res.body.user.actions.suspend.available).toBe(false);
+    expect(res.body.user).toMatchObject({ suspension: null, chatRestriction: null });
     expect(JSON.stringify(res.body)).not.toMatch(/passwordHash|password_hash/);
     const rows = await audit('USER_VIEWED');
     expect(rows).toEqual([
@@ -167,6 +167,63 @@ describe('parties', () => {
       [gameId],
     );
     expect(after.rows).toEqual(before.rows);
+  });
+
+  it('colonne Vainqueur : fin, vainqueur, fuite, échéance de tour et reprise d’une égalité', async () => {
+    const { gameId, sessionId, players } = await seedGameInProgress(ctx.app);
+    const [a, b] = players;
+    // Partie en cours : échéance de tour constatée, coup automatique en attente.
+    await database.sql.query(
+      `UPDATE games SET turn_timed_out_at = '2026-10-09T07:31:00Z' WHERE id = $1`,
+      [gameId],
+    );
+    let res = await api.get(`/api/admin/games/${gameId}`).expect(200);
+    expect(res.body.game).toMatchObject({
+      endReason: null,
+      winner: null,
+      turnTimedOutAt: '2026-10-09T07:31:00.000Z',
+      replayedByGameId: null,
+    });
+
+    // Égalité de victoires instantanées (aucun gagnant), rejouée dans une nouvelle partie.
+    await database.sql.query(
+      `UPDATE games SET status = 'finished', finished_at = '2026-10-09T07:32:00Z',
+         turn_timed_out_at = NULL, end_reason = 'INSTANT_WIN_TIE' WHERE id = $1`,
+      [gameId],
+    );
+    await database.sql.query('UPDATE game_players SET active = false WHERE game_id = $1', [gameId]);
+    const replayId = randomUUID();
+    await database.sql.query(
+      `INSERT INTO games (id, version, status, creator_id, max_players, state, created_at,
+         updated_at, started_at, finished_at, session_id, first_player_id, end_reason,
+         winner_id, replay_of_game_id)
+       VALUES ($1, 1, 'finished', $2, 2, '{}', $3, $3, $3, $3, $4, $2,
+         'CONTROL_AFTER_LAST_TRICK', $5, $6)`,
+      [replayId, a!.userId, '2026-10-09T07:33:00Z', sessionId, b!.userId, gameId],
+    );
+    for (const [seat, player] of [a!, b!].entries()) {
+      await database.sql.query(
+        `INSERT INTO game_players (game_id, player_id, seat, joined_at, active, table_position)
+         VALUES ($1, $2, $3, '2026-10-09T07:33:00Z', false, $4)`,
+        [replayId, player.userId, seat, seat],
+      );
+    }
+
+    res = await api.get('/api/admin/games?status=finished').expect(200);
+    const byId = new Map(res.body.items.map((g: { id: string }) => [g.id, g]));
+    expect(byId.get(gameId)).toMatchObject({
+      endReason: 'INSTANT_WIN_TIE',
+      winner: null,
+      turnTimedOutAt: null,
+      replayedByGameId: replayId,
+    });
+    expect(byId.get(replayId)).toMatchObject({
+      endReason: 'CONTROL_AFTER_LAST_TRICK',
+      winner: { id: b!.userId },
+      replayOfGameId: gameId,
+      replayedByGameId: null,
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/SECRET|"state"/);
   });
 });
 
@@ -296,14 +353,15 @@ describe('paiements CinetPay', () => {
 });
 
 describe('rapprochement et compte financier de la plateforme', () => {
-  it('anomalies de paiement : ancien en attente, montant ≠ jetons, hors barème', async () => {
+  it('anomalies de paiement : ancien en attente, montant ≠ jetons, hors limites', async () => {
     const player = await registerAndLogin(ctx.app);
     const stale = await seedPendingPayment(database.sql, player.userId, {
       createdAt: new Date('2026-10-09T06:00:00Z'),
     });
+    // 50 FCFA : sous le minimum d'achat (100, D-085), et 40 jetons ≠ 50.
     const mismatch = await seedPendingPayment(database.sql, player.userId, {
-      amount: 700,
-      tokens: 600,
+      amount: 50,
+      tokens: 40,
       createdAt: new Date('2026-10-09T07:55:00Z'),
     });
     const res = await api.get('/api/admin/reconciliation/anomalies').expect(200);
@@ -357,7 +415,7 @@ describe('rapprochement et compte financier de la plateforme', () => {
       currency: 'XAF',
       computedBalance: { amount: 1500 },
       treasury: { integrated: false },
-      ordinaryGamesCommission: { defined: false },
+      ordinaryGamesCommission: { defined: true },
       reconciliation: { status: 'ANOMALIES' },
     });
     const entries = await api.get('/api/admin/platform-account/entries').expect(200);
@@ -401,7 +459,11 @@ describe('tableau de bord, finances, rapports, journal, système', () => {
     expect(res.body).toHaveProperty('playerBalances.balance');
     expect(res.body).toHaveProperty('platformRevenue.total');
     expect(res.body.unsupported.map((o: { operation: string }) => o.operation)).toEqual(
-      expect.arrayContaining(['REFUND', 'WITHDRAWAL', 'MANUAL_CREDIT']),
+      expect.arrayContaining(['REFUND', 'MANUAL_CREDIT']),
+    );
+    // Retraits pris en charge depuis D-075 (/api/admin/withdrawals).
+    expect(res.body.unsupported.map((o: { operation: string }) => o.operation)).not.toContain(
+      'WITHDRAWAL',
     );
   });
 
@@ -496,6 +558,12 @@ describe('tableau de bord, finances, rapports, journal, système', () => {
   it('système : état des services, sans aucun secret', async () => {
     const res = await api.get('/api/admin/system').expect(200);
     expect(res.body.services.cinetpay).toEqual({ configured: true, mode: 'sandbox' });
+    // Sans service de retrait fourni : indisponible, motif stable (D-077).
+    expect(res.body.services.withdrawals).toEqual({
+      mode: 'unavailable',
+      reason: 'PROVIDER_NOT_CONFIGURED',
+      warnings: [],
+    });
     expect(res.body.maintenance.available).toBe(false);
     expect(JSON.stringify(res.body)).not.toMatch(/sk_test|sk_live|password|secret/i);
   });

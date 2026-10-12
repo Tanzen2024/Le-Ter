@@ -23,9 +23,9 @@ export function newTournamentId(): TournamentId {
 export const TOURNAMENT_TABLE_SIZE = 4;
 /**
  * Démarrage d'une table de tournoi (D-065) : dès le 2e joueur assis, le premier joueur
- * affecté (créateur de la partie) a 15 s pour démarrer (D-068) ; ensuite le serveur démarre.
+ * affecté (créateur de la partie) a 10 s pour démarrer (D-092) ; ensuite le serveur démarre.
  */
-export const TOURNAMENT_TABLE_AUTO_START_MS = 15_000;
+export const TOURNAMENT_TABLE_AUTO_START_MS = 10_000;
 export const TOURNAMENT_CURRENCY = 'XAF';
 
 // --- États (D-054) -----------------------------------------------------------------------
@@ -640,6 +640,7 @@ export function rankingWeightsError(weights: RankingWeights): string | undefined
  * délais de 10 s (4 plis joués × 4 joueurs × 10 s, le 5e pli est automatique, + 10 s de
  * Continuer/Quitter). FIGÉE par D-064 et D-068 : le passage des délais à 20 s puis à 15 s
  * ne modifie pas le classement des tournois ; seule une nouvelle décision peut l'ajuster.
+ * D-092 revient aux délais de 10 s d'origine : la référence leur correspond de nouveau.
  */
 export const RANKING_REFERENCE_GAME_MS = 170_000;
 

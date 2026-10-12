@@ -1,4 +1,7 @@
+import { PGlite } from '@electric-sql/pglite';
 import request from 'supertest';
+
+import { loadMigrations, pendingMigrations, runMigrations } from '../../../src/database/migrator';
 
 import {
   NO_ADMIN_LOGIN_LIMITS,
@@ -7,10 +10,11 @@ import {
   createAdmin,
   createAdminTestApp,
 } from '../../fixtures/admin';
-import { registerAndLogin } from '../../fixtures/auth';
+import { registerAndLogin, validRegistration } from '../../fixtures/auth';
 import {
   createMigratedDatabase,
   PGLITE_TIMEOUT_MS,
+  pgliteSqlClient,
   type TestDatabase,
 } from '../../fixtures/pglite';
 
@@ -173,6 +177,79 @@ describe('POST /api/admin/auth/login', () => {
       'SELECT end_reason FROM admin_sessions ORDER BY started_at, session_id',
     );
     expect(rows.map((r) => r.end_reason).sort()).toEqual(['REPLACED', null].sort());
+  });
+});
+
+describe('connexion : corps de requête et parcours complet', () => {
+  it('corps invalide : 400 VALIDATION_ERROR, aucune session ouverte, aucun jeton renvoyé', async () => {
+    const { app } = createAdminTestApp(database.sql);
+    const admin = await createAdmin(app, database.sql);
+    for (const body of [
+      {},
+      { email: admin.email },
+      { identifier: admin.email, password: admin.password },
+      { email: admin.email, password: 42 },
+    ]) {
+      const res = await request(app).post('/api/admin/auth/login').send(body).expect(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(JSON.stringify(res.body)).not.toMatch(/token/i);
+    }
+    // La session admin ouverte par createAdmin est toujours la seule active.
+    await asAdmin(app, admin.accessToken).get('/api/admin/auth/session').expect(200);
+  });
+
+  it('connexion → session reconnue → tableau de bord chargé ; sans jeton : 401', async () => {
+    const { app } = createAdminTestApp(database.sql);
+    const admin = await createAdmin(app, database.sql);
+    const session = await asAdmin(app, admin.accessToken).get('/api/admin/auth/session').expect(200);
+    expect(session.body.user.id).toBe(admin.userId);
+    await asAdmin(app, admin.accessToken).get('/api/admin/dashboard').expect(200);
+    await request(app).get('/api/admin/dashboard').expect(401);
+  });
+});
+
+describe('schéma de la base et connexion admin (incident : migration 0034 non appliquée)', () => {
+  it('migration de modération absente : la connexion aux BONS identifiants échoue (500) et la migration est signalée en attente ; une fois appliquée, la connexion réussit', async () => {
+    const db = new PGlite();
+    const sql = pgliteSqlClient(db);
+    try {
+      const all = await loadMigrations();
+      // Base « en retard » : tout jusqu'à 0033 inclus, comme la base de l'incident.
+      await runMigrations(sql, all.filter((m) => m.name < '0034'));
+      expect(await pendingMigrations(sql, all)).toEqual(
+        all.filter((m) => m.name >= '0034').map((m) => m.name),
+      );
+
+      const { app } = createAdminTestApp(sql);
+      const account = validRegistration();
+      const registered = await request(app).post('/api/auth/register').send(account).expect(201);
+      const userId: string = registered.body.user.id;
+      await sql.query(`UPDATE users SET role = 'admin' WHERE id = $1`, [userId]);
+      // Mauvais mot de passe : refusé AVANT la vérification de suspension (d'où 401, pas 500).
+      await request(app)
+        .post('/api/admin/auth/login')
+        .send({ email: account.email, password: 'Mauvais123' })
+        .expect(401);
+      // Bon mot de passe : la vérification de suspension lit `user_sanctions`, absente.
+      const broken = await request(app)
+        .post('/api/admin/auth/login')
+        .send({ email: account.email, password: account.password })
+        .expect(500);
+      expect(JSON.stringify(broken.body)).not.toMatch(/token|password|user_sanctions/i);
+      // Même cause pour la connexion des joueurs (application mobile).
+      await request(app)
+        .post('/api/auth/login')
+        .send({ email: account.email, password: account.password })
+        .expect(500);
+
+      // Correction : `npm run db:migrate` (même fonction) puis nouvelle tentative.
+      await runMigrations(sql, all);
+      expect(await pendingMigrations(sql, all)).toEqual([]);
+      const admin = await adminLogin(app, account.email, account.password, userId);
+      await asAdmin(app, admin.accessToken).get('/api/admin/dashboard').expect(200);
+    } finally {
+      await db.close();
+    }
   });
 });
 

@@ -39,8 +39,10 @@ const UNAVAILABLE = '—';
 
 /** Solde RÉEL du compte de jeu (serveur), « — » tant qu'il n'est pas connu. */
 /**
- * Solde affiché : le DISPONIBLE (solde − réservé, D-054) ; les fonds bloqués par des
- * inscriptions à des tournois sont indiqués à part (`reserved`), jamais additionnés.
+ * Solde affiché : le DISPONIBLE (solde − réservé, D-054) ; les fonds bloqués sont indiqués à
+ * part (`reserved`, 🔒), jamais additionnés. Ils viennent des inscriptions à des tournois :
+ * RÉSERVÉS, pas débités. Une partie en cours ne change ni le solde ni le disponible (D-080) ;
+ * seul le règlement de fin de partie débite un perdant.
  */
 export function useBalanceLabel(): { text: string; label: string; reserved?: string } {
   const wallet = useWallet();

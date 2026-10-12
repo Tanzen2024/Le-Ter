@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  Animated,
+  PanResponder,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 
 import { cardLabel } from './format';
 import { CARD_RATIO, CardFace } from './table/Cards';
@@ -114,8 +121,6 @@ export function DraggableCard({
       style={[
         styles.card,
         { width, height: width * CARD_RATIO },
-        !enabled && !pending && styles.cardDisabled,
-        pending && styles.cardPending,
         {
           zIndex: 10,
           transform: [
@@ -135,13 +140,32 @@ export function DraggableCard({
         ]}
       />
       <CardFace cardId={cardId} width={width} />
+      {/* États sans aucune opacité sur la carte : sur Android, une opacité sur une vue à
+          plusieurs couches les rend translucides une à une (la carte du dessous transparaît,
+          effet de flou). La carte reste opaque ; l'état est dessiné PAR-DESSUS. */}
+      {enabled && !pending ? (
+        <View
+          testID="card-playable"
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, styles.playable, { borderRadius: width * 0.08 }]}
+        />
+      ) : null}
+      {pending ? (
+        <View
+          testID="card-pending"
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, styles.pendingVeil, { borderRadius: width * 0.08 }]}
+        />
+      ) : null}
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   card: { borderRadius: 8 },
-  cardDisabled: { opacity: 0.6 },
-  cardPending: { opacity: 0.35 },
+  // Carte jouable maintenant (selon le serveur) : liseré doré net.
+  playable: { borderWidth: 2, borderColor: '#F5C842' },
+  // Envoi en cours : voile clair posé sur la carte opaque (bref, jusqu'à la réponse).
+  pendingVeil: { backgroundColor: 'rgba(255, 255, 255, 0.55)' },
   shadow: { boxShadow: '0 14px 22px rgba(0, 0, 0, 0.5)' },
 });

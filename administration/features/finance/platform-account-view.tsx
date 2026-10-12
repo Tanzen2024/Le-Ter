@@ -212,7 +212,11 @@ export function PlatformAccountView() {
           error={entries.error}
           onRetry={() => entries.refetch()}
           empty="Aucune écriture"
-          onRowClick={(e) => router.push(`/tournois/${e.origin.id}`)}
+          onRowClick={(e) =>
+            router.push(
+              e.origin.type === 'GAME' ? `/parties/${e.origin.id}` : `/tournois/${e.origin.id}`,
+            )
+          }
         />
         {entries.data && (
           <Pagination

@@ -4,6 +4,7 @@ import {
   type SqlClient,
   type SqlExecutor,
 } from '../database/sql-client';
+import type { GameStakeLedger } from './game-stake-ledger';
 import type { Game } from '../domain/game/game';
 import {
   TournamentTableAvailableError,
@@ -83,7 +84,11 @@ interface SessionPlayerRow {
  * de décision ouverte par session, joueurs d'une partie = membres actifs de la session.
  */
 export class PostgresSessionRepository implements SessionRepository {
-  constructor(private readonly db: SqlClient) {}
+  /** `stakeLedger` (D-074) : même rôle que pour PostgresGameRepository. */
+  constructor(
+    private readonly db: SqlClient,
+    private readonly options: { stakeLedger?: GameStakeLedger } = {},
+  ) {}
 
   async createWithFirstGame(
     session: Session,
@@ -114,7 +119,7 @@ export class PostgresSessionRepository implements SessionRepository {
           ],
         );
         await writePlayers(tx, session);
-        await insertGameRows(tx, game);
+        await insertGameRows(tx, game, this.options.stakeLedger);
         if (tournament) {
           await tx.query(
             `INSERT INTO tournament_sessions (id, tournament_id, session_id, created_at)
@@ -229,7 +234,7 @@ export class PostgresSessionRepository implements SessionRepository {
         if (result.events.length > 0) {
           await saveSession(tx, result.session);
         }
-        await insertGameRows(tx, result.game);
+        await insertGameRows(tx, result.game, this.options.stakeLedger);
         return result;
       });
     } catch (err) {
@@ -271,7 +276,12 @@ export class PostgresSessionRepository implements SessionRepository {
           return result;
         }
         if (result.savedGame) {
-          await updateGameRows(tx, result.savedGame.game, result.savedGame.expectedVersion);
+          await updateGameRows(
+            tx,
+            result.savedGame.game,
+            result.savedGame.expectedVersion,
+            this.options.stakeLedger,
+          );
         } else if (result.waitingGame?.kind === 'delete') {
           await deleteWaitingGame(tx, result.waitingGame.gameId);
         }

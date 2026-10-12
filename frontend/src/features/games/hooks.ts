@@ -28,11 +28,13 @@ export function isGameId(value: unknown): value is string {
  */
 const GAME_REFRESH_MS = 3_000;
 
+/** Parties actives du joueur (en attente ou en cours), lues sur le serveur. */
+export async function fetchActiveGames(): Promise<GameView[]> {
+  return (await withAccessToken((t) => gamesApi.listActive(t))).games;
+}
+
 export function useActiveGames() {
-  return useQuery({
-    queryKey: gameKeys.active,
-    queryFn: async () => (await withAccessToken((t) => gamesApi.listActive(t))).games,
-  });
+  return useQuery({ queryKey: gameKeys.active, queryFn: fetchActiveGames });
 }
 
 export function useGame(gameId: string) {

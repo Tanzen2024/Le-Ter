@@ -42,7 +42,9 @@ export type NotificationType =
   | 'TOURNAMENT_STARTED'
   | 'TOURNAMENT_RESULTS_AVAILABLE'
   | 'TOURNAMENT_PRIZE_CREDITED'
-  | 'TOURNAMENT_TABLE_CLOSED';
+  | 'TOURNAMENT_TABLE_CLOSED'
+  // Avertissement de l'administration (D-079) : `payload.message` est le texte visible.
+  | 'MODERATION_WARNING';
 
 export interface NotificationDraft {
   userId: UserId;

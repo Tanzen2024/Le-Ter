@@ -43,13 +43,6 @@ export const tournamentsApi = {
       accessToken,
     }),
 
-  /** Désinscription avant la fermeture : la réservation est libérée. */
-  unregister: (accessToken: string, tournamentId: string) =>
-    apiRequest<{ tournament: TournamentView }>(path(tournamentId, '/unregister'), {
-      method: 'POST',
-      accessToken,
-    }),
-
   join: (accessToken: string, tournamentId: string) =>
     apiRequest<TournamentSeat>(path(tournamentId, '/join'), { method: 'POST', accessToken }),
 

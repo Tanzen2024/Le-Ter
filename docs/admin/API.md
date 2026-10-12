@@ -36,12 +36,39 @@ Règles : rôle `admin` vérifié AVANT l'ouverture d'une session ; refresh toke
 
 | Méthode | Chemin | Paramètres | Réponse | Audit |
 |---|---|---|---|---|
-| GET | `/users` | `q` (pseudo, nom, email, téléphone, identifiant), `status` (`active`/`disabled`), `role`, `sort` (`created_desc`, `created_asc`, `username_asc`), pagination | page de joueurs, **téléphone masqué** | non |
-| GET | `/users/:userId` | — | `{ user }` : profil, solde, réservé, parties, paiements, `actions.suspend.available = false` | `USER_VIEWED` |
+| GET | `/users` | `q` (pseudo, nom, email, téléphone, identifiant), `status` (`active`/`disabled`/`suspended`), `role`, `sort` (`created_desc`, `created_asc`, `username_asc`), pagination | page de joueurs, **téléphone masqué**, `suspension` et `chatRestriction` en cours | non |
+| GET | `/users/:userId` | — | `{ user }` : profil, solde, réservé, parties, paiements, `suspension`, `chatRestriction` | `USER_VIEWED` |
 | GET | `/users/:userId/games` | pagination | page de parties | non |
 | GET | `/users/:userId/transactions` | pagination | page de transactions | non |
 
-404 `USER_NOT_FOUND`. Aucune route de suspension, de modification ni de suppression.
+404 `USER_NOT_FOUND`.
+
+### 3.1 Gestion des joueurs (D-079, [MODERATION.md](MODERATION.md))
+
+L'administrateur responsable est toujours l'appelant authentifié ; un champ inconnu du corps
+(par exemple `actorId`) est refusé (400). Aucune route ne supprime un compte, ne crédite ni ne
+débite un solde.
+
+| Méthode | Chemin | Corps / paramètres | Réponse | Audit |
+|---|---|---|---|---|
+| GET | `/users/:userId/moderation` | — | `{ serverTime, suspension, chatRestriction, security { lastLoginAt, lastSessionActivityAt, activeSessions }, isSelf, limits }` (aucun jeton) | non |
+| GET | `/users/:userId/sanctions` | pagination | suspensions, restrictions, avertissements (`state` : `ACTIVE`, `EXPIRED`, `LIFTED`, `RECORDED`) | non |
+| GET | `/users/:userId/notes` | pagination | notes internes (texte retiré si supprimée) | non |
+| GET | `/users/:userId/moderation-log` | pagination, `includeViews` | lignes `admin_audit_log` du joueur (sans `USER_VIEWED` par défaut) | non |
+| POST | `/users/:userId/disable` · `/enable` | `{ reason }` | `{ status, changed, revokedSessions }` | `USER_DISABLED` / `USER_ENABLED` |
+| POST | `/users/:userId/suspension` | `{ reason, comment?, endsAt? }` (absente : indéterminée) | 201 `{ sanctionId, revokedSessions }` | `USER_SUSPENDED` |
+| POST | `/users/:userId/suspension/lift` | `{ reason }` | `{ sanctionId }` | `USER_SUSPENSION_LIFTED` |
+| POST | `/users/:userId/sessions/revoke` | `{ reason? }` | `{ revokedSessions }` | `USER_SESSIONS_REVOKED` |
+| POST | `/users/:userId/chat-restriction` | `{ reason, comment?, endsAt? }` | 201 `{ sanctionId }` | `USER_CHAT_RESTRICTED` |
+| POST | `/users/:userId/chat-restriction/lift` | `{ reason }` | `{ sanctionId }` | `USER_CHAT_RESTRICTION_LIFTED` |
+| POST | `/users/:userId/warnings` | `Idempotency-Key` ; `{ reason, playerMessage?, comment? }` | 201 (200 si rejouée) `{ sanctionId, delivered, replayed }` | `USER_WARNED` |
+| POST | `/users/:userId/notes` | `Idempotency-Key` ; `{ body }` | 201 (200 si rejouée) `{ noteId, replayed }` | `USER_NOTE_ADDED` |
+| POST | `/users/:userId/notes/:noteId/delete` | `{ reason }` | `{ noteId }` | `USER_NOTE_DELETED` |
+
+Erreurs : 403 `SELF_ACTION_FORBIDDEN`, 409 `LAST_ADMIN`, 409 `ALREADY_SUSPENDED`,
+`ALREADY_CHAT_RESTRICTED`, `NOT_SUSPENDED`, `NOT_CHAT_RESTRICTED`, `NOTE_ALREADY_DELETED`,
+404 `USER_NOT_FOUND` / `NOTE_NOT_FOUND`, 409 `IDEMPOTENCY_KEY_REUSED`. Côté joueur :
+403 `ACCOUNT_SUSPENDED` (connexion, `details.suspendedUntil`), 403 `CHAT_RESTRICTED` (envoi).
 
 ## 4. Parties
 
@@ -81,6 +108,29 @@ Contrôles : paiements (statut vs achat, montant vs jetons, hors barème, attent
 référence manquante, achat sans paiement) et tournois (les six contrôles de l'audit §8.5).
 Lecture seule, 500 lignes au plus par contrôle.
 
+## 6 bis. Retraits des revenus de la plateforme (D-078, [platform-payouts.md](../platform-payouts.md))
+
+Préfixe `/platform-finance`. L'acteur est toujours l'administrateur connecté ; aucun statut,
+frais, initiateur ni approbateur n'est lu dans la requête.
+
+| Méthode | Chemin | Réponse |
+|---|---|---|
+| GET | `/platform-finance` | `{ revenue, treasury { state, confirmedAvailable (null = non confirmée), obligations, free, anomalies }, fees, withdrawable { amount, ceiling, blockers }, execution, reconciliationRequired }` |
+| GET | `/platform-finance/treasury` | 20 dernières relectures du solde CinetPay |
+| POST | `/platform-finance/treasury/observe` | relecture `GET /v1/balances` (auditée) → `{ observation }` |
+| POST | `/platform-finance/reconcile` | relectures seulement, aucun envoi (audité) |
+| GET/POST | `/platform-finance/beneficiaries` | liste (numéros masqués) / `{ label, msisdn }` |
+| POST | `/platform-finance/beneficiaries/:id/verify` · `/disable` | `{ note }` (autre administrateur) |
+| GET | `/platform-finance/payouts` | `page`, `limit`, `status` |
+| POST | `/platform-finance/payouts` | `Idempotency-Key` ; `{ beneficiaryId, amount, purpose }` → 201 / 200 rejeu |
+| GET | `/platform-finance/payouts/:id` | détail, `actions` permises, `events` (audité) |
+| POST | `/platform-finance/payouts/:id/approve` · `reject` · `cancel` | `{ note }` (requis pour rejet et annulation) |
+| POST | `/platform-finance/payouts/:id/release` | 503 `PLATFORM_PAYOUTS_DISABLED` tant que l'exécution est désactivée |
+| POST | `/platform-finance/payouts/:id/check` | relecture du transfert chez CinetPay |
+
+Refus métier : `409/403 PLATFORM_PAYOUT_REFUSED` + `details.reason`. Public :
+`POST /api/platform-payouts/cinetpay/notify` (jeton vérifié, statut relu).
+
 ## 7. Rapports, journal, système
 
 | Méthode | Chemin | Réponse | Audit |
@@ -96,6 +146,10 @@ Lecture seule, 500 lignes au plus par contrôle.
   `GET /detection/alerts/:id/signals`, `GET /detection/subjects/:key/score-history`,
   `PATCH /detection/alerts/:id/status` `{ status, expectedStatus }`.
 - Paramètres (D-053) : `GET|PATCH /settings/detection` `{ enabled }`.
+- Barème de commission des parties (D-074) : `GET|PATCH /settings/game-commission`, PATCH
+  `{ tiers: [{ minStake, maxStake | null, percent }] }` (barème complet, audité
+  `GAME_COMMISSION_UPDATED`) ; écran Paramètres › « Commission des parties ordinaires »
+  (`features/settings/game-commission-card.tsx`), simulation indicative côté navigateur.
 - Tournois (D-054, D-055) : `GET|PATCH /tournaments/settings`, `GET|POST /tournaments`,
   `GET|PATCH /tournaments/:id`, `POST /tournaments/:id/{approve,reject,cancel}`,
   `GET /tournaments/:id/{registrations,results,results.csv}`. La liste renvoie les 100

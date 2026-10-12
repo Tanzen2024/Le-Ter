@@ -6,6 +6,8 @@ export interface PlayerDistance {
   playerId: string;
   /** Mètres (arrondis par le serveur), ou `null` si une position manque. */
   meters: number | null;
+  /** Distance inconnue : position jamais reçue (`WAITING`) ou trop ancienne (`STALE`). */
+  unavailable?: 'WAITING' | 'STALE';
 }
 
 export type GeolocationStatus =

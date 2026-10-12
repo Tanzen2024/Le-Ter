@@ -21,7 +21,6 @@ import {
   type PlayerProgress,
   type TerRuleSet,
 } from '../rules/rule-set';
-import { UnresolvedRuleError } from '../rules/unresolved-rule';
 import { bestInstantWin, resolveInstantWins } from '../rules/win-conditions';
 import {
   MIN_PLAYERS_TO_START,
@@ -53,7 +52,7 @@ import type { PlayerId } from './game-id';
 export interface EngineContext {
   rules: TerRuleSet;
   now: Date;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (15 s, D-034, D-068). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034, D-092). */
   turnDurationMs?: number;
 }
 
@@ -424,7 +423,7 @@ function fleeRefusal(game: Game, playerId: PlayerId, rules: TerRuleSet): string 
     return 'un seul joueur peut fuir par partie';
   }
   if (!rules.fleeEligibility(progressOf(play, playerId))) {
-    return 'fuir n’est possible qu’au tour 1, avant d’avoir joué sa première carte';
+    return 'se coucher n’est possible qu’avant d’avoir joué sa deuxième carte';
   }
   return null;
 }
@@ -434,13 +433,13 @@ export function canFlee(game: Game, playerId: PlayerId, rules: TerRuleSet): bool
   return (
     !hasFled(game, playerId) &&
     game.players.some((p) => p.playerId === playerId) &&
-    fleeRefusal(game, playerId, rules) === null &&
-    activePlayerIds(game).length - 1 >= 2
+    // Partie à 2 comprise : la fuite y termine la partie au profit de l'adversaire (D-086).
+    fleeRefusal(game, playerId, rules) === null
   );
 }
 
 /**
- * Fuir (D-035) : seulement au tour 1, avant sa première carte ; un seul fuyard par partie ;
+ * Fuir (D-035, D-089) : avant sa deuxième carte (tours 1 et 2) ; un seul fuyard par partie ;
  * permis même au joueur qui a le contrôle. Le joueur devient inactif pour CETTE partie
  * (il reste dans la session, à son siège) ; ses cartes ne seront jamais jouées ; sa main
  * gagnante éventuelle ne compte plus.
@@ -453,10 +452,7 @@ export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEv
   if (refusal) {
     throw new FleeNotAllowedError(game.id, refusal);
   }
-  if (activePlayerIds(game).length - 1 < 2) {
-    // Partie à 2 : il resterait un seul joueur. Aucune décision ne dit ce qu'il advient.
-    throw new UnresolvedRuleError('R-30', 'la fuite laisserait un seul joueur dans la partie');
-  }
+  const remaining = activePlayerIds(game).filter((id) => id !== playerId);
 
   const player = game.players.find((p) => p.playerId === playerId);
   if (player) {
@@ -467,8 +463,16 @@ export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEv
   }
 
   const events: GameEventDraft[] = [{ type: 'game:player_fled', payload: { playerId } }];
+  if (remaining.length === 1) {
+    // Partie à 2 (R-30, D-086) : celui qui se couche perd, le joueur restant gagne aussitôt
+    // (victoire SIMPLE) ; le règlement débite la mise du fuyard comme celle d'un perdant.
+    return [
+      ...events,
+      ...finish(game, play, remaining[0]!, 'OPPONENT_FLED', ctx.now, { victoryType: 'SIMPLE' }),
+    ];
+  }
   if (play.control.playerId === playerId) {
-    // Le contrôleur fuit avant d'avoir joué (seul cas possible : le meneur du tour 1).
+    // Le contrôleur fuit avant d'avoir joué (le meneur du tour en cours, tour 1 ou 2).
     // Les joueurs ayant fui sont ignorés dans l'ordre (décision 37) : le joueur actif
     // suivant, sens antihoraire, mène le tour et détient donc le contrôle (décision 38).
     const next = getNextPlayer(play.dealOrder, playerId, (id) => !hasFled(game, id));
@@ -479,7 +483,10 @@ export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEv
     openTrick(game, play);
     beginTurn(game, ctx.now, ctx.turnDurationMs);
     events.push(
-      { type: 'game:control_changed', payload: { controllerId: next, trickNumber: 1 } },
+      {
+        type: 'game:control_changed',
+        payload: { controllerId: next, trickNumber: play.trickNumber },
+      },
       turnChanged(game, play),
     );
   } else if (play.nextPlayerId === playerId) {

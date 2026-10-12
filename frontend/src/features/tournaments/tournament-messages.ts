@@ -95,10 +95,23 @@ const fr = {
   register: "S'inscrire",
   registeredNow: 'Inscription confirmée.',
   registered: '✓ Inscrit',
+  /** État « inscrit » (icône de validation), restauré depuis le serveur à chaque lecture. */
+  registeredState: 'Vous êtes inscrit à ce tournoi',
   reserved: (fee: string) => `${fee} réservés`,
+  /** Dialogue de confirmation avant l'inscription (aucune requête avant « Confirmer »). */
+  confirm: {
+    title: "Confirmer l'inscription",
+    name: (date: string, start: string) => `Tournoi du ${date} à ${start}`,
+    entryFee: "Prix d'entrée",
+    message:
+      "Vous êtes sur le point de vous inscrire à ce tournoi. Le prix d'entrée sera réservé sur votre compte de jeu et débité uniquement au démarrage du tournoi.",
+    confirm: "Confirmer l'inscription",
+    cancel: 'Annuler',
+    pending: 'Inscription en cours…',
+    retry: 'Vous pouvez réessayer.',
+  },
   waiting: 'En attente du début du tournoi',
   startsIn: (duration: string) => `Début dans ${duration}`,
-  unregister: 'Se désinscrire',
   join: 'Rejoindre le Tournoi',
   tokens: (tokens: number, played: number) =>
     `🪙 ${tokens} jetons · ${played} partie${played > 1 ? 's' : ''}`,
@@ -146,6 +159,8 @@ const fr = {
         return `${name} : gain de ${formatFcfa(n.payload.amount ?? 0)} crédité.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name} : le tournoi est terminé, plus de nouvelle partie à cette table.`;
+      case 'MODERATION_WARNING':
+        return `Avertissement : ${n.payload.message ?? ''}`;
     }
   },
   locale: 'fr-FR',
@@ -223,10 +238,21 @@ const en: TournamentMessages = {
   register: 'Register',
   registeredNow: 'Registration confirmed.',
   registered: '✓ Registered',
+  registeredState: 'You are registered for this tournament',
   reserved: (fee) => `${fee} reserved`,
+  confirm: {
+    title: 'Confirm registration',
+    name: (date, start) => `Tournament of ${date} at ${start}`,
+    entryFee: 'Entry fee',
+    message:
+      'You are about to register for this tournament. The entry fee will be reserved on your game account and only charged when the tournament starts.',
+    confirm: 'Confirm registration',
+    cancel: 'Cancel',
+    pending: 'Registering…',
+    retry: 'You can try again.',
+  },
   waiting: 'Waiting for the tournament to start',
   startsIn: (duration) => `Starts in ${duration}`,
-  unregister: 'Unregister',
   join: 'Join the Tournament',
   tokens: (tokens, played) => `🪙 ${tokens} tokens · ${played} game${played > 1 ? 's' : ''}`,
   outOfTokens: 'Not enough tokens for a new game: your ranking is kept.',
@@ -271,6 +297,8 @@ const en: TournamentMessages = {
         return `${name}: prize of ${formatFcfa(n.payload.amount ?? 0)} credited.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name}: the tournament is over, no new game at this table.`;
+      case 'MODERATION_WARNING':
+        return `Warning: ${n.payload.message ?? ''}`;
     }
   },
   locale: 'en-GB',

@@ -59,7 +59,25 @@ export type AuditAction =
   | 'USER_VIEWED'
   | 'PAYMENT_VIEWED'
   | 'PAYMENT_VERIFICATION_REQUESTED'
-  | 'REPORT_EXPORTED';
+  | 'REPORT_EXPORTED'
+  | 'GAME_COMMISSION_UPDATED'
+  | 'WITHDRAWAL_LIMIT_UPDATED'
+  | 'WITHDRAWAL_VIEWED'
+  | 'WITHDRAWAL_VERIFICATION_REQUESTED'
+  | 'WITHDRAWAL_ESCALATED'
+  | 'WITHDRAWAL_REFUND_PROPOSED'
+  | 'WITHDRAWAL_REFUND_APPROVED'
+  | 'WITHDRAWAL_REFUND_REJECTED'
+  | 'USER_DISABLED'
+  | 'USER_ENABLED'
+  | 'USER_SUSPENDED'
+  | 'USER_SUSPENSION_LIFTED'
+  | 'USER_SESSIONS_REVOKED'
+  | 'USER_WARNED'
+  | 'USER_CHAT_RESTRICTED'
+  | 'USER_CHAT_RESTRICTION_LIFTED'
+  | 'USER_NOTE_ADDED'
+  | 'USER_NOTE_DELETED';
 
 export type AuditTargetType =
   | 'DETECTION_ALERT'
@@ -69,7 +87,8 @@ export type AuditTargetType =
   | 'ADMIN_SESSION'
   | 'USER'
   | 'PAYMENT'
-  | 'REPORT';
+  | 'REPORT'
+  | 'WITHDRAWAL';
 
 export interface AuditEvent {
   id: string;
@@ -141,6 +160,10 @@ export interface PlayerRow {
   reserved: number;
   gamesPlayed: number;
   lastGameAt: string | null;
+  /** Suspension en cours (D-079) ; `endsAt` null : indéterminée. */
+  suspension: { endsAt: string | null } | null;
+  /** Restriction du chat en cours (D-079). */
+  chatRestriction: { endsAt: string | null } | null;
 }
 
 export interface PlayerDetail extends PlayerRow {
@@ -151,7 +174,59 @@ export interface PlayerDetail extends PlayerRow {
   activeSessionId: string | null;
   tournamentRegistrations: number;
   payments: { total: number; succeeded: number; succeededAmount: number; pending: number };
-  actions: { suspend: { available: boolean; reason: string } };
+}
+
+// --- Gestion des joueurs (D-079) -------------------------------------------------------------
+
+export type SanctionKind = 'SUSPENSION' | 'CHAT_RESTRICTION' | 'WARNING';
+export type SanctionState = 'ACTIVE' | 'EXPIRED' | 'LIFTED' | 'RECORDED';
+
+export interface Sanction {
+  id: string;
+  kind: SanctionKind;
+  state: SanctionState;
+  reason: string;
+  comment: string | null;
+  playerMessage: string | null;
+  /** Avertissement : notification enregistrée dans l'application du joueur ; sinon null. */
+  delivered: boolean | null;
+  startsAt: string;
+  endsAt: string | null;
+  createdBy: { id: string; username: string | null };
+  createdAt: string;
+  lifted: { at: string; by: { id: string; username: string | null }; reason: string } | null;
+}
+
+export interface AdminNote {
+  id: string;
+  /** null : note supprimée (le texte n'est plus renvoyé). */
+  body: string | null;
+  author: { id: string; username: string | null };
+  createdAt: string;
+  deleted: { at: string; by: { id: string; username: string | null }; reason: string } | null;
+}
+
+export interface ModerationLimits {
+  reason: { min: number; max: number };
+  comment: { max: number };
+  playerMessage: { max: number };
+  note: { max: number };
+  maxDurationDays: number;
+  minDurationMinutes: number;
+}
+
+export interface PlayerModeration {
+  serverTime: string;
+  suspension: Sanction | null;
+  chatRestriction: Sanction | null;
+  security: {
+    lastLoginAt: string | null;
+    lastSessionActivityAt: string | null;
+    activeSessions: number;
+  };
+  /** Fiche de l'administrateur connecté : actions qui retirent l'accès interdites. */
+  isSelf: boolean;
+  limits: ModerationLimits;
 }
 
 // --- Parties ---------------------------------------------------------------------------------
@@ -170,9 +245,13 @@ export interface GameRow {
   startedAt: string | null;
   finishedAt: string | null;
   durationSeconds: number | null;
+  /** Échéance de tour dépassée (TURN_TIMEOUT), coup automatique en attente. */
+  turnTimedOutAt: string | null;
   endReason: string | null;
   winner: { id: string; username: string | null } | null;
   replayOfGameId: string | null;
+  /** Partie qui rejoue celle-ci après une égalité de priorité. */
+  replayedByGameId: string | null;
   players: {
     playerId: string;
     username: string;
@@ -331,12 +410,13 @@ export interface PlatformAccount {
 
 export interface LedgerEntry {
   id: string;
-  kind: 'TOURNAMENT_PLATFORM_FEE' | 'UNALLOCATED_PRIZE';
+  kind: 'TOURNAMENT_PLATFORM_FEE' | 'UNALLOCATED_PRIZE' | 'GAME_COMMISSION';
   amount: number;
   currency: string;
   feeBps: number | null;
   createdAt: string;
-  origin: { type: 'TOURNAMENT'; id: string; name: string };
+  /** Tournoi (commission, part non attribuée) ou partie ordinaire (commission, D-074). */
+  origin: { type: 'TOURNAMENT' | 'GAME'; id: string; name: string };
   participants: number | null;
   grossPool: number | null;
 }
@@ -361,6 +441,12 @@ export interface Report {
   rows: Record<string, string | number | null>[];
 }
 
+export interface WithdrawalServiceState {
+  mode: 'unavailable' | 'sandbox' | 'live';
+  reason?: string;
+  warnings: string[];
+}
+
 export interface SystemInfo {
   serverTime: string;
   environment: string;
@@ -368,6 +454,8 @@ export interface SystemInfo {
     database: 'connected' | 'unavailable' | 'disconnected';
     redis: 'connected' | 'unavailable' | 'disconnected';
     cinetpay: { configured: boolean; mode: 'sandbox' | 'production' | null };
+    /** Nouveaux retraits (D-077) ; absent sur un serveur antérieur. */
+    withdrawals?: WithdrawalServiceState;
   };
   sessionPolicy: { absoluteLifetimeSeconds: number; idleTimeoutSeconds: number };
   thresholds: Record<string, number>;
@@ -448,6 +536,28 @@ export interface TournamentResult {
   paid: boolean;
 }
 
+// --- Barème de commission des parties (D-074) -----------------------------------------------
+
+/** Tranche : mises de `minStake` à `maxStake` inclus ; `maxStake` null = sans plafond. */
+export interface GameCommissionTier {
+  minStake: number;
+  maxStake: number | null;
+  percent: number;
+}
+
+/** `GET|PATCH /api/admin/settings/game-commission` (le PATCH ajoute `changed`). */
+export interface GameCommissionSettings {
+  tiers: GameCommissionTier[];
+  updatedAt: string | null;
+  /** Bornes du taux d'une tranche (%). */
+  limits: { min: number; max: number };
+  maxTiers: number;
+  /** Multiplicateur de la perte de chaque perdant en victoire par Kora (le taux ne change pas, D-080). */
+  koraLossMultiplier: number;
+  appliesTo: 'GAMES_STARTED_AFTER_CHANGE';
+  changed?: boolean;
+}
+
 export interface TournamentSettings {
   platformFeePercent: number;
   initialTokensCoefficient: number;
@@ -510,4 +620,229 @@ export interface AlertSignals {
 export interface DetectionSetting {
   enabled: boolean;
   updatedAt: string | null;
+}
+
+// --- Retraits Mobile Money (D-075) -----------------------------------------------------------
+
+/**
+ * CREATED : jetons débités, transfert non encore accepté (ou issue d'envoi inconnue) ;
+ * PROCESSING : accepté par CinetPay ; SUCCEEDED / FAILED : statut final relu chez CinetPay.
+ */
+export type WithdrawalStatus = 'CREATED' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED';
+
+export interface WithdrawalRow {
+  id: string;
+  reference: string;
+  providerReference: string | null;
+  user: { id: string; username: string | null };
+  operator: 'OM_CM' | 'MTN_CM';
+  operatorLabel: string;
+  /** Numéro destinataire masqué. */
+  msisdn: string;
+  tokens: number;
+  amount: number;
+  currency: 'XAF';
+  /** Frais annoncés par CinetPay (compte marchand), s'ils ont été renvoyés. */
+  providerFee: number | null;
+  status: WithdrawalStatus;
+  providerStatus: string | null;
+  failureCode: string | null;
+  lastErrorCode: string | null;
+  lastErrorAt: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface WithdrawalDetail extends WithdrawalRow {
+  walletTransaction: { id: string; status: WalletStatus };
+  submission: { attempts: number; lastAttemptAt: string | null; lastCheckedAt: string | null };
+  verification: {
+    available: boolean;
+    providerConfigured: boolean;
+    history: AuditEvent[];
+  };
+  reconciliation: WithdrawalReconciliation;
+}
+
+export type RefundRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface WithdrawalRefundRequest {
+  id: string;
+  status: RefundRequestStatus;
+  providerTicket: string;
+  justification: string;
+  proposedBy: { id: string; username: string | null };
+  proposedAt: string;
+  providerStatusAtProposal: string;
+  decidedBy: { id: string; username: string | null } | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  providerStatusAtDecision: string | null;
+}
+
+/** Rapprochement d'un retrait bloqué (D-076) : remboursement à double validation, escalades. */
+export interface WithdrawalReconciliation {
+  open: boolean;
+  refundEligibleFrom: string;
+  canProposeRefund: boolean;
+  newTransfersEnabled: boolean;
+  refundRequests: WithdrawalRefundRequest[];
+  events: AuditEvent[];
+}
+
+export interface WithdrawalVerificationResult {
+  replayed: boolean;
+  outcome: 'settled' | 'processing' | 'unresolved' | 'already_final' | 'error';
+  status?: WithdrawalStatus;
+  reason?: string;
+}
+
+/** Quota de retraits : `null` = illimité (∞). */
+export interface WithdrawalLimitSetting {
+  count: number | null;
+  periodMinutes: number | null;
+  updatedAt: string | null;
+  bounds: { maxCount: number; maxPeriodMinutes: number };
+  countedStatuses: WithdrawalStatus[];
+}
+
+// --- Retraits des revenus de la plateforme (D-078) --------------------------------------------
+
+export type PlatformPayoutStatus =
+  | 'PENDING_APPROVAL'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'RESERVED'
+  | 'READY'
+  | 'SUBMITTING'
+  | 'PROCESSING'
+  | 'UNCERTAIN'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'RECONCILIATION_REQUIRED';
+
+export type TreasuryState = 'UNKNOWN' | 'UNAVAILABLE' | 'STALE' | 'CONFIRMED';
+
+export interface TreasuryObservation {
+  id: string;
+  source: 'CINETPAY_API';
+  environment: 'test' | 'live';
+  status: 'VALID' | 'INVALID' | 'ERROR';
+  availableAmount?: number;
+  currency?: string;
+  errorCode?: string;
+  requestedBy?: string;
+  observedAt: string;
+}
+
+export interface PlatformFinanceOverview {
+  currency: 'XAF';
+  generatedAt: string;
+  revenue: {
+    validatedRevenue: number;
+    charges: { playerTransferFees: number; executedPayouts: number; executedPayoutFees: number };
+    reserved: number;
+    distributable: number;
+    rawDistributable: number;
+    lastUpdatedAt: string | null;
+    anomalies: string[];
+  };
+  treasury: {
+    state: TreasuryState;
+    lastObservation: TreasuryObservation | null;
+    lastValidObservation: TreasuryObservation | null;
+    /** null : non confirmée (jamais 0 par défaut). */
+    confirmedAvailable: number | null;
+    obligations: {
+      walletBalances: number;
+      openWithdrawals: number;
+      tournamentFundsHeld: number;
+      total: number;
+    };
+    reservedPayouts: number;
+    free: number | null;
+    rawFree: number | null;
+    freshUntil: string | null;
+    anomalies: string[];
+    providerConfigured: boolean;
+  };
+  fees: {
+    configured: boolean;
+    bps: number | null;
+    fixed: number | null;
+    estimateForWithdrawable: number | null;
+  };
+  withdrawable: { amount: number | null; ceiling: number | null; blockers: string[] };
+  execution: { enabled: boolean; reason?: string; mode: 'disabled' | 'sandbox' | 'live' };
+  reconciliationRequired: number;
+}
+
+export interface PayoutBeneficiary {
+  id: string;
+  label: string;
+  operator: 'MTN_CM';
+  /** Toujours masqué : le numéro complet ne quitte jamais le serveur. */
+  msisdn: string;
+  status: 'PENDING_VERIFICATION' | 'ACTIVE' | 'DISABLED';
+  createdBy: PayoutActor;
+  createdAt: string;
+  verifiedBy: PayoutActor | null;
+  verifiedAt: string | null;
+  verificationNote: string | null;
+  disabledAt: string | null;
+}
+
+export interface PayoutActor {
+  id: string;
+  username: string | null;
+}
+
+export interface PlatformPayoutRow {
+  id: string;
+  reference: string;
+  providerReference: string | null;
+  beneficiary: { id: string; label: string; msisdn: string };
+  operator: 'MTN_CM';
+  amount: number;
+  currency: 'XAF';
+  estimatedFee: number;
+  finalAmount: number | null;
+  finalFee: number | null;
+  purpose: string;
+  status: PlatformPayoutStatus;
+  providerStatus: string | null;
+  initiatedBy: PayoutActor;
+  approvedBy: PayoutActor | null;
+  releasedBy: PayoutActor | null;
+  decidedBy: PayoutActor | null;
+  decisionNote: string | null;
+  lastErrorCode: string | null;
+  lastErrorAt: string | null;
+  reconciliationResult: string | null;
+  submissionAttempts: number;
+  notFoundChecks: number;
+  lastCheckedAt: string | null;
+  createdAt: string;
+  approvedAt: string | null;
+  releasedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface PayoutAction {
+  allowed: boolean;
+  reason: string | null;
+}
+
+export interface PlatformPayoutDetail extends PlatformPayoutRow {
+  actions: Record<'approve' | 'reject' | 'cancel' | 'release' | 'check', PayoutAction>;
+  events: {
+    id: string;
+    event: string;
+    fromStatus: PlatformPayoutStatus | null;
+    toStatus: PlatformPayoutStatus | null;
+    actor: PayoutActor | null;
+    details: Record<string, unknown>;
+    createdAt: string;
+  }[];
 }

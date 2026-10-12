@@ -4,8 +4,10 @@ import type { Column } from '@/components/data/data-table';
 import { IdText, StatusBadge } from '@/components/data/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { formatDateTime, formatDuration } from '@/lib/format';
-import { END_REASON, GAME_ANOMALY, GAME_STATUS, label } from '@/lib/labels';
+import { GAME_ANOMALY, GAME_STATUS, label } from '@/lib/labels';
 import type { GameRow } from '@/types/admin';
+
+import { GameOutcomeCell } from './game-outcome-cell';
 
 export const gameColumns: Column<GameRow>[] = [
   { key: 'id', header: 'Partie', cell: (g) => <IdText id={g.id} /> },
@@ -28,22 +30,10 @@ export const gameColumns: Column<GameRow>[] = [
     ),
   },
   {
-    key: 'result',
-    header: 'Résultat',
+    key: 'winner',
+    header: 'Vainqueur',
     hideOnMobile: true,
-    cell: (g) =>
-      g.status === 'finished' ? (
-        <span>
-          {g.winner?.username ? (
-            <span className="text-ink font-medium">{g.winner.username}</span>
-          ) : (
-            'Sans gagnant'
-          )}
-          <span className="text-muted block text-xs">{label(END_REASON, g.endReason)}</span>
-        </span>
-      ) : (
-        <span className="text-faint">—</span>
-      ),
+    cell: (g) => <GameOutcomeCell game={g} />,
   },
   { key: 'created', header: 'Créée', cell: (g) => formatDateTime(g.createdAt), hideOnMobile: true },
   {

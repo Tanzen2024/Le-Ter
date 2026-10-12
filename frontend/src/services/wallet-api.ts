@@ -1,5 +1,14 @@
 import { apiRequest } from '../lib/api-client';
-import type { PaymentView, WalletTransactionView, WalletView } from '../types/wallet';
+import type {
+  DepositChoice,
+  PaymentView,
+  WalletTransactionView,
+  WalletView,
+  WithdrawalOperator,
+  WithdrawalPolicy,
+  WithdrawalResult,
+  WithdrawalView,
+} from '../types/wallet';
 
 export type OperationResult = {
   transaction: WalletTransactionView;
@@ -17,21 +26,48 @@ export const walletApi = {
   get: (accessToken: string) => apiRequest<{ wallet: WalletView }>('/api/wallet', { accessToken }),
 
   /** Achat en FCFA : 1 FCFA = 1 jeton, devise fixée à XAF. */
-  deposit: (accessToken: string, tokens: number, idempotencyKey: string) =>
+  /**
+   * Achat : nombre de jetons (= FCFA saisis), et le choix de paiement : `method` (direct) ou
+   * `operator` (page CinetPay). Opérateur seulement : le numéro est celui du compte, le montant
+   * est revalidé par le serveur.
+   */
+  deposit: (accessToken: string, tokens: number, idempotencyKey: string, choice?: DepositChoice) =>
     apiRequest<OperationResult>('/api/wallet/deposits', {
       method: 'POST',
-      body: { tokens, currency: 'XAF' },
+      body: { tokens, currency: 'XAF', ...choice },
       accessToken,
       headers: { 'Idempotency-Key': idempotencyKey },
     }),
 
-  withdraw: (accessToken: string, tokens: number, idempotencyKey: string) =>
-    apiRequest<OperationResult>('/api/wallet/withdrawals', {
+  /**
+   * Retrait (D-075) : seulement le nombre de jetons et l'opérateur. Le destinataire est le
+   * numéro d'inscription, choisi par le serveur ; aucun numéro n'est envoyé.
+   */
+  withdraw: (
+    accessToken: string,
+    input: { tokens: number; operator: WithdrawalOperator },
+    idempotencyKey: string,
+  ) =>
+    apiRequest<WithdrawalResult>('/api/wallet/withdrawals', {
       method: 'POST',
-      body: { tokens },
+      body: input,
       accessToken,
       headers: { 'Idempotency-Key': idempotencyKey },
     }),
+
+  /** Historique des retraits et règles applicables (minimum, quota, opérateurs). */
+  withdrawals: (accessToken: string) =>
+    apiRequest<{ withdrawals: WithdrawalView[]; policy: WithdrawalPolicy }>(
+      '/api/wallet/withdrawals',
+      { accessToken },
+    ),
+
+  /** Statut RÉEL d'un retrait (seulement les siens), relu sur le serveur. */
+  withdrawal: (accessToken: string, withdrawalId: string) =>
+    apiRequest<{ withdrawal: WithdrawalView }>(
+      `/api/wallet/withdrawals/${encodeURIComponent(withdrawalId)}`,
+      { accessToken },
+    ),
 
   /** Statut RÉEL d'un paiement (seulement les siens), relu sur le serveur. */
   payment: (accessToken: string, paymentId: string) =>

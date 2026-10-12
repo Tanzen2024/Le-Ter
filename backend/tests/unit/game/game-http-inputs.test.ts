@@ -13,16 +13,41 @@ import { waitingGame } from '../../fixtures/game-builders';
 const COMMAND = '5b0c2c1e-4b8e-4f5c-9a51-0f1d6a3b2c11';
 
 describe('Validateurs HTTP des parties', () => {
-  it('création : maxPlayers 2 à 4, mise entière positive facultative, identité ignorée', () => {
-    expect(parseCreateGameInput({ maxPlayers: 4, stakeAmount: 0, creatorId: 'x' })).toEqual({
+  it('création : maxPlayers 2 à 4, mise entière > 0 (D-073), identité ignorée', () => {
+    expect(parseCreateGameInput({ maxPlayers: 4, stakeAmount: 1, creatorId: 'x' })).toEqual({
       maxPlayers: 4,
-      stakeAmount: 0,
+      stakeAmount: 1,
     });
+    // Forme seulement : l'absence de mise est refusée par la politique de mise (D-073).
     expect(parseCreateGameInput({ maxPlayers: 2 })).toEqual({ maxPlayers: 2 });
     expect(() => parseCreateGameInput({ maxPlayers: 2.5 })).toThrow(ValidationError);
     expect(() => parseCreateGameInput({ maxPlayers: 2, stakeAmount: 2 ** 60 })).toThrow(
       ValidationError,
     );
+  });
+
+  it('D-073 : mise nulle, négative, vide, null, NaN, Infinity, décimale ou malformée → 400', () => {
+    for (const stakeAmount of [
+      0,
+      -0,
+      -100,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      null,
+      '',
+      '100',
+      true,
+      {},
+      [],
+      1_000_000_001,
+    ]) {
+      expect(() => parseCreateGameInput({ maxPlayers: 2, stakeAmount })).toThrow(ValidationError);
+    }
+    expect(parseCreateGameInput({ maxPlayers: 2, stakeAmount: 1_000_000_000 })).toEqual({
+      maxPlayers: 2,
+      stakeAmount: 1_000_000_000,
+    });
   });
 
   it('R-23 : capacité 2, 3 ou 4 uniquement', () => {

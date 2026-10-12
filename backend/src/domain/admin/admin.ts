@@ -55,6 +55,40 @@ export const AUDIT_ACTIONS = [
   'PAYMENT_VIEWED',
   'PAYMENT_VERIFICATION_REQUESTED',
   'REPORT_EXPORTED',
+  // Barème de commission des parties (D-074, migrations 0029 et 0030).
+  'GAME_COMMISSION_UPDATED',
+  // Retraits Mobile Money (D-075, migration 0031).
+  'WITHDRAWAL_LIMIT_UPDATED',
+  'WITHDRAWAL_VIEWED',
+  'WITHDRAWAL_VERIFICATION_REQUESTED',
+  // Rapprochement des retraits bloqués (D-076, migration 0032).
+  'WITHDRAWAL_ESCALATED',
+  'WITHDRAWAL_REFUND_PROPOSED',
+  'WITHDRAWAL_REFUND_APPROVED',
+  'WITHDRAWAL_REFUND_REJECTED',
+  // Retraits des revenus de la plateforme (D-078, migration 0033).
+  'PAYOUT_BENEFICIARY_CREATED',
+  'PAYOUT_BENEFICIARY_VERIFIED',
+  'PAYOUT_BENEFICIARY_DISABLED',
+  'TREASURY_OBSERVED',
+  'PLATFORM_PAYOUT_CREATED',
+  'PLATFORM_PAYOUT_APPROVED',
+  'PLATFORM_PAYOUT_REJECTED',
+  'PLATFORM_PAYOUT_CANCELLED',
+  'PLATFORM_PAYOUT_RELEASED',
+  'PLATFORM_PAYOUT_VIEWED',
+  'PLATFORM_PAYOUT_RECONCILED',
+  // Gestion des joueurs (D-079, migration 0034).
+  'USER_DISABLED',
+  'USER_ENABLED',
+  'USER_SUSPENDED',
+  'USER_SUSPENSION_LIFTED',
+  'USER_SESSIONS_REVOKED',
+  'USER_WARNED',
+  'USER_CHAT_RESTRICTED',
+  'USER_CHAT_RESTRICTION_LIFTED',
+  'USER_NOTE_ADDED',
+  'USER_NOTE_DELETED',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -67,6 +101,10 @@ export const AUDIT_TARGET_TYPES = [
   'USER',
   'PAYMENT',
   'REPORT',
+  'WITHDRAWAL',
+  'PLATFORM_PAYOUT',
+  'PAYOUT_BENEFICIARY',
+  'TREASURY',
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 
@@ -133,7 +171,7 @@ export const ADMIN_THRESHOLDS = {
   stalePendingPaymentMinutes: 30,
   /** Partie en attente de joueurs depuis longtemps. */
   staleWaitingGameHours: 24,
-  /** Partie en cours depuis longtemps (5 plis × 15 s : quelques minutes en temps normal). */
+  /** Partie en cours depuis longtemps (5 plis × 10 s : quelques minutes en temps normal). */
   longRunningGameMinutes: 60,
   /** Échéance de tour dépassée sans traitement (minuteur bloqué ?). */
   overdueTurnSeconds: 60,

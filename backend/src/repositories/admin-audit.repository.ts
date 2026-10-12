@@ -12,6 +12,8 @@ export interface AuditListQuery {
   targetId?: string;
   from?: Date;
   to?: Date;
+  /** Actions écartées (journal de modération d'un joueur sans ses consultations). */
+  excludeActions?: AuditAction[];
 }
 
 export interface AuditListItem extends AuditEntry {
@@ -22,8 +24,14 @@ export interface AuditListItem extends AuditEntry {
 export interface AdminAuditRepository {
   insert(entry: AuditEntry): Promise<void>;
   list(query: AuditListQuery): Promise<{ total: number; items: AuditListItem[] }>;
-  /** Dernière vérification de paiement demandée avec cette clé d'idempotence, ou null. */
-  findVerification(idempotencyKey: string): Promise<AuditEntry | null>;
+  /**
+   * Dernière vérification demandée avec cette clé d'idempotence, ou null. Par défaut celle
+   * d'un paiement ; `WITHDRAWAL_VERIFICATION_REQUESTED` pour un retrait (D-075).
+   */
+  findVerification(
+    idempotencyKey: string,
+    action?: 'PAYMENT_VERIFICATION_REQUESTED' | 'WITHDRAWAL_VERIFICATION_REQUESTED',
+  ): Promise<AuditEntry | null>;
 }
 
 /**

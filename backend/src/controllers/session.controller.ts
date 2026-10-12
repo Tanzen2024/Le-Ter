@@ -46,7 +46,12 @@ export function createSessionController(sessions: SessionService) {
 
     /** Tables ouvertes (partie en attente, siège libre) ; la mienne est marquée `mine`. */
     async listOpen(_req: Request, res: Response): Promise<void> {
-      res.json({ tables: await sessions.listOpenTables(currentPlayer(res)) });
+      const [tables, detectionAvailable] = await Promise.all([
+        sessions.listOpenTables(currentPlayer(res)),
+        sessions.isDetectionAvailable(),
+      ]);
+      // `detectionAvailable` : l'option « Détection anti-collusion » est-elle proposée (D-081) ?
+      res.json({ tables, detectionAvailable });
     },
 
     async get(_req: Request, res: Response): Promise<void> {

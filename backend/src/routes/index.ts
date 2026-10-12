@@ -3,6 +3,7 @@ import { Router } from 'express';
 import type { AuthService } from '../services/auth/auth.service';
 import type { ChatService } from '../services/chat/chat.service';
 import type { DetectionAdminService } from '../services/detection/detection-admin.service';
+import type { GameCommissionSettingsService } from '../services/game/game-commission-settings.service';
 import type { DetectionSettingsService } from '../services/detection/detection-settings.service';
 import type { GeolocationService } from '../services/detection/geolocation.service';
 import type { GameService } from '../services/game/game.service';
@@ -11,6 +12,8 @@ import type { PaymentService } from '../services/payments/payment.service';
 import type { NotificationService } from '../services/notifications/notification.service';
 import type { TournamentService } from '../services/tournaments/tournament.service';
 import type { WalletService } from '../services/wallet/wallet.service';
+import type { WithdrawalAdminService } from '../services/withdrawals/withdrawal-admin.service';
+import type { WithdrawalService } from '../services/withdrawals/withdrawal.service';
 import type { Logger } from '../utils/logger';
 import { createAuthRouter, createUnavailableRouter, type AuthRateLimits } from './auth.routes';
 import { createChatRouter } from './chat.routes';
@@ -25,6 +28,12 @@ import { createPaymentRouter, type PaymentRouterOptions } from './payment.routes
 import { createNotificationRouter } from './notification.routes';
 import { createTournamentAdminRouter, createTournamentRouter } from './tournament.routes';
 import { createWalletRouter, DEFAULT_WALLET_WRITE_LIMIT } from './wallet.routes';
+import {
+  createPlatformFinanceAdminRouter,
+  createPlatformPayoutNotifyRouter,
+  type PlatformFinanceDependencies,
+} from './platform-finance.routes';
+import { createWithdrawalAdminRouter, createWithdrawalNotifyRouter } from './withdrawal.routes';
 
 export interface ApiRouterDependencies {
   logger: Logger;
@@ -42,6 +51,12 @@ export interface ApiRouterDependencies {
   /** Paiements CinetPay (D-050) ; absents, /payments répond 503. */
   payments?: PaymentService;
   paymentOptions?: PaymentRouterOptions;
+  /** Retraits Mobile Money (D-075), sous /wallet/withdrawals ; absents, 503. */
+  withdrawals?: WithdrawalService;
+  /** Administration des retraits (D-075), sous /admin/withdrawals ; absente, 503. */
+  withdrawalAdmin?: WithdrawalAdminService;
+  /** Retraits des revenus de la plateforme (D-078), sous /admin/platform-finance ; absents, 503. */
+  platformFinance?: PlatformFinanceDependencies;
   /** Chat de partie (D-045), sous /games/:gameId/chat ; absent, non monté. */
   chat?: ChatService;
   /** Géolocalisation de la détection (D-046), sous /games/:gameId ; absente, non montée. */
@@ -56,6 +71,8 @@ export interface ApiRouterDependencies {
   detectionAdmin?: DetectionAdminService;
   /** Interrupteur global de la détection (D-053), réservé au rôle admin ; absent, 503. */
   detectionSettings?: DetectionSettingsService;
+  /** Commission sur les gains des parties (D-074), sous /admin/settings ; absente, 503. */
+  gameCommissionSettings?: GameCommissionSettingsService;
   /** Tournois (D-054) ; absents, /tournaments et /admin/tournaments répondent 503. */
   tournaments?: TournamentService;
   /** Notifications dans l'application (D-054) ; absentes, /notifications répond 503. */
@@ -73,11 +90,15 @@ export function createApiRouter({
   walletWriteLimit,
   payments,
   paymentOptions,
+  withdrawals,
+  withdrawalAdmin,
+  platformFinance,
   chat,
   geolocation,
   admin,
   detectionAdmin,
   detectionSettings,
+  gameCommissionSettings,
   tournaments,
   notifications,
 }: ApiRouterDependencies): Router {
@@ -116,7 +137,7 @@ export function createApiRouter({
   router.use(
     '/wallet',
     auth && wallet
-      ? createWalletRouter(wallet, auth, logger, walletWriteLimit)
+      ? createWalletRouter(wallet, auth, logger, walletWriteLimit, withdrawals)
       : createUnavailableRouter(
           'WALLET_UNAVAILABLE',
           'Le compte de jeu n’est pas disponible : base ou authentification non configurée.',
@@ -129,6 +150,15 @@ export function createApiRouter({
       : createUnavailableRouter(
           'PAYMENTS_UNAVAILABLE',
           'Les paiements ne sont pas disponibles : base ou authentification non configurée.',
+        ),
+  );
+  router.use(
+    '/withdrawals',
+    withdrawals
+      ? createWithdrawalNotifyRouter(withdrawals)
+      : createUnavailableRouter(
+          'WITHDRAWALS_UNAVAILABLE',
+          'Les retraits ne sont pas disponibles : base ou authentification non configurée.',
         ),
   );
   // Garde de TOUTE l'administration (D-061) : connexion admin, puis requireAuth →
@@ -153,9 +183,44 @@ export function createApiRouter({
         ),
   );
   router.use(
+    '/admin/withdrawals',
+    auth && withdrawalAdmin
+      ? createWithdrawalAdminRouter(withdrawalAdmin, auth, logger)
+      : createUnavailableRouter(
+          'ADMIN_UNAVAILABLE',
+          "L'administration n'est pas disponible : base ou authentification non configurée.",
+        ),
+  );
+  router.use(
+    '/admin/platform-finance',
+    auth && platformFinance
+      ? createPlatformFinanceAdminRouter(platformFinance, auth, logger)
+      : createUnavailableRouter(
+          'ADMIN_UNAVAILABLE',
+          "L'administration n'est pas disponible : base ou authentification non configurée.",
+        ),
+  );
+  router.use(
+    '/platform-payouts',
+    platformFinance
+      ? createPlatformPayoutNotifyRouter(platformFinance.payouts)
+      : createUnavailableRouter(
+          'PLATFORM_PAYOUTS_UNAVAILABLE',
+          'Les retraits de la plateforme ne sont pas disponibles sur ce serveur.',
+        ),
+  );
+  router.use(
     '/admin/settings',
-    auth && detectionSettings
-      ? createAdminSettingsRouter(detectionSettings, auth, logger)
+    auth && (detectionSettings || gameCommissionSettings || withdrawals)
+      ? createAdminSettingsRouter(
+          {
+            detection: detectionSettings,
+            gameCommission: gameCommissionSettings,
+            withdrawals,
+          },
+          auth,
+          logger,
+        )
       : createUnavailableRouter(
           'ADMIN_UNAVAILABLE',
           "L'administration n'est pas disponible : base ou authentification non configurée.",

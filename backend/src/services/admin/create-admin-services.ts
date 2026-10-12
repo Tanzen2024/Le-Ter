@@ -11,15 +11,18 @@ import {
 import { PostgresAdminAuditRepository } from '../../repositories/postgres-admin-audit.repository';
 import { PostgresAdminQueryRepository } from '../../repositories/postgres-admin-query.repository';
 import { PostgresAdminSessionRepository } from '../../repositories/postgres-admin-session.repository';
+import { PostgresModerationRepository } from '../../repositories/postgres-moderation.repository';
 import type { Logger } from '../../utils/logger';
 import type { AuthService } from '../auth/auth.service';
 import type { PaymentService } from '../payments/payment.service';
 import { AdminQueryService } from './admin-query.service';
 import { AdminSessionService } from './admin-session.service';
+import { PlayerModerationService } from './player-moderation.service';
 
 export interface AdminServices {
   sessions: AdminSessionService;
   queries: AdminQueryService;
+  moderation: PlayerModerationService;
   rateLimitStore: RateLimitStore;
 }
 
@@ -56,6 +59,12 @@ export function createAdminServices(deps: {
       queries: new PostgresAdminQueryRepository(deps.sql),
       audit,
       payments: deps.payments,
+      logger: deps.logger,
+      clock: deps.clock,
+    }),
+    moderation: new PlayerModerationService({
+      repository: new PostgresModerationRepository(deps.sql),
+      audit,
       logger: deps.logger,
       clock: deps.clock,
     }),

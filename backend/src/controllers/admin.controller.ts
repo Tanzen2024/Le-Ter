@@ -9,6 +9,7 @@ import { getAuth } from '../middleware/require-auth';
 import type { AuthService } from '../services/auth/auth.service';
 import type { AdminQueryService } from '../services/admin/admin-query.service';
 import type { AdminSessionService } from '../services/admin/admin-session.service';
+import type { WithdrawalAvailability } from '../services/withdrawals/withdrawal-availability';
 import {
   parseAuditQuery,
   parseGameListQuery,
@@ -31,6 +32,8 @@ export interface AdminSystemInfo {
   nodeEnv: string;
   /** Mode CinetPay déduit côté serveur ; jamais la clé, le mot de passe ni les URL. */
   cinetpay: 'sandbox' | 'production' | null;
+  /** État des nouveaux retraits (D-077) : mode, motif, avertissements ; jamais de secret ni d'URL. */
+  withdrawals?: WithdrawalAvailability;
 }
 
 /**
@@ -166,6 +169,11 @@ export function createAdminController(deps: {
           database: await getDatabaseStatus(),
           redis: getRedisStatus(),
           cinetpay: { configured: system.cinetpay !== null, mode: system.cinetpay },
+          withdrawals: system.withdrawals ?? {
+            mode: 'unavailable',
+            reason: 'PROVIDER_NOT_CONFIGURED',
+            warnings: [],
+          },
         },
         sessionPolicy: {
           absoluteLifetimeSeconds: ADMIN_SESSION_POLICY.absoluteLifetimeSeconds,

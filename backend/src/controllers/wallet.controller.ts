@@ -4,7 +4,7 @@ import type { WalletTransaction } from '../domain/wallet/wallet';
 import { getAuth } from '../middleware/require-auth';
 import type { WalletOperationResult, WalletService } from '../services/wallet/wallet.service';
 import { parseIdempotencyKey } from '../validators/game.validators';
-import { parseDepositInput, parseTokenAmountInput } from '../validators/wallet.validators';
+import { parseDepositInput } from '../validators/wallet.validators';
 
 /**
  * Contrôleurs minces du compte de jeu (D-040) : identité issue du JWT, montant validé,
@@ -23,16 +23,11 @@ export function createWalletController(wallet: WalletService) {
      */
     async deposit(req: Request, res: Response): Promise<void> {
       const key = parseIdempotencyKey(req.get('idempotency-key'));
-      const { tokens } = parseDepositInput(req.body);
-      const result = await wallet.requestDeposit(getAuth(res).userId, tokens, key);
-      res.status(statusOf(result.transaction)).json(toView(result));
-    },
-
-    /** Retrait : jetons débités dès l'acceptation, remboursés si le transfert échoue. */
-    async withdraw(req: Request, res: Response): Promise<void> {
-      const key = parseIdempotencyKey(req.get('idempotency-key'));
-      const { tokens } = parseTokenAmountInput(req.body);
-      const result = await wallet.requestWithdrawal(getAuth(res).userId, tokens, key);
+      const { tokens, directOperator, pageOperator } = parseDepositInput(req.body);
+      const result = await wallet.requestDeposit(getAuth(res).userId, tokens, key, {
+        ...(directOperator && { directOperator }),
+        ...(pageOperator && { pageOperator }),
+      });
       res.status(statusOf(result.transaction)).json(toView(result));
     },
   };

@@ -208,17 +208,6 @@ export function useRegisterTournament() {
   });
 }
 
-/** Désinscription avant la fermeture : la réservation est libérée. */
-export function useUnregisterTournament() {
-  const refresh = useAfterReservationChange();
-  return useMutation({
-    mutationFn: async (tournamentId: string) =>
-      (await withAccessToken((t) => tournamentsApi.unregister(t, tournamentId))).tournament,
-    onSuccess: (tournament) => refresh(tournament),
-    onError: () => refresh(),
-  });
-}
-
 /**
  * Rejoindre le tournoi en cours : le SERVEUR vérifie la participation, la période, les
  * jetons et la session, puis attribue la table. L'écran de jeu existant s'ouvre sur le

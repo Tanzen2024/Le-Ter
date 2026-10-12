@@ -1,13 +1,57 @@
+import Constants from 'expo-constants';
+
+/** Port du backend en développement (`backend/.env`, `PORT`). */
+const DEV_API_PORT = 3000;
+
 /**
- * Client HTTP de l'API Le Ter.
- *
- * URL : EXPO_PUBLIC_API_URL (inlinée par Expo au build). Émulateur Android :
- * http://10.0.2.2:3000 ; appareil physique : l'IP du poste sur le réseau local.
+ * URL de l'API :
+ * - `EXPO_PUBLIC_API_URL` explicite (inlinée par Expo au build : après l'avoir changée, relancer
+ *   `npx expo start --clear`). Émulateur Android : http://10.0.2.2:3000 ; appareil physique :
+ *   l'IP du poste sur le réseau local (jamais `localhost`, qui désigne alors le téléphone) ;
+ * - `auto` ou absente, en DÉVELOPPEMENT : l'hôte du serveur Metro (`Constants.expoConfig.hostUri`,
+ *   présent seulement avec @expo/cli, SDK 57), c'est-à-dire le PC qui sert aussi le backend, port
+ *   3000. L'adresse suit ainsi le réseau du PC (Wi-Fi, partage de connexion) sans rien modifier ;
+ * - sinon `http://localhost:3000`.
  */
-export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000').replace(
-  /\/$/,
-  '',
+export function resolveApiUrl(envValue: string | undefined, hostUri: string | undefined): string {
+  const explicit = envValue?.trim();
+  if (explicit && explicit.toLowerCase() !== 'auto') return explicit.replace(/\/$/, '');
+  const host = hostUri?.split(':')[0];
+  return host ? `http://${host}:${DEV_API_PORT}` : `http://localhost:${DEV_API_PORT}`;
+}
+
+export const API_URL = resolveApiUrl(
+  process.env.EXPO_PUBLIC_API_URL,
+  __DEV__ ? Constants.expoConfig?.hostUri : undefined,
 );
+
+/**
+ * Délai maximal d'une requête : au-delà, `TIMEOUT` plutôt qu'une attente indéfinie (adresse
+ * injoignable, Wi-Fi qui isole les appareils). Large, car certaines opérations attendent un
+ * prestataire côté serveur ; l'abandon côté téléphone n'annule rien côté serveur.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Destination journalisée : origine et chemin seulement (aucune requête, jeton ni en-tête). */
+const destination = (url: string) => url.split(/[?#]/)[0];
+
+/**
+ * Diagnostic réseau en développement seulement : catégorie, méthode, destination, cause
+ * technique. Jamais d'en-tête Authorization, de jeton, de corps ni de donnée personnelle.
+ */
+export function logNetworkIssue(category: string, details: Record<string, unknown>): void {
+  if (__DEV__) console.warn(`[réseau] ${category}`, details);
+}
+
+if (__DEV__) {
+  console.info(`[réseau] API : ${API_URL}`);
+  if (/\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(API_URL)) {
+    console.warn(
+      '[réseau] EXPO_PUBLIC_API_URL désigne localhost : sur un téléphone, c’est le téléphone ' +
+        'lui-même. Utilisez l’adresse du PC sur le réseau, puis `npx expo start --clear`.',
+    );
+  }
+}
 
 /** Erreur renvoyée par l'API : `code` stable, `message` affichable, `fields` par champ. */
 export class ApiError extends Error {
@@ -23,6 +67,34 @@ export class ApiError extends Error {
 }
 
 const NETWORK_ERROR_MESSAGE = 'Impossible de joindre le serveur. Vérifiez votre connexion.';
+const TIMEOUT_MESSAGE = 'Le serveur ne répond pas. Vérifiez votre connexion et réessayez.';
+const SERVER_ERROR_MESSAGE = 'Le serveur a rencontré une erreur. Réessayez dans un instant.';
+
+/**
+ * `fetch` vers l'API avec délai maximal. Sans réponse HTTP, une `ApiError` de statut 0 :
+ * `NETWORK_ERROR` (serveur injoignable : arrêté, mauvaise adresse, réseau coupé) ou `TIMEOUT`
+ * (aucune réponse dans le délai). Toute réponse HTTP, même 401 ou 5xx, est rendue telle
+ * quelle : une erreur d'authentification n'est jamais présentée comme une erreur réseau.
+ */
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    const timedOut = controller.signal.aborted;
+    logNetworkIssue(timedOut ? 'TIMEOUT' : 'NETWORK_ERROR', {
+      method: init.method ?? 'GET',
+      url: destination(url),
+      cause: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
+    throw timedOut
+      ? new ApiError(0, 'TIMEOUT', TIMEOUT_MESSAGE)
+      : new ApiError(0, 'NETWORK_ERROR', NETWORK_ERROR_MESSAGE);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * L'utilisateur ne manipule que des PARTIES : la session (D-033) est un concept technique.
@@ -60,21 +132,17 @@ export async function apiRequest<T>(
     headers?: Record<string, string>;
   } = {},
 ): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_URL}${path}`, {
-      method: options.method ?? 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...(options.body !== undefined && { 'Content-Type': 'application/json' }),
-        ...(options.accessToken && { Authorization: `Bearer ${options.accessToken}` }),
-        ...options.headers,
-      },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
-  } catch {
-    throw new ApiError(0, 'NETWORK_ERROR', NETWORK_ERROR_MESSAGE);
-  }
+  const method = options.method ?? 'GET';
+  const response = await apiFetch(`${API_URL}${path}`, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      ...(options.body !== undefined && { 'Content-Type': 'application/json' }),
+      ...(options.accessToken && { Authorization: `Bearer ${options.accessToken}` }),
+      ...options.headers,
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
 
   if (response.status === 204) {
     return undefined as T;
@@ -86,12 +154,21 @@ export async function apiRequest<T>(
       message?: string;
       fields?: Record<string, string>;
     };
+    if (response.status >= 500) {
+      logNetworkIssue('SERVER_ERROR', {
+        method,
+        url: destination(`${API_URL}${path}`),
+        status: response.status,
+        code: body.code,
+      });
+    }
     throw new ApiError(
       response.status,
       body.code ?? 'HTTP_ERROR',
       PLAYER_FACING_MESSAGES[body.code ?? ''] ??
         body.message ??
-        'Une erreur est survenue. Réessayez.',
+        // Réponse 5xx sans message de l'API (proxy, panne) : dite comme telle.
+        (response.status >= 500 ? SERVER_ERROR_MESSAGE : 'Une erreur est survenue. Réessayez.'),
       body.fields,
     );
   }

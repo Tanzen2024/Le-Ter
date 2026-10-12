@@ -33,13 +33,30 @@ export function useMySessions() {
   });
 }
 
+/** Réponse de la liste des tables ouvertes, partagée par les deux hooks ci-dessous. */
+const openTablesQuery = {
+  queryKey: sessionKeys.open,
+  queryFn: () => withAccessToken((t) => sessionsApi.listOpen(t)),
+  refetchInterval: SESSION_REFRESH_MS,
+};
+
 /** Tables ouvertes à rejoindre ; relues tant que la liste est affichée. */
 export function useOpenTables() {
-  return useQuery({
-    queryKey: sessionKeys.open,
-    queryFn: async () => (await withAccessToken((t) => sessionsApi.listOpen(t))).tables,
-    refetchInterval: SESSION_REFRESH_MS,
+  return useQuery({ ...openTablesQuery, select: (data) => data.tables });
+}
+
+/**
+ * L'option « Détection anti-collusion » est-elle proposée (interrupteur global de
+ * l'administration, D-053, D-081) ? Lue avec la liste des tables, relue à la même cadence.
+ * Tant que la réponse n'est pas arrivée (ou si un ancien serveur ne la donne pas) : non
+ * proposée, jamais affichée par défaut.
+ */
+export function useDetectionAvailable(): boolean {
+  const { data } = useQuery({
+    ...openTablesQuery,
+    select: (response) => response.detectionAvailable === true,
   });
+  return data === true;
 }
 
 export function useSession(sessionId: string) {
@@ -83,7 +100,10 @@ export function useCreateSession() {
     ...mutation,
     create: (
       input: NewPrivateGame,
-      options?: { onSuccess?: (result: { session: SessionView; game: GameView }) => void },
+      options?: {
+        onSuccess?: (result: { session: SessionView; game: GameView }) => void;
+        onError?: (error: Error) => void;
+      },
     ) => mutation.mutate({ ...input, idempotencyKey: randomUUID() }, options),
   };
 }

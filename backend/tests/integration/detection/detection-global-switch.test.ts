@@ -418,8 +418,12 @@ describe('Hiérarchie global / partie', () => {
   });
 
   it('GLOBAL OFF + partie surveillée → aucune détection en fin de partie', async () => {
+    // Table surveillée créée détection active, puis coupée par l'administration (D-081 :
+    // détection coupée, l'option n'est plus proposée à la création).
+    await setGlobal(true);
     const { owner, guest, gameId } = await table(true);
     await closeTogether(gameId, owner.id, guest.id);
+    await setGlobal(false);
     await start(owner, gameId);
     await playToEnd(owner, guest, gameId);
     expect(await detectionCounts(gameId)).toEqual({
@@ -428,6 +432,38 @@ describe('Hiérarchie global / partie', () => {
       scores: 0,
       alerts: 0,
     });
+  });
+
+  it('GLOBAL OFF : option non proposée (detectionAvailable) et jamais enregistrée à la création', async () => {
+    const owner = await newPlayer();
+    const list = await expectStatus(owner.api.get('/api/sessions/open'), 200);
+    expect(list.body.detectionAvailable).toBe(false);
+    // Ancien client qui envoie quand même l'option : la table n'est PAS surveillée.
+    const res = await expectStatus(
+      owner.api.post('/api/sessions', { maxPlayers: 2, suspicionDetectionEnabled: true }),
+      201,
+    );
+    expect(res.body.session.suspicionDetectionEnabled).toBe(false);
+    // Activation ultérieure du global : cette table reste non surveillée (option immuable).
+    await setGlobal(true);
+    const status = await owner.api.get(`/api/games/${res.body.game.gameId}/geolocation`);
+    expect(status.body).toEqual({ detectionEnabled: false });
+  });
+
+  it('GLOBAL ON : option proposée et enregistrée telle que choisie', async () => {
+    await setGlobal(true);
+    const owner = await newPlayer();
+    const list = await expectStatus(owner.api.get('/api/sessions/open'), 200);
+    expect(list.body.detectionAvailable).toBe(true);
+    const res = await expectStatus(
+      owner.api.post('/api/sessions', { maxPlayers: 2, suspicionDetectionEnabled: true }),
+      201,
+    );
+    expect(res.body.session.suspicionDetectionEnabled).toBe(true);
+    // Coupure par l'administration : l'option disparaît aussitôt (relue à chaque appel).
+    await setGlobal(false);
+    const after = await expectStatus(owner.api.get('/api/sessions/open'), 200);
+    expect(after.body.detectionAvailable).toBe(false);
   });
 
   it('GLOBAL ON + partie non surveillée → aucune détection', async () => {

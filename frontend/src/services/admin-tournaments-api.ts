@@ -1,4 +1,4 @@
-import { API_URL, ApiError, apiRequest } from '../lib/api-client';
+import { API_URL, ApiError, apiFetch, apiRequest } from '../lib/api-client';
 import type {
   AdminRegistration,
   TournamentProposalInput,
@@ -66,18 +66,9 @@ export const adminTournamentsApi = {
 
   /** Export CSV produit par le SERVEUR (aucun calcul côté application). */
   async exportCsv(accessToken: string, tournamentId: string): Promise<string> {
-    let response: Response;
-    try {
-      response = await fetch(`${API_URL}${path(tournamentId, '/results.csv')}`, {
-        headers: { Accept: 'text/csv', Authorization: `Bearer ${accessToken}` },
-      });
-    } catch {
-      throw new ApiError(
-        0,
-        'NETWORK_ERROR',
-        'Impossible de joindre le serveur. Vérifiez votre connexion.',
-      );
-    }
+    const response = await apiFetch(`${API_URL}${path(tournamentId, '/results.csv')}`, {
+      headers: { Accept: 'text/csv', Authorization: `Bearer ${accessToken}` },
+    });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { code?: string; message?: string };
       throw new ApiError(

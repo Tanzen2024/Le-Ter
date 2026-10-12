@@ -91,3 +91,20 @@ export async function runMigrations(
     return done;
   });
 }
+
+/**
+ * Migrations du code non encore appliquées, SANS rien modifier (lecture seule). Une base
+ * jamais migrée (aucune table `schema_migrations`) les renvoie toutes.
+ */
+export async function pendingMigrations(
+  client: SqlClient,
+  migrations: readonly Migration[],
+): Promise<string[]> {
+  const { rows: exists } = await client.query<{ present: boolean }>(
+    "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS present",
+  );
+  if (!exists[0]?.present) return migrations.map((m) => m.name);
+  const { rows } = await client.query<{ name: string }>('SELECT name FROM schema_migrations');
+  const applied = new Set(rows.map((r) => r.name));
+  return migrations.map((m) => m.name).filter((name) => !applied.has(name));
+}

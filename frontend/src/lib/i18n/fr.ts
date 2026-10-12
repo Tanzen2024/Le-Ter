@@ -43,9 +43,12 @@ export const fr = {
     backHome: "Retour à l'accueil",
     addCoins: 'Ajouter des jetons',
     balance: (tokens: number) => `Solde : ${tokens} jetons`,
-    /** Solde disponible et fonds réservés par des inscriptions à des tournois (D-054). */
+    /**
+     * Solde disponible et fonds réservés (D-054, D-074) : mises des parties en cours et
+     * inscriptions à des tournois. Réservé ≠ débité : rien n'est perdu avant le règlement.
+     */
     balanceWithReserved: (available: number, reserved: number) =>
-      `Solde disponible : ${available} jetons, ${reserved} réservés pour des tournois`,
+      `Solde disponible : ${available} jetons, ${reserved} réservés (tournois), non débités`,
     balanceUnavailable: 'Solde indisponible',
     counterUnavailable: 'Compteur indisponible',
   },
@@ -78,6 +81,30 @@ export const fr = {
     cancel: 'Annuler',
     confirm: 'Valider',
     unavailableDay: (date: string) => `${date}, indisponible`,
+  },
+  /** Panneau de fin de partie, posé sur la table (gagnant, bilan, Quitter / Rejouer). */
+  gameOver: {
+    wonBy: (name: string) => `${name} a gagné la partie.`,
+    youWon: 'Vous avez gagné la partie.',
+    stopped: 'Partie arrêtée.',
+    youWin: 'Vous gagnez',
+    youLose: 'Vous perdez',
+    youFled: 'Vous avez fui la partie',
+    noChange: 'Aucun gain ni perte',
+    amountA11y: (signed: string) => `${signed} jetons`,
+    quit: 'Quitter',
+    replay: 'Rejouer',
+    leavingIn: (seconds: number) =>
+      `La partie sera quittée dans ${seconds} seconde${seconds > 1 ? 's' : ''}`,
+    leaving: 'Sortie de la partie…',
+    waitingOthers: (count: number) =>
+      `Vous rejouez. En attente de ${count} joueur${count > 1 ? 's' : ''}…`,
+    newGame: 'Nouvelle partie…',
+    nextGameLater: 'Une partie est en cours : vous jouerez la suivante.',
+    home: 'Accueil',
+    tieTitle: 'Égalité de priorité',
+    tieDetail: 'Aucun gagnant : la partie est rejouée immédiatement, avec le même premier joueur.',
+    newDeal: 'Nouvelle donne',
   },
 };
 

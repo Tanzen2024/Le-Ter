@@ -216,7 +216,9 @@ describe('Activation par la table', () => {
       sendPosition(owner, gameId, { latitude: 4.051234567, longitude: 9.767891234 }),
       201,
     );
-    expect(res.body).toEqual({ distances: [{ playerId: guest.id, meters: null }] });
+    expect(res.body).toEqual({
+      distances: [{ playerId: guest.id, meters: null, unavailable: 'WAITING' }],
+    });
     const { rows } = await database.sql.query<{ latitude: string; longitude: string }>(
       'SELECT latitude, longitude, player_id FROM detection_positions WHERE game_id = $1',
       [gameId],
@@ -319,7 +321,7 @@ describe('Distances calculées par le serveur', () => {
     expect(view.body.distances).toEqual([
       { playerId: p2.id, meters: 100 },
       { playerId: p3.id, meters: 1_000 },
-      { playerId: p4.id, meters: null },
+      { playerId: p4.id, meters: null, unavailable: 'WAITING' },
     ]);
     const refused = await expectStatus(p4.api.get(`/api/games/${gameId}/geolocation`), 200);
     expect(refused.body.distances.map((d: { meters: unknown }) => d.meters)).toEqual([
@@ -327,6 +329,22 @@ describe('Distances calculées par le serveur', () => {
       null,
       null,
     ]);
+  });
+
+  it('position trop ancienne : distance inconnue signalée STALE, sans âge ni coordonnée', async () => {
+    const { owner, guest, gameId } = await table(true);
+    await expectStatus(sendPosition(owner, gameId, DOUALA), 201);
+    await expectStatus(sendPosition(guest, gameId, north(200)), 201);
+    const fresh = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
+    expect(fresh.body.distances).toEqual([{ playerId: guest.id, meters: 200 }]);
+    // Les deux positions vieillissent au-delà de la fraîcheur d'affichage.
+    await database.sql.query(
+      `UPDATE detection_positions SET captured_at = captured_at - interval '10 minutes'
+       WHERE game_id = $1`,
+      [gameId],
+    );
+    const old = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
+    expect(old.body.distances).toEqual([{ playerId: guest.id, meters: null, unavailable: 'STALE' }]);
   });
 
   it('TEST 19 — aucune coordonnée dans les réponses aux joueurs', async () => {
@@ -497,7 +515,9 @@ describe('TEST 15 — isolation entre deux parties', () => {
 
     // Même lieu que les joueurs de A, mais aucune distance vers eux : B ne voit que B.
     const viewB = await expectStatus(b.owner.api.get(`/api/games/${b.gameId}/geolocation`), 200);
-    expect(viewB.body.distances).toEqual([{ playerId: b.guest.id, meters: null }]);
+    expect(viewB.body.distances).toEqual([
+      { playerId: b.guest.id, meters: null, unavailable: 'WAITING' },
+    ]);
 
     await Promise.all([
       detection.analyzeGame(await gameRecord(a.gameId)),

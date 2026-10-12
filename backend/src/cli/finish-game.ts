@@ -10,7 +10,7 @@ import { createLogger } from '../utils/logger';
  * administrative), via GameService.finishGame. Aucune écriture directe en base : la file
  * de la partie, la version et la diffusion `game:finished` (Redis si configuré) sont
  * respectées. Ses joueurs sont libérés pour une nouvelle partie (R-18), et la ronde
- * Poursuivre/Quitter de la session s'ouvre (D-034, échéance = fin + 15 s).
+ * Poursuivre/Quitter de la session s'ouvre (D-034, échéance = fin + 10 s).
  *
  * Utile tant qu'aucun jeu de règles n'est adopté : une partie démarrée ne peut pas encore
  * se terminer par le jeu. Les règles d'abandon ou de suspension restent ouvertes (R-19, R-25).

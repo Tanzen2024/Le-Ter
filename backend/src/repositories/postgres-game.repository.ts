@@ -31,6 +31,7 @@ import {
   type StartDeadline,
   type TurnDeadline,
 } from './game.repository';
+import type { GameStakeLedger } from './game-stake-ledger';
 
 /** Index de la migration 0004. */
 const ONE_ACTIVE_GAME_INDEX = 'game_players_one_active_game_per_player';
@@ -111,7 +112,14 @@ const SELECT_GAME = `
  * conflit, y compris entre plusieurs instances du backend.
  */
 export class PostgresGameRepository implements GameRepository {
-  constructor(private readonly db: SqlClient) {}
+  /**
+   * `stakeLedger` (D-074) : séquestre et règlement des mises dans la transaction de chaque
+   * écriture. Absent (tests du moteur, outils) : aucun mouvement de jetons.
+   */
+  constructor(
+    private readonly db: SqlClient,
+    private readonly options: { stakeLedger?: GameStakeLedger } = {},
+  ) {}
 
   nextId(): GameId {
     return newGameId();
@@ -125,7 +133,7 @@ export class PostgresGameRepository implements GameRepository {
 
   async insert(game: Game): Promise<void> {
     try {
-      await this.db.transaction((tx) => insertGameRows(tx, game));
+      await this.db.transaction((tx) => insertGameRows(tx, game, this.options.stakeLedger));
     } catch (err) {
       throw translateGameInsertError(err, game);
     }
@@ -145,7 +153,9 @@ export class PostgresGameRepository implements GameRepository {
   }
 
   private async saveInTransaction(game: Game, expectedVersion: number): Promise<void> {
-    await this.db.transaction((tx) => updateGameRows(tx, game, expectedVersion));
+    await this.db.transaction((tx) =>
+      updateGameRows(tx, game, expectedVersion, this.options.stakeLedger),
+    );
   }
 
   async findActiveByPlayer(playerId: PlayerId): Promise<Game[]> {
@@ -201,7 +211,11 @@ export class PostgresGameRepository implements GameRepository {
  * session verrouillée, soit une seule transaction (D-033). Erreurs brutes de PostgreSQL :
  * voir `translateGameInsertError`.
  */
-export async function insertGameRows(tx: SqlExecutor, game: Game): Promise<void> {
+export async function insertGameRows(
+  tx: SqlExecutor,
+  game: Game,
+  stakeLedger?: GameStakeLedger,
+): Promise<void> {
   await tx.query(
     `INSERT INTO games (id, version, status, creator_id, max_players, stake_amount, state,
        created_at, updated_at, started_at, finished_at, turn_deadline_at, creation_key,
@@ -236,6 +250,8 @@ export async function insertGameRows(tx: SqlExecutor, game: Game): Promise<void>
     ],
   );
   await writePlayers(tx, game);
+  // D-074 : une partie insérée déjà démarrée (partie suivante, reprise) ouvre son séquestre.
+  await stakeLedger?.afterGameWrite(tx, game, null);
 }
 
 /**
@@ -247,7 +263,19 @@ export async function updateGameRows(
   tx: SqlExecutor,
   game: Game,
   expectedVersion: number,
+  stakeLedger?: GameStakeLedger,
 ): Promise<void> {
+  // D-074 : statut enregistré AVANT l'écriture (démarrage, fin). Lu sous le verrou de la
+  // ligne : la version conditionne l'UPDATE, une écriture concurrente serait un conflit.
+  const previousStatus =
+    stakeLedger && game.status !== 'waiting'
+      ? ((
+          await tx.query<{ status: GameStatus }>(
+            'SELECT status FROM games WHERE id = $1 FOR UPDATE',
+            [game.id],
+          )
+        ).rows[0]?.status ?? null)
+      : null;
   // La ligne n'est modifiée que si la version est celle lue ET si le statut ne
   // recule pas (waiting → in_progress → finished) : garde-fou en base du cycle de vie.
   const { rowCount } = await tx.query(
@@ -296,6 +324,9 @@ export async function updateGameRows(
     throw new GameVersionConflictError(game.id, expectedVersion, stored.version);
   }
   await writePlayers(tx, game);
+  if (stakeLedger && previousStatus !== null) {
+    await stakeLedger.afterGameWrite(tx, game, previousStatus);
+  }
 }
 
 /** Partie lue et VERROUILLÉE (`FOR UPDATE`) dans la transaction `tx`, ou null. */

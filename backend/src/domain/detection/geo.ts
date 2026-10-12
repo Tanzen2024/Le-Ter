@@ -53,10 +53,18 @@ export function playerPairs(playerIds: readonly PlayerId[]): [PlayerId, PlayerId
   return pairs;
 }
 
+/**
+ * Pourquoi une distance est inconnue : `WAITING` = au moins un des deux joueurs n'a encore
+ * envoyé aucune position ; `STALE` = les deux en ont envoyé, mais l'une est trop ancienne.
+ */
+export type DistanceUnavailable = 'WAITING' | 'STALE';
+
 export interface PairDistance {
   pair: [PlayerId, PlayerId];
   /** Distance en mètres, ou `null` si l'une des deux positions manque ou est trop ancienne. */
   meters: number | null;
+  /** Cause d'une distance inconnue (`null` quand la distance est connue). */
+  unavailable: DistanceUnavailable | null;
 }
 
 /**
@@ -70,7 +78,9 @@ export function pairDistances(
   freshnessMs: number,
 ): PairDistance[] {
   const fresh = new Map<PlayerId, PositionSample>();
+  const seen = new Set<PlayerId>();
   for (const sample of latest) {
+    seen.add(sample.playerId);
     if (now.getTime() - sample.capturedAt.getTime() > freshnessMs) continue;
     const known = fresh.get(sample.playerId);
     if (!known || known.capturedAt < sample.capturedAt) fresh.set(sample.playerId, sample);
@@ -78,7 +88,12 @@ export function pairDistances(
   return playerPairs(playerIds).map(([a, b]) => {
     const pa = fresh.get(a);
     const pb = fresh.get(b);
-    return { pair: [a, b], meters: pa && pb ? haversineMeters(pa, pb) : null };
+    if (pa && pb) return { pair: [a, b], meters: haversineMeters(pa, pb), unavailable: null };
+    return {
+      pair: [a, b],
+      meters: null,
+      unavailable: seen.has(a) && seen.has(b) ? 'STALE' : 'WAITING',
+    };
   });
 }
 

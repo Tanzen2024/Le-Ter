@@ -22,9 +22,12 @@ export interface Period {
 export const USER_SORTS = ['created_desc', 'created_asc', 'username_asc'] as const;
 export type UserSort = (typeof USER_SORTS)[number];
 
+/** Filtre d'état d'un compte : statut (`users.status`) ou suspension en cours (D-079). */
+export type UserStatusFilter = UserStatus | 'suspended';
+
 export interface UserListQuery extends Page {
   q?: string;
-  status?: UserStatus;
+  status?: UserStatusFilter;
   role?: UserRole;
   sort: UserSort;
 }
@@ -44,6 +47,10 @@ export interface AdminUserRow {
   reserved: number;
   gamesPlayed: number;
   lastGameAt: Date | null;
+  /** Suspension en cours (D-079) ; `endsAt` null : indéterminée. */
+  suspension: { endsAt: Date | null } | null;
+  /** Restriction du chat en cours (D-079). */
+  chatRestriction: { endsAt: Date | null } | null;
 }
 
 export interface AdminUserDetail extends AdminUserRow {
@@ -93,10 +100,14 @@ export interface AdminGameRow {
   startedAt: Date | null;
   finishedAt: Date | null;
   turnDeadlineAt: Date | null;
+  /** Échéance de tour dépassée (TURN_TIMEOUT), coup automatique en attente. */
+  turnTimedOutAt: Date | null;
   endReason: string | null;
   winnerId: string | null;
   winnerUsername: string | null;
   replayOfGameId: string | null;
+  /** Partie qui rejoue celle-ci après une égalité de priorité (INSTANT_WIN_TIE). */
+  replayedByGameId: string | null;
   players: AdminGamePlayer[];
 }
 
@@ -123,6 +134,9 @@ export const WALLET_KINDS = [
   'withdrawal',
   'tournament_entry',
   'tournament_prize',
+  // Partie ordinaire (D-074) : mise consommée, gain net du gagnant.
+  'game_stake',
+  'game_winnings',
 ] as const;
 export type WalletKind = (typeof WALLET_KINDS)[number];
 export const WALLET_STATUSES = ['pending', 'succeeded', 'failed'] as const;
@@ -221,7 +235,12 @@ export interface FinanceOverview {
 
 // --- Compte financier de la plateforme -------------------------------------------------------
 
-export const LEDGER_KINDS = ['TOURNAMENT_PLATFORM_FEE', 'UNALLOCATED_PRIZE'] as const;
+export const LEDGER_KINDS = [
+  'TOURNAMENT_PLATFORM_FEE',
+  'UNALLOCATED_PRIZE',
+  // Commission sur le gain d'une partie ordinaire (D-074).
+  'GAME_COMMISSION',
+] as const;
 export type LedgerKind = (typeof LEDGER_KINDS)[number];
 
 export interface LedgerQuery extends Page {
@@ -233,8 +252,10 @@ export interface LedgerQuery extends Page {
 
 export interface LedgerEntry {
   id: string;
-  tournamentId: string;
-  tournamentName: string;
+  /** Origine : un tournoi (commission, rang non attribué) OU une partie (D-074). */
+  tournamentId: string | null;
+  tournamentName: string | null;
+  gameId: string | null;
   kind: LedgerKind;
   amount: number;
   feeBps: number | null;
@@ -350,8 +371,8 @@ export interface TournamentReportRow {
 }
 
 export interface AdminQueryRepository {
-  listUsers(query: UserListQuery): Promise<{ total: number; items: AdminUserRow[] }>;
-  findUser(id: string): Promise<AdminUserDetail | null>;
+  listUsers(query: UserListQuery, now: Date): Promise<{ total: number; items: AdminUserRow[] }>;
+  findUser(id: string, now: Date): Promise<AdminUserDetail | null>;
   listGames(query: GameListQuery, now: Date): Promise<{ total: number; items: AdminGameRow[] }>;
   findGame(id: string): Promise<AdminGameDetail | null>;
   listWalletTransactions(
@@ -364,12 +385,12 @@ export interface AdminQueryRepository {
   listLedger(query: LedgerQuery): Promise<{ total: number; items: LedgerEntry[] }>;
   /**
    * Paiements candidats au rapprochement : statut incohérent avec l'achat, montant ≠ jetons,
-   * montant hors barème, ou en attente depuis plus de `staleMinutes`.
+   * montant hors des limites d'achat (D-085), ou en attente depuis plus de `staleMinutes`.
    */
   paymentReconciliation(options: {
     now: Date;
     staleMinutes: number;
-    allowedAmounts: readonly number[];
+    depositLimits: { min: number; max: number };
     tokensPerUnit: number;
     limit: number;
   }): Promise<PaymentReconciliationRow[]>;

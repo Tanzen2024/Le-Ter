@@ -15,8 +15,10 @@ export interface ChatMessage {
 export interface ChatHistory {
   messages: ChatMessage[];
   hasMore: boolean;
-  /** Faux quand la partie est terminée : historique en lecture seule. */
+  /** Faux quand la partie est terminée, ou quand le chat du joueur est restreint. */
   canSend: boolean;
+  /** Restriction du chat par l'administration (D-079) ; `endsAt` null : indéterminée. */
+  restriction?: { endsAt: string | null } | null;
   /** Limite de longueur d'un message : valeur du serveur, jamais recopiée ici. */
   maxMessageLength: number;
 }

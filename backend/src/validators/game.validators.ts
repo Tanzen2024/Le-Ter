@@ -1,5 +1,6 @@
 import { isGameId, type GameId } from '../domain/game/game-id';
 import { ALLOWED_MAX_PLAYERS } from '../domain/game/game';
+import { isValidGameStake } from '../domain/rules/stake';
 import { BCRYPT_MAX_PASSWORD_BYTES } from '../services/auth/password.service';
 import { ValidationError } from './validation-error';
 
@@ -17,7 +18,10 @@ const CARD_ID_MAX_LENGTH = 16;
 export interface CreateGameInput {
   /** Capacité maximale : 2, 3 ou 4 (R-23). Ce n'est pas un minimum pour démarrer. */
   maxPlayers: number;
-  /** Mise indicative ; aucun mouvement d'argent n'existe encore (R-13, phase Finance). */
+  /**
+   * Mise en jetons, entier > 0 (D-073) ; aucun mouvement de jetons n'existe encore (R-13).
+   * Son absence et le solde (≥ 2 × mise) sont refusés par la politique de mise du serveur.
+   */
   stakeAmount?: number;
 }
 
@@ -74,11 +78,9 @@ export function parseCreateGameInput(body: unknown): CreateGameInput {
   ) {
     fields.maxPlayers = `Nombre maximal de joueurs : ${ALLOWED_MAX_PLAYERS.join(', ')}.`;
   }
-  if (
-    stakeAmount !== undefined &&
-    (typeof stakeAmount !== 'number' || !Number.isSafeInteger(stakeAmount) || stakeAmount < 0)
-  ) {
-    fields.stakeAmount = 'La mise doit être un entier positif ou nul.';
+  // null, chaîne, 0, négatif, décimal, NaN/Infinity (null en JSON) ou trop grand : refusés.
+  if (stakeAmount !== undefined && !isValidGameStake(stakeAmount)) {
+    fields.stakeAmount = 'La mise doit être un nombre entier supérieur à zéro.';
   }
   if (Object.keys(fields).length > 0) {
     throw new ValidationError(fields);

@@ -43,7 +43,7 @@ export const en: Messages = {
     addCoins: 'Add tokens',
     balance: (tokens: number) => `Balance: ${tokens} tokens`,
     balanceWithReserved: (available: number, reserved: number) =>
-      `Available balance: ${available} tokens, ${reserved} reserved for tournaments`,
+      `Available balance: ${available} tokens, ${reserved} reserved (tournaments), not debited`,
     balanceUnavailable: 'Balance unavailable',
     counterUnavailable: 'Counter unavailable',
   },
@@ -74,5 +74,28 @@ export const en: Messages = {
     cancel: 'Cancel',
     confirm: 'OK',
     unavailableDay: (date: string) => `${date}, unavailable`,
+  },
+  gameOver: {
+    wonBy: (name: string) => `${name} won the game.`,
+    youWon: 'You won the game.',
+    stopped: 'Game stopped.',
+    youWin: 'You win',
+    youLose: 'You lose',
+    youFled: 'You fled the game',
+    noChange: 'No gain, no loss',
+    amountA11y: (signed: string) => `${signed} tokens`,
+    quit: 'Quit',
+    replay: 'Play again',
+    leavingIn: (seconds: number) =>
+      `Leaving the game in ${seconds} second${seconds > 1 ? 's' : ''}`,
+    leaving: 'Leaving the game…',
+    waitingOthers: (count: number) =>
+      `You play again. Waiting for ${count} player${count > 1 ? 's' : ''}…`,
+    newGame: 'New game…',
+    nextGameLater: 'A game is in progress: you will play the next one.',
+    home: 'Home',
+    tieTitle: 'Priority tie',
+    tieDetail: 'No winner: the game is replayed right away, with the same first player.',
+    newDeal: 'New deal',
   },
 };

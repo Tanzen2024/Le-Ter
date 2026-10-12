@@ -58,6 +58,7 @@ export function GameChat({
       loadingOlder={chat.loadingOlder}
       onLoadOlder={() => void chat.loadOlder()}
       canSend={data?.canSend ?? false}
+      restricted={Boolean(data?.restriction)}
       maxLength={data?.maxMessageLength}
       connection={chat.status}
       sending={sender.isPending}

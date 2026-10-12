@@ -7,7 +7,7 @@ import type { PlayerPlayView, TrickPlay } from '../../../types/game';
 
 /** Tour joué automatiquement par le serveur (D-035) : présenté carte par carte (D-041). */
 export const LAST_TRICK_NUMBER = 5;
-/** Pause entre deux cartes du 5e tour, après que la précédente a été rangée (D-041). */
+/** Pause entre l'apparition de deux cartes du 5e tour (D-041). */
 export const LAST_TRICK_GAP_MS = 2000;
 
 export type PublicPlay = TrickPlay & { trick: number };
@@ -33,13 +33,27 @@ export function publicPlays(play: PlayerPlayView | undefined): PublicPlay[] {
   return all.filter((p) => !seen.has(p.cardId) && seen.add(p.cardId));
 }
 
+/** Une carte jouée présentée sur la table, et quand elle doit rejoindre son joueur. */
+export interface Spotlight {
+  play: PublicPlay;
+  /** Attente avant son apparition (pause entre deux cartes du 5e tour). */
+  delayMs: number;
+  /**
+   * Vrai quand son tour est complet : la carte quitte alors la table `TRICK_CLEAR_DELAY_MS`
+   * plus tard, en même temps que les autres cartes du même tour.
+   */
+  release: boolean;
+}
+
 /**
  * Ce qui est présenté MAINTENANT (fonction pure, dérivée de l'état du serveur et de ce qui a
  * déjà été affiché, donc sans rejouer d'animation après une reconnexion) :
- * - cartes des tours 1 à 4 : chacune dès qu'elle arrive (comportement inchangé) ;
+ * - cartes des tours 1 à 4 : chacune apparaît dès qu'elle est jouée et RESTE sur la table
+ *   jusqu'à ce que le tour soit complet (`completedTricks`) ; elles partent alors ensemble ;
  * - cartes du 5e tour (D-041) : UNE à la fois, dans l'ordre du serveur (ordre du tour, fuyards
- *   absents), seulement quand plus aucune carte d'un tour précédent n'est présentée, et
- *   `LAST_TRICK_GAP_MS` après que la précédente a été rangée ;
+ *   absents), seulement quand plus aucune carte d'un tour précédent n'est sur la table, et
+ *   `LAST_TRICK_GAP_MS` après l'apparition de la précédente ; elles restent toutes sur la table
+ *   et partent ensemble quand la dernière est apparue ;
  * - `notYetShown(joueur)` : ses cartes du 5e tour pas encore apparues (dessinées de dos, ou
  *   dans ma main) ;
  * - `presenting` : tant qu'une carte jouée n'est pas rangée, le résultat attend.
@@ -48,18 +62,37 @@ export function planPresentation(
   plays: PublicPlay[],
   settled: ReadonlySet<string>,
   revealed: ReadonlySet<string>,
+  completedTricks: ReadonlySet<number> = new Set(),
 ) {
   const unsettled = plays.filter((p) => !settled.has(p.cardId));
   const regular = unsettled.filter((p) => p.trick !== LAST_TRICK_NUMBER);
+  const finals = plays.filter((p) => p.trick === LAST_TRICK_NUMBER);
   const finalQueue = unsettled.filter((p) => p.trick === LAST_TRICK_NUMBER);
-  const activeFinal = regular.length === 0 ? finalQueue[0] : undefined;
-  const finalAlreadyShown = plays.some(
-    (p) => p.trick === LAST_TRICK_NUMBER && settled.has(p.cardId),
-  );
+  const isShown = (p: PublicPlay) => revealed.has(p.cardId) || settled.has(p.cardId);
+
+  const spotlights: Spotlight[] = regular.map((play) => ({
+    play,
+    delayMs: 0,
+    release: completedTricks.has(play.trick),
+  }));
+  let activeFinal: PublicPlay | undefined;
+  if (regular.length === 0 && finalQueue.length > 0) {
+    // Cartes du 5e tour déjà apparues, puis la suivante (une seule à la fois).
+    const shown = finalQueue.filter(isShown);
+    activeFinal = finalQueue.find((p) => !isShown(p));
+    const allShown = activeFinal === undefined;
+    for (const play of shown) spotlights.push({ play, delayMs: 0, release: allShown });
+    if (activeFinal) {
+      spotlights.push({
+        play: activeFinal,
+        delayMs: finals.some(isShown) ? LAST_TRICK_GAP_MS : 0,
+        release: finals.every((p) => p === activeFinal || isShown(p)),
+      });
+    }
+  }
   return {
-    spotlights: activeFinal ? [...regular, activeFinal] : regular,
+    spotlights,
     activeFinal,
-    finalGap: finalAlreadyShown ? LAST_TRICK_GAP_MS : 0,
     notYetShown: (playerId: string) =>
       finalQueue.filter((p) => p.playerId === playerId && !revealed.has(p.cardId)),
     presenting: unsettled.length > 0,

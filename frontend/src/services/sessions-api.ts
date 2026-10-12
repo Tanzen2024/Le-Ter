@@ -30,7 +30,9 @@ export const sessionsApi = {
 
   /** Tables ouvertes à rejoindre (partie en attente, place libre), hors les miennes. */
   listOpen: (accessToken: string) =>
-    apiRequest<{ tables: OpenTable[] }>('/api/sessions/open', { accessToken }),
+    apiRequest<{ tables: OpenTable[]; detectionAvailable?: boolean }>('/api/sessions/open', {
+      accessToken,
+    }),
 
   listMine: (accessToken: string) =>
     apiRequest<{ sessions: SessionView[] }>('/api/sessions/me/active', { accessToken }),
@@ -56,7 +58,7 @@ export const sessionsApi = {
       accessToken,
     }),
 
-  /** Poursuivre ou Quitter pendant la ronde de décision (15 s). */
+  /** Poursuivre ou Quitter pendant la ronde de décision (10 s). */
   decide: (accessToken: string, sessionId: string, choice: 'continue' | 'leave') =>
     apiRequest<{ session: SessionView }>(`/api/sessions/${sessionId}/decision`, {
       method: 'POST',

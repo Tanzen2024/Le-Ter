@@ -11,9 +11,16 @@ import { InsufficientBalanceError } from '../domain/wallet/wallet';
  * compte de jeu sont validés ou annulés ensemble.
  *
  * Invariants (garantis en base, migration 0021) :
- * - `wallets.reserved` = somme des réservations ACTIVE ; `0 <= reserved <= balance` ;
+ * - `wallets.reserved` = somme des réservations ACTIVE de TOURNOI ; `0 <= reserved <= balance` ;
  * - disponible = solde − réservé ;
  * - le solde ne change QUE par une ligne de `wallet_transactions` (capture, gain).
+ *
+ * Engagements de partie (D-080) : une réservation ACTIVE portant un `game_id` est un
+ * ENGAGEMENT (2 × mise, perte maximale) et non un blocage visible : elle n'entre ni dans
+ * `wallets.reserved`, ni dans le solde ou le disponible AFFICHÉS, qui restent identiques
+ * pendant toute la partie. Elle est seulement déduite des contrôles de DÉPENSE faits sous le
+ * verrou du portefeuille (`lockWalletBalances` : retrait, inscription à un tournoi, démarrage
+ * d'une autre partie), pour que le perdant puisse toujours payer au règlement.
  */
 
 export type ReservationStatus = 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
@@ -35,8 +42,14 @@ export interface WalletReservation {
 export interface WalletBalances {
   balance: number;
   reserved: number;
-  /** Solde utilisable : solde − réservé. */
+  /** Solde utilisable : solde − réservé (− engagé, pour un contrôle de dépense). */
   available: number;
+}
+
+/** Montants lus SOUS verrou pour un contrôle de dépense (D-080). */
+export interface LockedWalletBalances extends WalletBalances {
+  /** Engagements des parties en cours (réservations ACTIVE avec `game_id`). */
+  committed: number;
 }
 
 interface ReservationRow {
@@ -69,12 +82,17 @@ function toReservation(row: ReservationRow): WalletReservation {
   };
 }
 
-/** Portefeuille créé s'il n'existe pas, puis verrouillé (`FOR UPDATE`) ; ses montants. */
+/**
+ * Portefeuille créé s'il n'existe pas, puis verrouillé (`FOR UPDATE`) ; ses montants, pour un
+ * contrôle de DÉPENSE : `available` = solde − réservé − engagements des parties en cours
+ * (D-080). Les engagements sont lus après le verrou : une partie démarrée en même temps
+ * (qui prend le même verrou pour s'engager) est vue, ou attend la fin de cette dépense.
+ */
 export async function lockWalletBalances(
   tx: SqlExecutor,
   userId: UserId,
   now: Date,
-): Promise<WalletBalances> {
+): Promise<LockedWalletBalances> {
   await tx.query(
     `INSERT INTO wallets (user_id, balance, created_at, updated_at) VALUES ($1, 0, $2, $2)
      ON CONFLICT (user_id) DO NOTHING`,
@@ -86,10 +104,24 @@ export async function lockWalletBalances(
   );
   const balance = Number(rows[0]?.balance ?? 0);
   const reserved = Number(rows[0]?.reserved ?? 0);
-  return { balance, reserved, available: balance - reserved };
+  const committed = await readGameCommitments(tx, userId);
+  return { balance, reserved, committed, available: balance - reserved - committed };
 }
 
-/** Lecture sans verrou (affichage). Sans portefeuille : tout à 0. */
+/** Somme des engagements ACTIVE des parties ordinaires du joueur (D-080). */
+async function readGameCommitments(db: SqlExecutor, userId: UserId): Promise<number> {
+  const { rows } = await db.query<{ committed: string | number }>(
+    `SELECT COALESCE(sum(amount), 0) AS committed FROM wallet_reservations
+     WHERE wallet_id = $1 AND game_id IS NOT NULL AND status = 'ACTIVE'`,
+    [userId],
+  );
+  return Number(rows[0]?.committed ?? 0);
+}
+
+/**
+ * Lecture sans verrou (affichage). Sans portefeuille : tout à 0. Les engagements de partie
+ * n'y sont PAS déduits (D-080) : le solde affiché ne bouge pas pendant une partie.
+ */
 export async function readWalletBalances(db: SqlExecutor, userId: UserId): Promise<WalletBalances> {
   const { rows } = await db.query<{ balance: string | number; reserved: string | number }>(
     'SELECT balance, reserved FROM wallets WHERE user_id = $1',

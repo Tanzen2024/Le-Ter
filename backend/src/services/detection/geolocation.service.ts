@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { GEOLOCATION_CONFIG } from '../../domain/detection/detection-config';
 import {
+  type DistanceUnavailable,
   GeolocationDisabledError,
   pairDistances,
   roundCoordinate,
@@ -34,6 +35,11 @@ export interface PlayerDistanceView {
   playerId: PlayerId;
   /** Mètres (arrondis), ou `null` si une des deux positions manque ou est trop ancienne. */
   meters: number | null;
+  /**
+   * Distance inconnue : `WAITING` (une position n'est jamais arrivée) ou `STALE` (position
+   * trop ancienne). Absent quand la distance est connue. Jamais de coordonnée ni d'âge précis.
+   */
+  unavailable?: DistanceUnavailable;
 }
 
 /** Ce que voit un joueur : activation, cadence de collecte et ses distances. */
@@ -163,9 +169,10 @@ export class GeolocationService {
     const latest = await this.deps.repository.latestPositions(gameId);
     return pairDistances(playerIds, latest, now, freshnessMs)
       .filter(({ pair }) => pair.includes(viewerId))
-      .map(({ pair, meters }) => ({
+      .map(({ pair, meters, unavailable }) => ({
         playerId: pair[0] === viewerId ? pair[1] : pair[0],
         meters: meters === null ? null : roundDistance(meters, roundingMeters),
+        ...(unavailable && { unavailable }),
       }));
   }
 }

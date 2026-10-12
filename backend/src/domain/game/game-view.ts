@@ -103,6 +103,11 @@ export interface PlayerGameView {
   myInstantWin?: { rank: InstantWinRank; combination: WinConditionId };
   myActions: PlayerActions;
   viewerId: PlayerId;
+  /**
+   * SON bilan financier, une fois la partie terminée et réglée (D-074) : variation nette
+   * enregistrée par le règlement. Absent pour une table de tournoi ou une partie sans mise.
+   */
+  mySettlement?: { delta: number };
 }
 
 export function toPlayerView(

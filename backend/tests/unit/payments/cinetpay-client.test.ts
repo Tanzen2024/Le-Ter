@@ -2,8 +2,10 @@ import {
   CINETPAY_TOKEN_TTL_SECONDS,
   CinetPayClient,
   CinetPayError,
+  CinetPayPaymentNotSentError,
   type CinetPayPaymentRequest,
 } from '../../../src/services/payments/cinetpay/cinetpay-client';
+import { MobileMoneyProviderError } from '../../../src/services/wallet/mobile-money.gateway';
 import { createLogger } from '../../../src/utils/logger';
 
 /**
@@ -300,6 +302,7 @@ describe('createPayment()', () => {
       paymentUrl: PAYMENT_OK.payment_url,
       notifyToken: NOTIFY_TOKEN,
       initialStatus: 'INITIATED',
+      mustBeRedirected: true,
     });
     const post = calls[1]!;
     expect(post.method).toBe('POST');
@@ -445,5 +448,130 @@ describe('getPaymentStatus()', () => {
     await expect(client.getPaymentStatus('cp-tx-1')).rejects.toMatchObject({
       kind: 'malformed_response',
     });
+  });
+});
+
+/**
+ * Paiement DIRECT (D-083) : même POST /v1/payment, champs du SDK officiel `cinetpay-js`
+ * (`serializePaymentRequest`) : `payment_method`, `client_phone_number`, `direct_pay`.
+ */
+describe('createPayment() — paiement direct (sans redirection)', () => {
+  const PHONE = '+237670000001';
+  const DIRECT: CinetPayPaymentRequest = {
+    ...REQUEST,
+    direct: { paymentMethod: 'MTN_CM', phoneNumber: PHONE },
+  };
+  const DIRECT_OK = {
+    ...PAYMENT_OK,
+    payment_url: undefined,
+    details: { code: 2001, status: 'INITIATED', message: 'Validez sur votre téléphone', must_be_redirected: false },
+  };
+
+  it('champs direct_pay, payment_method, client_phone_number ; jamais d’otp_code ; numéro jamais journalisé', async () => {
+    const { client, calls, lines } = setup(routes({ payment: { body: DIRECT_OK } }));
+    const created = await client.createPayment(DIRECT);
+    expect(created).toEqual({
+      transactionId: 'cp-tx-1',
+      merchantTransactionId: 'LT0001',
+      notifyToken: NOTIFY_TOKEN,
+      initialStatus: 'INITIATED',
+      mustBeRedirected: false,
+    });
+    expect(calls[1]!.body).toMatchObject({
+      payment_method: 'MTN_CM',
+      client_phone_number: PHONE,
+      direct_pay: true,
+      channel: 'PUSH',
+    });
+    expect(calls[1]!.body).not.toHaveProperty('otp_code');
+    const logs = lines.join('\n');
+    expect(logs).not.toContain(PHONE);
+    expectNoSecret(logs);
+  });
+
+  it('paiement classique : aucun champ direct envoyé', async () => {
+    const { client, calls } = setup(routes());
+    await client.createPayment(REQUEST);
+    for (const field of ['payment_method', 'client_phone_number', 'direct_pay', 'otp_code']) {
+      expect(calls[1]!.body).not.toHaveProperty(field);
+    }
+  });
+
+  it('redirection exigée par CinetPay : URL HTTPS renvoyée, sinon réponse invalide', async () => {
+    const redirect = { ...DIRECT_OK, payment_url: PAYMENT_OK.payment_url, details: { ...DIRECT_OK.details, must_be_redirected: true } };
+    const ok = setup(routes({ payment: { body: redirect } }));
+    expect(await ok.client.createPayment(DIRECT)).toMatchObject({
+      mustBeRedirected: true,
+      paymentUrl: PAYMENT_OK.payment_url,
+    });
+    const missing = setup(routes({ payment: { body: { ...redirect, payment_url: undefined } } }));
+    await expect(missing.client.createPayment(DIRECT)).rejects.toMatchObject({
+      kind: 'malformed_response',
+    });
+    const insecure = setup(routes({ payment: { body: { ...DIRECT_OK, payment_url: 'http://evil.test' } } }));
+    await expect(insecure.client.createPayment(DIRECT)).rejects.toMatchObject({
+      kind: 'malformed_response',
+    });
+  });
+
+  it('« SUCCESS » annoncé à la création : simple statut initial, jamais interprété', async () => {
+    const instant = { ...DIRECT_OK, details: { ...DIRECT_OK.details, code: 100, status: 'SUCCESS' } };
+    const { client } = setup(routes({ payment: { body: instant } }));
+    expect(await client.createPayment(DIRECT)).toMatchObject({ initialStatus: 'SUCCESS' });
+  });
+
+  it('opérateur refusé (422 NOT_ALLOWED) : erreur http avec code CinetPay', async () => {
+    const { client } = setup(
+      routes({ payment: { status: 422, body: { code: 2011, status: 'NOT_ALLOWED' } } }),
+    );
+    await expect(client.createPayment(DIRECT)).rejects.toMatchObject({
+      kind: 'http',
+      details: { httpStatus: 422, apiCode: 2011, apiStatus: 'NOT_ALLOWED' },
+    });
+  });
+
+  it('authentification refusée : demande JAMAIS envoyée (CinetPayPaymentNotSentError)', async () => {
+    const { client, calls } = setup(
+      routes({ login: { status: 422, body: { code: 1005, status: 'INVALID_CREDENTIALS' } } }),
+    );
+    await expect(client.createPayment(DIRECT)).rejects.toBeInstanceOf(CinetPayPaymentNotSentError);
+    expect(calls.some((c) => c.url.endsWith('/v1/payment'))).toBe(false);
+  });
+
+  it('délai dépassé APRÈS l’envoi : erreur timeout (issue inconnue), pas « non envoyée »', async () => {
+    const { client } = setup(routes({ payment: 'hang' }), { timeoutMs: 50 });
+    const err = await client.createPayment(DIRECT).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CinetPayError);
+    expect(err).not.toBeInstanceOf(CinetPayPaymentNotSentError);
+    expect(err).toMatchObject({ kind: 'timeout' });
+  });
+});
+
+describe('createPayment() — page hébergée avec opérateur présélectionné (D-087)', () => {
+  it('payment_method seul, sans direct_pay, numéro ni OTP', async () => {
+    const { client, calls } = setup(routes());
+    await client.createPayment({ ...REQUEST, pagePaymentMethod: 'OM_CM' });
+    expect(calls[1]!.body).toMatchObject({ payment_method: 'OM_CM', channel: 'PUSH' });
+    for (const field of ['direct_pay', 'client_phone_number', 'otp_code']) {
+      expect(calls[1]!.body).not.toHaveProperty(field);
+    }
+  });
+});
+
+describe('createPayment() — numéro du payeur (D-088)', () => {
+  it('page hébergée : client_phone_number transmis, sans direct_pay', async () => {
+    const { client, calls, lines } = setup(routes());
+    await client.createPayment({ ...REQUEST, clientPhoneNumber: '+237692130271' });
+    expect(calls[1]!.body).toMatchObject({ client_phone_number: '+237692130271' });
+    expect(calls[1]!.body).not.toHaveProperty('direct_pay');
+    expect(lines.join('\n')).not.toContain('+237692130271');
+  });
+});
+
+describe('erreurs du fournisseur (D-091)', () => {
+  it('CinetPayError et CinetPayPaymentNotSentError sont des erreurs du FOURNISSEUR', () => {
+    expect(new CinetPayError('timeout', 'x')).toBeInstanceOf(MobileMoneyProviderError);
+    expect(new CinetPayPaymentNotSentError(new Error('x'))).toBeInstanceOf(MobileMoneyProviderError);
+    expect(new Error('Connection terminated unexpectedly')).not.toBeInstanceOf(MobileMoneyProviderError);
   });
 });

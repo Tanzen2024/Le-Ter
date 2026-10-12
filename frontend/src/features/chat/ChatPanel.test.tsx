@@ -111,14 +111,19 @@ describe('ChatPanel', () => {
   });
 
   it('affiche l’erreur d’envoi du serveur', async () => {
-    await renderPanel({ sendError: 'Trop de messages. Patientez quelques secondes.' });
+    await renderPanel({
+      sendError: 'Trop de messages. Patientez quelques secondes.',
+    });
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Trop de messages. Patientez quelques secondes.',
     );
   });
 
   it('partie terminée : historique visible, saisie remplacée par la lecture seule', async () => {
-    await renderPanel({ canSend: false, messages: [message('m1', 'lui', 'gg')] });
+    await renderPanel({
+      canSend: false,
+      messages: [message('m1', 'lui', 'gg')],
+    });
     expect(screen.getByText('gg')).toBeTruthy();
     expect(screen.queryByLabelText('Message')).toBeNull();
     expect(screen.getByText(/lecture seule/)).toBeTruthy();

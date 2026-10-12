@@ -1,13 +1,17 @@
+import type { SessionId } from '../../domain/sessions/session';
 import type { TournamentId } from '../../domain/tournaments/tournament';
 import type { RedisConnections } from '../../config/redis';
 import type { SqlClient } from '../../database/sql-client';
+import { PostgresGameStakeLedger } from '../../repositories/game-stake-ledger';
 import { PostgresGameRepository } from '../../repositories/postgres-game.repository';
+import { PostgresGameSettlementReader } from '../../repositories/postgres-game-settlement.repository';
 import { PostgresBehaviorHistoryRepository } from '../../repositories/postgres-behavior-history.repository';
 import { PostgresDetectionRepository } from '../../repositories/postgres-detection.repository';
 import { PostgresDetectionSettingsRepository } from '../../repositories/postgres-detection-settings.repository';
 import { PostgresGeolocationRepository } from '../../repositories/postgres-geolocation.repository';
 import { PostgresSessionRepository } from '../../repositories/postgres-session.repository';
 import { PostgresTournamentRepository } from '../../repositories/postgres-tournament.repository';
+import { PostgresWalletRepository } from '../../repositories/postgres-wallet.repository';
 import { createBehaviorAnalyzers } from '../detection/behavior-analyzers';
 import { DetectionService } from '../detection/detection.service';
 import { DetectionSettingsService } from '../detection/detection-settings.service';
@@ -31,9 +35,18 @@ import {
 import { TournamentScheduler } from '../tournaments/tournament-scheduler';
 import { TournamentService } from '../tournaments/tournament.service';
 import { DeadlineSupervisor } from '../timers/deadline-supervisor';
+import { PostgresGameCommissionSettingsRepository } from '../../repositories/postgres-game-commission-settings.repository';
+import { GameCommissionSettingsService } from './game-commission-settings.service';
 import { GameService } from './game.service';
 import { GameTimerRegistry, SessionTimerRegistry } from './game-timer-registry';
 import { singleActiveGameParticipation } from './participation-policies';
+import {
+  allSessionAdmissions,
+  allSessionContinuations,
+  walletGameStakePolicy,
+  walletSessionStakeAdmission,
+  walletStakeContinuation,
+} from './stake-policies';
 
 /**
  * Assemble GameService pour le serveur (D-030) :
@@ -60,12 +73,16 @@ export function createGameService(options: {
   detection: DetectionService;
   geolocation: GeolocationService;
   detectionSettings: DetectionSettingsService;
+  gameCommissionSettings: GameCommissionSettingsService;
   tournaments: TournamentService;
   tournamentScheduler: TournamentScheduler;
   notifications: NotificationService;
 } {
-  const repository = new PostgresGameRepository(options.sql);
-  const sessionRepository = new PostgresSessionRepository(options.sql);
+  // Séquestre et règlement des mises (D-074), dans la transaction de chaque écriture de
+  // partie : démarrage = mises réservées, fin = partie réglée (ou tout ou rien).
+  const stakeLedger = new PostgresGameStakeLedger({ logger: options.logger });
+  const repository = new PostgresGameRepository(options.sql, { stakeLedger });
+  const sessionRepository = new PostgresSessionRepository(options.sql, { stakeLedger });
   const transport = options.redis
     ? new RedisPubSubTransport(options.redis.client, options.redis.subscriber)
     : undefined;
@@ -77,6 +94,13 @@ export function createGameService(options: {
     ? new PubSubSessionEventPublisher(transport, localSessionEvents, options.logger)
     : localSessionEvents;
   const timers = new GameTimerRegistry();
+  const tournamentRepository = new PostgresTournamentRepository(options.sql);
+  // Mise des parties ordinaires (D-073) : mise > 0 et solde disponible ≥ 2 × mise, relus en
+  // base ; les tables de tournoi (jetons de tournoi) ne sont pas concernées.
+  const stakeDeps = {
+    wallets: new PostgresWalletRepository(options.sql),
+    tournamentOfSession: (id: SessionId) => tournamentRepository.findTournamentOfSession(id),
+  };
   const games = new GameService({
     repository,
     publisher: bus,
@@ -84,11 +108,18 @@ export function createGameService(options: {
     timers,
     // R-18 : une seule partie active par joueur (garantie en base, migration 0004).
     participationPolicy: singleActiveGameParticipation(repository),
+    stakePolicy: walletGameStakePolicy(stakeDeps),
     sessionSeats: sessionRepository,
+    settlements: new PostgresGameSettlementReader(options.sql),
+    logger: options.logger,
+  });
+  // Interrupteur GLOBAL de la détection (D-053) : lu par la création des tables (D-081) et par
+  // la détection elle-même (plus bas).
+  const detectionSettings = new DetectionSettingsService({
+    repository: new PostgresDetectionSettingsRepository(options.sql),
     logger: options.logger,
   });
   const sessionTimers = new SessionTimerRegistry();
-  const tournamentRepository = new PostgresTournamentRepository(options.sql);
   // TournamentService est construit après SessionService : appel résolu à l'exécution.
   const settlePending = (id: TournamentId): Promise<number> => tournaments.settlePendingGames(id);
   const sessions = new SessionService({
@@ -99,10 +130,27 @@ export function createGameService(options: {
     timers: sessionTimers,
     // Tables de tournoi réservées aux participants du tournoi en cours (D-051, D-054).
     // Seuil de participation (D-063) : jetons lus après règlement des parties terminées.
-    admission: tournamentSessionAdmission(tournamentRepository, undefined, settlePending),
+    // Tables ordinaires : solde ≥ 2 × la mise de la table avant d'occuper un siège (D-073).
+    admission: allSessionAdmissions(
+      tournamentSessionAdmission(tournamentRepository, undefined, settlePending),
+      walletSessionStakeAdmission({
+        ...stakeDeps,
+        lastStakeOfSession: async (id) => {
+          const last = await sessionRepository.findLastGame(id);
+          const game = last ? await games.findGame(last.gameId) : null;
+          // Partie sans mise (antérieure à D-073) : `undefined`, refusée comme invalide.
+          return game ? game.stakeAmount : null;
+        },
+      }),
+    ),
     // Plus de nouvelle partie aux tables d'un tournoi terminé (D-056) ; joueurs sous le seuil
     // écartés de la partie suivante (D-063).
-    continuation: tournamentTableContinuation(tournamentRepository, undefined, settlePending),
+    // Tables ordinaires : joueurs dont le solde ne couvre plus 2 × la mise écartés (D-073).
+    continuation: allSessionContinuations(
+      tournamentTableContinuation(tournamentRepository, undefined, settlePending),
+      walletStakeContinuation(stakeDeps),
+    ),
+    detectionSwitch: detectionSettings,
   });
   const supervisor = new DeadlineSupervisor({ games, sessions, logger: options.logger });
   // Détection de potentielle collusion (R-36, D-044) : observe les fins de partie, en
@@ -112,10 +160,6 @@ export function createGameService(options: {
   // comportementales sur l'historique surveillé. Aucun score (étape 4).
   // Interrupteur GLOBAL (D-053), relu dans PostgreSQL à chaque consultation : désactivé
   // (défaut), aucune analyse, aucun score, aucune alerte, aucune position acceptée.
-  const detectionSettings = new DetectionSettingsService({
-    repository: new PostgresDetectionSettingsRepository(options.sql),
-    logger: options.logger,
-  });
   const geolocationRepository = new PostgresGeolocationRepository(options.sql);
   const detection = new DetectionService({
     repository: new PostgresDetectionRepository(options.sql),
@@ -159,5 +203,10 @@ export function createGameService(options: {
     detection,
     geolocation,
     detectionSettings,
+    // Commission sur les gains des parties (D-074), lue par le séquestre à chaque démarrage.
+    gameCommissionSettings: new GameCommissionSettingsService({
+      repository: new PostgresGameCommissionSettingsRepository(options.sql),
+      logger: options.logger,
+    }),
   };
 }

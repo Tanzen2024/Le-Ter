@@ -50,7 +50,7 @@ describe('solde du HUD (D-056)', () => {
     await waitFor(() => expect(result.current.text).toBe('4000'));
     expect(result.current.reserved).toBe('🔒 1000');
     expect(result.current.label).toBe(
-      'Solde disponible : 4000 jetons, 1000 réservés pour des tournois',
+      'Solde disponible : 4000 jetons, 1000 réservés (tournois), non débités',
     );
   });
 

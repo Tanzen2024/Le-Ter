@@ -1,3 +1,5 @@
+import type { DirectPayOperator } from '../../domain/payments/payment';
+
 /**
  * Port du fournisseur Mobile Money (D-040). Le compte Mobile Money du joueur est celui de son
  * numéro d'inscription (`users.phone`, E.164) : il est transmis au fournisseur au moment de
@@ -20,7 +22,23 @@ export interface MobileMoneyRequest {
    * Identité du payeur, exigée par les pages de paiement hébergées (CinetPay : nom, prénom,
    * e-mail). Issue du compte authentifié, jamais du client.
    */
-  customer?: { firstName: string; lastName: string; email: string };
+  customer?: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    /** Numéro d'inscription, format international (`+237…`), transmis à CinetPay (D-088). */
+    phone?: string;
+  };
+  /**
+   * Paiement DIRECT (sans redirection) avec cet opérateur, sur le numéro `msisdn` : le joueur
+   * valide sur son téléphone. Absent : page de paiement hébergée.
+   */
+  directOperator?: DirectPayOperator;
+  /**
+   * Page hébergée : opérateur souhaité par le joueur. Présélectionné seulement s'il figure dans
+   * `pagePreselectOperators` ; sinon la page propose toutes les méthodes (aucune garantie).
+   */
+  pageOperator?: DirectPayOperator;
 }
 
 /** Réponse d'une demande acceptée par le fournisseur (toujours EN ATTENTE). */
@@ -43,6 +61,15 @@ export interface MobileMoneyGateway {
    * erreur métier, ex. `PaymentProfileIncompleteError`). Absente : aucune exigence.
    */
   assertCollectionEligible?(customer: MobileMoneyCustomer): void;
+  /** Opérateurs proposés en paiement direct (vide ou absent : page hébergée seulement). */
+  readonly directPayOperators?: readonly DirectPayOperator[];
+  /** Opérateurs présélectionnables sur la page hébergée (vide : page générique). */
+  readonly pagePreselectOperators?: readonly DirectPayOperator[];
+  /**
+   * Paiement direct possible avec cet opérateur et ce numéro ? Vérifié AVANT toute écriture ;
+   * lève `DirectPaymentUnavailableError` sinon.
+   */
+  assertDirectPayEligible?(operator: DirectPayOperator, msisdn: string): void;
   /** Faux si le fournisseur ne gère pas les retraits (CinetPay, D-050 : achat seulement). */
   readonly disbursementAvailable?: boolean;
   /** Achat : demande de paiement au joueur (collecte). */
@@ -67,7 +94,26 @@ export class UnconfiguredMobileMoneyGateway implements MobileMoneyGateway {
   }
 }
 
-export class MobileMoneyNotConfiguredError extends Error {
+/**
+ * Erreur du FOURNISSEUR Mobile Money (injoignable, refus, non configuré) : la seule famille
+ * d'erreurs qui permet d'affirmer « service indisponible » (D-091). Toute autre erreur pendant
+ * une recharge (base de données, panne interne) laisse l'issue INCONNUE.
+ */
+export class MobileMoneyProviderError extends Error {}
+
+/**
+ * Issue d'une recharge inconnue (D-091) : une erreur interne (base indisponible…) est survenue
+ * pendant sa création. Rien n'est déclaré échoué ni crédité ; le statut sera vérifié auprès du
+ * fournisseur (réconciliation). Le joueur ne doit pas relancer immédiatement.
+ */
+export class DepositOutcomeUnknownError extends Error {
+  constructor(readonly transactionId: string) {
+    super('Issue de la recharge inconnue : vérification en cours');
+    this.name = 'DepositOutcomeUnknownError';
+  }
+}
+
+export class MobileMoneyNotConfiguredError extends MobileMoneyProviderError {
   constructor() {
     super('Aucun fournisseur Mobile Money configuré');
     this.name = 'MobileMoneyNotConfiguredError';

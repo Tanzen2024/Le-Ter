@@ -22,7 +22,12 @@ export interface NewRefreshToken {
   sessionExpiresAt?: Date;
 }
 
-export type RotationFailure = 'unknown' | 'revoked' | 'expired' | 'account_disabled';
+export type RotationFailure =
+  | 'unknown'
+  | 'revoked'
+  | 'expired'
+  | 'account_disabled'
+  | 'account_suspended';
 
 export type RotationResult =
   | { ok: true; userId: UserId; role: UserRole; sessionId: string }
@@ -31,7 +36,12 @@ export type RotationResult =
 export interface ActiveAuthSession {
   role: UserRole;
   status: UserStatus;
+  /** Suspension active à cet instant (D-079) : l'accès est refusé comme pour un compte désactivé. */
+  suspended: boolean;
 }
+
+/** Révocations de toutes les sessions d'un compte par l'administration (D-079). */
+export type AdminRevocationReason = 'admin_revoked' | 'account_disabled' | 'account_suspended';
 
 export interface AuthSessionRepository {
   /**
@@ -59,4 +69,7 @@ export interface AuthSessionRepository {
     sessionId: string,
     now: Date,
   ): Promise<ActiveAuthSession | null>;
+
+  /** Suspension active de ce compte à l'heure `now` (D-079), ou null. */
+  findActiveSuspension(userId: UserId, now: Date): Promise<{ endsAt: Date | null } | null>;
 }

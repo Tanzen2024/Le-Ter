@@ -9,9 +9,10 @@ import { geolocationApi } from '../../services/geolocation-api';
 import { useAuthStore } from '../../stores/auth-store';
 import type { GameView } from '../../types/game';
 import type { GeolocationStatus } from '../../types/geolocation';
-import { formatDistance, usePlayerDistances } from '../games/table/distance';
+import { distanceLabel, usePlayerDistances } from '../games/table/distance';
 import { CONSENT_TITLE, GameGeolocation } from './GameGeolocation';
-import { resetGeolocationConsent } from './hooks';
+import { POSITION_TIMEOUT_MS, resetGeolocationConsent } from './hooks';
+import { useGameUiStore } from '../../stores/game-ui-store';
 
 jest.mock('expo-location', () => ({
   getForegroundPermissionsAsync: jest.fn(),
@@ -65,13 +66,14 @@ const permission = (granted: boolean, canAskAgain = true) =>
     expires: 'never',
   }) as never;
 
-/** Étiquettes de distance, comme sur la table (un adversaire = une étiquette). */
+/** Étiquettes de distance, comme sur la table : aucune quand la partie n'est pas surveillée. */
+const NO_TAG = 'aucune étiquette';
 function Distances({ game }: { game: GameView }) {
   const distances = usePlayerDistances(game);
   return (
     <>
-      <Text testID="p2">{formatDistance(distances.p2)}</Text>
-      <Text testID="p3">{formatDistance(distances.p3)}</Text>
+      <Text testID="p2">{distances ? distanceLabel(distances.of('p2')) : NO_TAG}</Text>
+      <Text testID="p3">{distances ? distanceLabel(distances.of('p3')) : NO_TAG}</Text>
     </>
   );
 }
@@ -132,7 +134,7 @@ async function acceptConsent() {
 }
 
 describe('Partie non surveillée', () => {
-  it('aucune explication, aucune permission demandée, aucune position, distances « — »', async () => {
+  it('aucune explication, aucune permission demandée, aucune position, aucune étiquette de distance', async () => {
     await renderScreen({ detectionEnabled: false });
     await waitFor(() => expect(status).toHaveBeenCalledWith('jeton', GAME));
     await act(async () => {
@@ -143,7 +145,7 @@ describe('Partie non surveillée', () => {
     expect(location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
     expect(location.getCurrentPositionAsync).not.toHaveBeenCalled();
     expect(sendPosition).not.toHaveBeenCalled();
-    expect(screen.getByTestId('p2').props.children).toBe('—');
+    expect(screen.getByTestId('p2').props.children).toBe(NO_TAG);
   });
 });
 
@@ -171,7 +173,7 @@ describe('Partie surveillée : consentement', () => {
       capturedAt: 1_760_000_000_000,
     });
     await waitFor(() => expect(screen.getByTestId('p2').props.children).toBe('850 m'));
-    expect(screen.getByTestId('p3').props.children).toBe('—');
+    expect(screen.getByTestId('p3').props.children).toBe('En attente de position');
     expect(screen.queryByText(CONSENT_TITLE)).toBeNull();
   });
 
@@ -186,7 +188,7 @@ describe('Partie surveillée : consentement', () => {
     expect(location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
     expect(location.getCurrentPositionAsync).not.toHaveBeenCalled();
     expect(sendPosition).not.toHaveBeenCalled();
-    expect(screen.getByTestId('p2').props.children).toBe('—');
+    expect(screen.getByTestId('p2').props.children).toBe('Localisation refusée');
   });
 
   it('refusé par le système : rien n’est envoyé, aucune fausse distance', async () => {
@@ -199,7 +201,7 @@ describe('Partie surveillée : consentement', () => {
     });
     expect(location.getCurrentPositionAsync).not.toHaveBeenCalled();
     expect(sendPosition).not.toHaveBeenCalled();
-    expect(screen.getByTestId('p2').props.children).toBe('—');
+    expect(screen.getByTestId('p2').props.children).toBe('Localisation refusée');
   });
 
   it('refus mémorisé pour la table : pas de nouvelle explication à la partie suivante', async () => {
@@ -275,5 +277,104 @@ describe('Collecte', () => {
       await jest.advanceTimersByTimeAsync(3 * INTERVAL);
     });
     expect(sendPosition).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Distances indisponibles et mises à jour', () => {
+  it('position trop ancienne selon le serveur : « Position obsolète », jamais 0 m', async () => {
+    await renderScreen(
+      watched({
+        distances: [
+          { playerId: 'p2', meters: null, unavailable: 'STALE' },
+          { playerId: 'p3', meters: 0 },
+        ],
+      }),
+    );
+    sendPosition.mockResolvedValue({
+      distances: [
+        { playerId: 'p2', meters: null, unavailable: 'STALE' },
+        { playerId: 'p3', meters: 0 },
+      ],
+    });
+    await acceptConsent();
+    await waitFor(() =>
+      expect(screen.getByTestId('p2').props.children).toBe('Position obsolète'),
+    );
+    // 0 m est une vraie distance (même lieu), distincte d'une distance inconnue.
+    expect(screen.getByTestId('p3').props.children).toBe('0 m');
+  });
+
+  it('GPS en échec (coupé) : « GPS indisponible », rien n’est envoyé, nouvel essai plus tard', async () => {
+    location.getCurrentPositionAsync.mockRejectedValue(new Error('Location services disabled'));
+    await renderScreen(watched());
+    await waitFor(() => expect(screen.getByText(CONSENT_TITLE)).toBeTruthy());
+    await fireEvent.press(screen.getByText('CONTINUER'));
+    await waitFor(() =>
+      expect(screen.getByTestId('p2').props.children).toBe('GPS indisponible'),
+    );
+    expect(sendPosition).not.toHaveBeenCalled();
+    // Le GPS revient : la position suivante part, l'état se lève.
+    location.getCurrentPositionAsync.mockResolvedValue({
+      coords: { latitude: 4.0511, longitude: 9.7679, accuracy: 12 },
+      timestamp: 1_760_000_000_000,
+    } as never);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(INTERVAL);
+    });
+    expect(sendPosition).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId('p2').props.children).toBe('850 m'));
+  });
+
+  it('GPS sans réponse : délai dépassé, « GPS indisponible », jamais de position fictive', async () => {
+    location.getCurrentPositionAsync.mockReturnValue(new Promise(() => undefined));
+    await renderScreen(watched());
+    await waitFor(() => expect(screen.getByText(CONSENT_TITLE)).toBeTruthy());
+    await fireEvent.press(screen.getByText('CONTINUER'));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(POSITION_TIMEOUT_MS);
+    });
+    expect(screen.getByTestId('p2').props.children).toBe('GPS indisponible');
+    expect(sendPosition).not.toHaveBeenCalled();
+  });
+
+  it('nouvelle position d’un adversaire : distance mise à jour sans envoi ni rechargement', async () => {
+    const view = await renderScreen(watched());
+    await waitFor(() => expect(screen.getByText(CONSENT_TITLE)).toBeTruthy());
+    // Ce joueur refuse : il n'envoie rien, mais la distance de la table reste suivie.
+    await fireEvent.press(screen.getByText('NON MERCI'));
+    status.mockResolvedValue(
+      watched({ distances: [{ playerId: 'p2', meters: 1_200 }, { playerId: 'p3', meters: null }] }),
+    );
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(INTERVAL);
+    });
+    expect(screen.getByTestId('p2').props.children).toBe('1,2 km');
+    expect(sendPosition).not.toHaveBeenCalled();
+    // Sortie de la partie : plus aucune relecture, état GPS local oublié.
+    const calls = status.mock.calls.length;
+    await view.unmount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(3 * INTERVAL);
+    });
+    expect(status.mock.calls.length).toBe(calls);
+    expect(useGameUiStore.getState().localGps[GAME]).toBeUndefined();
+  });
+
+  it('partie terminée côté serveur : plus de relecture périodique', async () => {
+    await renderScreen(watched({ collecting: false }));
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(3 * INTERVAL);
+    });
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it('état GPS propre à chaque partie : un refus dans A ne touche pas B', () => {
+    const store = useGameUiStore.getState();
+    store.setLocalGps('game-a', 'refused');
+    store.setLocalGps('game-b', null);
+    expect(useGameUiStore.getState().localGps).toEqual({ 'game-a': 'refused' });
+    store.setLocalGps('game-a', null);
+    expect(useGameUiStore.getState().localGps).toEqual({});
   });
 });

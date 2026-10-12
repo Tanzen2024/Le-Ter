@@ -11,10 +11,11 @@ import { Card } from '@/components/ui/card';
 import { Select } from '@/components/ui/form-controls';
 import { useListState } from '@/hooks/use-list-state';
 import { formatDate, formatDateTime, formatNumber, formatTokens } from '@/lib/format';
-import { ACCOUNT_STATUS, ROLE } from '@/lib/labels';
+import { ROLE } from '@/lib/labels';
 import type { PlayerRow } from '@/types/admin';
 
 import { playersQuery } from './api';
+import { AccountBadges, PlayerRowActions } from './player-actions';
 
 const columns: Column<PlayerRow>[] = [
   {
@@ -33,7 +34,7 @@ const columns: Column<PlayerRow>[] = [
   {
     key: 'status',
     header: 'Compte',
-    cell: (p) => <StatusBadge map={ACCOUNT_STATUS} value={p.status} />,
+    cell: (p) => <AccountBadges player={p} />,
   },
   {
     key: 'role',
@@ -61,6 +62,12 @@ const columns: Column<PlayerRow>[] = [
     cell: (p) => formatDate(p.createdAt),
     hideOnMobile: true,
   },
+  {
+    key: 'actions',
+    header: <span className="sr-only">Actions</span>,
+    cell: (p) => <PlayerRowActions player={p} />,
+    align: 'right',
+  },
 ];
 
 export function PlayersList() {
@@ -84,7 +91,7 @@ export function PlayersList() {
     <>
       <PageHeader
         title="Joueurs"
-        description="Comptes Le Ter. La consultation d’une fiche est inscrite au journal d’audit."
+        description="Comptes Le Ter. La consultation d’une fiche et chaque action de modération sont inscrites au journal d’audit."
       />
       <Card>
         <FilterBar onReset={reset}>
@@ -103,6 +110,7 @@ export function PlayersList() {
             <option value="">Tous les comptes</option>
             <option value="active">Actifs</option>
             <option value="disabled">Désactivés</option>
+            <option value="suspended">Suspendus</option>
           </Select>
           <Select
             aria-label="Rôle"

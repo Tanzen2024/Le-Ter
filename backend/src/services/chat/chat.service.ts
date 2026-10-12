@@ -2,6 +2,7 @@ import {
   ChatClosedError,
   ChatMessageKeyReusedError,
   ChatRateLimitedError,
+  ChatRestrictedError,
   MAX_CHAT_MESSAGE_LENGTH,
   newChatMessageId,
   type ChatMessage,
@@ -34,8 +35,10 @@ export interface ChatServiceDependencies {
 
 /** Chat vu par un joueur : une page d'historique et l'état d'envoi. */
 export interface ChatHistory extends ChatPage {
-  /** Faux quand la partie est terminée (historique en lecture seule, D-045). */
+  /** Faux quand la partie est terminée (D-045) ou le chat du joueur restreint (D-079). */
   canSend: boolean;
+  /** Restriction du chat du lecteur (D-079) ; `endsAt` ISO, null : durée indéterminée. */
+  restriction: { endsAt: string | null } | null;
   maxMessageLength: number;
 }
 
@@ -70,9 +73,11 @@ export class ChatService {
         [query.before ? 'before' : 'after']: 'Message de référence inconnu dans cette partie.',
       });
     }
+    const restriction = access.chatRestriction;
     return {
       ...page,
-      canSend: access.status !== 'finished',
+      canSend: access.status !== 'finished' && !restriction,
+      restriction: restriction ? { endsAt: restriction.endsAt?.toISOString() ?? null } : null,
       maxMessageLength: MAX_CHAT_MESSAGE_LENGTH,
     };
   }
@@ -95,6 +100,10 @@ export class ChatService {
     if (access.status === 'finished') {
       throw new ChatClosedError(gameId);
     }
+    // Restriction vérifiée à CHAQUE envoi, HTTP comme WebSocket, puis dans l'insertion SQL.
+    if (access.chatRestriction) {
+      throw new ChatRestrictedError(access.chatRestriction.endsAt);
+    }
     this.consumeRate(senderId);
 
     const message = await this.deps.repository.insert({
@@ -112,9 +121,9 @@ export class ChatService {
         return { message: concurrent, replayed: true };
       }
       const now = await this.requirePlayer(gameId, senderId);
-      throw now.status === 'finished'
-        ? new ChatClosedError(gameId)
-        : new GameAccessDeniedError(gameId, senderId);
+      if (now.status === 'finished') throw new ChatClosedError(gameId);
+      if (now.chatRestriction) throw new ChatRestrictedError(now.chatRestriction.endsAt);
+      throw new GameAccessDeniedError(gameId, senderId);
     }
 
     try {
@@ -147,7 +156,7 @@ export class ChatService {
   }
 
   private async requirePlayer(gameId: GameId, playerId: PlayerId): Promise<ChatAccess> {
-    const access = await this.deps.repository.findAccess(gameId, playerId);
+    const access = await this.deps.repository.findAccess(gameId, playerId, this.clock());
     if (!access) {
       throw new GameNotFoundError(gameId);
     }

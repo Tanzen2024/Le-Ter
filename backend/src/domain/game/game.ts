@@ -111,7 +111,12 @@ export type GameEndMethod =
   /** Victoire instantanée, déclarée ou automatique (D-035). Toujours SIMPLE. */
   | 'INSTANT_WIN'
   /** Contrôle détenu à l'issue du 5e tour : victoire automatique (décisions 35, 52). */
-  | 'CONTROL_AFTER_LAST_TRICK';
+  | 'CONTROL_AFTER_LAST_TRICK'
+  /**
+   * Partie à 2 : l'adversaire s'est couché (avant sa deuxième carte) ; le joueur restant gagne
+   * aussitôt, victoire SIMPLE, et le fuyard paie sa mise comme un perdant (D-086).
+   */
+  | 'OPPONENT_FLED';
 
 /**
  * Raison de la fin d'une partie (colonne `games.end_reason`) :
@@ -142,7 +147,10 @@ export interface GameResult {
   revealedHands?: Record<string, CardId[]>;
   /** Joueurs encore en jeu autres que le gagnant. */
   remainingOpponentIds: PlayerId[];
-  /** Joueurs ayant fui ; leur traitement financier reste à définir (R-05). */
+  /**
+   * Joueurs ayant fui. Hors des participants réglés (coût de la fuite non défini, R-05), sauf
+   * la fuite d'une partie à 2 (`OPPONENT_FLED`) : le fuyard y est le perdant (D-086).
+   */
   fledPlayerIds: PlayerId[];
 }
 

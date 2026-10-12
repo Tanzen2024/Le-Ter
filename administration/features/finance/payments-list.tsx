@@ -52,7 +52,7 @@ export function PaymentsList() {
       />
       <InfoNote className="mb-4">
         Un paiement n’est confirmé qu’après relecture de son statut chez CinetPay par le serveur.
-        Remboursements et retraits ne sont pas pris en charge par l’intégration actuelle.
+        Les remboursements ne sont pas pris en charge ; les retraits ont leur propre rubrique.
       </InfoNote>
       <Card>
         <FilterBar onReset={reset}>

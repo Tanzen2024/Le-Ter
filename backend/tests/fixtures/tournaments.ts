@@ -6,6 +6,7 @@ import type { Game } from '../../src/domain/game/game';
 import type { GameId, PlayerId } from '../../src/domain/game/game-id';
 import type { TournamentId, TournamentInput } from '../../src/domain/tournaments/tournament';
 import type { UserId } from '../../src/domain/users/user';
+import { PostgresGameStakeLedger } from '../../src/repositories/game-stake-ledger';
 import { PostgresGameRepository } from '../../src/repositories/postgres-game.repository';
 import { PostgresSessionRepository } from '../../src/repositories/postgres-session.repository';
 import { PostgresTournamentRepository } from '../../src/repositories/postgres-tournament.repository';
@@ -67,8 +68,11 @@ export function createTournamentTestStack(
 ) {
   const logger = createLogger({}, () => undefined);
   const bus = new InMemoryGameEventHub();
-  const gameRepository = new PostgresGameRepository(sql);
-  const sessionRepository = new PostgresSessionRepository(sql);
+  // Séquestre des mises câblé comme en production (D-074) : les tables de tournoi en sont
+  // exclues (jetons de tournoi) ; aucun test de tournoi ne doit réserver de jetons.
+  const stakeLedger = new PostgresGameStakeLedger({ logger });
+  const gameRepository = new PostgresGameRepository(sql, { stakeLedger });
+  const sessionRepository = new PostgresSessionRepository(sql, { stakeLedger });
   const repository = new PostgresTournamentRepository(sql);
   const timers = new GameTimerRegistry();
   const games = new GameService({

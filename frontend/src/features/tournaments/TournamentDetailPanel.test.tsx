@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { router } from 'expo-router';
 
 import { ApiError } from '../../lib/api-client';
@@ -16,7 +16,6 @@ jest.mock('../../services/tournaments-api', () => ({
   tournamentsApi: {
     get: jest.fn(),
     register: jest.fn(),
-    unregister: jest.fn(),
     join: jest.fn(),
     notifications: jest.fn(),
     markNotificationRead: jest.fn(),
@@ -89,6 +88,18 @@ async function renderDetail() {
   await screen.findByTestId('tournament-details');
 }
 
+/** Bouton « Confirmer l'inscription » du dialogue (le titre porte le même texte). */
+const confirmButton = () =>
+  within(screen.getByTestId('tournament-register-dialog')).getByRole('button', {
+    name: "Confirmer l'inscription",
+  });
+
+/** « S'inscrire », puis « Confirmer l'inscription » dans le dialogue. */
+async function registerViaDialog() {
+  await fireEvent.press(screen.getByText("S'inscrire"));
+  await fireEvent.press(confirmButton());
+}
+
 afterEach(async () => {
   await cleanup();
   clients.splice(0).forEach((client) => client.clear());
@@ -121,7 +132,7 @@ describe('fiche d’un tournoi à venir', () => {
     expect(screen.getByText('Inscriptions ouvertes')).toBeTruthy();
   });
 
-  it('non inscrit : explique la réservation, s’inscrit, puis affiche « ✓ Inscrit » et le montant réservé', async () => {
+  it('non inscrit : explique la réservation, confirme, puis affiche « Vous êtes inscrit à ce tournoi »', async () => {
     serve(view());
     const registered = view({
       registration,
@@ -134,28 +145,30 @@ describe('fiche d’un tournoi à venir', () => {
     expect(screen.getByText("Vous n'êtes pas encore inscrit.")).toBeTruthy();
     expect(
       screen.getByText(
-        "Les frais d'inscription de 1 000 FCFA seront réservés sur votre compte de jeu. Le débit aura lieu uniquement au démarrage du tournoi. En cas d'annulation, le montant réservé sera libéré.",
+        "Les frais d'inscription de 1 000 FCFA seront réservés sur votre compte de jeu. Le débit aura lieu uniquement au démarrage du tournoi. En cas d'annulation, le montant réservé sera libéré.",
       ),
     ).toBeTruthy();
     serve(registered); // l'état relu ensuite est celui du serveur
-    await fireEvent.press(screen.getByText("S'inscrire"));
+    await registerViaDialog();
 
+    expect(api.register).toHaveBeenCalledTimes(1);
     expect(api.register).toHaveBeenCalledWith('jeton', ID);
-    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    expect(await screen.findByText('Vous êtes inscrit à ce tournoi')).toBeTruthy();
+    expect(screen.getByTestId('tournament-registered')).toBeTruthy();
+    expect(screen.getByText('1 000 FCFA réservés')).toBeTruthy();
     expect(screen.getByText('En attente du début du tournoi')).toBeTruthy();
     expect(screen.queryByText("S'inscrire")).toBeNull();
+    expect(screen.queryByTestId('tournament-register-dialog')).toBeNull();
   });
 
-  it('déjà inscrit : aucune seconde inscription ; désinscription possible avant la fermeture', async () => {
+  it('déjà inscrit (état relu du serveur, après navigation ou reconnexion) : état inscrit, ni « S’inscrire » ni « Se désinscrire »', async () => {
     serve(view({ registration, canRegister: false, canUnregister: true }));
-    api.unregister.mockResolvedValue({ tournament: view() });
     await renderDetail();
-    expect(screen.getByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    expect(screen.getByText('Vous êtes inscrit à ce tournoi')).toBeTruthy();
+    expect(screen.getByText('1 000 FCFA réservés')).toBeTruthy();
     expect(screen.queryByText("S'inscrire")).toBeNull();
-    serve(view()); // l'état relu ensuite est celui du serveur
-    await fireEvent.press(screen.getByText('Se désinscrire'));
-    expect(api.unregister).toHaveBeenCalledWith('jeton', ID);
-    expect(await screen.findByText("S'inscrire")).toBeTruthy();
+    expect(screen.queryByText('Se désinscrire')).toBeNull();
+    expect(screen.queryByText(/désinscri/i)).toBeNull();
   });
 
   it('inscriptions clôturées : statut affiché, aucun bouton d’inscription', async () => {
@@ -165,30 +178,83 @@ describe('fiche d’un tournoi à venir', () => {
     expect(screen.queryByText("S'inscrire")).toBeNull();
   });
 
-  it('solde disponible insuffisant : message clair', async () => {
+  it('solde disponible insuffisant : message clair dans le dialogue, nouvelle tentative possible', async () => {
     serve(view());
     api.register.mockRejectedValue(new ApiError(409, 'INSUFFICIENT_BALANCE', 'Solde insuffisant.'));
     await renderDetail();
-    await fireEvent.press(screen.getByText("S'inscrire"));
+    await registerViaDialog();
     expect(
-      await screen.findByText('Solde disponible insuffisant pour réserver la participation.'),
+      await screen.findByText(
+        'Solde disponible insuffisant pour réserver la participation. Vous pouvez réessayer.',
+      ),
     ).toBeTruthy();
-    // Juste au-dessus du bouton, visible sans défiler.
-    const tree = JSON.stringify(screen.toJSON());
-    expect(tree.indexOf('Solde disponible insuffisant')).toBeLessThan(
-      tree.indexOf("S'inscrire"),
-    );
+    // Le dialogue reste ouvert : l'utilisateur peut réessayer (après avoir alimenté son compte).
+    expect(screen.getByTestId('tournament-register-dialog')).toBeTruthy();
+    expect(screen.queryByText('Vous êtes inscrit à ce tournoi')).toBeNull();
+    await fireEvent.press(confirmButton());
+    await waitFor(() => expect(api.register).toHaveBeenCalledTimes(2));
   });
 
-  it('double inscription refusée par le serveur : l’état réel est relu', async () => {
+  it('double inscription refusée par le serveur : le dialogue se ferme, l’état réel est relu', async () => {
     serve(view());
     api.register.mockRejectedValue(
       new ApiError(409, 'ALREADY_REGISTERED', 'Vous êtes déjà inscrit à ce tournoi.'),
     );
     await renderDetail();
     serve(view({ registration, canRegister: false }));
+    await registerViaDialog();
+    expect(await screen.findByText('Vous êtes inscrit à ce tournoi')).toBeTruthy();
+    expect(screen.queryByTestId('tournament-register-dialog')).toBeNull();
+    expect(api.register).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('confirmation de l’inscription', () => {
+  it('« S’inscrire » ouvre le dialogue : nom, prix d’entrée, message ; aucune requête', async () => {
+    serve(view());
+    await renderDetail();
     await fireEvent.press(screen.getByText("S'inscrire"));
-    expect(await screen.findByText('✓ Inscrit · 1 000 FCFA réservés')).toBeTruthy();
+    const dialog = within(screen.getByTestId('tournament-register-dialog'));
+    expect(dialog.getAllByText("Confirmer l'inscription").length).toBeGreaterThan(0);
+    expect(dialog.getByText('Tournoi du 12 octobre 2026 à 18:00')).toBeTruthy();
+    expect(dialog.getByLabelText("Prix d'entrée : 1 000 FCFA")).toBeTruthy();
+    expect(dialog.queryByText('Jetons requis')).toBeNull();
+    expect(dialog.getByText(/Vous êtes sur le point de vous inscrire à ce tournoi/)).toBeTruthy();
+    expect(dialog.getByText('Annuler')).toBeTruthy();
+    expect(api.register).not.toHaveBeenCalled();
+  });
+
+  it('Annuler : aucune inscription, le dialogue se ferme', async () => {
+    serve(view());
+    await renderDetail();
+    await fireEvent.press(screen.getByText("S'inscrire"));
+    await fireEvent.press(screen.getByText('Annuler'));
+    expect(screen.queryByTestId('tournament-register-dialog')).toBeNull();
+    expect(api.register).not.toHaveBeenCalled();
+    expect(screen.getByText("Vous n'êtes pas encore inscrit.")).toBeTruthy();
+  });
+
+  it('double clic sur « Confirmer » : une seule demande, chargement affiché, succès après la réponse', async () => {
+    serve(view());
+    let resolve!: (value: { tournament: TournamentView }) => void;
+    api.register.mockReturnValue(new Promise((r) => (resolve = r)));
+    await renderDetail();
+    await fireEvent.press(screen.getByText("S'inscrire"));
+    const confirm = confirmButton();
+    await fireEvent.press(confirm);
+    await fireEvent.press(confirm);
+    expect(await screen.findByText('Inscription en cours…')).toBeTruthy();
+    // Pendant le traitement, Annuler est inactif : le dialogue reste ouvert.
+    await fireEvent.press(screen.getByText('Annuler'));
+    expect(screen.getByTestId('tournament-register-dialog')).toBeTruthy();
+    expect(api.register).toHaveBeenCalledTimes(1);
+    // Aucun succès affiché avant la confirmation du serveur.
+    expect(screen.queryByText('Vous êtes inscrit à ce tournoi')).toBeNull();
+
+    const registered = view({ registration, canRegister: false });
+    serve(registered);
+    resolve({ tournament: registered });
+    expect(await screen.findByText('Vous êtes inscrit à ce tournoi')).toBeTruthy();
     expect(api.register).toHaveBeenCalledTimes(1);
   });
 });
@@ -280,7 +346,6 @@ describe('tournoi en cours : recherche de table', () => {
       expect(sessions.leave).toHaveBeenCalledTimes(1);
       expect(sessions.leave).toHaveBeenCalledWith('jeton', 'session-1');
       expect(replace).not.toHaveBeenCalled();
-      expect(api.unregister).not.toHaveBeenCalled();
       expect(screen.getByText('Rejoindre le Tournoi')).toBeTruthy();
     });
 
@@ -426,7 +491,7 @@ describe('tournoi complet (D-057)', () => {
     );
     await renderDetail();
     serve(view({ registeredCount: 100, canRegister: false }));
-    await fireEvent.press(screen.getByText("S'inscrire"));
+    await registerViaDialog();
     expect(await screen.findByText('Tournoi complet 🎉')).toBeTruthy();
     expect(screen.getByText(FULL_REGISTER)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -451,9 +516,9 @@ describe('tournoi complet (D-057)', () => {
       ),
     );
     await renderDetail();
-    await fireEvent.press(screen.getByText("S'inscrire"));
+    await registerViaDialog();
     expect(
-      await screen.findByText('Impossible de joindre le serveur. Vérifiez votre connexion.'),
+      await screen.findByText(/Impossible de joindre le serveur. Vérifiez votre connexion./),
     ).toBeTruthy();
     expect(screen.queryByText('Tournoi complet 🎉')).toBeNull();
   });

@@ -7,6 +7,10 @@ import {
 } from '../domain/detection/alert-admin';
 import type { AlertPriority, AlertStatus } from '../domain/detection/detection';
 import { ALERT_CONFIG, RISK_LEVELS, type RiskLevel } from '../domain/detection/detection-config';
+import {
+  commissionScheduleError,
+  type GameCommissionTier,
+} from '../domain/rules/game-settlement';
 import { ValidationError } from './validation-error';
 
 /**
@@ -220,4 +224,21 @@ export function parseDetectionSettingChange(body: unknown): { enabled: boolean }
   }
   if (Object.keys(fields).length > 0) throw new ValidationError(fields);
   return { enabled: source.enabled as boolean };
+}
+
+/**
+ * Barème de commission des parties (D-074) : `{ tiers: [{ minStake, maxStake, percent }] }`,
+ * tranches contiguës depuis 1, la dernière sans plafond (`maxStake: null`), taux de 0 à 100 % (D-080)
+ * à 2 décimales au plus. Chaîne, null, NaN ou Infinity refusés : jamais convertis en 0.
+ */
+export function parseGameCommissionChange(body: unknown): { tiers: GameCommissionTier[] } {
+  const source = (typeof body === 'object' && body !== null ? body : {}) as Query;
+  const fields: Record<string, string> = {};
+  const error = commissionScheduleError(source.tiers);
+  if (error) fields.tiers = error;
+  for (const key of Object.keys(source)) {
+    if (key !== 'tiers') fields[key] = 'Champ inconnu.';
+  }
+  if (Object.keys(fields).length > 0) throw new ValidationError(fields);
+  return { tiers: source.tiers as GameCommissionTier[] };
 }

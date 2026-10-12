@@ -122,3 +122,14 @@ export class ChatRateLimitedError extends Error {
     this.name = 'ChatRateLimitedError';
   }
 }
+
+/**
+ * Chat restreint par l'administration (D-079) : l'expéditeur ne peut plus envoyer de message,
+ * dans aucune partie, jusqu'à `endsAt` (null : durée indéterminée) ou la levée.
+ */
+export class ChatRestrictedError extends Error {
+  constructor(readonly endsAt: Date | null) {
+    super('Chat restreint');
+    this.name = 'ChatRestrictedError';
+  }
+}

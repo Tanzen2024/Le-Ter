@@ -36,14 +36,17 @@ export const mustFollowLeadColorWhenPossible: CardPlayabilityPolicy = ({
 export const declareBeforeFirstCard: WinDeclarationWindow = ({ trickNumber, cardsPlayed }) =>
   trickNumber === 1 && cardsPlayed === 0;
 
-/** Fuir : seulement pendant le tour 1, avant que le joueur ait joué sa première carte. */
-export const fleeBeforeFirstCardOfFirstTrick: FleeEligibility = ({ trickNumber, cardsPlayed }) =>
-  trickNumber === 1 && cardsPlayed === 0;
+/**
+ * Fuir (se coucher) : tant que le joueur n'a pas joué sa DEUXIÈME carte, c'est-à-dire aux
+ * tours 1 et 2 (D-089, révise D-035 qui limitait la fuite au tour 1).
+ */
+export const fleeBeforeSecondCard: FleeEligibility = ({ trickNumber, cardsPlayed }) =>
+  trickNumber <= 2 && cardsPlayed < 2;
 
 /** Le jeu de règles OFFICIEL, utilisé en production. */
 export const OFFICIAL_TER_RULES: TerRuleSet = {
   sameColor: sameSuit,
   cardPlayability: mustFollowLeadColorWhenPossible,
   winDeclarationWindow: declareBeforeFirstCard,
-  fleeEligibility: fleeBeforeFirstCardOfFirstTrick,
+  fleeEligibility: fleeBeforeSecondCard,
 };

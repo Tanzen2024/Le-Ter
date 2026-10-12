@@ -36,7 +36,7 @@ import {
 /**
  * Tables de tournoi (D-065) : tables de 4 créées et attribuées par le serveur, la plus
  * remplie d'abord ; dès le 2e joueur, le premier joueur affecté (créateur de la partie) a
- * 15 s pour démarrer, puis le SERVEUR démarre la partie. Échéance persistée
+ * 10 s pour démarrer, puis le SERVEUR démarre la partie. Échéance persistée
  * (`games.start_deadline_at`), jamais repoussée par les arrivées suivantes, reprise après
  * un redémarrage ; une seule transition waiting → in_progress, même en concurrence.
  * Toutes les échéances sont mesurées sur l'horloge de test (parties comprises).
@@ -135,9 +135,9 @@ describe('affectation automatique', () => {
   });
 });
 
-describe('délai de démarrage de 15 s', () => {
-  it('arrivée du 2e joueur : échéance persistée à +15 s, visible de tous ; démarrage réservé au premier joueur', async () => {
-    expect(TOURNAMENT_TABLE_AUTO_START_MS).toBe(15_000); // D-068 (20 s auparavant)
+describe('délai de démarrage de 10 s', () => {
+  it('arrivée du 2e joueur : échéance persistée à +10 s, visible de tous ; démarrage réservé au premier joueur', async () => {
+    expect(TOURNAMENT_TABLE_AUTO_START_MS).toBe(10_000); // D-092 (15 s auparavant)
     const a = await join(ANA);
     const joinedAt = stack.clock.now().getTime();
     await join(BEN);
@@ -236,11 +236,13 @@ describe('délai de démarrage de 15 s', () => {
         logger,
         clock: stack.clock.now,
       });
-      stack.clock.advance(10 * SECOND);
+      // Avant l'échéance (relatif au délai réel) : le timer est réarmé.
+      stack.clock.advance(TOURNAMENT_TABLE_AUTO_START_MS - 5 * SECOND);
       const early = await supervisor.recover();
       expect(early.startTimersScheduled).toBe(1);
       expect((await game(a.gameId)).status).toBe('waiting');
 
+      // Échéance dépassée : le serveur démarre la partie.
       stack.clock.advance(10 * SECOND);
       const due = await supervisor.recover();
       expect(due.startDeadlinesProcessed).toBe(1);

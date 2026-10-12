@@ -37,6 +37,9 @@
   --color-info: #3b6fb6;
   --color-info-soft: #e7eff9;
 
+  /* Trophée du vainqueur (colonne « Vainqueur » des parties). */
+  --color-gold: #b8860b;
+
   /* Teintes des graphiques (validées : bande de luminance, chroma, daltonisme, contraste). */
   --color-chart-1: #159a8f;
   --color-chart-2: #4a6fe0;

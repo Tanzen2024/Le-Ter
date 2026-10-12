@@ -32,6 +32,7 @@ import {
 import type { GameEvent, GameEventDraft } from '../../domain/game/game-events';
 import type { GameId, PlayerId } from '../../domain/game/game-id';
 import { toPlayerView, type PlayerGameView } from '../../domain/game/game-view';
+import type { GameSettlementReader } from '../../repositories/game-settlement.repository';
 import * as engine from '../../domain/game/ter-engine';
 import { OFFICIAL_TER_RULES } from '../../domain/rules/official-rules';
 import { TURN_DURATION_MS, type TerRuleSet } from '../../domain/rules/rule-set';
@@ -40,7 +41,7 @@ import {
   SessionGameInProgressError,
   type SessionId,
 } from '../../domain/sessions/session';
-import { assertValidStake } from '../../domain/rules/stake';
+import { InvalidGameStakeError, isValidGameStake } from '../../domain/rules/stake';
 import { UnresolvedRuleError } from '../../domain/rules/unresolved-rule';
 import { cryptoRandomSource } from '../../utils/crypto-random-source';
 import {
@@ -68,6 +69,16 @@ export interface ParticipationPolicy {
   canJoin(playerId: PlayerId, game: Game): Promise<boolean>;
 }
 
+/**
+ * Mise des parties ORDINAIRES (D-073) : mise > 0 et solde disponible du compte de jeu
+ * ≥ 2 × mise, relus côté serveur à chaque entrée d'un joueur dans une partie (création,
+ * participation). Lève une erreur explicite pour refuser ; ignore les tables de tournoi
+ * (jetons de tournoi, D-054). Absente : aucun contrôle de solde (tests du moteur).
+ */
+export interface GameStakePolicy {
+  assertCanStake(playerId: PlayerId, game: Game): Promise<void>;
+}
+
 /** Paramètres de création (R-23 : maxPlayers ∈ {2, 3, 4}). */
 export interface CreateGameOptions {
   maxPlayers: number;
@@ -85,6 +96,11 @@ export interface CreateGameOptions {
    * créateur peut démarrer pendant ce délai, puis le serveur démarre la partie.
    */
   autoStartDelayMs?: number;
+  /**
+   * Table de tournoi en cours de création (D-054) : elle se joue en jetons de tournoi, la
+   * mise du compte de jeu (D-073) ne s'applique pas. Jamais lu dans une requête client.
+   */
+  tournamentTable?: boolean;
 }
 
 /**
@@ -135,6 +151,8 @@ export interface GameServiceDependencies {
    */
   startTimers?: GameTimerRegistry;
   participationPolicy: ParticipationPolicy;
+  /** Mise et solde des parties ordinaires (D-073). */
+  stakePolicy?: GameStakePolicy;
   logger: Logger;
   clock?: () => Date;
   /** Règles coup par coup. Par défaut : OFFICIAL_TER_RULES (D-035, socle de vérité). */
@@ -143,13 +161,15 @@ export interface GameServiceDependencies {
   random?: RandomSource;
   /** Obligatoire pour les parties rattachées à une session (D-033). */
   sessionSeats?: SessionSeatLookup;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (15 s, D-034, D-068). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034, D-092). */
   turnDurationMs?: number;
   /**
    * Choix de la carte jouée automatiquement après TURN_TIMEOUT (tours 1 à 4). Par défaut :
    * règle officielle D-036 (LowestCardAutomaticSelectionStrategy).
    */
   autoCardSelection?: AutomaticCardSelectionStrategy;
+  /** Bilan financier du joueur ajouté à sa vue d'une partie terminée (D-074, lecture seule). */
+  settlements?: GameSettlementReader;
 }
 
 export type GameFinishedListener = (game: Game) => void;
@@ -289,13 +309,22 @@ export class GameService {
    * `createGame` et par SessionService, qui l'enregistre avec sa session en une transaction.
    */
   async prepareNewGame(creatorId: PlayerId, options: CreateGameOptions): Promise<Game> {
-    const { maxPlayers, stakeAmount, creationKey, sessionId, creatorTablePosition, autoStartDelayMs } =
-      options;
+    const {
+      maxPlayers,
+      stakeAmount,
+      creationKey,
+      sessionId,
+      creatorTablePosition,
+      autoStartDelayMs,
+      tournamentTable,
+    } = options;
     if (!(ALLOWED_MAX_PLAYERS as readonly number[]).includes(maxPlayers)) {
       throw new InvalidPlayerCountError(maxPlayers);
     }
-    if (stakeAmount !== undefined) {
-      assertValidStake(stakeAmount);
+    // Mise enregistrée : toujours > 0 (D-073). Son absence n'est admise que pour une table de
+    // tournoi : la politique de mise la refuse pour une partie ordinaire.
+    if (stakeAmount !== undefined && !isValidGameStake(stakeAmount)) {
+      throw new InvalidGameStakeError(stakeAmount);
     }
     if (
       autoStartDelayMs !== undefined &&
@@ -330,6 +359,9 @@ export class GameService {
     };
     if (!(await this.deps.participationPolicy.canJoin(creatorId, structuredClone(game)))) {
       throw new ParticipationRefusedError(game.id, creatorId);
+    }
+    if (!tournamentTable) {
+      await this.deps.stakePolicy?.assertCanStake(creatorId, structuredClone(game));
     }
     return game;
   }
@@ -376,6 +408,8 @@ export class GameService {
       if (!(await this.deps.participationPolicy.canJoin(playerId, structuredClone(game)))) {
         throw new ParticipationRefusedError(gameId, playerId);
       }
+      // D-073 : mise de LA partie et solde relus côté serveur, jamais ceux du client.
+      await this.deps.stakePolicy?.assertCanStake(playerId, structuredClone(game));
       // D-033 : seul un joueur actif de la session entre dans sa partie ; il y garde sa
       // place de session (ordre antihoraire). Revérifié en base dans la transaction.
       let tablePosition: number | undefined;
@@ -987,7 +1021,10 @@ export class GameService {
   async getGameForPlayer(gameId: GameId, playerId: PlayerId): Promise<PlayerGameView> {
     const game = await this.load(gameId);
     assertPlayerInGame(game, playerId);
-    return toPlayerView(game, playerId, this.rules);
+    const view = toPlayerView(game, playerId, this.rules);
+    if (game.status !== 'finished' || !this.deps.settlements) return view;
+    const settlement = await this.deps.settlements.findPlayerSettlement(gameId, playerId);
+    return settlement ? { ...view, mySettlement: settlement } : view;
   }
 
   /** Parties actives d'un joueur, pour le reprendre là où il en était après une reconnexion. */

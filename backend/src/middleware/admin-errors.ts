@@ -7,6 +7,11 @@ import {
   AdminSessionRequiredError,
   PaymentProviderUnavailableError,
 } from '../domain/admin/admin';
+import {
+  AdminNoteNotFoundError,
+  ModerationConflictError,
+  ModerationForbiddenError,
+} from '../domain/admin/moderation';
 import type { ApiError } from './api-errors';
 
 const NOT_FOUND_MESSAGES = {
@@ -54,5 +59,32 @@ export function toAdminApiError(err: unknown): ApiError | undefined {
       'Cette clé a déjà servi pour une autre opération.',
     );
   }
+  if (err instanceof ModerationForbiddenError) {
+    return err.reason === 'SELF_ACTION'
+      ? apiError(
+          403,
+          'SELF_ACTION_FORBIDDEN',
+          'Cette action est interdite sur votre propre compte.',
+        )
+      : apiError(
+          409,
+          'LAST_ADMIN',
+          'Impossible : c’est le dernier super administrateur encore actif.',
+        );
+  }
+  if (err instanceof ModerationConflictError) {
+    return apiError(409, err.code, MODERATION_CONFLICT_MESSAGES[err.code]);
+  }
+  if (err instanceof AdminNoteNotFoundError) {
+    return apiError(404, 'NOTE_NOT_FOUND', 'Note introuvable.');
+  }
   return undefined;
 }
+
+const MODERATION_CONFLICT_MESSAGES: Record<ModerationConflictError['code'], string> = {
+  ALREADY_SUSPENDED: 'Ce joueur est déjà suspendu.',
+  ALREADY_CHAT_RESTRICTED: 'Le chat de ce joueur est déjà restreint.',
+  NOT_SUSPENDED: 'Ce joueur n’a aucune suspension en cours.',
+  NOT_CHAT_RESTRICTED: 'Le chat de ce joueur n’est pas restreint.',
+  NOTE_ALREADY_DELETED: 'Cette note est déjà supprimée.',
+};

@@ -9,11 +9,13 @@ import { PostgresPaymentRepository } from '../../../src/repositories/postgres-pa
 import { createAuthService } from '../../../src/services/auth/create-auth-service';
 import {
   CinetPayError,
+  CinetPayPaymentNotSentError,
   type CinetPayPaymentCreated,
   type CinetPayPaymentRequest,
   type CinetPayPaymentStatus,
 } from '../../../src/services/payments/cinetpay/cinetpay-client';
 import { CinetPayGateway } from '../../../src/services/payments/cinetpay/cinetpay.gateway';
+import type { DirectPayOperator } from '../../../src/domain/payments/payment';
 import { PaymentService } from '../../../src/services/payments/payment.service';
 import { createWalletService } from '../../../src/services/wallet/create-wallet-service';
 import { createLogger } from '../../../src/utils/logger';
@@ -47,11 +49,20 @@ class FakeCinetPay {
   statusCalls = 0;
   failCreate = false;
   failStatus = false;
+  /** Refus explicite de la création (ex. 422 { code: 2011, NOT_ALLOWED }). */
+  refuseCreate?: CinetPayError;
+  /** Paiement créé chez CinetPay, mais la réponse n'arrive jamais (délai dépassé). */
+  timeoutAfterCreate = false;
+  /** Paiement direct : CinetPay exige malgré tout une redirection. */
+  directRedirect = false;
+  /** Statut annoncé à la création (jamais une preuve). */
+  initialStatus = 'INITIATED';
 
   createPayment(req: CinetPayPaymentRequest): Promise<CinetPayPaymentCreated> {
     if (this.failCreate) {
       return Promise.reject(new CinetPayError('http', 'CinetPay a répondu 500'));
     }
+    if (this.refuseCreate) return Promise.reject(this.refuseCreate);
     const transactionId = `cp-${randomUUID()}`;
     const notifyToken = `notify-${randomUUID()}`;
     this.created.push({ ...req, transactionId, notifyToken });
@@ -60,20 +71,34 @@ class FakeCinetPay {
       transactionId,
       merchantTransactionId: req.merchantTransactionId,
     });
+    if (this.timeoutAfterCreate) {
+      return Promise.reject(new CinetPayError('timeout', 'CinetPay ne répond pas'));
+    }
+    const mustBeRedirected = !req.direct || this.directRedirect;
     return Promise.resolve({
       transactionId,
       merchantTransactionId: req.merchantTransactionId,
-      paymentUrl: `https://secure.sandbox.cinetpay.net/payment/${transactionId}`,
+      ...(mustBeRedirected && {
+        paymentUrl: `https://secure.sandbox.cinetpay.net/payment/${transactionId}`,
+      }),
       notifyToken,
-      initialStatus: 'INITIATED',
+      initialStatus: this.initialStatus,
+      mustBeRedirected,
     });
   }
 
+  /** Comme l'API : `transaction_id` OU `merchant_transaction_id`. */
   getPaymentStatus(identifier: string): Promise<CinetPayPaymentStatus> {
     this.statusCalls += 1;
     if (this.failStatus) return Promise.reject(new CinetPayError('timeout', 'timeout'));
-    const remote = this.remote.get(identifier);
-    if (!remote) return Promise.reject(new CinetPayError('http', 'not found'));
+    const remote =
+      this.remote.get(identifier) ??
+      [...this.remote.values()].find((r) => r.merchantTransactionId === identifier);
+    if (!remote) {
+      return Promise.reject(
+        new CinetPayError('http', 'not found', { httpStatus: 404, apiCode: 404, apiStatus: 'NOT_FOUND' }),
+      );
+    }
     return Promise.resolve({ code: remote.status === 'SUCCESS' ? 100 : 2002, ...remote });
   }
 
@@ -110,7 +135,17 @@ function failingSql(sql: SqlClient, state: { fail: boolean }): SqlClient {
   return { ...wrap(sql), transaction: (work) => sql.transaction((tx) => work(wrap(tx))) };
 }
 
-function setup(options: { reconcileIntervalMs?: number; paymentsSql?: SqlClient } = {}) {
+function setup(
+  options: {
+    reconcileIntervalMs?: number;
+    paymentsSql?: SqlClient;
+    directPayOperators?: DirectPayOperator[];
+    pagePreselectOperators?: DirectPayOperator[];
+    clock?: () => Date;
+    /** Client SQL de la passerelle (simulation d'une base qui tombe pendant la création). */
+    gatewaySql?: SqlClient;
+  } = {},
+) {
   const logLines: string[] = [];
   const logger = createLogger({}, (line) => logLines.push(line));
   const auth = createAuthService(
@@ -124,13 +159,15 @@ function setup(options: { reconcileIntervalMs?: number; paymentsSql?: SqlClient 
     logger,
   );
   const cinetpay = new FakeCinetPay();
-  const repository = new PostgresPaymentRepository(database.sql);
+  const repository = new PostgresPaymentRepository(options.gatewaySql ?? database.sql);
   const gateway = new CinetPayGateway({
     client: cinetpay,
     payments: repository,
     logger,
     notifyUrl: 'https://api.test.local/api/payments/cinetpay/notify',
     returnUrl: 'https://api.test.local/api/payments/cinetpay/return',
+    directPayOperators: options.directPayOperators ?? [],
+    pagePreselectOperators: options.pagePreselectOperators ?? [],
   });
   const wallet = createWalletService({ sql: database.sql, logger, gateway });
   const payments = new PaymentService({
@@ -138,6 +175,7 @@ function setup(options: { reconcileIntervalMs?: number; paymentsSql?: SqlClient 
     cinetpay,
     logger,
     reconcileIntervalMs: options.reconcileIntervalMs ?? 60 * 60_000,
+    ...(options.clock && { clock: options.clock }),
   });
   const app = createApp({
     logger,
@@ -148,7 +186,7 @@ function setup(options: { reconcileIntervalMs?: number; paymentsSql?: SqlClient 
     walletWriteLimit: { windowMs: 60_000, max: 100_000 },
     paymentOptions: { notifyLimit: { windowMs: 60_000, max: 100_000 } },
   });
-  return { app, cinetpay, logLines };
+  return { app, cinetpay, logLines, payments };
 }
 
 async function player(app: Express) {
@@ -211,6 +249,7 @@ describe('Scénario complet', () => {
       status: 'PENDING',
       amount: 1000,
       currency: 'XAF',
+      mode: 'REDIRECT',
       paymentUrl: expect.stringMatching(/^https:\/\/secure\.sandbox\.cinetpay\.net\//),
     });
     expect(await A.balance()).toBe(0);
@@ -231,6 +270,7 @@ describe('Scénario complet', () => {
       status: 'SUCCESS',
       amount: 1000,
       currency: 'XAF',
+      mode: 'REDIRECT',
       tokens: 1000,
       createdAt: expect.any(String),
       completedAt: expect.any(String),
@@ -241,8 +281,8 @@ describe('Scénario complet', () => {
   });
 });
 
-describe('Wallet : conversion 1 FCFA = 1 jeton, montants autorisés', () => {
-  it.each([500, 1000, 2000, 5000])('%i XAF → %i jetons', async (amount) => {
+describe('Wallet : montant SAISI, 1 FCFA = 1 jeton, limites 100 à 2 500 000 FCFA (D-085)', () => {
+  it.each([100, 500, 750, 1000, 1234, 5000, 10_000, 2_500_000])('%i XAF → %i jetons', async (amount) => {
     const { app, cinetpay } = setup();
     const A = await player(app);
 
@@ -257,18 +297,76 @@ describe('Wallet : conversion 1 FCFA = 1 jeton, montants autorisés', () => {
     expect(await A.balance()).toBe(amount);
   });
 
-  it.each([100, 750, 1500, 10_000, 0, -500, 1000.5, '1000'])(
-    'montant non autorisé (%p) → 400, ni transaction ni appel CinetPay',
-    async (tokens) => {
-      const { app, cinetpay } = setup();
-      const A = await player(app);
+  it.each([
+    ['nul', 0],
+    ['négatif', -500],
+    ['décimal', 1000.5],
+    ['chaîne numérique', '1000'],
+    ['texte', 'mille'],
+    ['vide', ''],
+    ['null', null],
+    ['absent', undefined],
+    ['sous le minimum', 99],
+    ['au-dessus du maximum', 2_500_001],
+    ['énorme', 1e12],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('montant %s (%p) → 400 explicite, ni transaction ni appel CinetPay', async (_label, tokens) => {
+    const { app, cinetpay } = setup();
+    const A = await player(app);
+    const res = await A.deposit(tokens === undefined ? {} : { tokens });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(typeof res.body.fields.tokens).toBe('string');
+    expect(cinetpay.created).toHaveLength(0);
+    expect(await count('wallet_transactions')).toBe(0);
+    expect(await count('payments')).toBe(0);
+  });
+
+  it('hors limites : message explicite avec les bornes', async () => {
+    const { app } = setup();
+    const A = await player(app);
+    for (const tokens of [99, 2_500_001]) {
       const res = await A.deposit({ tokens });
-      expect(res.status).toBe(400);
-      expect(res.body.code).toBe('VALIDATION_ERROR');
-      expect(cinetpay.created).toHaveLength(0);
-      expect(await count('wallet_transactions')).toBe(0);
-    },
-  );
+      expect(res.body.fields.tokens).toBe(
+        'Montant de recharge invalide : nombre entier de FCFA entre 100 et 2 500 000.',
+      );
+    }
+  });
+
+  it('requête envoyée à la main : montant, jetons ou prix fournis par le client ignorés', async () => {
+    const { app, cinetpay } = setup();
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 1500, amount: 1, price: 1, currency: 'XAF', userId: 'x' });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ amount: 1500, currency: 'XAF' });
+    expect(cinetpay.created[0]).toMatchObject({ amount: 1500, currency: 'XAF' });
+  });
+
+  it('GET /api/wallet annonce les limites appliquées par le serveur', async () => {
+    const { app } = setup();
+    const A = await player(app);
+    expect((await A.wallet()).depositLimits).toEqual({ min: 100, max: 2_500_000, currency: 'XAF' });
+  });
+
+  it('montant libre : idempotence et aucun double crédit (notifications multiples, réconciliation)', async () => {
+    const { app, cinetpay, payments } = setup();
+    const A = await player(app);
+    const key = randomUUID();
+    const [first, again] = await Promise.all([
+      A.deposit({ tokens: 3750 }, key),
+      A.deposit({ tokens: 3750 }, key),
+    ]);
+    expect(first.body.payment.id).toBe(again.body.payment.id);
+    expect(cinetpay.created).toHaveLength(1);
+    // Même clé, autre montant : autre opération, refusée.
+    expect((await A.deposit({ tokens: 3751 }, key)).body.code).toBe('IDEMPOTENCY_KEY_REUSED');
+
+    cinetpay.set(0, { status: 'SUCCESS' });
+    await Promise.all([notify(app, cinetpay.notification()), notify(app, cinetpay.notification())]);
+    await payments.reconcile(first.body.payment.id);
+    expect(await A.balance()).toBe(3750);
+  });
+
 
   it.each(['XOF', 'EUR', 'xaf', 1])('devise incorrecte (%p) → 400', async (currency) => {
     const { app, cinetpay } = setup();
@@ -306,17 +404,17 @@ describe('Wallet : conversion 1 FCFA = 1 jeton, montants autorisés', () => {
     expect(await A.balance()).toBe(0);
   });
 
-  it('retrait : hors périmètre CinetPay, refusé proprement (rien n’est débité)', async () => {
+  it('retrait : transferts non activés (D-075), refusé proprement (rien n’est débité)', async () => {
     const { app } = setup();
     const A = await player(app);
     await database.sql.query(
-      `INSERT INTO wallets (user_id, balance, created_at, updated_at) VALUES ($1, 100, now(), now())`,
+      `INSERT INTO wallets (user_id, balance, created_at, updated_at) VALUES ($1, 5000, now(), now())`,
       [A.id],
     );
-    const res = await A.withdraw({ tokens: 50 });
+    const res = await A.withdraw({ tokens: 1000, operator: 'MTN_CM' });
     expect(res.status).toBe(503);
     expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
-    expect(await A.balance()).toBe(100);
+    expect(await A.balance()).toBe(5000);
     // Aucune transaction fictive : rien n'est écrit pour un retrait que CinetPay ne gère pas.
     expect(await count('wallet_transactions')).toBe(0);
     expect(await A.wallet()).toMatchObject({
@@ -522,7 +620,7 @@ describe('GET /api/payments/:id', () => {
 
     const own = await A.payment(body.payment.id).expect(200);
     expect(Object.keys(own.body.payment).sort()).toEqual(
-      ['amount', 'createdAt', 'currency', 'id', 'paymentUrl', 'status', 'tokens'].sort(),
+      ['amount', 'createdAt', 'currency', 'id', 'mode', 'paymentUrl', 'status', 'tokens'].sort(),
     );
     const foreign = await B.payment(body.payment.id);
     expect(foreign.status).toBe(404);
@@ -656,5 +754,681 @@ describe('Sécurité', () => {
       ]),
     );
     expect(logLines.join('\n')).not.toMatch(/Bearer|api_password|api_key|access_token/i);
+  });
+});
+
+/**
+ * Paiement DIRECT, sans redirection (D-083) : même API v1 (`direct_pay`, opérateur, numéro
+ * d'inscription), validation sur le téléphone. Jamais de crédit avant le statut RELU par le
+ * serveur ; opérateur non activé, numéro hors Cameroun ou refus explicite : rien n'est
+ * crédité et la page CinetPay reste possible ; issue inconnue : jamais close à l'aveugle.
+ */
+describe('Paiement direct MTN Mobile Money (sans redirection)', () => {
+  const MTN = ['MTN_CM'] as DirectPayOperator[];
+
+  it('GET /api/wallet annonce les opérateurs directs ; aucun sans activation ni numéro +237', async () => {
+    const off = setup();
+    expect((await (await player(off.app)).wallet()).directPayOperators).toEqual([]);
+    await database.reset();
+    const on = setup({ directPayOperators: MTN });
+    const A = await player(on.app);
+    expect((await A.wallet()).directPayOperators).toEqual(['MTN_CM']);
+    await database.sql.query("UPDATE users SET phone = '+33612345678' WHERE id = $1", [A.id]);
+    expect((await A.wallet()).directPayOperators).toEqual([]);
+  });
+
+  it('succès : validation sur le téléphone, crédit seulement après le statut relu, une fois', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    // Même un « SUCCESS » annoncé à la création n'est pas une preuve.
+    cinetpay.initialStatus = 'SUCCESS';
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 1000, method: 'MTN_CM', playerId: 'autre', amount: 1 });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toEqual({
+      id: expect.any(String),
+      status: 'PENDING',
+      amount: 1000,
+      currency: 'XAF',
+      mode: 'DIRECT',
+      operator: 'MTN_CM',
+    });
+    // Le serveur calcule le montant ; le numéro est celui du compte (+237), jamais du client.
+    const sent = cinetpay.created[0]!;
+    expect(sent).toMatchObject({ amount: 1000, currency: 'XAF', channel: 'PUSH' });
+    expect(sent.direct).toEqual({ paymentMethod: 'MTN_CM', phoneNumber: expect.stringMatching(/^\+2376\d{8}$/) });
+    expect(sent).not.toHaveProperty('otpCode');
+    const id = res.body.payment.id as string;
+    expect(await row(id)).toMatchObject({ payment_method: 'MTN_CM', payment_url: null, status: 'PENDING' });
+
+    // Toujours INITIATED chez CinetPay : rien n'est crédité malgré le « SUCCESS » initial.
+    expect((await A.payment(id).expect(200)).body.payment.status).toBe('PENDING');
+    expect(await A.balance()).toBe(0);
+
+    cinetpay.set(0, { status: 'SUCCESS' });
+    const notifications = await Promise.all([1, 2, 3].map(() => notify(app, cinetpay.notification())));
+    expect(notifications.every((n) => n.status === 200)).toBe(true);
+    expect(await A.balance()).toBe(1000);
+    expect((await A.payment(id).expect(200)).body.payment).toMatchObject({
+      status: 'SUCCESS',
+      mode: 'DIRECT',
+      tokens: 1000,
+    });
+    await notify(app, cinetpay.notification()).expect(200);
+    expect(await A.balance()).toBe(1000);
+  });
+
+  it.each([
+    ['PENDING', 'PENDING', 'pending'],
+    ['FAILED', 'FAILED', 'failed'],
+    ['INSUFFICIENT_BALANCE', 'FAILED', 'failed'],
+    ['EXPIRED', 'EXPIRED', 'failed'],
+    ['OTP_ERROR', 'PENDING', 'pending'],
+    ['NOT_ALLOWED', 'PENDING', 'pending'],
+  ])('statut CinetPay %s → paiement %s, aucun crédit', async (remote, status, walletStatus) => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    cinetpay.set(0, { status: remote });
+    await notify(app, cinetpay.notification()).expect(200);
+    expect(await row(id)).toMatchObject({ status, wallet_status: walletStatus });
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('erreur réseau à la vérification : jamais un succès, paiement toujours en attente', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    cinetpay.set(0, { status: 'SUCCESS' });
+    cinetpay.failStatus = true;
+    expect((await notify(app, cinetpay.notification())).status).toBeGreaterThanOrEqual(500);
+    expect(await row(id)).toMatchObject({ status: 'PENDING', wallet_status: 'pending' });
+    expect(await A.balance()).toBe(0);
+  });
+
+
+
+
+  it('5xx sans code après envoi : issue inconnue, jamais déclarée échouée ni réussie', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    cinetpay.refuseCreate = new CinetPayError('http', 'CinetPay a répondu 502', { httpStatus: 502 });
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 500, method: 'MTN_CM' });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ status: 'PENDING', mode: 'DIRECT' });
+    expect(await row(res.body.payment.id)).toMatchObject({ status: 'PENDING', wallet_status: 'pending' });
+  });
+
+  it('CinetPay exige une redirection : page proposée comme telle (mode REDIRECT)', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    cinetpay.directRedirect = true;
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 500, method: 'MTN_CM' });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({
+      mode: 'REDIRECT',
+      operator: 'MTN_CM',
+      paymentUrl: expect.stringMatching(/^https:\/\//),
+    });
+  });
+
+
+  describe('création partie sans réponse (délai dépassé après l’envoi)', () => {
+    it('paiement retrouvé chez CinetPay par merchant_transaction_id, crédité une fois après SUCCESS', async () => {
+      const { app, cinetpay, payments } = setup({ directPayOperators: MTN, reconcileIntervalMs: 0 });
+      cinetpay.timeoutAfterCreate = true;
+      const A = await player(app);
+      const res = await A.deposit({ tokens: 2000, method: 'MTN_CM' });
+      // Ni échec ni crédit : la demande a peut-être atteint le téléphone.
+      expect(res.status).toBe(202);
+      expect(res.body.payment).toEqual({
+        id: expect.any(String),
+        status: 'PENDING',
+        amount: 2000,
+        currency: 'XAF',
+        mode: 'DIRECT',
+        operator: 'MTN_CM',
+      });
+      const id = res.body.payment.id as string;
+      expect(await row(id)).toMatchObject({
+        status: 'PENDING',
+        provider_reference: null,
+        notify_token_hash: null,
+        wallet_status: 'pending',
+      });
+
+      // Toujours INITIATED : référence retrouvée, rien crédité.
+      expect((await payments.reconcile(id)).status).toBe('PENDING');
+      expect(await row(id)).toMatchObject({
+        provider_reference: cinetpay.created[0]!.transactionId,
+        notify_token_hash: null,
+      });
+      expect(await A.balance()).toBe(0);
+      // Notification de ce paiement : refusée (jeton inconnu), jamais un crédit.
+      expect((await notify(app, cinetpay.notification())).status).toBe(401);
+
+      cinetpay.set(0, { status: 'SUCCESS' });
+      const results = await Promise.all([payments.reconcile(id), payments.reconcile(id), A.payment(id)]);
+      expect(results[0].status === 'SUCCESS' || results[1].status === 'SUCCESS').toBe(true);
+      expect(await A.balance()).toBe(2000);
+      expect(await payments.reconcile(id)).toMatchObject({ outcome: 'already_final', status: 'SUCCESS' });
+      expect(await A.balance()).toBe(2000);
+    });
+
+    it('jamais créé chez CinetPay : en attente, puis clos sans crédit après 30 min', async () => {
+      let now = new Date('2026-10-12T10:00:00Z');
+      const { app, cinetpay, payments } = setup({
+        directPayOperators: MTN,
+        reconcileIntervalMs: 0,
+        clock: () => now,
+      });
+      cinetpay.refuseCreate = new CinetPayError('timeout', 'CinetPay ne répond pas');
+      const A = await player(app);
+      const id = (await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202)).body.payment.id;
+      await database.sql.query('UPDATE payments SET created_at = $2 WHERE id = $1', [id, now.toISOString()]);
+
+      now = new Date(now.getTime() + 5 * 60_000);
+      expect(await payments.reconcile(id)).toMatchObject({ outcome: 'pending', status: 'PENDING' });
+      expect(await row(id)).toMatchObject({ status: 'PENDING', provider_status: 'NOT_FOUND' });
+
+      now = new Date(now.getTime() + 30 * 60_000);
+      expect(await payments.reconcile(id)).toMatchObject({ status: 'FAILED' });
+      expect(await row(id)).toMatchObject({ status: 'FAILED', wallet_status: 'failed' });
+      expect(await A.balance()).toBe(0);
+    });
+
+    it('fournisseur injoignable pendant la recherche : rien n’est écrit', async () => {
+      const { app, cinetpay, payments } = setup({ directPayOperators: MTN, reconcileIntervalMs: 0 });
+      cinetpay.timeoutAfterCreate = true;
+      const A = await player(app);
+      const id = (await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202)).body.payment.id;
+      cinetpay.failStatus = true;
+      await expect(payments.reconcile(id)).rejects.toThrow();
+      expect(await row(id)).toMatchObject({ status: 'PENDING', provider_reference: null });
+    });
+  });
+});
+
+/**
+ * Cas observé le 2026-10-12 sur téléphone : CinetPay refuse l'AUTHENTIFICATION du serveur
+ * (`422 { code: 2011, NOT_ALLOWED }` : adresse IP non autorisée par le compte marchand). La
+ * demande de paiement n'est jamais envoyée : 503 MOBILE_MONEY_UNAVAILABLE, rien de crédité ni
+ * de débité, et le motif exact est conservé pour le diagnostic.
+ */
+describe('Authentification CinetPay refusée (IP non autorisée)', () => {
+  const notAllowed = () =>
+    new CinetPayPaymentNotSentError(
+      new CinetPayError('authentication', 'Authentification CinetPay refusée', {
+        httpStatus: 422,
+        apiCode: 2011,
+        apiStatus: 'NOT_ALLOWED',
+      }),
+    );
+
+  it('503 MOBILE_MONEY_UNAVAILABLE, motif 2011 NOT_ALLOWED enregistré, aucun crédit, rejeu identique', async () => {
+    const { app, cinetpay, logLines } = setup();
+    cinetpay.refuseCreate = notAllowed() as unknown as CinetPayError;
+    const A = await player(app);
+    const key = randomUUID();
+
+    const res = await A.deposit({ tokens: 2000 }, key);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
+    expect(cinetpay.created).toHaveLength(0);
+
+    const { rows } = await database.sql.query<Record<string, unknown>>(
+      `SELECT p.status, p.provider_reference, p.metadata, t.status AS wallet_status, t.failure_code
+       FROM payments p JOIN wallet_transactions t ON t.id = p.wallet_transaction_id`,
+    );
+    expect(rows).toEqual([
+      {
+        status: 'FAILED',
+        provider_reference: null,
+        metadata: { failure: 'CinetPayPaymentNotSentError:authentication:2011:NOT_ALLOWED' },
+        wallet_status: 'failed',
+        failure_code: 'PROVIDER_UNAVAILABLE',
+      },
+    ]);
+    expect(await A.balance()).toBe(0);
+    // Journal exploitable, sans secret : le motif et le code.
+    expect(logLines.join('\n')).toContain(
+      'CinetPayPaymentNotSentError:authentication:2011:NOT_ALLOWED',
+    );
+
+    // Même Idempotency-Key : même refus, aucune nouvelle opération ni nouvel appel.
+    cinetpay.refuseCreate = undefined;
+    expect((await A.deposit({ tokens: 2000 }, key)).status).toBe(503);
+    expect(await count('wallet_transactions')).toBe(1);
+    expect(cinetpay.created).toHaveLength(0);
+
+    // Accès rétabli (IP autorisée) : une NOUVELLE demande aboutit normalement.
+    const retry = await A.deposit({ tokens: 2000 });
+    expect(retry.status).toBe(202);
+    expect(retry.body.payment).toMatchObject({ status: 'PENDING', mode: 'REDIRECT' });
+    expect(await A.balance()).toBe(0);
+  });
+
+  it.each([
+    ['délai dépassé', new CinetPayError('timeout', 'CinetPay ne répond pas'), 'CinetPayError:timeout'],
+    ['erreur HTTP 500', new CinetPayError('http', 'CinetPay a répondu 500', { httpStatus: 500 }), 'CinetPayError:http:500'],
+  ])('%s à la création (page CinetPay) : 503, motif enregistré, aucun crédit', async (_label, error, reason) => {
+    const { app, cinetpay } = setup();
+    cinetpay.refuseCreate = error;
+    const A = await player(app);
+    expect((await A.deposit({ tokens: 500 })).status).toBe(503);
+    const { rows } = await database.sql.query<{ metadata: Record<string, unknown> }>(
+      'SELECT metadata FROM payments',
+    );
+    expect(rows[0]!.metadata).toEqual({ failure: reason });
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('sans jeton : 401, rien n’est créé', async () => {
+    const { app, cinetpay } = setup();
+    await request(app)
+      .post('/api/wallet/deposits')
+      .set('Idempotency-Key', randomUUID())
+      .send({ tokens: 500 })
+      .expect(401);
+    expect(cinetpay.created).toHaveLength(0);
+    expect(await count('wallet_transactions')).toBe(0);
+  });
+});
+
+/**
+ * Traçabilité (2026-10-12) : la réponse de création et le chemin qui a relu puis réglé le
+ * paiement sont conservés (`metadata`), sans secret ni numéro. Cas observé en sandbox : un
+ * paiement direct MTN « SUCCESS » relu ~2 s après sa création, sans aucune validation sur le
+ * téléphone (issue simulée par CinetPay) ; d'autres restent PENDING. Simulation : ce test ne
+ * prouve PAS un fonctionnement réel auprès de MTN.
+ */
+describe('Traçabilité des paiements directs (création → crédit)', () => {
+  const MTN = ['MTN_CM'] as DirectPayOperator[];
+  const metadataOf = async (id: string) =>
+    (await database.sql.query<{ metadata: Record<string, unknown> }>(
+      'SELECT metadata FROM payments WHERE id = $1',
+      [id],
+    )).rows[0]!.metadata;
+
+  it('SUCCESS relu par la lecture du joueur, sans validation sur le téléphone : crédité une fois, tracé', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN, reconcileIntervalMs: 0 });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 1000, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    expect(await metadataOf(id)).toEqual({ initialStatus: 'INITIATED', mustBeRedirected: false });
+
+    // L'issue est décidée par CinetPay (sandbox) : aucune action sur le téléphone.
+    cinetpay.set(0, { status: 'SUCCESS' });
+    const reads = await Promise.all([A.payment(id), A.payment(id), A.payment(id)]);
+    expect(reads.every((r) => r.status === 200)).toBe(true);
+    expect(await A.balance()).toBe(1000);
+    expect(await metadataOf(id)).toEqual({
+      initialStatus: 'INITIATED',
+      mustBeRedirected: false,
+      settledBy: 'player_read',
+    });
+    // Relectures et notification ultérieures : aucun nouveau crédit, trace inchangée.
+    await A.payment(id).expect(200);
+    await notify(app, cinetpay.notification()).expect(200);
+    expect(await A.balance()).toBe(1000);
+    expect((await metadataOf(id)).settledBy).toBe('player_read');
+  });
+
+  it('INITIATED puis PENDING : jamais crédité, statut fournisseur noté, aucune trace de règlement', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN, reconcileIntervalMs: 0 });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    await A.payment(id).expect(200);
+    expect(await row(id)).toMatchObject({ status: 'PENDING', provider_status: 'INITIATED' });
+    cinetpay.set(0, { status: 'PENDING' });
+    await A.payment(id).expect(200);
+    expect(await row(id)).toMatchObject({ status: 'PENDING', provider_status: 'PENDING' });
+    expect(await metadataOf(id)).not.toHaveProperty('settledBy');
+    expect(await A.balance()).toBe(0);
+  });
+
+  it.each([
+    ['notification', 'notification'],
+    ['réconciliation', 'reconciliation'],
+  ] as const)('règlement par %s : settledBy = %s', async (_label, expected) => {
+    const { app, cinetpay, payments } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 2000, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    cinetpay.set(0, { status: 'FAILED' });
+    if (expected === 'notification') await notify(app, cinetpay.notification()).expect(200);
+    else await payments.reconcile(id);
+    expect(await row(id)).toMatchObject({ status: 'FAILED', wallet_status: 'failed' });
+    expect((await metadataOf(id)).settledBy).toBe(expected);
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('réconciliation répétée et simultanée après SUCCESS : un seul crédit', async () => {
+    const { app, cinetpay, payments } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 5000, method: 'MTN_CM' }).expect(202)).body.payment.id;
+    cinetpay.set(0, { status: 'SUCCESS' });
+    await Promise.all([1, 2, 3, 4].map(() => payments.reconcile(id)));
+    await payments.reconcile(id);
+    expect(await A.balance()).toBe(5000);
+    const { rows } = await database.sql.query<{ n: string }>(
+      "SELECT count(*) AS n FROM wallet_transactions WHERE kind = 'deposit' AND status = 'succeeded'",
+    );
+    expect(Number(rows[0]!.n)).toBe(1);
+    expect((await metadataOf(id)).settledBy).toBe('reconciliation');
+  });
+
+  it('page CinetPay (non directe) : mustBeRedirected = true conservé', async () => {
+    const { app } = setup();
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 500 }).expect(202)).body.payment.id;
+    expect(await metadataOf(id)).toEqual({ initialStatus: 'INITIATED', mustBeRedirected: true });
+  });
+});
+
+
+
+/**
+ * Numéro du payeur (D-088) : TOUJOURS le numéro d'inscription du compte, au format
+ * international (`+237…`), transmis à CinetPay par le serveur pour toute recharge (page
+ * hébergée comme paiement direct). Un numéro envoyé par l'application est ignoré.
+ */
+describe('Numéro du payeur transmis à CinetPay', () => {
+  const registeredPhone = async (userId: string) =>
+    (await database.sql.query<{ phone: string }>('SELECT phone FROM users WHERE id = $1', [userId]))
+      .rows[0]!.phone;
+
+  it('page CinetPay : numéro d’inscription +237 transmis, numéro du client ignoré', async () => {
+    const { app, cinetpay } = setup();
+    const A = await player(app);
+    const res = await A.deposit({
+      tokens: 1500,
+      phone: '+237600000000',
+      clientPhoneNumber: '+237600000000',
+      msisdn: '+237600000000',
+    });
+    expect(res.status).toBe(202);
+    const phone = await registeredPhone(A.id);
+    expect(phone).toMatch(/^\+2376\d{8}$/);
+    expect(cinetpay.created[0]!.clientPhoneNumber).toBe(phone);
+    expect(cinetpay.created[0]!.clientPhoneNumber).not.toBe('+237600000000');
+  });
+
+  it('paiement direct MTN : même numéro d’inscription', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: ['MTN_CM'] as DirectPayOperator[] });
+    const A = await player(app);
+    await A.deposit({ tokens: 500, method: 'MTN_CM' }).expect(202);
+    const phone = await registeredPhone(A.id);
+    expect(cinetpay.created[0]!.direct?.phoneNumber).toBe(phone);
+    expect(cinetpay.created[0]!.clientPhoneNumber).toBe(phone);
+  });
+
+
+  it('numéro d’inscription : format international garanti par la base (indicatif obligatoire)', async () => {
+    const { app } = setup();
+    const A = await player(app);
+    // users.phone : CHECK (phone ~ '^\+[1-9][0-9]{7,14}$') depuis la migration 0002.
+    await expect(
+      database.sql.query("UPDATE users SET phone = '692130271' WHERE id = $1", [A.id]),
+    ).rejects.toThrow(/users_phone_check/);
+    expect(await registeredPhone(A.id)).toMatch(/^\+237/);
+  });
+});
+
+/**
+ * Recharge AUTOMATIQUE (D-090) : l'application n'envoie que le montant ; le serveur déduit
+ * l'opérateur du numéro d'inscription (préfixe camerounais), tente le paiement DIRECT s'il est
+ * ouvert pour cet opérateur, et ne bascule sur la page CinetPay (même opérateur) que sur un refus
+ * CERTAIN. Jamais d'opérateur imposé par l'application, jamais de second paiement vivant.
+ */
+describe('Recharge automatique (opérateur déduit du numéro du compte)', () => {
+  const MTN = ['MTN_CM'] as DirectPayOperator[];
+  const BOTH = ['MTN_CM', 'OM_CM'] as DirectPayOperator[];
+  let orangeSeq = 0;
+  /** Joueur Orange Money : numéro d'inscription 69x (le fixture crée des 67x, MTN). */
+  async function orangePlayer(app: Express) {
+    const p = await player(app);
+    orangeSeq += 1;
+    await database.sql.query('UPDATE users SET phone = $2 WHERE id = $1', [
+      p.id,
+      `+23769${String(orangeSeq).padStart(7, '0')}`,
+    ]);
+    return p;
+  }
+
+  it('GET /api/wallet : opérateur déduit du numéro (MTN 67x, Orange 69x, non pris en charge null)', async () => {
+    const { app } = setup();
+    const mtn = await player(app);
+    const orange = await orangePlayer(app);
+    const nexttel = await player(app);
+    await database.sql.query("UPDATE users SET phone = '+237661234567' WHERE id = $1", [nexttel.id]);
+    expect((await mtn.wallet()).paymentOperator).toBe('MTN_CM');
+    expect((await orange.wallet()).paymentOperator).toBe('OM_CM');
+    expect((await nexttel.wallet()).paymentOperator).toBeNull();
+  });
+
+  it('MTN, direct ouvert : le montant seul suffit → paiement direct sur le numéro du compte', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 1500 });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ amount: 1500, mode: 'DIRECT', operator: 'MTN_CM' });
+    expect(cinetpay.created[0]!.direct?.paymentMethod).toBe('MTN_CM');
+  });
+
+  it('Orange, direct non ouvert (OTP) : page CinetPay directement, jamais direct ni OTP', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const B = await orangePlayer(app);
+    const res = await B.deposit({ tokens: 800, otpCode: '1234' });
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ amount: 800, mode: 'REDIRECT', paymentUrl: expect.any(String) });
+    expect(cinetpay.created[0]).not.toHaveProperty('direct');
+    expect(cinetpay.created[0]).not.toHaveProperty('otpCode');
+    expect(cinetpay.created[0]!.clientPhoneNumber).toMatch(/^\+23769/);
+  });
+
+  it('Orange présélectionné si le compte l’accepte (CINETPAY_PAGE_PRESELECT_METHODS)', async () => {
+    const { app, cinetpay } = setup({ pagePreselectOperators: ['OM_CM'] as DirectPayOperator[] });
+    const B = await orangePlayer(app);
+    const res = await B.deposit({ tokens: 800 });
+    expect(res.body.payment).toMatchObject({ mode: 'REDIRECT', operator: 'OM_CM' });
+    expect(cinetpay.created[0]!.pagePaymentMethod).toBe('OM_CM');
+  });
+
+  it('opérateur ou mode imposé par l’application et différent du compte : 400, rien créé', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: BOTH });
+    const A = await player(app); // MTN
+    for (const body of [
+      { tokens: 500, method: 'OM_CM' },
+      { tokens: 500, operator: 'OM_CM' },
+      { tokens: 500, method: 'WAVE_SN' },
+    ]) {
+      expect((await A.deposit(body)).status).toBe(400);
+    }
+    expect(cinetpay.created).toHaveLength(0);
+    expect(await count('wallet_transactions')).toBe(0);
+    // Le même opérateur que le compte est simplement redondant (accepté).
+    expect((await A.deposit({ tokens: 500, method: 'MTN_CM' })).status).toBe(202);
+  });
+
+  it('numéro hors MTN / Orange (Nexttel, autre pays) : 409 PAYMENT_OPERATOR_UNSUPPORTED, rien créé', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    for (const phone of ['+237661234567', '+2250707070700']) {
+      await database.sql.query('UPDATE users SET phone = $2 WHERE id = $1', [A.id, phone]);
+      const res = await A.deposit({ tokens: 500 });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('PAYMENT_OPERATOR_UNSUPPORTED');
+    }
+    expect(cinetpay.created).toHaveLength(0);
+    expect(await count('wallet_transactions')).toBe(0);
+  });
+
+  it('direct refusé de façon CERTAINE : repli serveur vers la page (même requête), un seul paiement vivant, crédit unique, rejeu identique', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN, pagePreselectOperators: MTN });
+    const A = await player(app);
+    let refused = false;
+    const original = cinetpay.createPayment.bind(cinetpay);
+    cinetpay.createPayment = (req) => {
+      if (req.direct && !refused) {
+        refused = true;
+        return Promise.reject(
+          new CinetPayError('http', 'CinetPay a répondu 422', {
+            httpStatus: 422,
+            apiCode: 2011,
+            apiStatus: 'NOT_ALLOWED',
+          }),
+        );
+      }
+      return original(req);
+    };
+    const key = randomUUID();
+    const res = await A.deposit({ tokens: 2000 }, key);
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ amount: 2000, mode: 'REDIRECT', operator: 'MTN_CM' });
+    expect(cinetpay.created).toHaveLength(1);
+    expect(cinetpay.created[0]!.pagePaymentMethod).toBe('MTN_CM');
+
+    // Rejeu de la même intention : la même page, aucune nouvelle demande.
+    const again = await A.deposit({ tokens: 2000 }, key);
+    expect(again.body.payment.id).toBe(res.body.payment.id);
+    expect(cinetpay.created).toHaveLength(1);
+
+    cinetpay.set(0, { status: 'SUCCESS' });
+    await Promise.all([notify(app, cinetpay.notification()), notify(app, cinetpay.notification())]);
+    expect(await A.balance()).toBe(2000);
+    const { rows } = await database.sql.query<{ status: string }>(
+      'SELECT status FROM payments ORDER BY created_at',
+    );
+    expect(rows.map((r) => r.status)).toEqual(['FAILED', 'SUCCESS']);
+  });
+
+  it('direct à l’issue INCERTAINE : paiement en attente renvoyé, AUCUN repli ni second paiement', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    cinetpay.timeoutAfterCreate = true;
+    const A = await player(app);
+    const key = randomUUID();
+    const res = await A.deposit({ tokens: 1000 }, key);
+    expect(res.status).toBe(202);
+    expect(res.body.payment).toMatchObject({ status: 'PENDING', mode: 'DIRECT' });
+    cinetpay.timeoutAfterCreate = false;
+    const again = await A.deposit({ tokens: 1000 }, key);
+    expect(again.body.payment.id).toBe(res.body.payment.id);
+    expect(cinetpay.created).toHaveLength(1);
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('service indisponible (demande jamais partie) : 503 explicite, aucun repli, rien crédité', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    cinetpay.refuseCreate = new CinetPayPaymentNotSentError(
+      new CinetPayError('authentication', 'refus', { httpStatus: 422, apiCode: 2011 }),
+    ) as unknown as CinetPayError;
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 500 });
+    expect(res.status).toBe(503);
+    expect(cinetpay.created).toHaveLength(0);
+    expect(await count('payments')).toBe(1);
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('confirmation seulement par le serveur : aucun crédit avant SUCCESS relu, puis exactement le montant', async () => {
+    const { app, cinetpay } = setup({ directPayOperators: MTN });
+    const A = await player(app);
+    const id = (await A.deposit({ tokens: 1234 }).expect(202)).body.payment.id;
+    expect(await A.balance()).toBe(0);
+    cinetpay.set(0, { status: 'PENDING' });
+    await A.payment(id).expect(200);
+    expect(await A.balance()).toBe(0);
+    cinetpay.set(0, { status: 'SUCCESS' });
+    await notify(app, cinetpay.notification()).expect(200);
+    expect(await A.balance()).toBe(1234);
+  });
+});
+
+/** Client SQL dont l'enregistrement de la référence CinetPay échoue (base perdue après l'appel). */
+function sqlLostAfterProviderCall(sql: SqlClient, state: { fail: boolean }): SqlClient {
+  const wrap = (tx: SqlExecutor): SqlExecutor => ({
+    query: (text, params) => {
+      if (state.fail && /SET provider_reference = \$2, payment_url/.test(text)) {
+        return Promise.reject(new Error('Connection terminated due to connection timeout'));
+      }
+      if (state.fail && /SET status = 'FAILED'|initialization', 'UNCERTAIN',\s*'initializationError'/.test(text)) {
+        return Promise.reject(new Error('Connection terminated unexpectedly'));
+      }
+      return tx.query(text, params);
+    },
+  });
+  return { ...wrap(sql), transaction: (work) => sql.transaction((tx) => work(wrap(tx))) };
+}
+
+/**
+ * Base indisponible pendant une recharge (D-091) : une erreur INTERNE n'est jamais présentée
+ * comme une indisponibilité du fournisseur ni comme « rien n'a été débité ». Rien n'est déclaré
+ * échoué ni crédité ; un paiement direct, marqué incertain dès sa création, est retrouvé chez
+ * CinetPay par la réconciliation et crédité une seule fois.
+ */
+describe('Base indisponible pendant la création d’une recharge', () => {
+  it('paiement direct : 503 PAYMENT_VERIFICATION_PENDING, achat en attente, puis retrouvé et crédité une fois', async () => {
+    const state = { fail: true };
+    const { app, cinetpay, payments } = setup({
+      directPayOperators: ['MTN_CM'] as DirectPayOperator[],
+      reconcileIntervalMs: 0,
+      gatewaySql: sqlLostAfterProviderCall(database.sql, state),
+    });
+    const A = await player(app);
+    const key = randomUUID();
+    const res = await A.deposit({ tokens: 1500 }, key);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('PAYMENT_VERIFICATION_PENDING');
+    expect(res.body.message).not.toMatch(/aucun montant/i);
+    expect(cinetpay.created).toHaveLength(1); // la demande est partie vers le téléphone
+
+    const { rows } = await database.sql.query<Record<string, unknown>>(
+      `SELECT p.id, p.status, p.provider_reference, p.metadata, t.status AS wallet
+       FROM payments p JOIN wallet_transactions t ON t.id = p.wallet_transaction_id`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: 'PENDING',
+      provider_reference: null,
+      wallet: 'pending',
+      metadata: { initialization: 'UNCERTAIN' },
+    });
+
+    // Base revenue : rejeu de la même intention → même opération, aucun second paiement.
+    state.fail = false;
+    const again = await A.deposit({ tokens: 1500 }, key);
+    expect(again.status).toBe(202);
+    expect(cinetpay.created).toHaveLength(1);
+
+    // Le joueur a validé sur son téléphone : la réconciliation retrouve et crédite une fois.
+    cinetpay.set(0, { status: 'SUCCESS' });
+    const id = rows[0]!.id as string;
+    await payments.reconcile(id);
+    await payments.reconcile(id);
+    expect(await A.balance()).toBe(1500);
+  });
+
+  it('page CinetPay : 503 PAYMENT_VERIFICATION_PENDING, rien déclaré échoué ni crédité', async () => {
+    const state = { fail: true };
+    const { app, cinetpay } = setup({ gatewaySql: sqlLostAfterProviderCall(database.sql, state) });
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 500 });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('PAYMENT_VERIFICATION_PENDING');
+    expect(cinetpay.created).toHaveLength(1);
+    const { rows } = await database.sql.query<{ wallet: string }>(
+      'SELECT status AS wallet FROM wallet_transactions',
+    );
+    expect(rows).toEqual([{ wallet: 'pending' }]);
+    expect(await A.balance()).toBe(0);
+  });
+
+  it('fournisseur injoignable (et base saine) : toujours 503 MOBILE_MONEY_UNAVAILABLE, achat clos', async () => {
+    const { app, cinetpay } = setup();
+    cinetpay.failCreate = true;
+    const A = await player(app);
+    const res = await A.deposit({ tokens: 500 });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
+    const { rows } = await database.sql.query<{ status: string }>('SELECT status FROM wallet_transactions');
+    expect(rows).toEqual([{ status: 'failed' }]);
   });
 });

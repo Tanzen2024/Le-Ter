@@ -22,7 +22,7 @@ export interface SessionSeat {
 
 export type DecisionChoice = 'continue' | 'leave' | 'auto_leave';
 
-/** Ronde Poursuivre / Quitter après une partie (15 s, décidée par le serveur). */
+/** Ronde Poursuivre / Quitter après une partie (10 s, décidée par le serveur). */
 export interface SessionDecision {
   gameId: string;
   deadlineAt: string;
@@ -63,7 +63,12 @@ export interface SessionGameSummary {
   creatorId: string;
   firstPlayerId?: string;
   winnerId?: string;
-  endReason?: 'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK' | 'INSTANT_WIN_TIE' | 'ADMIN_STOP';
+  endReason?:
+    | 'INSTANT_WIN'
+    | 'CONTROL_AFTER_LAST_TRICK'
+    | 'OPPONENT_FLED'
+    | 'INSTANT_WIN_TIE'
+    | 'ADMIN_STOP';
   replayOfGameId?: string;
   maxPlayers: number;
   playerIds: string[];

@@ -9,6 +9,7 @@ import type {
   NewChatMessage,
   StoredChatMessage,
 } from './chat.repository';
+import { activeSanctionSql } from './user-sanctions.sql';
 
 interface MessageRow {
   id: string;
@@ -44,16 +45,32 @@ const MESSAGE_COLUMNS = `m.id, m.game_id, m.sender_id, u.username AS sender_disp
 export class PostgresChatRepository implements ChatRepository {
   constructor(private readonly db: SqlExecutor) {}
 
-  async findAccess(gameId: GameId, playerId: PlayerId): Promise<ChatAccess | null> {
-    const { rows } = await this.db.query<{ status: GameStatus; is_player: boolean }>(
+  async findAccess(gameId: GameId, playerId: PlayerId, now: Date): Promise<ChatAccess | null> {
+    const { rows } = await this.db.query<{
+      status: GameStatus;
+      is_player: boolean;
+      restricted: boolean;
+      restricted_until: Date | null;
+    }>(
       `SELECT g.status,
          EXISTS (SELECT 1 FROM game_players gp WHERE gp.game_id = g.id AND gp.player_id = $2)
-           AS is_player
+           AS is_player,
+         ${activeSanctionSql('$2', 'CHAT_RESTRICTION', '$3')} AS restricted,
+         (SELECT max(s.ends_at) FROM user_sanctions s
+           WHERE s.user_id = $2 AND s.kind = 'CHAT_RESTRICTION' AND s.lifted_at IS NULL
+             AND s.ends_at > $3) AS restricted_until
        FROM games g WHERE g.id = $1`,
-      [gameId, playerId],
+      [gameId, playerId, now.toISOString()],
     );
     const row = rows[0];
-    return row ? { status: row.status, isPlayer: row.is_player } : null;
+    if (!row) return null;
+    return {
+      status: row.status,
+      isPlayer: row.is_player,
+      chatRestriction: row.restricted
+        ? { endsAt: row.restricted_until ? new Date(row.restricted_until) : null }
+        : null,
+    };
   }
 
   async findByClientMessageId(
@@ -81,6 +98,7 @@ export class PostgresChatRepository implements ChatRepository {
          FROM games g
          JOIN game_players gp ON gp.game_id = g.id AND gp.player_id = $3
          WHERE g.id = $2 AND g.status <> 'finished'
+           AND NOT ${activeSanctionSql('gp.player_id', 'CHAT_RESTRICTION', '$6')}
          ON CONFLICT (game_id, sender_id, client_message_id) DO NOTHING
          RETURNING *
        )

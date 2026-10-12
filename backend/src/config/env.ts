@@ -1,6 +1,12 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import {
+  isDirectPayOperator,
+  OTP_REQUIRED_OPERATORS,
+  type DirectPayOperator,
+} from '../domain/payments/payment';
+
 export type NodeEnv = 'development' | 'test' | 'production';
 
 export interface Env {
@@ -25,6 +31,8 @@ export interface CinetPayEnv {
   apiKey: string;
   /** Mot de passe API v1. Jamais journalisé. */
   apiPassword: string;
+  /** Environnement déduit du préfixe de la clé : `test` (sandbox) ou `live` (fonds réels). */
+  environment: CinetPayEnvironment;
   /** https://api.cinetpay.net (sandbox) ou https://api.cinetpay.co (production). */
   baseUrl: string;
   /** URL publique de POST /api/payments/cinetpay/notify (≤ 120 caractères). */
@@ -34,6 +42,47 @@ export interface CinetPayEnv {
   /** Lien de retour dans l'application (défaut leter://payment/return). */
   appReturnUrl: string;
   timeoutMs: number;
+  /** Intervalle de la réconciliation automatique des paiements en attente (défaut 30 s). */
+  reconcileIntervalMs: number;
+  /**
+   * Opérateurs proposés en paiement DIRECT (sans redirection), `CINETPAY_DIRECT_PAY_METHODS`.
+   * Vide par défaut : le mode direct doit d'abord être activé sur le compte CinetPay. Seul
+   * MTN_CM est accepté (OM_CM exige un OTP, non collecté).
+   */
+  directPayMethods: DirectPayOperator[];
+  /**
+   * Opérateurs PRÉSÉLECTIONNÉS sur la page CinetPay hébergée (`payment_method` sans
+   * `direct_pay`), `CINETPAY_PAGE_PRESELECT_METHODS`. Vide par défaut : la page propose toutes
+   * les méthodes du pays activées sur le compte. N'activer un opérateur qu'après confirmation
+   * par CinetPay qu'il est accepté pour le compte (sinon la création serait refusée).
+   */
+  pagePreselectMethods: DirectPayOperator[];
+  /**
+   * Retraits par l'API de transfert CinetPay v1 (D-075). Absent tant que
+   * `CINETPAY_TRANSFERS_ENABLED` ne vaut pas `true` : le transfert doit être activé et
+   * approvisionné sur le compte marchand, ce que le serveur ne peut pas vérifier seul.
+   */
+  transfers?: CinetPayTransfersEnv;
+}
+
+export type CinetPayEnvironment = 'test' | 'live';
+
+export interface CinetPayTransfersEnv {
+  /** URL publique de POST /api/withdrawals/cinetpay/notify (≤ 120 caractères). */
+  notifyUrl: string;
+  /**
+   * `CINETPAY_TRANSFERS_LIVE_CONFIRMED=true` : l'exploitant atteste que les prérequis de
+   * production sont validés (transfert activé et approvisionné chez CinetPay, notification
+   * publique HTTPS testée, parcours validé en sandbox). Exigé en plus de
+   * `CINETPAY_TRANSFERS_ENABLED` avec une clé `sk_live_` ; sans effet en sandbox.
+   */
+  liveConfirmed: boolean;
+  /**
+   * Envois au plus par retrait (`CINETPAY_TRANSFER_MAX_SUBMISSIONS`, 1 à 3, défaut 1 = aucun
+   * renvoi automatique). Un renvoi réutilise la même référence marchande ; ne relever qu'après
+   * confirmation en sandbox de `NOT_FOUND` et `TRANSACTION_EXIST`.
+   */
+  maxSubmissions: number;
 }
 
 export interface AuthEnv {
@@ -142,7 +191,10 @@ export function readTrustProxy(value: string | undefined): number | string | und
   );
 }
 
-const CINETPAY_URLS = { test: 'https://api.cinetpay.net', live: 'https://api.cinetpay.co' };
+export const CINETPAY_URLS: Record<CinetPayEnvironment, string> = {
+  test: 'https://api.cinetpay.net',
+  live: 'https://api.cinetpay.co',
+};
 
 /**
  * Configuration CinetPay v1. Clé et mot de passe vont ensemble ; sans eux, CinetPay est
@@ -155,7 +207,7 @@ function readCinetPayEnv(source: NodeJS.ProcessEnv, nodeEnv: NodeEnv): CinetPayE
   if (!apiKey || !apiPassword) {
     throw new Error('CINETPAY_API_KEY et CINETPAY_API_PASSWORD doivent être définis ensemble');
   }
-  const environment = apiKey.startsWith('sk_live_')
+  const environment: CinetPayEnvironment | undefined = apiKey.startsWith('sk_live_')
     ? 'live'
     : apiKey.startsWith('sk_test_')
       ? 'test'
@@ -180,7 +232,105 @@ function readCinetPayEnv(source: NodeJS.ProcessEnv, nodeEnv: NodeEnv): CinetPayE
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
     throw new Error('CINETPAY_TIMEOUT_MS invalide : entier entre 1000 et 60000');
   }
-  return { apiKey, apiPassword, baseUrl, notifyUrl, returnUrl, appReturnUrl, timeoutMs };
+  const reconcileIntervalMs = Number(source.CINETPAY_RECONCILE_INTERVAL_MS?.trim() || 30_000);
+  if (
+    !Number.isInteger(reconcileIntervalMs) ||
+    reconcileIntervalMs < 5_000 ||
+    reconcileIntervalMs > 3_600_000
+  ) {
+    throw new Error('CINETPAY_RECONCILE_INTERVAL_MS invalide : entier entre 5000 et 3600000');
+  }
+  const transfers = readCinetPayTransfersEnv(source, publicProtocols);
+  const directPayMethods = readDirectPayMethods(source.CINETPAY_DIRECT_PAY_METHODS);
+  const pagePreselectMethods = readPagePreselectMethods(source.CINETPAY_PAGE_PRESELECT_METHODS);
+  return {
+    apiKey,
+    apiPassword,
+    environment,
+    baseUrl,
+    notifyUrl,
+    returnUrl,
+    appReturnUrl,
+    timeoutMs,
+    reconcileIntervalMs,
+    directPayMethods,
+    pagePreselectMethods,
+    ...(transfers && { transfers }),
+  };
+}
+
+/**
+ * `CINETPAY_DIRECT_PAY_METHODS` : opérateurs séparés par des virgules (ex. `MTN_CM`), vide par
+ * défaut (paiement direct désactivé). Un opérateur exigeant un OTP (OM_CM) est refusé : sa
+ * collecte n'est pas autorisée.
+ */
+/**
+ * `CINETPAY_PAGE_PRESELECT_METHODS` : opérateurs (MTN_CM, OM_CM) présélectionnés sur la page
+ * hébergée. Aucun OTP en jeu (le payeur saisit tout sur la page CinetPay) : OM_CM y est permis.
+ */
+export function readPagePreselectMethods(value: string | undefined): DirectPayOperator[] {
+  const methods: DirectPayOperator[] = [];
+  for (const item of (value ?? '')
+    .split(',')
+    .map((i) => i.trim().toUpperCase())
+    .filter(Boolean)) {
+    if (!isDirectPayOperator(item)) {
+      throw new Error(
+        'CINETPAY_PAGE_PRESELECT_METHODS invalide : opérateurs attendus parmi MTN_CM, OM_CM',
+      );
+    }
+    if (!methods.includes(item)) methods.push(item);
+  }
+  return methods;
+}
+
+export function readDirectPayMethods(value: string | undefined): DirectPayOperator[] {
+  const items = (value ?? '')
+    .split(',')
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  const methods: DirectPayOperator[] = [];
+  for (const item of items) {
+    if (!isDirectPayOperator(item)) {
+      throw new Error('CINETPAY_DIRECT_PAY_METHODS invalide : opérateurs attendus parmi MTN_CM');
+    }
+    if (OTP_REQUIRED_OPERATORS.includes(item)) {
+      throw new Error(
+        `CINETPAY_DIRECT_PAY_METHODS : ${item} exige un code OTP en paiement direct, non pris en charge`,
+      );
+    }
+    if (!methods.includes(item)) methods.push(item);
+  }
+  return methods;
+}
+
+/** `CINETPAY_TRANSFERS_ENABLED` : `true` ou `false` (défaut). Activé : URL de notification requise. */
+function readCinetPayTransfersEnv(
+  source: NodeJS.ProcessEnv,
+  publicProtocols: readonly string[],
+): CinetPayTransfersEnv | undefined {
+  const enabled = source.CINETPAY_TRANSFERS_ENABLED?.trim().toLowerCase() || 'false';
+  if (enabled !== 'true' && enabled !== 'false') {
+    throw new Error('CINETPAY_TRANSFERS_ENABLED invalide : true ou false attendu');
+  }
+  if (enabled === 'false') return undefined;
+  const notifyUrl = optionalUrl(
+    source.CINETPAY_TRANSFER_NOTIFY_URL,
+    'CINETPAY_TRANSFER_NOTIFY_URL',
+    publicProtocols,
+  );
+  if (!notifyUrl) {
+    throw new Error('CINETPAY_TRANSFER_NOTIFY_URL est requis avec CINETPAY_TRANSFERS_ENABLED=true');
+  }
+  const maxSubmissions = Number(source.CINETPAY_TRANSFER_MAX_SUBMISSIONS?.trim() || 1);
+  if (!Number.isInteger(maxSubmissions) || maxSubmissions < 1 || maxSubmissions > 3) {
+    throw new Error('CINETPAY_TRANSFER_MAX_SUBMISSIONS invalide : entier entre 1 et 3');
+  }
+  const liveConfirmed = source.CINETPAY_TRANSFERS_LIVE_CONFIRMED?.trim().toLowerCase() || 'false';
+  if (liveConfirmed !== 'true' && liveConfirmed !== 'false') {
+    throw new Error('CINETPAY_TRANSFERS_LIVE_CONFIRMED invalide : true ou false attendu');
+  }
+  return { notifyUrl, maxSubmissions, liveConfirmed: liveConfirmed === 'true' };
 }
 
 const DURATION_UNITS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86_400 };

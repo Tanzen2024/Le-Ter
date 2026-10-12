@@ -4,15 +4,19 @@ import {
   MobileMoneyUnavailableError,
 } from '../domain/wallet/wallet';
 import {
+  DirectPaymentUnavailableError,
   PaymentNotFoundError,
+  PaymentOperatorUnsupportedError,
   PaymentNotificationRejectedError,
   PaymentProfileIncompleteError,
   PaymentVerificationError,
 } from '../domain/payments/payment';
 import { CinetPayError } from '../services/payments/cinetpay/cinetpay-client';
+import { DepositOutcomeUnknownError } from '../services/wallet/mobile-money.gateway';
 import { STATUS_CODES } from 'node:http';
 
 import { toAdminApiError } from './admin-errors';
+import { toPlatformFinanceApiError } from './platform-finance-errors';
 import { toTournamentApiError } from './tournament-errors';
 
 import { InvalidCardError } from '../domain/cards/card';
@@ -24,9 +28,20 @@ import {
 import { GeolocationDisabledError } from '../domain/detection/geo';
 import { AccessForbiddenError } from './require-role';
 import {
+  WithdrawalAccountBlockedError,
+  WithdrawalLimitReachedError,
+  WithdrawalNotFoundError,
+  WithdrawalNotificationRejectedError,
+  WithdrawalPhoneUnsupportedError,
+  WithdrawalProviderUnavailableError,
+  WithdrawalRefundRefusedError,
+  WithdrawalVerificationError,
+} from '../domain/wallet/withdrawal';
+import {
   ChatClosedError,
   ChatMessageKeyReusedError,
   ChatRateLimitedError,
+  ChatRestrictedError,
 } from '../domain/chat/chat';
 import {
   CardNotInHandError,
@@ -57,6 +72,11 @@ import {
 import { InvalidGameIdError } from '../domain/game/game-id';
 import { UnresolvedRuleError } from '../domain/rules/unresolved-rule';
 import {
+  InsufficientBalanceForStakeError,
+  InvalidGameStakeError,
+  StakeNotCoveredAtStartError,
+} from '../domain/rules/stake';
+import {
   FirstPlayerUndeterminedError,
   InvalidSessionIdError,
   NoDecisionPendingError,
@@ -73,6 +93,7 @@ import {
 } from '../domain/sessions/session';
 import {
   AccountDisabledError,
+  AccountSuspendedError,
   AuthenticationRequiredError,
   CONFLICT_MESSAGES,
   CurrentPasswordIncorrectError,
@@ -99,6 +120,26 @@ export interface ApiError {
     details?: Record<string, unknown>;
   };
 }
+
+const DIRECT_PAYMENT_MESSAGES: Record<DirectPaymentUnavailableError['reason'], string> = {
+  METHOD_NOT_ENABLED:
+    'Le paiement direct n’est pas disponible pour cet opérateur. Payez par la page CinetPay.',
+  PHONE_UNSUPPORTED:
+    'Votre numéro d’inscription n’est pas un numéro Mobile Money camerounais (+237). Payez par la page CinetPay.',
+  PROVIDER_REFUSED:
+    'CinetPay a refusé le paiement direct : aucun montant n’a été débité. Payez par la page CinetPay.',
+};
+
+const REFUND_REFUSAL_MESSAGES: Record<WithdrawalRefundRefusedError['reason'], string> = {
+  NOT_OPEN: 'Ce retrait est déjà réglé : aucun remboursement manuel possible.',
+  TOO_RECENT: 'Remboursement manuel possible seulement 24 h après le dernier envoi au fournisseur.',
+  TRANSFER_EXISTS:
+    'CinetPay connaît ce transfert et il n’est pas finalisé : escaladez auprès du fournisseur.',
+  TRANSFER_SUCCEEDED: 'CinetPay confirme que ce transfert a réussi : aucun remboursement.',
+  PENDING_REQUEST_EXISTS: 'Une demande de remboursement est déjà en attente pour ce retrait.',
+  SAME_ADMIN: 'Un autre administrateur doit approuver cette demande (double validation).',
+  REQUEST_NOT_PENDING: 'Cette demande a déjà été traitée.',
+};
 
 function apiError(
   status: number,
@@ -130,6 +171,23 @@ const RULE_VIOLATIONS: readonly [abstract new (...args: never[]) => Error, strin
   ],
 ];
 
+/**
+ * Connexion à PostgreSQL perdue ou impossible (D-091) : codes réseau Node et classes SQLSTATE
+ * « connexion » (08xxx), « opérateur » (57P01-57P03), « trop de connexions » (53300), et messages
+ * du pilote `pg` (« Connection terminated… »). Jamais une erreur de requête ou de contrainte.
+ */
+export function isDatabaseUnavailable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string') {
+    if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', '53300'].includes(code)) return true;
+    if (/^08/.test(code) || /^57P0[123]$/.test(code)) return true;
+  }
+  return /Connection terminated|connection timeout|timeout exceeded when trying to connect|Client has encountered a connection error/i.test(
+    err.message,
+  );
+}
+
 export function toApiError(err: unknown): ApiError | undefined {
   // --- Tournois (D-051, D-054) --------------------------------------------------
   const tournamentError = toTournamentApiError(err);
@@ -140,6 +198,11 @@ export function toApiError(err: unknown): ApiError | undefined {
   const adminError = toAdminApiError(err);
   if (adminError) {
     return adminError;
+  }
+  // --- Retraits des revenus de la plateforme (D-078) -------------------------------
+  const platformFinanceError = toPlatformFinanceApiError(err);
+  if (platformFinanceError) {
+    return platformFinanceError;
   }
   // --- Détection : géolocalisation (D-046) -------------------------------------
   // --- Administration de la détection (D-049) -----------------------------------
@@ -177,10 +240,42 @@ export function toApiError(err: unknown): ApiError | undefined {
       'Cette clé d’envoi a déjà servi pour un autre message.',
     );
   }
+  if (err instanceof ChatRestrictedError) {
+    return apiError(
+      403,
+      'CHAT_RESTRICTED',
+      err.endsAt
+        ? 'Votre accès au chat est restreint temporairement.'
+        : 'Votre accès au chat est restreint.',
+      { details: { restrictedUntil: err.endsAt ? err.endsAt.toISOString() : null } },
+    );
+  }
   if (err instanceof ChatRateLimitedError) {
     return apiError(429, 'RATE_LIMITED', 'Trop de messages. Patientez quelques secondes.', {
       details: { retryAfterMs: err.retryAfterMs },
     });
+  }
+
+  // --- Mise des parties ordinaires (D-073) ------------------------------------
+  if (err instanceof InvalidGameStakeError) {
+    return apiError(400, 'STAKE_INVALID', 'La mise doit être supérieure à zéro.');
+  }
+  if (err instanceof InsufficientBalanceForStakeError) {
+    return apiError(
+      409,
+      'INSUFFICIENT_BALANCE_FOR_STAKE',
+      `Vous devez disposer d'au moins ${err.required} jetons pour jouer avec une mise de ${err.stake} jetons.`,
+      { details: { stake: err.stake, requiredBalance: err.required } },
+    );
+  }
+  // D-074 : séquestre des mises au démarrage. Le joueur concerné n'est pas désigné.
+  if (err instanceof StakeNotCoveredAtStartError) {
+    return apiError(
+      409,
+      'STAKE_NOT_COVERED',
+      "Un joueur de la table ne dispose plus du solde requis pour cette mise : la partie n'a pas démarré.",
+      { details: { stake: err.stake, requiredBalance: err.required } },
+    );
   }
 
   // --- Compte de jeu (D-040) --------------------------------------------------
@@ -202,6 +297,55 @@ export function toApiError(err: unknown): ApiError | undefined {
     );
   }
 
+  // --- Retraits Mobile Money (D-075) -------------------------------------------
+  if (err instanceof WithdrawalLimitReachedError) {
+    return apiError(
+      429,
+      'WITHDRAWAL_LIMIT_REACHED',
+      'Vous avez atteint le nombre maximal de retraits pour la période en cours.',
+      {
+        details: {
+          maxWithdrawals: err.limit.count,
+          periodMinutes: err.limit.periodMinutes,
+          used: err.used,
+        },
+      },
+    );
+  }
+  if (err instanceof WithdrawalPhoneUnsupportedError) {
+    return apiError(
+      422,
+      'WITHDRAWAL_PHONE_UNSUPPORTED',
+      'Votre numéro d’inscription n’est pas un numéro Mobile Money pris en charge pour le retrait (Cameroun, +237).',
+    );
+  }
+  if (err instanceof WithdrawalAccountBlockedError) {
+    return apiError(403, 'WITHDRAWAL_NOT_ALLOWED', 'Ce compte ne peut pas effectuer de retrait.');
+  }
+  // Retrait d'un autre joueur ou inconnu : même réponse (aucune fuite d'existence).
+  if (err instanceof WithdrawalNotFoundError) {
+    return apiError(404, 'WITHDRAWAL_NOT_FOUND', 'Retrait introuvable.');
+  }
+  if (err instanceof WithdrawalNotificationRejectedError) {
+    return apiError(401, 'NOTIFICATION_REJECTED', 'Notification refusée.');
+  }
+  if (err instanceof WithdrawalVerificationError) {
+    return apiError(409, 'WITHDRAWAL_VERIFICATION_FAILED', 'Le retrait n’a pas pu être vérifié.');
+  }
+  // Rapprochement (D-076) : la preuve exigée pour un remboursement manuel n'est pas réunie.
+  if (err instanceof WithdrawalRefundRefusedError) {
+    return apiError(409, 'WITHDRAWAL_REFUND_REFUSED', REFUND_REFUSAL_MESSAGES[err.reason], {
+      details: { reason: err.reason },
+    });
+  }
+  if (err instanceof WithdrawalProviderUnavailableError) {
+    return apiError(
+      503,
+      'WITHDRAWAL_PROVIDER_UNAVAILABLE',
+      'Le statut du transfert ne peut pas être relu chez CinetPay : aucune décision n’est possible.',
+    );
+  }
+
   // --- Paiements CinetPay (D-050) -----------------------------------------------
   // Paiement d'un autre joueur ou inconnu : même réponse (aucune fuite d'existence).
   if (err instanceof PaymentNotFoundError) {
@@ -209,16 +353,43 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   // Prénom ou nom d'une lettre : refus clair, rien n'est créé (aucune modification du compte).
   if (err instanceof PaymentProfileIncompleteError) {
-    const message = 'Doit contenir au moins 2 caractères pour un paiement CinetPay.';
+    const nameMessage = 'Doit contenir au moins 2 caractères pour un paiement CinetPay.';
+    const phoneMessage =
+      'Numéro d’inscription au format international attendu (ex. +237692130271).';
+    const phoneOnly = err.fields.length === 1 && err.fields[0] === 'phone';
     return apiError(
       422,
       'PAYMENT_PROFILE_INCOMPLETE',
-      'Votre prénom et votre nom doivent contenir au moins 2 caractères pour payer par CinetPay. Contactez l’assistance pour mettre à jour votre profil.',
-      { fields: Object.fromEntries(err.fields.map((field) => [field, message])) },
+      phoneOnly
+        ? 'Le numéro de téléphone de votre compte ne peut pas être transmis à CinetPay. Contactez l’assistance pour le mettre à jour.'
+        : 'Votre prénom et votre nom doivent contenir au moins 2 caractères pour payer par CinetPay. Contactez l’assistance pour mettre à jour votre profil.',
+      {
+        fields: Object.fromEntries(
+          err.fields.map((field) => [field, field === 'phone' ? phoneMessage : nameMessage]),
+        ),
+      },
     );
   }
   if (err instanceof PaymentNotificationRejectedError) {
     return apiError(401, 'NOTIFICATION_REJECTED', 'Notification refusée.');
+  }
+  // Numéro d'inscription hors MTN / Orange Money Cameroun (D-090) : aucun paiement possible.
+  if (err instanceof PaymentOperatorUnsupportedError) {
+    return apiError(
+      409,
+      'PAYMENT_OPERATOR_UNSUPPORTED',
+      'Le numéro de votre compte n’est pas un numéro MTN Mobile Money ou Orange Money du Cameroun. Contactez l’assistance pour le mettre à jour.',
+    );
+  }
+  // Paiement direct (D-083) : opérateur non activé, numéro hors Cameroun ou refus de CinetPay.
+  // Rien n'est crédité ; l'application propose la page de paiement CinetPay.
+  if (err instanceof DirectPaymentUnavailableError) {
+    return apiError(
+      409,
+      'DIRECT_PAYMENT_UNAVAILABLE',
+      DIRECT_PAYMENT_MESSAGES[err.reason],
+      { details: { reason: err.reason } },
+    );
   }
   if (err instanceof PaymentVerificationError) {
     return apiError(409, 'PAYMENT_VERIFICATION_FAILED', 'Le paiement n’a pas pu être vérifié.');
@@ -252,6 +423,11 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   if (err instanceof AccountDisabledError) {
     return apiError(403, 'ACCOUNT_DISABLED', err.message);
+  }
+  if (err instanceof AccountSuspendedError) {
+    return apiError(403, 'ACCOUNT_SUSPENDED', err.message, {
+      details: { suspendedUntil: err.endsAt ? err.endsAt.toISOString() : null },
+    });
   }
   if (err instanceof RegistrationConflictError) {
     const fields = Object.fromEntries(err.fields.map((f) => [f, CONFLICT_MESSAGES[f]]));
@@ -405,6 +581,22 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   if (err instanceof InvalidCardError) {
     return apiError(422, 'INVALID_CARD', 'Carte inconnue.');
+  }
+  // Recharge dont l'issue est inconnue (D-091) : ne pas affirmer qu'aucun montant n'a été débité.
+  if (err instanceof DepositOutcomeUnknownError) {
+    return apiError(
+      503,
+      'PAYMENT_VERIFICATION_PENDING',
+      'Vérification du paiement en cours. Ne relancez pas tout de suite : votre solde sera mis à jour automatiquement si le paiement aboutit.',
+    );
+  }
+  // Base de données momentanément injoignable (veille du poste, redémarrage de PostgreSQL…).
+  if (isDatabaseUnavailable(err)) {
+    return apiError(
+      503,
+      'SERVICE_TEMPORARILY_UNAVAILABLE',
+      'Service momentanément indisponible. Réessayez dans quelques instants.',
+    );
   }
   // Règle métier non tranchée (docs/TODO.md) : le serveur refuse plutôt que de deviner.
   if (err instanceof UnresolvedRuleError) {

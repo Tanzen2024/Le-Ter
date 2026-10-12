@@ -55,12 +55,17 @@ export type InstantWinCombination =
   | 'THREE_AND_TWO'
   | 'THREE_THREES';
 
+/** `OPPONENT_FLED` : partie à 2, l'adversaire s'est couché, victoire simple (D-086). */
 export type GameEndReason =
-  'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK' | 'INSTANT_WIN_TIE' | 'ADMIN_STOP';
+  | 'INSTANT_WIN'
+  | 'CONTROL_AFTER_LAST_TRICK'
+  | 'OPPONENT_FLED'
+  | 'INSTANT_WIN_TIE'
+  | 'ADMIN_STOP';
 
 export interface GameResult {
   winnerId: string;
-  method: 'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK';
+  method: 'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK' | 'OPPONENT_FLED';
   /** Victoire instantanée : rang retenu (1 = le plus fort) et combinaison. */
   instantWinRank?: number;
   instantWinCombination?: InstantWinCombination;
@@ -120,6 +125,11 @@ export interface GameView {
     canDeclareInstantWin: boolean;
   };
   viewerId: string;
+  /**
+   * MON bilan financier une fois la partie terminée et réglée (D-074) : variation nette
+   * enregistrée par le serveur. Absent pour une table de tournoi ou une partie sans mise.
+   */
+  mySettlement?: { delta: number };
   /** Heure du serveur à la réponse : aligne le compte à rebours sur son horloge. */
   serverNow?: string;
 }

@@ -18,7 +18,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Field, Input } from '@/components/ui/form-controls';
 import { detectionSettingQuery, setDetection } from '@/features/anti-collusion/api';
+import { GameCommissionCard } from '@/features/settings/game-commission-card';
 import { tournamentSettingsQuery } from '@/features/tournaments/api';
+import { WithdrawalLimitCard } from '@/features/withdrawals/withdrawal-limit-card';
+import { WithdrawalServiceStatus } from '@/features/withdrawals/withdrawal-service-status';
 import { api } from '@/lib/api/client';
 import { ApiError } from '@/lib/api/errors';
 import { formatDateTime } from '@/lib/format';
@@ -305,6 +308,10 @@ function SystemCard() {
                   </Badge>
                 ),
               ],
+              [
+                'Retraits Mobile Money',
+                <WithdrawalServiceStatus key="w" state={s.services.withdrawals} />,
+              ],
               ['Environnement', s.environment],
               ['Heure du serveur', formatDateTime(s.serverTime)],
               ['Fuseau d’affichage', s.timezone],
@@ -332,7 +339,9 @@ export function SettingsView() {
           <SystemCard />
           <DetectionCard />
         </div>
+        <GameCommissionCard />
         <TournamentSettingsCard />
+        <WithdrawalLimitCard />
         <Card>
           <CardHeader title="Autres paramètres" />
           <CardBody className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -355,7 +364,8 @@ export function SettingsView() {
         </Card>
         <InfoNote>
           Modifier un paramètre ne perturbe jamais un tournoi en cours ni une partie : les tournois
-          publiés conservent les valeurs copiées à leur publication.
+          publiés conservent les valeurs copiées à leur publication, et chaque partie garde le taux
+          de commission figé à son démarrage.
         </InfoNote>
       </div>
     </>

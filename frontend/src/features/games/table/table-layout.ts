@@ -47,7 +47,7 @@ export interface GameTableLayout {
   diameter: number;
   plateWidth: number;
   plateHeight: number;
-  /** Cartes de MA main, légèrement chevauchées (pas = `handStep`). */
+  /** Cartes de MA main, nettement chevauchées comme sur la référence (pas = `handStep`). */
   cardWidth: number;
   cardHeight: number;
   handStep: number;
@@ -71,8 +71,46 @@ export interface GameTableLayout {
     /** Haut du bloc : aucun élément de siège ne descend plus bas sur la gauche. */
     top: number;
   };
-  /** Bas droit : boutons d'action ponctuels (Se coucher, Gagner). */
-  action: { size: number; top: number };
+  /**
+   * Bas droit : boutons ronds « Main spéciale » et « Se coucher », côte à côte. `size` :
+   * diamètre d'un bouton ; `width` : largeur de la rangée des deux boutons.
+   */
+  action: { size: number; width: number; top: number };
+  /**
+   * Les cercles du centre de la table : anneau gravé (monogramme) et zone de dépôt, qui
+   * occupe l'intérieur de l'anneau (aucun cercle supplémentaire visible au repos).
+   */
+  center: { ring: number; ringBorder: number; drop: number };
+  /**
+   * Contrôles des coins hauts : quitter et réglages (gauche), solde et chat (droite), en
+   * colonne. Aucun élément de siège n'y est posé.
+   */
+  corners: { left: Rect; right: Rect };
+}
+
+export interface Rect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export const overlaps = (a: Rect, b: Rect) =>
+  a.left < b.left + b.width &&
+  b.left < a.left + a.width &&
+  a.top < b.top + b.height &&
+  b.top < a.top + a.height;
+
+/**
+ * Demi-largeur de la table ronde sur la bande horizontale [y1, y2] : ce qu'il faut laisser
+ * libre de part et d'autre du centre pour qu'une rangée posée dans cette bande ne mord pas
+ * sur le bois.
+ */
+export function tableHalfWidthOver(y1: number, y2: number, L: Pick<GameTableLayout, 'cy' | 'diameter'>) {
+  const r = L.diameter / 2;
+  if (y1 <= L.cy && y2 >= L.cy) return r;
+  const d = Math.min(Math.abs(y1 - L.cy), Math.abs(y2 - L.cy));
+  return d >= r ? 0 : Math.sqrt(r * r - d * d);
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -80,12 +118,51 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 /** Longueur du libellé le plus long du compteur : « Tour 5/5 ». */
 const LABEL_CHARS = 8;
 
+/**
+ * Proportions des cercles de la table de référence (capture 1280 × 561 : table de 407 px de
+ * diamètre, anneau gravé de 219 px au trait de 18 px), rapportées à la hauteur de l'écran et
+ * au diamètre de la table : elles restent les mêmes sur tous les smartphones.
+ */
+export const TABLE_REFERENCE = {
+  /** Diamètre de la table / hauteur de l'écran. */
+  diameterToHeight: 0.725,
+  /** Diamètre extérieur de l'anneau gravé / diamètre de la table. */
+  ring: 0.54,
+  /** Épaisseur du trait de l'anneau / diamètre de la table. */
+  ringBorder: 0.044,
+  /** Pas de la main chevauchée, en largeur de carte. */
+  handStep: 0.48,
+} as const;
+
+export function centerCircles(diameter: number): { ring: number; ringBorder: number; drop: number } {
+  const ring = Math.round(diameter * TABLE_REFERENCE.ring);
+  const ringBorder = Math.max(3, Math.round(diameter * TABLE_REFERENCE.ringBorder));
+  // La zone de dépôt est l'intérieur de l'anneau gravé.
+  return { ring, ringBorder, drop: ring - ringBorder * 2 };
+}
+
 /** Cartes distribuées à chaque joueur (D-032). */
 export const MAX_HAND_CARDS = 5;
 
+/** Pas maximal de la main : avec peu de cartes, chacune reste nettement visible. */
+export const HAND_MAX_STEP = 0.78;
+
+/**
+ * Pas de la main selon son nombre de cartes : 5 cartes gardent le pas de la référence
+ * (`handStep`) ; avec moins de cartes, le pas s'élargit dans le même emplacement (jusqu'à
+ * `HAND_MAX_STEP` de la largeur), la main restant centrée. Le coin de chaque carte
+ * (valeur, famille) reste toujours visible.
+ */
+export function handStepFor(count: number, L: Pick<GameTableLayout, 'cardWidth' | 'handStep' | 'handSlotWidth'>) {
+  if (count <= 1) return L.handStep;
+  // Arrondi vers le bas : la main ne déborde jamais de son emplacement, même d'un pixel.
+  const fill = Math.floor((L.handSlotWidth - L.cardWidth) / (count - 1));
+  return Math.min(Math.round(L.cardWidth * HAND_MAX_STEP), Math.max(L.handStep, fill));
+}
+
 /** Largeur d'une main de `count` cartes chevauchées. */
 export const handWidthOf = (count: number, L: GameTableLayout) =>
-  count > 0 ? L.cardWidth + (count - 1) * L.handStep : 0;
+  count > 0 ? L.cardWidth + (count - 1) * handStepFor(count, L) : 0;
 
 /**
  * Disposition de la table de référence (paysage) : table ronde au centre, adversaires autour
@@ -104,7 +181,7 @@ export function computeGameTableLayout(
   const plateHeight = Math.round(clamp(height * 0.095, 32, 46));
   const cardWidth = Math.round(clamp(height * 0.17, 48, 92));
   const cardHeight = Math.round(cardWidth * CARD_RATIO);
-  const handStep = Math.round(cardWidth * 0.8);
+  const handStep = Math.round(cardWidth * TABLE_REFERENCE.handStep);
   const smallCard = Math.round(clamp(height * 0.085, 24, 48));
   const control = Math.round(clamp(height * 0.11, 44, 52));
 
@@ -116,22 +193,30 @@ export function computeGameTableLayout(
   // signe) tienne en entier avec ses marges : jamais de texte tronqué.
   const labelWidth = Math.ceil(labelFontSize * 0.62 * LABEL_CHARS + labelHeight * 0.8 + 2);
   const columnWidth = Math.max(Math.round(ring * 1.12), labelWidth);
-  // Bas droit : bouton carré « Se coucher » (et « Gagner » au-dessus si autorisé).
-  const actionSize = Math.round(clamp(height * 0.19, 56, 92));
+  // Bas droit : deux boutons ronds côte à côte (« Main spéciale », « Se coucher »).
+  const actionSize = Math.round(clamp(height * 0.18, 60, 92));
+  const actionWidth = actionSize * 2 + Math.round(gap * 0.6);
 
   // La plaque du haut mord sur le bord de la table, ses dos de carte au-dessus d'elle.
   const top = options.topSeat
     ? safe.top + smallCard * CARD_RATIO + 2 + plateHeight * 0.3
     : safe.top + plateHeight * 0.5;
-  const bottom = safe.bottom + cardHeight * 0.8;
+  // Table de la référence : 72,5 % de la hauteur ; la main du bas la chevauche, comme sur
+  // la capture, sans jamais la faire sortir de l'écran.
+  const bottom = safe.bottom + height * 0.06;
   const diameter = Math.round(
-    Math.min(height - top - bottom, (width - safe.left - safe.right) * 0.42, 760),
+    Math.min(
+      height * TABLE_REFERENCE.diameterToHeight,
+      height - top - bottom,
+      (width - safe.left - safe.right) * 0.42,
+      760,
+    ),
   );
   const cx = width / 2;
   const cy = top + diameter / 2;
 
   const handSlotWidth = cardWidth + (MAX_HAND_CARDS - 1) * handStep;
-  const rightLimit = width - safe.right - actionSize - gap;
+  const rightLimit = width - safe.right - actionWidth - gap;
   const localPlateLeft = Math.min(cx + handSlotWidth / 2 + gap, rightLimit - plateWidth);
   const handLeft = Math.min(cx - handSlotWidth / 2, localPlateLeft - gap - handSlotWidth);
 
@@ -182,7 +267,24 @@ export function computeGameTableLayout(
     },
     action: {
       size: actionSize,
-      top: height - safe.bottom - actionSize * 2 - gap,
+      width: actionWidth,
+      top: height - safe.bottom - actionSize - gap * 0.5,
+    },
+    center: centerCircles(diameter),
+    corners: {
+      left: {
+        left: safe.left,
+        top: safe.top,
+        width: control,
+        height: control * 2 + gap,
+      },
+      // Solde (pastille de largeur variable, au plus ≈ 2,6 boutons) puis chat dessous.
+      right: {
+        left: width - safe.right - control * 2.6,
+        top: safe.top,
+        width: control * 2.6,
+        height: control * 2 + gap,
+      },
     },
   };
 }

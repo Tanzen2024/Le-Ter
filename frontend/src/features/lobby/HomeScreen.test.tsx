@@ -15,7 +15,11 @@ import {
 import { HomeScreen } from './HomeScreen';
 
 jest.mock('../../services/tournaments-api', () => ({
-  tournamentsApi: { list: jest.fn() },
+  tournamentsApi: {
+    list: jest.fn(),
+    notifications: jest.fn().mockResolvedValue({ notifications: [], unread: 0 }),
+    markNotificationRead: jest.fn().mockResolvedValue({ read: true }),
+  },
 }));
 jest.mock('expo-router', () => {
   const { useEffect } = jest.requireActual('react');
@@ -45,7 +49,11 @@ const view = (overrides: Partial<TournamentView> = {}): TournamentView =>
     ...overrides,
   });
 const serve = (tournaments: TournamentView[]) =>
-  api.list.mockResolvedValue({ tournaments, history: [], serverNow: local(16) });
+  api.list.mockResolvedValue({
+    tournaments,
+    history: [],
+    serverNow: local(16),
+  });
 
 const clients: QueryClient[] = [];
 async function renderHome() {
@@ -73,7 +81,9 @@ describe('accueil : panneau Tournois (D-059, D-065)', () => {
   it('« + Proposer un tournoi » présent une seule fois (Tournois), ouvre le parcours existant', async () => {
     serve([]);
     await renderHome();
-    const buttons = screen.getAllByRole('button', { name: 'Proposer un tournoi' });
+    const buttons = screen.getAllByRole('button', {
+      name: 'Proposer un tournoi',
+    });
     expect(buttons).toHaveLength(1);
     expect(screen.getByText('+')).toBeTruthy();
     await fireEvent.press(buttons[0]!);
@@ -152,5 +162,47 @@ describe('accueil : panneau Tournois (D-059, D-065)', () => {
     await waitFor(() => expect(api.list).toHaveBeenCalled());
     expect(screen.queryByTestId('home-tournament-summary')).toBeNull();
     expect(screen.getByRole('button', { name: 'Proposer un tournoi' })).toBeTruthy();
+  });
+});
+
+describe('accueil : avertissement de l’administration (D-079)', () => {
+  it('affiche le message non lu tel quel, « J’ai compris » le marque lu', async () => {
+    serve([]);
+    api.notifications.mockResolvedValue({
+      notifications: [
+        {
+          id: 'n-1',
+          type: 'MODERATION_WARNING',
+          payload: { message: 'Merci de rester courtois <b>dans le chat</b>.' },
+          createdAt: local(15),
+        },
+      ],
+      unread: 1,
+    });
+    await renderHome();
+    expect(await screen.findByText('Merci de rester courtois <b>dans le chat</b>.')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'J’ai compris' }));
+    await waitFor(() =>
+      expect(api.markNotificationRead).toHaveBeenCalledWith(expect.anything(), 'n-1'),
+    );
+  });
+
+  it('avertissement déjà lu : rien n’est affiché', async () => {
+    serve([]);
+    api.notifications.mockResolvedValue({
+      notifications: [
+        {
+          id: 'n-2',
+          type: 'MODERATION_WARNING',
+          payload: { message: 'Ancien avertissement' },
+          createdAt: local(15),
+          readAt: local(15, 30),
+        },
+      ],
+      unread: 0,
+    });
+    await renderHome();
+    await waitFor(() => expect(api.notifications).toHaveBeenCalled());
+    expect(screen.queryByText('Ancien avertissement')).toBeNull();
   });
 });

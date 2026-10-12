@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -22,7 +23,6 @@ import {
   useMarkNotificationRead,
   useNotifications,
   useRegisterTournament,
-  useUnregisterTournament,
 } from './hooks';
 import {
   formatDuration,
@@ -51,14 +51,32 @@ const NOTICES_SHOWN = 3;
 const FULL = 'TOURNAMENT_FULL';
 /** Départ refusé : la partie de la table a démarré (D-037) ; le joueur y est attendu. */
 const IN_ACTIVE_GAME = 'PLAYER_IN_ACTIVE_GAME';
+/**
+ * Refus définitifs de l'inscription : réessayer n'aurait pas de sens. Le dialogue se ferme et
+ * la fiche affiche l'état relu sur le serveur (complet, fermé, déjà inscrit…). Tout autre
+ * échec (réseau, solde) laisse le dialogue ouvert : « Confirmer l'inscription » réessaie.
+ */
+const FINAL_REGISTRATION_ERRORS = [
+  FULL,
+  'ALREADY_REGISTERED',
+  'REGISTRATION_CLOSED',
+  'TOURNAMENT_STARTED',
+  'TOURNAMENT_CANCELLED',
+];
 
 type PanelState = Exclude<TournamentWidgetState, 'NO_TOURNAMENT'>;
 
 /**
  * Fiche d'un tournoi (D-054, D-065) : date, horaires, statut, participation, inscrits, rangs
  * récompensés, état de MON inscription, et les actions que le SERVEUR autorise (s'inscrire,
- * se désinscrire, rejoindre). Aucune règle n'est décidée ici : chaque action est revérifiée
- * par le serveur (inscription, éligibilité, seuil de jetons, table attribuée).
+ * rejoindre). Aucune règle n'est décidée ici : chaque action est revérifiée par le serveur
+ * (inscription, éligibilité, seuil de jetons, table attribuée).
+ *
+ * « S'inscrire » ouvre d'abord un dialogue de confirmation (nom, prix d'entrée, jetons
+ * requis) : aucune requête avant « Confirmer l'inscription », une seule ensuite (bouton bloqué
+ * pendant le traitement). Inscrit : « Vous êtes inscrit à ce tournoi », dérivé de
+ * `registration` renvoyé par le serveur, donc restauré après navigation ou reconnexion. La
+ * désinscription n'est plus proposée au joueur ; la route du serveur reste en place.
  *
  * Rejoindre ouvre la recherche de table (« Recherche d'une partie en cours… ») tant que la
  * requête est en cours, puis l'écran de jeu de la table attribuée par le serveur.
@@ -79,8 +97,10 @@ export function TournamentDetailPanel({
   const t = useTournamentMessages();
   const fonts = useTableFonts();
   const register = useRegisterTournament();
-  const unregister = useUnregisterTournament();
   const cancelRequested = useRef(false);
+  const [confirming, setConfirming] = useState(false);
+  /** Verrou synchrone : deux appuis rapprochés ne déclenchent qu'une demande. */
+  const submitting = useRef(false);
   const join = useJoinTournament({ cancelled: () => cancelRequested.current });
   const leave = useLeaveSession();
   const [cancelling, setCancelling] = useState(false);
@@ -89,8 +109,7 @@ export function TournamentDetailPanel({
   const state = tournamentWidgetState(tournament, {
     justRegistered,
   }) as PanelState;
-  const actionError = register.error ?? unregister.error;
-  const error = toDisplayError(actionError);
+  const error = toDisplayError(register.error);
   const period = formatTournamentPeriod(tournament, t.locale);
   const small = [styles.meta, fontOf(fonts.button), { fontSize: m.smallSize }];
   const body = [
@@ -99,7 +118,7 @@ export function TournamentDetailPanel({
     { fontSize: m.bodySize, lineHeight: Math.round(m.bodySize * 1.45) },
   ];
   const noteSize = m.smallSize + 1;
-  const busy = register.isPending || unregister.isPending;
+  const busy = register.isPending;
   const joinable = state === 'IN_PROGRESS' && tournament.canJoin;
   /** Espace entre les groupes (en-tête, informations, inscription, frais, action). */
   const sectionGap = Math.round(m.gap * 1.2);
@@ -174,6 +193,35 @@ export function TournamentDetailPanel({
   }
 
   const canRegisterNow = state === 'UPCOMING' && tournament.canRegister;
+  /** Une seule requête par confirmation : ignorée tant que la précédente est en cours. */
+  const confirmRegistration = () => {
+    if (submitting.current || register.isPending) return;
+    submitting.current = true;
+    register.mutate(tournament.tournamentId, {
+      onSettled: () => {
+        submitting.current = false;
+      },
+      onSuccess: () => {
+        setConfirming(false);
+        setJustRegistered(true);
+      },
+      onError: (err) => {
+        if (err instanceof ApiError && FINAL_REGISTRATION_ERRORS.includes(err.code ?? '')) {
+          setConfirming(false);
+        }
+      },
+    });
+  };
+  const closeConfirm = () => {
+    if (submitting.current || register.isPending) return;
+    setConfirming(false);
+    register.reset();
+  };
+  /** Échec à réessayer : affiché DANS le dialogue (les refus définitifs restent sur la fiche). */
+  const dialogError =
+    confirming && error && !FINAL_REGISTRATION_ERRORS.includes(error.code ?? '')
+      ? error
+      : undefined;
   const errorNotice =
     error?.code === FULL ? (
       // Capacité atteinte : information conviviale, pas une alerte (D-057).
@@ -218,7 +266,10 @@ export function TournamentDetailPanel({
         <View
           style={[
             styles.reservation,
-            { paddingVertical: m.gap, paddingHorizontal: Math.round(m.gap * 1.4) },
+            {
+              paddingVertical: m.gap,
+              paddingHorizontal: Math.round(m.gap * 1.4),
+            },
           ]}
         >
           <Text
@@ -233,38 +284,29 @@ export function TournamentDetailPanel({
         </View>
       ) : null}
       {/* Échec d'inscription : juste au-dessus du bouton, visible sans défiler. */}
-      {canRegisterNow ? errorNotice : null}
+      {canRegisterNow && !dialogError ? errorNotice : null}
       {canRegisterNow && (
         <PillButton
           style={{ marginTop: Math.round(m.gap * 0.4) }}
           title={t.register}
-          onPress={() =>
-            register.mutate(tournament.tournamentId, {
-              onSuccess: () => setJustRegistered(true),
-            })
-          }
+          onPress={() => {
+            register.reset();
+            setConfirming(true);
+          }}
           loading={busy}
           height={Math.max(44, m.controlHeight)}
           fontSize={m.bodySize + 2}
           fontFamily={fonts.button}
         />
       )}
-      {(state === 'WAITING' || state === 'REGISTERED') && tournament.canUnregister && (
-        <Pressable
-          accessibilityRole="button"
-          disabled={busy}
-          onPress={() =>
-            unregister.mutate(tournament.tournamentId, {
-              onSuccess: () => setJustRegistered(false),
-            })
-          }
-          style={styles.linkButton}
-        >
-          <Text style={[styles.link, fontOf(fonts.button), { fontSize: m.smallSize }]}>
-            {t.unregister}
-          </Text>
-        </Pressable>
-      )}
+      <RegistrationConfirmDialog
+        visible={confirming && canRegisterNow}
+        tournament={tournament}
+        pending={register.isPending}
+        error={dialogError}
+        onCancel={closeConfirm}
+        onConfirm={confirmRegistration}
+      />
       {joinable && (
         <PillButton
           title={t.join}
@@ -490,11 +532,16 @@ function tournamentDetails({
     case 'WAITING':
       return (
         <>
-          {state === 'REGISTERED' && <Text style={textStyle}>{t.registeredNow}</Text>}
+          <RegisteredBadge />
+          {state === 'REGISTERED' && (
+            <Text accessibilityLiveRegion="polite" style={textStyle}>
+              {t.registeredNow}
+            </Text>
+          )}
           <Text style={textStyle}>
-            {`${t.registered} · ${t.reserved(
+            {t.reserved(
               formatFcfa(tournament.registration?.reservation?.amount ?? tournament.entryFee),
-            )}`}
+            )}
           </Text>
           <Text style={textStyle}>{t.waiting}</Text>
           <StartCountdown tournament={tournament} receivedAt={receivedAt} style={textStyle} />
@@ -544,6 +591,155 @@ function tournamentDetails({
   }
 }
 
+/**
+ * État « inscrit » : icône de validation et texte, sans action (la désinscription n'est plus
+ * proposée au joueur). Affiché seulement quand le SERVEUR renvoie une inscription.
+ */
+function RegisteredBadge() {
+  const m = useLobbyMetrics();
+  const t = useTournamentMessages();
+  const fonts = useTableFonts();
+  const icon = Math.round(m.bodySize * 1.6);
+  return (
+    <View
+      testID="tournament-registered"
+      accessible
+      accessibilityLabel={t.registeredState}
+      style={[
+        styles.registered,
+        { gap: Math.round(m.gap * 0.6), padding: Math.round(m.gap * 0.7) },
+      ]}
+    >
+      <View
+        importantForAccessibility="no"
+        style={[styles.registeredIcon, { width: icon, height: icon, borderRadius: icon / 2 }]}
+      >
+        <Text style={[styles.registeredCheck, { fontSize: Math.round(icon * 0.6) }]}>✓</Text>
+      </View>
+      <Text style={[styles.registeredText, fontOf(fonts.button), { fontSize: m.bodySize + 1 }]}>
+        {t.registeredState}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Confirmation avant l'inscription (même fenêtre que les sélecteurs : fond assombri, carte
+ * sombre ; `supportedOrientations` : l'application est en paysage). Annuler ne déclenche
+ * rien ; confirmer appelle `onConfirm`, bloqué avec un indicateur pendant le traitement. Les
+ * montants affichés sont ceux renvoyés par le serveur.
+ */
+function RegistrationConfirmDialog({
+  visible,
+  tournament,
+  pending,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean;
+  tournament: TournamentView;
+  pending: boolean;
+  error?: DisplayError;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const m = useLobbyMetrics();
+  const t = useTournamentMessages();
+  const fonts = useTableFonts();
+  const period = formatTournamentPeriod(tournament, t.locale);
+  const text = [styles.dialogText, fontOf(fonts.button), { fontSize: m.bodySize }];
+  const rows: [string, string][] =
+    tournament.entryFee > 0 ? [[t.confirm.entryFee, formatFcfa(tournament.entryFee)]] : [];
+  const controlHeight = Math.max(44, m.controlHeight);
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      supportedOrientations={['landscape', 'portrait']}
+      onRequestClose={onCancel}
+    >
+      <View style={styles.backdrop}>
+        <View
+          testID="tournament-register-dialog"
+          accessibilityViewIsModal
+          style={[styles.dialog, { gap: m.gap, padding: Math.round(m.gap * 1.4) }]}
+        >
+          <Text
+            accessibilityRole="header"
+            style={[styles.dialogTitle, fontOf(fonts.button), { fontSize: m.bodySize + 4 }]}
+          >
+            {t.confirm.title}
+          </Text>
+          <Text style={[styles.dialogName, fontOf(fonts.button), { fontSize: m.bodySize + 1 }]}>
+            {t.confirm.name(period.date, period.start)}
+          </Text>
+          {rows.map(([label, value]) => (
+            <View
+              key={label}
+              accessible
+              accessibilityLabel={`${label} : ${value}`}
+              style={styles.dialogRow}
+            >
+              <Text style={[...text, styles.dialogLabel]}>{label}</Text>
+              <Text style={[...text, styles.dialogValue]}>{value}</Text>
+            </View>
+          ))}
+          <Text style={[...text, { lineHeight: Math.round(m.bodySize * 1.45) }]}>
+            {t.confirm.message}
+          </Text>
+          {error ? (
+            <Text
+              accessibilityRole="alert"
+              style={[styles.error, fontOf(fonts.button), { fontSize: m.smallSize }]}
+            >
+              {`${errorText(error, t)} ${t.confirm.retry}`}
+            </Text>
+          ) : null}
+          {pending ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={[styles.meta, fontOf(fonts.button), { fontSize: m.smallSize }]}
+            >
+              {t.confirm.pending}
+            </Text>
+          ) : null}
+          <View style={[styles.dialogActions, { gap: m.gap }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: pending }}
+              disabled={pending}
+              onPress={onCancel}
+              style={({ pressed }) => [
+                styles.dialogCancel,
+                { minHeight: controlHeight },
+                pressed && styles.pressed,
+                pending && styles.inactive,
+              ]}
+            >
+              <Text
+                style={[styles.dialogCancelText, fontOf(fonts.button), { fontSize: m.bodySize }]}
+              >
+                {t.confirm.cancel}
+              </Text>
+            </Pressable>
+            <PillButton
+              style={styles.dialogConfirm}
+              title={t.confirm.confirm}
+              onPress={onConfirm}
+              loading={pending}
+              height={controlHeight}
+              fontSize={m.bodySize + 1}
+              fontFamily={fonts.button}
+            />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 /** Au-delà de cette largeur, les quatre informations tiennent sur une seule rangée. */
 const FACTS_ONE_ROW_WIDTH = 520;
 
@@ -561,18 +757,35 @@ function TournamentFacts({ tournament }: { tournament: TournamentView }) {
   const columns = width >= FACTS_ONE_ROW_WIDTH ? 4 : 2;
   const tileWidth = width > 0 ? Math.floor((width - gap * (columns - 1)) / columns) : '48%';
   const ranks = rewardedRanks(tournament);
-  const facts: { key: string; label: string; value: string; detail?: string }[] = [
-    { key: 'entry', label: t.facts.entry, value: formatFcfa(tournament.entryFee) },
+  const facts: {
+    key: string;
+    label: string;
+    value: string;
+    detail?: string;
+  }[] = [
+    {
+      key: 'entry',
+      label: t.facts.entry,
+      value: formatFcfa(tournament.entryFee),
+    },
     {
       key: 'players',
       label: t.facts.players,
       value: t.facts.registered(tournament.registeredCount, tournament.maximumPlayers),
       detail: t.facts.minimum(tournament.minimumPlayers),
     },
-    { key: 'duration', label: t.facts.duration, value: formatTournamentDuration(tournament) },
+    {
+      key: 'duration',
+      label: t.facts.duration,
+      value: formatTournamentDuration(tournament),
+    },
   ];
   if (ranks > 0)
-    facts.push({ key: 'rewards', label: t.facts.rewards, value: t.facts.ranks(ranks) });
+    facts.push({
+      key: 'rewards',
+      label: t.facts.rewards,
+      value: t.facts.ranks(ranks),
+    });
   const label = [styles.factLabel, fontOf(fonts.button), { fontSize: m.smallSize }];
   return (
     <View
@@ -600,7 +813,10 @@ function TournamentFacts({ tournament }: { tournament: TournamentView }) {
             style={[
               styles.factValue,
               fontOf(fonts.button),
-              { fontSize: m.bodySize + 1, lineHeight: Math.round((m.bodySize + 1) * 1.3) },
+              {
+                fontSize: m.bodySize + 1,
+                lineHeight: Math.round((m.bodySize + 1) * 1.3),
+              },
             ]}
           >
             {fact.value}
@@ -622,7 +838,10 @@ function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
   const { data } = useNotifications();
   const markRead = useMarkNotificationRead();
   const unread = (data?.notifications ?? [])
-    .filter((n) => !n.readAt && n.type !== 'TOURNAMENT_APPROVED')
+    .filter(
+      // Avertissements de l'administration : affichés à l'accueil (ModerationNotice).
+      (n) => !n.readAt && n.type !== 'TOURNAMENT_APPROVED' && n.type !== 'MODERATION_WARNING',
+    )
     .slice(0, NOTICES_SHOWN);
   if (unread.length === 0) return null;
   return (
@@ -692,18 +911,30 @@ export function StatusChip({
 const styles = StyleSheet.create({
   summary: { alignItems: 'center' },
   facts: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
-  fact: { alignItems: 'center', gap: 2, borderRadius: 10, backgroundColor: 'rgba(0, 0, 0, 0.2)' },
+  fact: {
+    alignItems: 'center',
+    gap: 2,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+  },
   factLabel: { color: tablePalette.cream, opacity: 0.72, textAlign: 'center' },
   factValue: { color: tablePalette.cream, textAlign: 'center' },
   /** Filet discret : sépare MON inscription des caractéristiques du tournoi. */
-  status: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: tablePalette.panelBorder },
+  status: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: tablePalette.panelBorder,
+  },
   reservation: {
     alignSelf: 'center',
     maxWidth: 560,
     borderRadius: 10,
     backgroundColor: 'rgba(0, 0, 0, 0.18)',
   },
-  reservationText: { color: tablePalette.cream, opacity: 0.88, textAlign: 'center' },
+  reservationText: {
+    color: tablePalette.cream,
+    opacity: 0.88,
+    textAlign: 'center',
+  },
   centerText: { textAlign: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: '100%' },
   date: { flexShrink: 1, color: tablePalette.gold, letterSpacing: 0.5 },
@@ -737,6 +968,66 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   link: { color: tablePalette.gold, textDecorationLine: 'underline' },
+  registered: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    maxWidth: '100%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(31, 156, 156, 0.55)',
+    backgroundColor: 'rgba(23, 128, 110, 0.28)',
+  },
+  registeredIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tablePalette.jade,
+  },
+  registeredCheck: { color: tablePalette.gold, fontWeight: '700' },
+  registeredText: { flexShrink: 1, color: tablePalette.cream },
+  backdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 16,
+  },
+  dialog: {
+    width: '100%',
+    maxWidth: 460,
+    maxHeight: '100%',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: tablePalette.panelBorder,
+    backgroundColor: '#1B0D09',
+  },
+  dialogTitle: {
+    color: tablePalette.gold,
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  dialogName: { color: tablePalette.cream, textAlign: 'center' },
+  dialogText: { color: tablePalette.cream },
+  dialogRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  dialogLabel: { opacity: 0.75 },
+  dialogValue: { fontWeight: '700' },
+  dialogActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  dialogCancel: {
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: tablePalette.panelBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dialogCancelText: { color: tablePalette.cream },
+  dialogConfirm: { flexGrow: 1, flexShrink: 1, maxWidth: 260 },
+  pressed: { opacity: 0.75 },
+  inactive: { opacity: 0.5 },
   notices: {
     gap: 4,
     borderTopWidth: 1,

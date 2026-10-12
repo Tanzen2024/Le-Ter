@@ -8,10 +8,13 @@ import {
   type PaymentStatus,
 } from '../../domain/payments/payment';
 import { isUserId, type UserId } from '../../domain/users/user';
-import type { PaymentRepository } from '../../repositories/payment.repository';
+import type {
+  PaymentRepository,
+  PaymentSettlementSource,
+} from '../../repositories/payment.repository';
 import type { Logger } from '../../utils/logger';
 import { ValidationError } from '../../validators/validation-error';
-import type { CinetPayPaymentStatus } from './cinetpay/cinetpay-client';
+import { CinetPayError, type CinetPayPaymentStatus } from './cinetpay/cinetpay-client';
 import { hashNotifyToken } from './cinetpay/cinetpay.gateway';
 
 /** Lecture du statut réel chez CinetPay (serveur à serveur). */
@@ -43,6 +46,11 @@ export interface NotificationResult {
   status: PaymentStatus;
 }
 
+export interface ReconcileResult {
+  outcome: NotificationOutcome | 'already_final';
+  status: PaymentStatus;
+}
+
 /** Statuts finaux CinetPay → statut du paiement. Les autres laissent le paiement en attente. */
 const FINAL_STATUSES: Readonly<Record<string, Exclude<PaymentStatus, 'PENDING'>>> = {
   SUCCESS: 'SUCCESS',
@@ -52,6 +60,19 @@ const FINAL_STATUSES: Readonly<Record<string, Exclude<PaymentStatus, 'PENDING'>>
 };
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 10_000;
+/**
+ * Paiement direct à l'initialisation incertaine, toujours INTROUVABLE chez CinetPay après ce
+ * délai : la création n'a pas abouti, l'achat est clos sans crédit (D-083).
+ */
+export const UNCERTAIN_INITIALIZATION_GIVE_UP_MS = 30 * 60_000;
+
+/** NOT_FOUND (code 404) : le paiement n'existe pas chez CinetPay. */
+function isProviderNotFound(err: unknown): boolean {
+  return (
+    err instanceof CinetPayError &&
+    (err.details.apiCode === 404 || err.details.apiStatus === 'NOT_FOUND')
+  );
+}
 const MAX_NOTIFICATION_FIELD_LENGTH = 256;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -86,7 +107,7 @@ export class PaymentService {
     if (!payment) throw new PaymentNotFoundError();
     if (payment.status !== 'PENDING' || !this.shouldReconcile(payment)) return payment;
     try {
-      await this.verifyAndSettle(payment);
+      await this.verifyAndSettle(payment, 'player_read');
     } catch (err) {
       // La lecture n'échoue jamais à cause du fournisseur : l'état enregistré fait foi.
       this.deps.logger.warn('payment reconcile failed', {
@@ -103,14 +124,25 @@ export class PaymentService {
    * idempotent. Un paiement déjà final n'est pas revérifié. Le navigateur ne fournit aucun
    * statut : seul CinetPay, relu par le serveur, fait foi.
    */
-  async verifyForAdmin(
-    paymentId: string,
-  ): Promise<{ outcome: NotificationOutcome | 'already_final'; status: PaymentStatus }> {
+  async verifyForAdmin(paymentId: string): Promise<ReconcileResult> {
     if (!UUID.test(paymentId)) throw new PaymentNotFoundError();
+    return this.reconcile(paymentId, 'admin');
+  }
+
+  /**
+   * Revérification d'un paiement en attente (réconciliation automatique, administration) :
+   * MÊME contrôle serveur à serveur et même règlement idempotent que la notification
+   * (`verifyAndSettle`). Le paiement est relu : déjà final, il n'est pas revérifié. Les
+   * erreurs du fournisseur sont propagées sans rien écrire (nouvelle tentative possible).
+   */
+  async reconcile(
+    paymentId: string,
+    source: PaymentSettlementSource = 'reconciliation',
+  ): Promise<ReconcileResult> {
     const payment = await this.deps.payments.findById(paymentId);
     if (!payment) throw new PaymentNotFoundError();
     if (payment.status !== 'PENDING') return { outcome: 'already_final', status: payment.status };
-    return this.verifyAndSettle(payment);
+    return this.verifyAndSettle(payment, source);
   }
 
   /** Vrai si un fournisseur est configuré (sinon aucune vérification n'est possible). */
@@ -148,17 +180,28 @@ export class PaymentService {
       log.info('cinetpay notification already processed', { paymentId: payment.id });
       return { outcome: 'already_processed', status: payment.status };
     }
-    return this.verifyAndSettle(payment);
+    return this.verifyAndSettle(payment, 'notification');
   }
 
   /** Statut relu chez CinetPay, contrôlé, puis règlement atomique s'il est final. */
-  private async verifyAndSettle(payment: Payment): Promise<NotificationResult> {
+  private async verifyAndSettle(
+    payment: Payment,
+    source: PaymentSettlementSource,
+  ): Promise<NotificationResult> {
     const { cinetpay, payments, logger } = this.deps;
+    if (cinetpay && !payment.providerReference && payment.initializationUncertain) {
+      return this.recoverUncertainInitialization(payment, source);
+    }
     if (!cinetpay || !payment.providerReference) {
       throw new PaymentVerificationError('provider_unavailable');
     }
     this.lastChecks.set(payment.id, this.clock().getTime());
-    const log = logger.child({ action: 'CINETPAY_VERIFY', paymentId: payment.id });
+    const log = logger.child({
+      action: 'CINETPAY_VERIFY',
+      paymentId: payment.id,
+      source,
+      ...(payment.paymentMethod && { paymentMethod: payment.paymentMethod }),
+    });
 
     const remote = await cinetpay.getPaymentStatus(payment.providerReference);
     const mismatch =
@@ -189,11 +232,14 @@ export class PaymentService {
     }
     const result = await payments.settle(
       payment.id,
-      { status: final, providerStatus: remote.status },
+      { status: final, providerStatus: remote.status, settledBy: source },
       this.clock(),
     );
     this.lastChecks.delete(payment.id);
     log.info('cinetpay payment settled', {
+      // Délai création → règlement : un paiement direct réglé en quelques secondes n'a pas pu
+      // être validé par un joueur sur son téléphone (issue simulée en sandbox).
+      secondsSinceCreation: Math.round((this.clock().getTime() - payment.createdAt.getTime()) / 1000),
       status: result.payment.status,
       walletTransactionStatus: result.transaction.status,
       changed: result.changed,
@@ -204,8 +250,61 @@ export class PaymentService {
     };
   }
 
+  /**
+   * Paiement direct dont la création est partie sans réponse (D-083) : recherché chez CinetPay
+   * par NOTRE `merchant_transaction_id` (serveur à serveur). Trouvé : sa référence est posée,
+   * puis le contrôle normal (`verifyAndSettle`) s'applique. Introuvable : il reste en attente,
+   * puis est clos sans crédit au-delà de `UNCERTAIN_INITIALIZATION_GIVE_UP_MS`. Toute autre
+   * erreur est propagée sans rien écrire.
+   */
+  private async recoverUncertainInitialization(
+    payment: Payment,
+    source: PaymentSettlementSource,
+  ): Promise<NotificationResult> {
+    const { cinetpay, payments, logger } = this.deps;
+    if (!cinetpay) throw new PaymentVerificationError('provider_unavailable');
+    const now = this.clock();
+    this.lastChecks.set(payment.id, now.getTime());
+    const log = logger.child({ action: 'CINETPAY_RECOVER', paymentId: payment.id });
+    let remote: CinetPayPaymentStatus;
+    try {
+      remote = await cinetpay.getPaymentStatus(payment.merchantTransactionId);
+    } catch (err) {
+      if (!isProviderNotFound(err)) throw err;
+      if (now.getTime() - payment.createdAt.getTime() < UNCERTAIN_INITIALIZATION_GIVE_UP_MS) {
+        await payments.recordProviderStatus(payment.id, 'NOT_FOUND', now);
+        log.info('direct payment not found yet');
+        return { outcome: 'pending', status: 'PENDING' };
+      }
+      const result = await payments.settle(
+        payment.id,
+        { status: 'FAILED', providerStatus: 'NOT_FOUND', settledBy: source },
+        now,
+      );
+      this.lastChecks.delete(payment.id);
+      log.warn('direct payment never created: closed without credit');
+      return {
+        outcome: result.changed ? 'settled' : 'already_processed',
+        status: result.payment.status,
+      };
+    }
+    if (remote.merchantTransactionId !== payment.merchantTransactionId) {
+      log.error('cinetpay verification mismatch: nothing credited', { reason: 'reference_mismatch' });
+      throw new PaymentVerificationError('reference_mismatch');
+    }
+    await payments.recordRecoveredReference(payment.id, remote.transactionId, now);
+    log.info('direct payment reference recovered');
+    const recovered = await payments.findById(payment.id);
+    if (!recovered?.providerReference || recovered.status !== 'PENDING') {
+      return { outcome: 'already_processed', status: recovered?.status ?? payment.status };
+    }
+    // Même contrôle et même règlement que tout paiement (statut relu par sa référence).
+    return this.verifyAndSettle(recovered, source);
+  }
+
   private shouldReconcile(payment: Payment): boolean {
-    if (!this.deps.cinetpay || !payment.providerReference) return false;
+    if (!this.deps.cinetpay) return false;
+    if (!payment.providerReference && !payment.initializationUncertain) return false;
     const now = this.clock().getTime();
     const interval = this.deps.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
     const last = this.lastChecks.get(payment.id);

@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 
 import { createAdminController, type AdminSystemInfo } from '../controllers/admin.controller';
+import { createPlayerModerationController } from '../controllers/player-moderation.controller';
 import { ADMIN_LOGIN_LIMITS, type AdminLoginLimits } from '../domain/admin/admin';
 import { createRequireAdminSession } from '../middleware/require-admin-session';
 import { createRequireAuth } from '../middleware/require-auth';
@@ -12,6 +13,7 @@ import {
 } from '../middleware/shared-rate-limit';
 import type { AdminQueryService } from '../services/admin/admin-query.service';
 import type { AdminSessionService } from '../services/admin/admin-session.service';
+import type { PlayerModerationService } from '../services/admin/player-moderation.service';
 import type { AuthService } from '../services/auth/auth.service';
 import type { Logger } from '../utils/logger';
 
@@ -19,6 +21,7 @@ export interface AdminRouterDependencies {
   auth: AuthService;
   sessions: AdminSessionService;
   queries: AdminQueryService;
+  moderation: PlayerModerationService;
   rateLimitStore: RateLimitStore;
   loginLimits?: AdminLoginLimits;
   system: AdminSystemInfo;
@@ -38,6 +41,18 @@ export interface AdminRouterDependencies {
  *   GET  /auth/session                         compte et session courants
  *   GET  /dashboard?from&to                    indicateurs réels
  *   GET  /users  /users/:userId (audité)  /users/:userId/games  /users/:userId/transactions
+ *   Gestion des joueurs (D-079) — lecture :
+ *   GET  /users/:userId/moderation  /sanctions  /notes  /moderation-log?includeViews
+ *   Gestion des joueurs (D-079) — actions, toutes auditées :
+ *   POST /users/:userId/disable  /enable                  { reason }
+ *   POST /users/:userId/suspension                        { reason, comment?, endsAt? }
+ *   POST /users/:userId/suspension/lift                   { reason }
+ *   POST /users/:userId/sessions/revoke                   { reason? }
+ *   POST /users/:userId/chat-restriction                  { reason, comment?, endsAt? }
+ *   POST /users/:userId/chat-restriction/lift             { reason }
+ *   POST /users/:userId/warnings     Idempotency-Key      { reason, playerMessage?, comment? }
+ *   POST /users/:userId/notes        Idempotency-Key      { body }
+ *   POST /users/:userId/notes/:noteId/delete              { reason }
  *   GET  /games  /games/:gameId               sans aucune donnée de jeu privée
  *   GET  /finance/overview?from&to
  *   GET  /wallet-transactions
@@ -97,6 +112,21 @@ export function createAdminRouter(deps: AdminRouterDependencies): Router {
   router.get('/users/:userId', controller.user);
   router.get('/users/:userId/games', controller.userGames);
   router.get('/users/:userId/transactions', controller.userTransactions);
+  const players = createPlayerModerationController(deps);
+  router.get('/users/:userId/moderation', players.overview);
+  router.get('/users/:userId/sanctions', players.sanctions);
+  router.get('/users/:userId/notes', players.notes);
+  router.get('/users/:userId/moderation-log', players.log);
+  router.post('/users/:userId/disable', players.disable);
+  router.post('/users/:userId/enable', players.enable);
+  router.post('/users/:userId/suspension', players.suspend);
+  router.post('/users/:userId/suspension/lift', players.liftSuspension);
+  router.post('/users/:userId/sessions/revoke', players.revokeSessions);
+  router.post('/users/:userId/chat-restriction', players.restrictChat);
+  router.post('/users/:userId/chat-restriction/lift', players.liftChatRestriction);
+  router.post('/users/:userId/warnings', players.warn);
+  router.post('/users/:userId/notes', players.addNote);
+  router.post('/users/:userId/notes/:noteId/delete', players.deleteNote);
   router.get('/games', controller.games);
   router.get('/games/:gameId', controller.game);
   router.get('/finance/overview', controller.financeOverview);

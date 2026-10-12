@@ -25,6 +25,7 @@ import { PageHeader } from '@/components/layout/page-header';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { AuditEventLine } from '@/features/audit/audit-event-line';
 import { isPeriod, PeriodSelect, PERIODS } from '@/features/shared/period';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useListState } from '@/hooks/use-list-state';
 import { formatDateTime, formatNumber, formatXaf } from '@/lib/format';
 import { TOURNAMENT_STATUS } from '@/lib/labels';
@@ -98,7 +99,12 @@ export function DashboardView() {
   const { filters, setFilter } = useListState(['periode'] as const);
   const period = isPeriod(filters.periode) ? filters.periode : '30';
   const query = useQuery(dashboardQuery(Number(period)));
-  const data = query.data;
+  // Le serveur rend toujours sans données (squelettes). La même requête peut déjà être résolue
+  // par la Topbar, hydratée avant le segment de la page : jusqu'à la fin de l'hydratation, on
+  // rend donc le même état que le serveur ; les valeurs réelles arrivent au rendu suivant.
+  const hydrated = useHydrated();
+  const data = hydrated ? query.data : undefined;
+  const error = hydrated ? query.error : null;
   const periodLabel = PERIODS.find((p) => p.value === period)?.label.toLowerCase();
 
   return (
@@ -108,9 +114,9 @@ export function DashboardView() {
         description="Indicateurs calculés par le serveur sur les données réelles de Le Ter."
         actions={<PeriodSelect value={period} onChange={(v) => setFilter('periode', v)} />}
       />
-      {query.error ? (
+      {error ? (
         <Card>
-          <ErrorState error={query.error} onRetry={() => query.refetch()} />
+          <ErrorState error={error} onRetry={() => query.refetch()} />
         </Card>
       ) : (
         <div className="space-y-6">

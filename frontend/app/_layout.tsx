@@ -4,6 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 
 import { bootstrapSession } from '../src/features/auth/session';
+import { ActiveGameRestorer } from '../src/features/games/ActiveGameRestorer';
+import { installAppFocusManager } from '../src/lib/app-focus';
 import { installSoundPlayer } from '../src/services/expo-sound-player';
 import { useAuthStore } from '../src/stores/auth-store';
 
@@ -15,6 +17,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     installSoundPlayer();
+    // Retour au premier plan : l'état affiché (la partie notamment) est relu aussitôt.
+    installAppFocusManager();
     void bootstrapSession();
   }, []);
 
@@ -36,7 +40,8 @@ export default function RootLayout() {
         </Stack.Protected>
         {/* Parties et tournois : réservés aux comptes connectés (R-10, aucun mode invité). */}
         <Stack.Protected guard={status === 'signedIn'}>
-          <Stack.Screen name="game/[gameId]" />
+          {/* Pas de balayage arrière : on ne quitte la table que par « Quitter la partie ». */}
+          <Stack.Screen name="game/[gameId]" options={{ gestureEnabled: false }} />
           <Stack.Screen name="tournament/index" />
           <Stack.Screen name="tournament/propose" />
           {/* Fiche d'un tournoi depuis la liste (D-065). */}
@@ -50,6 +55,8 @@ export default function RootLayout() {
           <Stack.Screen name="admin/tournaments/[tournamentId]" />
         </Stack.Protected>
       </Stack>
+      {/* Reprise de la partie active au lancement et au retour au premier plan. */}
+      <ActiveGameRestorer />
     </QueryClientProvider>
   );
 }

@@ -2,10 +2,12 @@ import type { SqlClient, SqlExecutor } from '../database/sql-client';
 import type { UserId, UserRole, UserStatus } from '../domain/users/user';
 import type {
   ActiveAuthSession,
+  AdminRevocationReason,
   NewRefreshToken,
   RotationResult,
   AuthSessionRepository,
 } from './auth-session.repository';
+import { activeSanctionSql } from './user-sanctions.sql';
 
 /**
  * Sessions dans PostgreSQL (D-029). Concurrence :
@@ -73,6 +75,9 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
       if (!user || user.status !== 'active') {
         return { ok: false, reason: 'account_disabled', userId };
       }
+      if (await isSuspended(tx, userId, next.createdAt)) {
+        return { ok: false, reason: 'account_suspended', userId };
+      }
 
       await tx.query(
         `UPDATE refresh_tokens SET revoked_at = $2, revoked_reason = 'rotated' WHERE id = $1`,
@@ -122,8 +127,13 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
     sessionId: string,
     now: Date,
   ): Promise<ActiveAuthSession | null> {
-    const { rows } = await this.db.query<{ role: UserRole; status: UserStatus }>(
-      `SELECT u.role, u.status
+    // Une seule requête par appel authentifié : session, compte et suspension (D-079).
+    const { rows } = await this.db.query<{
+      role: UserRole;
+      status: UserStatus;
+      suspended: boolean;
+    }>(
+      `SELECT u.role, u.status, ${activeSanctionSql('u.id', 'SUSPENSION', '$3')} AS suspended
        FROM refresh_tokens t JOIN users u ON u.id = t.user_id
        WHERE t.user_id = $1 AND t.session_id = $2
          AND t.revoked_at IS NULL AND t.expires_at > $3`,
@@ -131,6 +141,46 @@ export class PostgresAuthSessionRepository implements AuthSessionRepository {
     );
     return rows[0] ?? null;
   }
+
+  async findActiveSuspension(userId: UserId, now: Date): Promise<{ endsAt: Date | null } | null> {
+    const { rows } = await this.db.query<{ ends_at: Date | null }>(
+      `SELECT s.ends_at FROM user_sanctions s
+       WHERE s.user_id = $1 AND s.kind = 'SUSPENSION' AND s.lifted_at IS NULL
+         AND (s.ends_at IS NULL OR s.ends_at > $2)
+       ORDER BY s.ends_at DESC NULLS FIRST LIMIT 1`,
+      [userId, now.toISOString()],
+    );
+    const row = rows[0];
+    return row ? { endsAt: row.ends_at ? new Date(row.ends_at) : null } : null;
+  }
+}
+
+async function isSuspended(tx: SqlExecutor, userId: UserId, now: Date): Promise<boolean> {
+  const { rows } = await tx.query<{ suspended: boolean }>(
+    `SELECT ${activeSanctionSql('$1', 'SUSPENSION', '$2')} AS suspended`,
+    [userId, now.toISOString()],
+  );
+  return rows[0]?.suspended === true;
+}
+
+/**
+ * Révoque TOUTES les sessions actives d'un compte (D-079), dans la transaction de l'appelant
+ * qui a déjà verrouillé la ligne `users` (même discipline que les opérations ci-dessus). Les
+ * access tokens de ces sessions sont refusés dès la requête suivante (`findActiveSession`).
+ * @returns le nombre de jetons révoqués (0 ou 1 : une seule session par compte, R-32).
+ */
+export async function revokeUserSessions(
+  tx: SqlExecutor,
+  userId: UserId,
+  now: Date,
+  reason: AdminRevocationReason,
+): Promise<number> {
+  const { rowCount } = await tx.query(
+    `UPDATE refresh_tokens SET revoked_at = $2, revoked_reason = $3
+     WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId, now.toISOString(), reason],
+  );
+  return rowCount;
 }
 
 /** Verrou par utilisateur : sérialise toutes les opérations de session de ce compte. */

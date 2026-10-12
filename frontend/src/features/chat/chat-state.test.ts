@@ -19,12 +19,18 @@ function msg(id: string, at: string, senderId = 'p1', gameId = GAME): ChatMessag
 
 describe('mergeMessages', () => {
   it('fusionne sans doublon et dans l’ordre du serveur', () => {
-    const merged = mergeMessages([msg('b', '02'), msg('a', '01')], [msg('c', '03'), msg('b', '02')]);
+    const merged = mergeMessages(
+      [msg('b', '02'), msg('a', '01')],
+      [msg('c', '03'), msg('b', '02')],
+    );
     expect(merged.map((m) => m.id)).toEqual(['a', 'b', 'c']);
   });
 
   it('même horodatage : départage par identifiant', () => {
-    expect(mergeMessages([], [msg('z', '01'), msg('y', '01')]).map((m) => m.id)).toEqual(['y', 'z']);
+    expect(mergeMessages([], [msg('z', '01'), msg('y', '01')]).map((m) => m.id)).toEqual([
+      'y',
+      'z',
+    ]);
   });
 
   it('renvoie la même liste si rien de neuf (aucun rendu inutile)', () => {
@@ -34,7 +40,11 @@ describe('mergeMessages', () => {
 });
 
 describe('messageForGame', () => {
-  const event = (gameId: string, message: ChatMessage) => ({ type: 'chat:message', gameId, message });
+  const event = (gameId: string, message: ChatMessage) => ({
+    type: 'chat:message',
+    gameId,
+    message,
+  });
 
   it('accepte un message de la partie affichée', () => {
     expect(messageForGame(event(GAME, msg('a', '01')), GAME)?.id).toBe('a');
@@ -56,7 +66,12 @@ describe('messageForGame', () => {
 
 describe('unreadCount', () => {
   it('compte les messages des autres après le dernier vu', () => {
-    const list = [msg('a', '01', 'moi'), msg('b', '02', 'lui'), msg('c', '03', 'moi'), msg('d', '04', 'lui')];
+    const list = [
+      msg('a', '01', 'moi'),
+      msg('b', '02', 'lui'),
+      msg('c', '03', 'moi'),
+      msg('d', '04', 'lui'),
+    ];
     expect(unreadCount(list, 'a', 'moi')).toBe(2);
     expect(unreadCount(list, 'd', 'moi')).toBe(0);
     expect(unreadCount(list, undefined, 'moi')).toBe(2);

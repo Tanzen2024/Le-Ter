@@ -31,6 +31,7 @@ export class PostgresAdminAuditRepository implements AdminAuditRepository {
     if (query.targetId) add('a.target_id = ?', query.targetId);
     if (query.from) add('a.created_at >= ?', query.from.toISOString());
     if (query.to) add('a.created_at < ?', query.to.toISOString());
+    if (query.excludeActions?.length) add('NOT (a.action = ANY(?))', query.excludeActions);
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
     const count = await this.db.query<{ n: number }>(
@@ -53,13 +54,18 @@ export class PostgresAdminAuditRepository implements AdminAuditRepository {
     };
   }
 
-  async findVerification(idempotencyKey: string): Promise<AuditEntry | null> {
+  async findVerification(
+    idempotencyKey: string,
+    action:
+      | 'PAYMENT_VERIFICATION_REQUESTED'
+      | 'WITHDRAWAL_VERIFICATION_REQUESTED' = 'PAYMENT_VERIFICATION_REQUESTED',
+  ): Promise<AuditEntry | null> {
     const { rows } = await this.db.query<AuditRow>(
       `SELECT id, actor_id, action, target_type, target_id, outcome, details, created_at
        FROM admin_audit_log
-       WHERE action = 'PAYMENT_VERIFICATION_REQUESTED' AND details ->> 'idempotencyKey' = $1
+       WHERE action = $2 AND details ->> 'idempotencyKey' = $1
        ORDER BY created_at DESC LIMIT 1`,
-      [idempotencyKey],
+      [idempotencyKey, action],
     );
     return rows[0] ? auditEntryOf(rows[0]) : null;
   }

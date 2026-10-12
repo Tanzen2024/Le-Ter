@@ -19,6 +19,7 @@ import type {
 import { AccessTokenService, InvalidAccessTokenError } from './access-token.service';
 import {
   AccountDisabledError,
+  AccountSuspendedError,
   AuthenticationRequiredError,
   CurrentPasswordIncorrectError,
   InvalidCredentialsError,
@@ -45,8 +46,10 @@ export type CredentialCheck =
   | { ok: true; user: User }
   | {
       ok: false;
-      reason: 'unknown_account' | 'invalid_credentials' | 'account_disabled';
+      reason: 'unknown_account' | 'invalid_credentials' | 'account_disabled' | 'account_suspended';
       userId?: UserId;
+      /** Fin de la suspension (`account_suspended`) ; null : indéterminée. */
+      suspendedUntil?: Date | null;
     };
 
 export interface OpenedSession extends TokenPair {
@@ -128,6 +131,9 @@ export class AuthService {
       // Compte inconnu et mauvais mot de passe : même raison journalisée qu'avant.
       const reason = check.reason === 'unknown_account' ? 'invalid_credentials' : check.reason;
       log.warn('login failed', { reason, userId: check.userId });
+      if (check.reason === 'account_suspended') {
+        throw new AccountSuspendedError(check.suspendedUntil ?? null);
+      }
       throw check.reason === 'account_disabled'
         ? new AccountDisabledError()
         : new InvalidCredentialsError();
@@ -149,6 +155,15 @@ export class AuthService {
     if (!user) return { ok: false, reason: 'unknown_account' };
     if (!valid) return { ok: false, reason: 'invalid_credentials', userId: user.id };
     if (user.status !== 'active') return { ok: false, reason: 'account_disabled', userId: user.id };
+    const suspension = await this.deps.sessions.findActiveSuspension(user.id, this.clock());
+    if (suspension) {
+      return {
+        ok: false,
+        reason: 'account_suspended',
+        userId: user.id,
+        suspendedUntil: suspension.endsAt,
+      };
+    }
     return { ok: true, user };
   }
 
@@ -238,8 +253,8 @@ export class AuthService {
   }
 
   /**
-   * Identité d'un access token : signature et expiration, puis session encore active
-   * et compte actif. Une nouvelle connexion (R-32) ou un logout invalide donc tout de
+   * Identité d'un access token : signature et expiration, puis session encore active,
+   * compte actif et non suspendu (D-079). Une nouvelle connexion (R-32) ou un logout invalide donc tout de
    * suite les access tokens de l'ancienne session, sans attendre leur expiration.
    */
   async authenticate(accessToken: string): Promise<AuthContext> {
@@ -262,6 +277,9 @@ export class AuthService {
     }
     if (session.status !== 'active') {
       throw new AuthenticationRequiredError('account_disabled');
+    }
+    if (session.suspended) {
+      throw new AuthenticationRequiredError('account_suspended');
     }
     return { userId: claims.userId, role: session.role, sessionId: claims.sessionId };
   }

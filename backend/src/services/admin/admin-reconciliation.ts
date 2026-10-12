@@ -1,5 +1,9 @@
 import { ADMIN_THRESHOLDS } from '../../domain/admin/admin';
-import { isAllowedDepositAmount, TOKENS_PER_XAF } from '../../domain/payments/payment';
+import {
+  DEPOSIT_LIMITS_XAF,
+  isAllowedDepositAmount,
+  TOKENS_PER_XAF,
+} from '../../domain/payments/payment';
 import { computePool, computePrizes } from '../../domain/tournaments/tournament';
 import type {
   OrphanDepositRow,
@@ -64,7 +68,13 @@ export const DATABASE_GUARANTEES = [
   },
   {
     control: 'Écriture plateforme en double',
-    guarantee: 'UNIQUE (tournament_id, kind) sur platform_ledger',
+    guarantee: 'UNIQUE (tournament_id, kind) et UNIQUE (game_id, kind) sur platform_ledger',
+  },
+  {
+    // D-074 : une partie n'est réglée qu'une fois, et ses montants sont cohérents.
+    control: 'Règlement d’une partie',
+    guarantee:
+      "game_settlements.game_id PRIMARY KEY ; CHECK gross_amount = unit_amount × (participants − 1) = commission_amount + net_gain ; UNIQUE (user_id, idempotency_key) 'game-stake:' / 'game-winnings:' sur wallet_transactions",
   },
 ] as const;
 
@@ -125,8 +135,14 @@ export function paymentAnomalies(rows: PaymentReconciliationRow[], now: Date): A
         ...base,
         type: 'PAYMENT_AMOUNT_OUT_OF_RANGE',
         severity: 'WARNING',
-        compared: [{ label: 'Montant', expected: '500, 1 000, 2 000 ou 5 000', actual: p.amount }],
-        explanation: "Le montant n'appartient pas au barème des achats (D-050).",
+        compared: [
+          {
+            label: 'Montant (FCFA)',
+            expected: `${DEPOSIT_LIMITS_XAF.min} à ${DEPOSIT_LIMITS_XAF.max}`,
+            actual: p.amount,
+          },
+        ],
+        explanation: "Le montant est hors des limites d'achat (D-085).",
       });
     }
     if (p.status === 'PENDING' && now.getTime() - p.createdAt.getTime() >= staleMs) {

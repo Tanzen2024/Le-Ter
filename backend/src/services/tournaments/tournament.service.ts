@@ -1086,7 +1086,7 @@ export class TournamentService {
   /**
    * Nouvelle table : session de 4 places, sans mise réelle, dont le joueur est le créateur.
    * Création ET rattachement au tournoi dans UNE transaction (jamais de table ordinaire
-   * intermédiaire, jamais visible dans les tables ouvertes). Démarrage automatique 15 s
+   * intermédiaire, jamais visible dans les tables ouvertes). Démarrage automatique 10 s
    * après l'arrivée du 2e joueur (D-065, D-068).
    */
   private async openTable(

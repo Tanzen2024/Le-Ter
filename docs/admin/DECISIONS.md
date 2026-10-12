@@ -25,7 +25,7 @@ propres à `administration/`.
 | D-061 | `admin` est le seul rôle d'administration, présenté comme `SUPER_ADMIN`. | Attribution par `npm run user:role` uniquement ; session admin dédiée sur toutes les routes `/api/admin/*`. |
 | — | Joueur actif sur `[from, to)` : présent dans `game_players` d'au moins une partie **créée** dans la période et **démarrée** (`in_progress` ou `finished`). Compté une fois. | Les parties `waiting` jamais démarrées sont exclues. Il n'existe ni partie annulée ni partie de test dans le modèle. |
 | — | Session admin : 8 h absolues, 30 min d'inactivité, contrôlées par le backend. | Table `admin_sessions` (migration 0023). |
-| — | Suspension des joueurs désactivée en V1. | Règles à définir : partie en cours, table, tournoi, achat en attente. |
+| ~~—~~ | ~~Suspension des joueurs désactivée en V1.~~ **Remplacée par D-079** (gestion des joueurs). | Désactivation, suspension, révocation des sessions, avertissements, restriction du chat et notes : [MODERATION.md](MODERATION.md). |
 | — | Audit des consultations : détail joueur et détail paiement ; jamais les listes. | `USER_VIEWED`, `PAYMENT_VIEWED`. |
 | — | Opérations indisponibles : remboursement, retrait, crédit manuel, écriture manuelle au compte plateforme, maintenance. | Affichées « indisponibles », sans endpoint. |
 

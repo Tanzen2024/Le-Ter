@@ -9,49 +9,72 @@ import {
   useTableFonts,
 } from '../../../components/table/TableDecor';
 import { ApiError } from '../../../lib/api-client';
+import { useMessages } from '../../../lib/i18n';
 import { useGameUiStore } from '../../../stores/game-ui-store';
 import type { GameView, PlayerInGame } from '../../../types/game';
 import { useLobbyMetrics } from '../../lobby/lobby-metrics';
-import { Coin, PanelButton, useBalanceLabel } from '../../lobby/LobbyUi';
+import { Coin, PanelButton } from '../../lobby/LobbyUi';
 import { SettingsPanel } from '../../lobby/SettingsPanel';
-import { ShopFlow } from '../../wallet/ShopFlow';
-import { DecisionPanel } from '../../sessions/DecisionPanel';
+import { walletKey } from '../../wallet/hooks';
 import { useLeaveSession, useSession, useSessionDecision } from '../../sessions/hooks';
 import type { SessionView } from '../../../types/session';
 import { DraggableCard, type DropZone } from '../DraggableCard';
-import { INSTANT_WIN_LABELS, playerLabel } from '../format';
+import { ReconnectionPanel } from '../ReconnectionPanel';
+import { gameScreenContent, useGameReconnection } from '../use-game-reconnection';
+import { playerLabel } from '../format';
 import { chatKeys } from '../../chat/hooks';
-import { isGameId, MIN_PLAYERS_TO_START, useGame, useGameAction, useStartGame } from '../hooks';
+import {
+  gameKeys,
+  isGameId,
+  MIN_PLAYERS_TO_START,
+  useGame,
+  useGameAction,
+  useStartGame,
+} from '../hooks';
 import { TournamentTableWaiting } from './TournamentTableWaiting';
-import { CARD_RATIO, HiddenHand, PublicRow, ROW_STEP } from './Cards';
+import { CARD_RATIO, HiddenHand, PublicRow } from './Cards';
 import { GameChat, useGameChatWithUnread } from '../../chat/GameChat';
 import { GameGeolocation } from '../../geolocation/GameGeolocation';
-import { QuitDialog } from './GameOverlays';
+import { GameOverPanel } from './GameOverPanel';
 import { usePlayerDistances } from './distance';
 import { planPresentation, publicPlays } from './presentation-plan';
+import { useTableBalanceLabel } from './table-balance';
 import {
   DealFlight,
   handZoneRect,
   PlayedCardSpotlight,
+  publicCardLeft,
+  publicRowBox,
   seatZones,
   smallCardWidth,
+  spotCardWidth,
   useDealProgress,
 } from './TableCards';
 import {
   arrangeSeats,
   computeGameTableLayout,
+  handStepFor,
   handWidthOf,
   type GameTableLayout,
   type SeatSide,
 } from './table-layout';
-import { playerOfTurnKey, turnKeyOf, useTurnSignal } from './turn-signal';
-import { TurnActions, TurnGlow, TurnHud } from './TurnHud';
+import {
+  controllerOf,
+  playerOfControlSignal,
+  playerOfTurnKey,
+  turnKeyOf,
+  useControlSignal,
+  useTurnSignal,
+} from './turn-signal';
+import { FarewellHand, TurnActions, TurnGlow, TurnHud, useFarewell } from './TurnHud';
 import {
   BalancePill,
+  ControlGlow,
   DistanceTag,
   ExitGlyph,
   FeltBackdrop,
   GlassBox,
+  plateContentHeight,
   SeatPlate,
   SoftIconButton,
   WoodTable,
@@ -69,31 +92,57 @@ import {
  * Tout ce qui est affiché vient du serveur (D-008) : aucun état, nom ou distance inventé.
  */
 export function GameTableScreen() {
-  const { gameId } = useLocalSearchParams<{ gameId: string }>();
+  const { gameId, reprise } = useLocalSearchParams<{ gameId: string; reprise?: string }>();
   const valid = isGameId(gameId);
   const game = useGame(valid ? gameId : '');
+  // Reprise après une absence : l'état est relu sur le serveur, jamais reconstruit localement.
+  const reconnection = useGameReconnection(game, { resume: reprise === '1' });
+
+  const view = gameScreenContent({
+    hasData: game.data !== undefined,
+    error: game.error,
+    reconnecting: reconnection.state !== null,
+  });
 
   let content;
   if (!valid) {
     content = <CenteredMessage message="Identifiant de partie invalide." />;
-  } else if (game.isPending) {
+  } else if (view === 'table' && game.data) {
+    // Une partie = un état d'écran : nouvelle partie (Poursuivre, égalité) → tout repart à neuf
+    // (mains, cartes jouées, animations), jamais de cartes de l'ancienne partie.
+    content = <GameTable key={game.data.gameId} game={game.data} receivedAt={game.dataUpdatedAt} />;
+  } else if (view === 'retry') {
+    // Serveur injoignable avant le premier état : la partie continue côté serveur ; on réessaie.
     content = (
-      <View style={styles.fill}>
-        <ActivityIndicator color={palette.gold} size="large" />
-      </View>
+      <ReconnectionPanel
+        state={game.isFetching ? 'restoring' : 'failed'}
+        onRetry={reconnection.retry}
+        secondary={{ title: 'Accueil', onPress: goHome }}
+      />
     );
-  } else if (game.error) {
+  } else if (view === 'message') {
+    // Partie inaccessible (non membre, introuvable) : aucune navigation forcée.
     content = (
       <CenteredMessage
         message={game.error instanceof ApiError ? game.error.message : 'Partie indisponible.'}
       />
     );
-  } else {
-    // Une partie = un état d'écran : nouvelle partie (Poursuivre, égalité) → tout repart à neuf
-    // (mains, cartes jouées, animations), jamais de cartes de l'ancienne partie.
-    content = <GameTable key={game.data.gameId} game={game.data} receivedAt={game.dataUpdatedAt} />;
+  } else if (view === 'loading') {
+    content = (
+      <View style={styles.fill}>
+        <ActivityIndicator color={palette.gold} size="large" />
+      </View>
+    );
   }
-  return <FeltBackdrop>{content}</FeltBackdrop>;
+  return (
+    <FeltBackdrop>
+      {content}
+      {/* Table affichée (ou reprise en cours) mais état périmé : relecture sur le serveur. */}
+      {(view === 'table' || view === 'restoring') && reconnection.state ? (
+        <ReconnectionPanel state={reconnection.state} onRetry={reconnection.retry} />
+      ) : null}
+    </FeltBackdrop>
+  );
 }
 
 /** Retour à l'accueil (sans empiler d'écran) : jamais vers un écran technique. */
@@ -118,7 +167,10 @@ function CenteredMessage({ message }: { message: string }) {
   );
 }
 
-type Overlay = 'settings' | 'quit' | 'shop' | null;
+type Overlay = 'settings' | null;
+
+/** Durée d'affichage d'un refus de départ du serveur. */
+const QUIT_REFUSAL_MS = 4_000;
 
 function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number }) {
   const m = useLobbyMetrics();
@@ -128,26 +180,58 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
   });
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [chatOpen, setChatOpen] = useState(false);
-  const balance = useBalanceLabel();
+  // Résultat annoncé à l'écran : partie terminée ET dernière carte présentée (D-041).
+  const [announcedGameId, setAnnouncedGameId] = useState<string | null>(null);
+  const resultAnnounced = game.status === 'finished' && announcedGameId === game.gameId;
+  const onResultShown = useCallback(() => setAnnouncedGameId(game.gameId), [game.gameId]);
+  // Aucun nouveau solde avant l'annonce du résultat (D-080) : figé pendant la présentation.
+  const balance = useTableBalanceLabel(game.status === 'finished' && !resultAnnounced);
   const closeOverlay = useCallback(() => setOverlay(null), []);
   const closeChat = useCallback(() => setChatOpen(false), []);
   // Chat suivi dès l'arrivée sur la table (temps réel + badge), affiché à la demande.
   const { chat, unread } = useGameChatWithUnread(game.gameId, game.viewerId, chatOpen);
   const queryClient = useQueryClient();
-  // Fin de partie : l'état d'envoi du chat est relu (lecture seule, décidé par le serveur).
+  // Fin de partie : l'état d'envoi du chat est relu (lecture seule, décidé par le serveur),
+  // ainsi que la partie, dont la lecture porte mon bilan réglé (D-074).
   useEffect(() => {
     if (game.status === 'finished') {
       void queryClient.invalidateQueries({
         queryKey: chatKeys.history(game.gameId),
       });
+      void queryClient.invalidateQueries({ queryKey: gameKeys.detail(game.gameId) });
     }
   }, [queryClient, game.status, game.gameId]);
+  // Fin (règlement, D-074) : le solde est relu au moment où le résultat est ANNONCÉ, pas
+  // quand le serveur termine la partie (le dernier tour est encore présenté, D-041, D-080).
+  useEffect(() => {
+    if (resultAnnounced) void queryClient.invalidateQueries({ queryKey: walletKey });
+  }, [queryClient, resultAnnounced]);
 
-  // Sortir de l'aire de jeu passe toujours par « Quitter la partie » : le retour Android
-  // ouvre la confirmation (les panneaux ouverts se ferment d'abord, ils l'écoutent aussi).
+  // « Quitter la partie » : départ DIRECT, sans boîte de confirmation. Le serveur décide si
+  // le départ est possible (D-037) ; son refus s'affiche brièvement sous le bouton.
+  const { quit, pending: quitting, error: quitError } = useQuitGame(game);
+  const [refusalShown, setRefusalShown] = useState(false);
+  const leaveTable = useCallback(() => {
+    if (quitting) return;
+    setRefusalShown(false);
+    void quit().then((ok) => (ok ? goHome() : setRefusalShown(true)));
+  }, [quit, quitting]);
+  useEffect(() => {
+    if (!refusalShown) return;
+    const timer = setTimeout(() => setRefusalShown(false), QUIT_REFUSAL_MS);
+    return () => clearTimeout(timer);
+  }, [refusalShown]);
+  const quitRefusal = refusalShown ? quitError : undefined;
+
+  // Sortir de l'aire de jeu passe toujours par « Quitter la partie » : le retour Android quitte
+  // directement (les panneaux ouverts se ferment d'abord, ils l'écoutent aussi).
+  const backState = useRef({ panelOpen: false, leave: leaveTable });
+  useEffect(() => {
+    backState.current = { panelOpen: overlay !== null || chatOpen, leave: leaveTable };
+  });
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      setOverlay((current) => current ?? 'quit');
+      if (!backState.current.panelOpen) backState.current.leave();
       return true;
     });
     return () => subscription.remove();
@@ -176,6 +260,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
         layout={layout}
         dealing={dealing}
         onDealDone={finishDeal}
+        onResultShown={onResultShown}
       />
 
       {/* Contrôles discrets : quitter et réglages en haut à gauche. */}
@@ -184,7 +269,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
           label="Quitter la partie"
           tone="danger"
           size={layout.control}
-          onPress={() => setOverlay('quit')}
+          onPress={leaveTable}
         >
           <ExitGlyph size={layout.control} />
         </SoftIconButton>
@@ -200,7 +285,8 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
         </SoftIconButton>
       </View>
 
-      {/* Solde (aucune donnée de portefeuille : « — ») et chat en haut à droite. */}
+      {/* Solde en lecture seule (aucune donnée de portefeuille : « — ») et chat en haut à
+          droite. Pendant une partie, aucun achat ni retrait n'est proposé. */}
       <View
         style={[
           styles.corner,
@@ -208,7 +294,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
           { top: controlsTop, right: m.safe.right, gap: layout.gap },
         ]}
       >
-        <BalancePill height={layout.control} onPress={() => setOverlay('shop')}>
+        <BalancePill height={layout.control}>
           <Text
             accessibilityLabel={balance.label}
             style={[styles.balanceText, fontOf(fonts.button), { fontSize: m.bodySize * 1.15 }]}
@@ -216,6 +302,17 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
             {balance.text}
           </Text>
           <Coin size={Math.round(layout.control * 0.62)} fontFamily={fonts.title} />
+          {balance.reserved ? (
+            // Inscriptions à des tournois : réservées, PAS débitées (une partie en cours
+            // ne réserve plus rien d'affiché, D-080).
+            <Text
+              testID="table-reserved"
+              importantForAccessibility="no"
+              style={[styles.reservedText, { fontSize: m.smallSize }]}
+            >
+              {balance.reserved}
+            </Text>
+          ) : null}
         </BalancePill>
         <View>
           <SoftIconButton
@@ -255,8 +352,20 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
         />
       ) : null}
       {overlay === 'settings' ? <SettingsPanel onClose={closeOverlay} /> : null}
-      {overlay === 'shop' ? <ShopFlow onClose={closeOverlay} /> : null}
-      {overlay === 'quit' ? <QuitFlow game={game} onCancel={closeOverlay} /> : null}
+      {quitRefusal ? (
+        <View
+          style={[
+            styles.absolute,
+            { top: controlsTop + layout.control + layout.gap, left: m.safe.left + layout.gap },
+          ]}
+        >
+          <GlassBox style={styles.chip}>
+            <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
+              {quitRefusal}
+            </Text>
+          </GlassBox>
+        </View>
+      ) : null}
       {/* Détection anti-collusion (D-046) : explication et collecte, parties surveillées seules. */}
       <GameGeolocation game={game} />
     </View>
@@ -266,49 +375,55 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
 /**
  * Quitter (D-037, décidé par le serveur) : partie en attente → départ de la session ;
  * partie terminée avec une ronde ouverte → choix « Quitter » ; partie en cours → le serveur
- * refuse (PLAYER_IN_ACTIVE_GAME) et son message s'affiche dans la confirmation.
+ * refuse (PLAYER_IN_ACTIVE_GAME) et son message s'affiche. Partagé par le bouton « Quitter
+ * la partie » (départ direct, sans confirmation) et le panneau de fin de partie : `quit`
+ * résout `true` si le départ a abouti ; l'écran revient alors à l'accueil.
  */
-function QuitFlow({ game, onCancel }: { game: GameView; onCancel: () => void }) {
+function useQuitGame(game: GameView) {
   const sessionId = game.sessionId ?? '';
   const session = useSession(game.status === 'finished' ? sessionId : '');
   const leave = useLeaveSession();
   const decision = useSessionDecision(sessionId);
   const failure = [leave.error, decision.error].find((e) => e instanceof ApiError)?.message;
 
-  const confirm = () => {
-    if (!game.sessionId) {
-      goHome();
-      return;
-    }
+  const quit = async (): Promise<boolean> => {
+    if (!game.sessionId) return true;
     const round = session.data?.decision;
-    if (
-      game.status === 'finished' &&
-      round?.open &&
-      round.gameId === game.gameId &&
-      round.pendingPlayerIds.includes(game.viewerId)
-    ) {
-      decision.mutate('leave', { onSuccess: goHome });
-    } else {
-      leave.mutate(game.sessionId, { onSuccess: goHome });
+    try {
+      if (
+        game.status === 'finished' &&
+        round?.open &&
+        round.gameId === game.gameId &&
+        round.pendingPlayerIds.includes(game.viewerId)
+      ) {
+        await decision.mutateAsync('leave');
+      } else {
+        await leave.mutateAsync(game.sessionId);
+      }
+      return true;
+    } catch {
+      return false;
     }
   };
 
-  return (
-    <QuitDialog
-      onCancel={onCancel}
-      onConfirm={confirm}
-      pending={leave.isPending || decision.isPending}
-      error={failure}
-    />
-  );
+  return {
+    session,
+    decision,
+    quit,
+    pending: leave.isPending || decision.isPending,
+    error: failure,
+  };
 }
 
-/** Position de la carte jouée dans la zone d'action, légèrement poussée vers son joueur. */
+/**
+ * Position de la carte jouée sur la table, poussée vers son joueur comme sur la référence
+ * (carte posée à 16 % du diamètre du centre, côté de celui qui l'a jouée).
+ */
 const SPOT_OFFSET: Record<SeatSide, { x: number; y: number }> = {
-  bottom: { x: 0, y: 0.09 },
-  top: { x: 0, y: -0.09 },
-  left: { x: -0.1, y: 0 },
-  right: { x: 0.1, y: 0 },
+  bottom: { x: 0, y: 0.16 },
+  top: { x: 0, y: -0.16 },
+  left: { x: -0.16, y: 0 },
+  right: { x: 0.16, y: 0 },
 };
 
 function seatStateOf(game: GameView, player: PlayerInGame, presenting: boolean): SeatState {
@@ -353,12 +468,15 @@ function PlayArea({
   layout,
   dealing,
   onDealDone,
+  onResultShown,
 }: {
   game: GameView;
   receivedAt: number;
   layout: GameTableLayout;
   dealing: boolean;
   onDealDone: () => void;
+  /** Partie terminée et dernière carte présentée : le résultat est à l'écran. */
+  onResultShown: () => void;
 }) {
   const m = useLobbyMetrics();
   const act = useGameAction(game.gameId);
@@ -372,8 +490,9 @@ function PlayArea({
   const sideOf = (playerId: string) =>
     seats.find((s) => s.player?.playerId === playerId)?.side ?? 'bottom';
 
-  // Zone d'action : petit cercle au centre de la table, cible du glisser-déposer.
-  const dropSize = Math.round(diameter * 0.42);
+  // Zone d'action : cercle au centre de la table, cible du glisser-déposer (agrandi sur
+  // smartphone, `centerCircles`).
+  const dropSize = layout.center.drop;
   const dropRef = useRef<View>(null);
   const dropZone = useRef<DropZone | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -427,20 +546,31 @@ function PlayArea({
     (cardId: string) => setRevealed((prev) => new Set(prev).add(cardId)),
     [],
   );
-  const { spotlights, activeFinal, finalGap, notYetShown, presenting } = planPresentation(
+  // Tours complets selon le serveur : leurs cartes quittent la table ensemble, 2 s après la
+  // dernière carte jouée.
+  const completedTricks = new Set((play?.completedTricks ?? []).map((t) => t.number));
+  const { spotlights, notYetShown, presenting } = planPresentation(
     plays,
     settled,
     revealed,
+    completedTricks,
   );
+  const resultShown = game.status === 'finished' && !presenting;
+  // Main d'au revoir de 3 s juste après MA fuite confirmée par le serveur.
+  const farewell = useFarewell(game);
+  useEffect(() => {
+    if (resultShown) onResultShown();
+  }, [resultShown, onResultShown]);
   const showHands = Boolean(inProgress) || (presenting && Boolean(play));
-  const spotWidth = Math.round(Math.min(Math.max(diameter * 0.16, 34), 72));
+  const spotWidth = spotCardWidth(diameter, sw);
   const playsBy = (playerId: string) => plays.filter((p) => p.playerId === playerId);
   const publicSlot = (playerId: string, cardId: string) => {
     const row = zones(sideOf(playerId)).publicRow;
     const index = playsBy(playerId).findIndex((p) => p.cardId === cardId);
     return {
-      x: row.left + index * sw * ROW_STEP + sw / 2,
-      y: row.top + (sw * CARD_RATIO) / 2,
+      x: publicCardLeft(row, index) + row.cardWidth / 2,
+      y: row.top + (row.cardWidth * CARD_RATIO) / 2,
+      width: row.cardWidth,
     };
   };
 
@@ -450,7 +580,7 @@ function PlayArea({
       : undefined;
   const failure = act.error instanceof ApiError ? act.error.message : undefined;
 
-  // Signal lumineux de 2 s sur les cartes du joueur qui DEVIENT actif (une fois par tour).
+  // Halo lumineux de 5 s sur la zone du joueur qui DEVIENT actif (une fois par tour).
   const signalKey = useTurnSignal(turnKeyOf(game, dealing));
   const signaled = signalKey ? playerOfTurnKey(signalKey) : null;
   const glowFor = (playerId: string, side: SeatSide, count: number) =>
@@ -458,10 +588,31 @@ function PlayArea({
       <TurnGlow key={signalKey} rect={handZoneRect(side, count, layout, m)} />
     ) : null;
 
+  // Halo de 3 s sur la plaque du joueur qui OBTIENT le contrôle (état officiel du serveur).
+  const controlSignal = useControlSignal(controllerOf(game, dealing));
+  const controlHolder = controlSignal ? playerOfControlSignal(controlSignal) : null;
+  const controlGlow = (() => {
+    if (!controlSignal || !controlHolder) return null;
+    const side = seats.find((s) => s.player?.playerId === controlHolder)?.side;
+    if (!side) return null;
+    const z = zones(side);
+    // Barre réelle (une ligne : le pseudo), posée en haut de son emplacement, ou en bas
+    // pour le joueur connecté.
+    const height = plateContentHeight(ph, false);
+    const top = side === 'bottom' ? z.plate.top + ph - height : z.plate.top;
+    return (
+      <ControlGlow
+        key={controlSignal}
+        rect={{ left: z.plate.left, top, width: pw, height }}
+      />
+    );
+  })();
+
   // Ma main : cartes légèrement chevauchées, centrées dans l'emplacement de 5 cartes.
   const handCards = [...myHand, ...notYetShown(game.viewerId).map((p) => p.cardId)];
   const handLeft =
     layout.handLeft + (layout.handSlotWidth - handWidthOf(handCards.length, layout)) / 2;
+  const handStep = handStepFor(handCards.length, layout);
   const [draggedCard, setDraggedCard] = useState<string | null>(null);
 
   return (
@@ -479,7 +630,11 @@ function PlayArea({
           },
         ]}
       >
-        <WoodTable diameter={diameter} />
+        <WoodTable
+          diameter={diameter}
+          ring={layout.center.ring}
+          ringBorder={layout.center.ringBorder}
+        />
       </View>
       <View
         ref={dropRef}
@@ -498,15 +653,20 @@ function PlayArea({
         ]}
       />
 
-      {/* 3. L'état de la partie, au centre de la table. */}
+      {/* Halo de contrôle : juste au-dessus de la table, DERRIÈRE plaques, cartes et contrôles. */}
+      {controlGlow}
+
+      {/* 3. L'état de la partie, au centre de la table. Après « Se coucher » : main d'au
+          revoir pendant 3 s, puis le panneau de fin (il attend la fin de la main). */}
       <TableCenter
         game={game}
         receivedAt={receivedAt}
         layout={layout}
         failure={failure}
         dealing={dealing}
-        presenting={presenting}
+        presenting={presenting || farewell}
       />
+      {farewell ? <FarewellHand cx={cx} cy={cy} size={Math.round(diameter * 0.32)} /> : null}
       <TurnHud
         game={game}
         receivedAt={receivedAt}
@@ -534,7 +694,15 @@ function PlayArea({
               <HiddenHand count={hidden} width={sw} zone={z.backs} />
             ) : null}
             {settledCards.length > 0 ? (
-              <PublicRow cardIds={settledCards} width={sw} style={z.publicRow} />
+              <PublicRow
+                cardIds={settledCards}
+                width={z.publicRow.cardWidth}
+                step={z.publicRow.step}
+                reverse={z.publicRow.reverse}
+                style={(({ left, top }) => ({ left, top }))(
+                  publicRowBox(z.publicRow, settledCards.length),
+                )}
+              />
             ) : null}
             <SeatPlate
               state={player ? seatStateOf(game, player, presenting) : undefined}
@@ -543,10 +711,11 @@ function PlayArea({
               align={side === 'bottom' ? 'bottom' : 'top'}
               style={z.plate}
             />
-            {player && !mine && z.distance ? (
-              // Une étiquette par AUTRE joueur présent ; jamais pour soi (voir distance.ts).
+            {player && !mine && z.distance && distances ? (
+              // Partie surveillée seulement : une étiquette par AUTRE joueur présent, jamais
+              // pour soi (voir distance.ts).
               <DistanceTag
-                meters={distances[player.playerId]}
+                distance={distances.of(player.playerId)}
                 playerName={playerLabel(game, player.playerId)}
                 width={z.distance.width}
                 style={[styles.absolute, { left: z.distance.left, top: z.distance.top }]}
@@ -582,7 +751,7 @@ function PlayArea({
                 }}
                 onDrop={(id) => act.send({ type: 'PLAY_CARD', cardId: id }, game.version)}
                 style={{
-                  marginLeft: index === 0 ? 0 : layout.handStep - layout.cardWidth,
+                  marginLeft: index === 0 ? 0 : handStep - layout.cardWidth,
                   zIndex: draggedCard === cardId ? 40 : 10 + index,
                 }}
               />
@@ -605,18 +774,20 @@ function PlayArea({
           ))
         : null}
 
-      {/* Cartes qui viennent d'être jouées : au centre, puis vers leur joueur. */}
-      {spotlights.map((p) => {
+      {/* Cartes du tour : sur la table jusqu'à la dernière, puis 2 s après, vers leur joueur. */}
+      {spotlights.map(({ play: p, delayMs, release }) => {
         const offset = SPOT_OFFSET[sideOf(p.playerId)];
+        const slot = publicSlot(p.playerId, p.cardId);
         return (
           <PlayedCardSpotlight
             key={p.cardId}
             cardId={p.cardId}
             from={{ x: cx + offset.x * diameter, y: cy + offset.y * diameter }}
-            to={publicSlot(p.playerId, p.cardId)}
+            to={slot}
             width={spotWidth}
-            targetWidth={sw}
-            delayMs={p === activeFinal ? finalGap : 0}
+            targetWidth={slot.width}
+            delayMs={delayMs}
+            release={release}
             onReveal={reveal}
             onSettled={settle}
           />
@@ -689,15 +860,9 @@ function TableCenter({
               ? `En attente de ${missing} joueur${missing > 1 ? 's' : ''}`
               : 'Table complète'}
           </Text>
-          {isCreator ? (
-            canStart ? (
-              <PanelButton title="Démarrer" loading={start.isPending} onPress={start.start} />
-            ) : (
-              <Text style={small}>Il faut au moins 2 joueurs pour démarrer.</Text>
-            )
-          ) : (
-            <Text style={small}>Lancement par le créateur de la partie.</Text>
-          )}
+          {isCreator && canStart ? (
+            <PanelButton title="Démarrer" loading={start.isPending} onPress={start.start} />
+          ) : null}
           {startFailure ? <Text style={[small, styles.error]}>{startFailure}</Text> : null}
         </GlassBox>
       </View>
@@ -706,17 +871,11 @@ function TableCenter({
 
   if (game.status === 'finished') {
     if (presenting) return null;
+    // Panneau centré sur la table, sans déborder de l'écran (marge de 16 de chaque côté).
+    const width = Math.min(Math.max(diameter * 0.85, 260), m.availableWidth - 32, 440);
     return (
-      <View
-        style={[
-          styles.centerSlot,
-          centered(Math.min(m.availableWidth, diameter * 1.25)),
-          { top: cy - radius, height: diameter },
-        ]}
-      >
-        <GlassBox style={{ ...box, maxWidth: undefined }}>
-          <GameOutcome game={game} />
-        </GlassBox>
+      <View style={[styles.centerSlot, centered(width), { top: cy - radius, height: diameter }]}>
+        <GameOutcome game={game} width={width} />
       </View>
     );
   }
@@ -759,16 +918,16 @@ function TableCenter({
 }
 
 /**
- * Fin de partie, telle que le serveur l'a décidée : gagnant, égalité de priorité (partie
- * rejouée aussitôt) ou arrêt. La ronde Poursuivre/Quitter (15 s) s'affiche sur la table ;
- * ensuite la partie suivante se crée ou se rejoint d'ici même. La session qui enchaîne les
- * parties reste technique : elle n'est ni nommée ni affichée.
+ * Fin de partie, telle que le serveur l'a décidée : égalité de priorité (partie rejouée
+ * aussitôt) ou panneau de résultat (gagnant, bilan, Quitter / Rejouer). « Rejouer » est le
+ * choix « Poursuivre » de la ronde du serveur (D-034) ; ensuite la partie suivante se rejoint
+ * d'ici même. La session qui enchaîne les parties reste technique : jamais nommée.
  */
-function GameOutcome({ game }: { game: GameView }) {
+function GameOutcome({ game, width }: { game: GameView; width: number }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
-  const session = useSession(game.sessionId ?? '');
-  const decision = useSessionDecision(game.sessionId ?? '');
+  const t = useMessages().gameOver;
+  const { session, decision, quit, pending, error } = useQuitGame(game);
   const tie = game.endReason === 'INSTANT_WIN_TIE';
   const replayId = tie ? session.data?.currentGame?.gameId : undefined;
 
@@ -779,69 +938,72 @@ function GameOutcome({ game }: { game: GameView }) {
     }
   }, [replayId, game.gameId]);
 
-  const title = [styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.2 }];
-  const small = [styles.smallText, { fontSize: m.smallSize }];
-
   if (tie) {
     return (
-      <>
-        <Text style={title}>Égalité de priorité</Text>
-        <Text style={small}>
-          Aucun gagnant : la partie est rejouée immédiatement, avec le même premier joueur.
+      <GlassBox style={{ padding: m.gap, gap: m.gap * 0.6 }}>
+        <Text style={[styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.2 }]}>
+          {t.tieTitle}
         </Text>
-        {replayId ? (
-          <PanelButton title="Nouvelle donne" onPress={() => openGame(replayId)} />
-        ) : null}
-      </>
+        <Text style={[styles.smallText, { fontSize: m.smallSize }]}>{t.tieDetail}</Text>
+        {replayId ? <PanelButton title={t.newDeal} onPress={() => openGame(replayId)} /> : null}
+      </GlassBox>
     );
   }
-  const result = game.result;
-  const round =
-    session.data?.decision?.open && session.data.decision.gameId === game.gameId
-      ? session.data
-      : null;
-  const decisionFailure = decision.error instanceof ApiError ? decision.error.message : undefined;
-  const detail = !result
-    ? undefined
-    : result.method === 'INSTANT_WIN'
-      ? `Victoire instantanée${result.automatic ? ' (automatique)' : ''} : ${
-          result.instantWinCombination ? INSTANT_WIN_LABELS[result.instantWinCombination] : ''
-        }`
-      : 'Contrôle conservé à la fin du 5e tour.';
-  return (
-    <>
-      <Text style={title}>
-        {result ? `Gagnant : ${playerLabel(game, result.winnerId)}` : 'Partie arrêtée.'}
+
+  const data = session.data;
+  const round = data?.decision?.open && data.decision.gameId === game.gameId ? data.decision : null;
+  const awaitingMe = data ? Boolean(round?.pendingPlayerIds.includes(game.viewerId)) : undefined;
+  // Échéance du serveur ramenée à l'horloge du téléphone (décalage mesuré à la réception).
+  const capAt =
+    round && data
+      ? Date.parse(round.deadlineAt) - (Date.parse(data.serverNow) - session.dataUpdatedAt)
+      : undefined;
+  const footer =
+    awaitingMe !== false || !data ? undefined : round ? (
+      <Text style={[styles.smallText, { fontSize: m.smallSize }]}>
+        {t.waitingOthers(round.pendingPlayerIds.length)}
       </Text>
-      {detail ? <Text style={small}>{detail}</Text> : null}
-      {decisionFailure ? <Text style={[small, styles.error]}>{decisionFailure}</Text> : null}
-      {round ? (
-        <DecisionPanel
-          session={round}
-          receivedAt={session.dataUpdatedAt}
-          viewerId={game.viewerId}
-          pending={decision.isPending}
-          onDecide={(choice) =>
-            decision.mutate(choice, {
-              onSuccess: choice === 'leave' ? goHome : undefined,
-            })
-          }
-        />
-      ) : session.data ? (
-        <NextGame game={game} session={session.data} />
-      ) : null}
-    </>
+    ) : (
+      <NextGame game={game} session={data} />
+    );
+
+  return (
+    <GameOverPanel
+      game={game}
+      width={width}
+      awaitingMe={awaitingMe}
+      capAt={capAt}
+      pending={pending}
+      error={error}
+      footer={footer}
+      onQuit={async (automatic) => {
+        const ok = await quit();
+        // Fin du compte à rebours : on sort même si l'envoi échoue, le serveur appliquera de
+        // toute façon le départ automatique à son échéance.
+        if (ok || automatic) goHome();
+        return ok || automatic;
+      }}
+      onReplay={async () => {
+        try {
+          await decision.mutateAsync('continue');
+          return true;
+        } catch {
+          return false;
+        }
+      }}
+    />
   );
 }
 
 /**
- * Après « Poursuivre » (D-042) : le serveur crée et distribue lui-même la partie suivante de la
+ * Après « Rejouer » (D-042) : le serveur crée et distribue lui-même la partie suivante de la
  * même table dès la clôture de la ronde. L'écran n'a AUCUNE action à proposer : il passe
  * directement à l'aire de jeu de la nouvelle partie (distribution sur la table), où les
  * mains, cartes jouées et indicateurs repartent à zéro.
  */
 function NextGame({ game, session }: { game: GameView; session: SessionView }) {
   const m = useLobbyMetrics();
+  const t = useMessages().gameOver;
   const small = [styles.smallText, { fontSize: m.smallSize }];
   const next = session.currentGame;
   const seated = session.seats.some((s) => s.playerId === game.viewerId);
@@ -853,16 +1015,16 @@ function NextGame({ game, session }: { game: GameView; session: SessionView }) {
   }, [mine, next?.gameId]);
 
   if (session.status !== 'open' || !seated) {
-    return <PanelButton title="Accueil" onPress={goHome} />;
+    return <PanelButton title={t.home} onPress={goHome} />;
   }
   if (next && next.gameId !== game.gameId && !mine) {
     // Arrivé pendant une partie en cours : il jouera la suivante (D-035).
-    return <Text style={small}>Une partie est en cours : vous jouerez la suivante.</Text>;
+    return <Text style={small}>{t.nextGameLater}</Text>;
   }
   return (
     <View style={[styles.centerRow, { gap: m.gap * 0.5 }]} accessibilityLiveRegion="polite">
       <ActivityIndicator color={palette.gold} />
-      <Text style={small}>Nouvelle partie…</Text>
+      <Text style={small}>{t.newGame}</Text>
     </View>
   );
 }
@@ -888,13 +1050,15 @@ const styles = StyleSheet.create({
   corner: { position: 'absolute', alignItems: 'flex-start' },
   cornerRight: { alignItems: 'flex-end' },
   balanceText: { color: '#FFFFFF' },
+  reservedText: { color: 'rgba(255, 236, 200, 0.85)' },
   tableSlot: { position: 'absolute' },
   passThrough: { pointerEvents: 'none' },
+  // Intérieur de l'anneau gravé : invisible au repos (seul l'anneau se voit, comme sur la
+  // référence), souligné pendant le glisser-déposer.
   dropZone: {
     position: 'absolute',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 236, 200, 0.32)',
-    backgroundColor: 'rgba(255, 225, 170, 0.07)',
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
   dropZoneActive: {
     borderColor: 'rgba(242, 196, 81, 0.85)',
@@ -909,7 +1073,6 @@ const styles = StyleSheet.create({
   centerRow: { alignItems: 'center' },
   centerText: { color: '#FFFFFF', textAlign: 'center' },
   smallText: { color: 'rgba(255, 255, 255, 0.78)', textAlign: 'center' },
-  countdown: { color: palette.gold },
   whisper: { color: 'rgba(255, 245, 225, 0.75)' },
   error: { color: palette.error },
   chip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999 },

@@ -11,6 +11,8 @@
  *   rétablie, plutôt que de rester ouverte en apparence.
  */
 
+import { logNetworkIssue } from './api-client';
+
 export type RealtimeStatus = 'idle' | 'connecting' | 'connected' | 'offline';
 
 /** Sous-ensemble du WebSocket standard (React Native, navigateur) utilisé ici. */
@@ -199,6 +201,8 @@ export class RealtimeClient {
     if (socket !== this.socket) return;
     this.socket = null;
     this.stopPing();
+    // Diagnostic (développement) : destination et code de fermeture, jamais le jeton.
+    logNetworkIssue('TEMPS_RÉEL_FERMÉ', { url: this.deps.url, code });
     if (code === UNAUTHENTICATED_CLOSE) this.refreshBeforeConnect = true;
     if (this.chats.size === 0) {
       this.setStatus('idle');

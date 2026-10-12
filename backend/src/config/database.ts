@@ -25,6 +25,10 @@ export function poolConfig(url: string): PoolConfig {
     // Attente maximale d'une connexion libre (pool saturé) ou de son ouverture.
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,
+    // Keep-alive TCP (D-091) : après une veille du poste ou une coupure réseau, une connexion
+    // inactive morte est détectée et retirée du pool au lieu d'échouer à la requête suivante.
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
     // Côté serveur : une requête ou une transaction oubliée est interrompue.
     statement_timeout: 10_000,
     idle_in_transaction_session_timeout: 10_000,

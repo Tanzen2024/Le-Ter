@@ -68,7 +68,9 @@ export function useGameChat(gameId: string, client: RealtimeClient = appRealtime
     const current = queryClient.getQueryData<ChatHistory>(chatKeys.history(gameId));
     let after = current?.messages.at(-1)?.id;
     if (!after) {
-      await queryClient.invalidateQueries({ queryKey: chatKeys.history(gameId) });
+      await queryClient.invalidateQueries({
+        queryKey: chatKeys.history(gameId),
+      });
       return;
     }
     try {
@@ -79,12 +81,20 @@ export function useGameChat(gameId: string, client: RealtimeClient = appRealtime
         );
         addMessages(queryClient, gameId, res.messages);
         queryClient.setQueryData<ChatHistory>(chatKeys.history(gameId), (c) =>
-          c ? { ...c, canSend: res.canSend } : c,
+          c
+            ? {
+                ...c,
+                canSend: res.canSend,
+                restriction: res.restriction ?? null,
+              }
+            : c,
         );
         after = res.hasMore ? res.messages.at(-1)?.id : undefined;
       }
     } catch {
-      await queryClient.invalidateQueries({ queryKey: chatKeys.history(gameId) });
+      await queryClient.invalidateQueries({
+        queryKey: chatKeys.history(gameId),
+      });
     }
   }, [queryClient, gameId]);
 
@@ -111,7 +121,11 @@ export function useGameChat(gameId: string, client: RealtimeClient = appRealtime
       const page = await withAccessToken((t) => chatApi.list(t, gameId, { before: oldest }));
       queryClient.setQueryData<ChatHistory>(chatKeys.history(gameId), (c) =>
         c
-          ? { ...c, messages: mergeMessages(c.messages, page.messages), hasMore: page.hasMore }
+          ? {
+              ...c,
+              messages: mergeMessages(c.messages, page.messages),
+              hasMore: page.hasMore,
+            }
           : c,
       );
     } catch {
@@ -146,6 +160,12 @@ export function useSendChatMessage(gameId: string) {
           c ? { ...c, canSend: false } : c,
         );
       }
+      // Restriction posée par l'administration (D-079) : le serveur refuse chaque envoi.
+      if (err instanceof ApiError && err.code === 'CHAT_RESTRICTED') {
+        void queryClient.invalidateQueries({
+          queryKey: chatKeys.history(gameId),
+        });
+      }
     },
   });
 
@@ -156,5 +176,10 @@ export function useSendChatMessage(gameId: string) {
     }
     mutation.mutate({ content, key: intent.current.key }, { onSuccess: () => onSent?.() });
   };
-  return { send, isPending: mutation.isPending, error: mutation.error, reset: mutation.reset };
+  return {
+    send,
+    isPending: mutation.isPending,
+    error: mutation.error,
+    reset: mutation.reset,
+  };
 }

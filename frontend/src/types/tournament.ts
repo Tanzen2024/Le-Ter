@@ -137,7 +137,9 @@ export type AppNotificationType =
   | 'TOURNAMENT_STARTED'
   | 'TOURNAMENT_RESULTS_AVAILABLE'
   | 'TOURNAMENT_PRIZE_CREDITED'
-  | 'TOURNAMENT_TABLE_CLOSED';
+  | 'TOURNAMENT_TABLE_CLOSED'
+  /** Avertissement de l'administration (D-079) : `payload.message` est le texte à afficher. */
+  | 'MODERATION_WARNING';
 
 export interface AppNotification {
   id: string;
@@ -151,6 +153,8 @@ export interface AppNotification {
     rank?: number;
     reservedAmount?: number;
     prizeAmount?: number;
+    /** Avertissement (D-079) : message rédigé par l'administration, en texte brut. */
+    message?: string;
   };
   createdAt: string;
   readAt?: string;
@@ -206,5 +210,8 @@ export interface AdminRegistration {
   status: 'REGISTERED' | 'CANCELLED';
   registeredAt: string;
   cancelledAt?: string;
-  reservation?: { amount: number; status: 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED' };
+  reservation?: {
+    amount: number;
+    status: 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
+  };
 }

@@ -7,10 +7,15 @@ import { createApp } from '../../src/app';
 import type { SqlClient, SqlExecutor } from '../../src/database/sql-client';
 import type { RandomSource } from '../../src/domain/cards/random-source';
 import type { TerRuleSet } from '../../src/domain/rules/rule-set';
+import { PostgresGameStakeLedger } from '../../src/repositories/game-stake-ledger';
+import { PostgresGameCommissionSettingsRepository } from '../../src/repositories/postgres-game-commission-settings.repository';
+import { PostgresGameSettlementReader } from '../../src/repositories/postgres-game-settlement.repository';
 import { PostgresGameRepository } from '../../src/repositories/postgres-game.repository';
+import { GameCommissionSettingsService } from '../../src/services/game/game-commission-settings.service';
 import { PasswordService } from '../../src/services/auth/password.service';
 import { PostgresSessionRepository } from '../../src/repositories/postgres-session.repository';
 import { SessionService } from '../../src/services/sessions/session.service';
+import type { SessionId } from '../../src/domain/sessions/session';
 import { InMemorySessionEventHub } from '../../src/websocket/session-event-publisher';
 import type { AuthService } from '../../src/services/auth/auth.service';
 import { createAuthService } from '../../src/services/auth/create-auth-service';
@@ -26,6 +31,13 @@ import {
 import { DeadlineSupervisor } from '../../src/services/timers/deadline-supervisor';
 import type { AutomaticCardSelectionStrategy } from '../../src/domain/game/automatic-card-selection';
 import { singleActiveGameParticipation } from '../../src/services/game/participation-policies';
+import {
+  walletGameStakePolicy,
+  walletSessionStakeAdmission,
+  walletStakeContinuation,
+} from '../../src/services/game/stake-policies';
+import { PostgresTournamentRepository } from '../../src/repositories/postgres-tournament.repository';
+import { PostgresWalletRepository } from '../../src/repositories/postgres-wallet.repository';
 import { createLogger, type Logger } from '../../src/utils/logger';
 import { testAdminDependencies } from './admin';
 import type {
@@ -85,6 +97,18 @@ export function createGameApiTestApp(
     detectionAdmin?: DetectionAdminService;
     /** Interrupteur global de la détection (D-053) ; absent, 503. */
     detectionSettings?: DetectionSettingsService;
+    /**
+     * Mise des parties ordinaires (D-073), câblée comme en production : mise > 0 et solde
+     * disponible ≥ 2 × mise. Désactivée par défaut : les tests historiques ne la concernent pas.
+     */
+    stakePolicies?: boolean;
+    /**
+     * Séquestre et règlement des mises (D-074), câblés comme en production. Par défaut : actif
+     * avec `stakePolicies` (le chemin financier complet), inactif sinon.
+     */
+    stakeLedger?: boolean;
+    /** Horloge du séquestre (dates des écritures). */
+    ledgerClock?: () => Date;
   } = {},
 ): GameApiTestContext {
   const logLines: Record<string, unknown>[] = [];
@@ -101,8 +125,21 @@ export function createGameApiTestApp(
   );
   const bus = options.bus ?? new InMemoryGameEventHub();
   const timers = new GameTimerRegistry();
-  const repository = new PostgresGameRepository(sql);
-  const sessionRepository = new PostgresSessionRepository(sql);
+  const stakeLedger =
+    (options.stakeLedger ?? options.stakePolicies)
+      ? new PostgresGameStakeLedger({ logger, clock: options.ledgerClock })
+      : undefined;
+  const repository = new PostgresGameRepository(sql, { stakeLedger });
+  const sessionRepository = new PostgresSessionRepository(sql, { stakeLedger });
+  const gameCommissionSettings = new GameCommissionSettingsService({
+    repository: new PostgresGameCommissionSettingsRepository(sql),
+    logger,
+  });
+  const tournamentRepository = new PostgresTournamentRepository(sql);
+  const stakeDeps = {
+    wallets: new PostgresWalletRepository(sql),
+    tournamentOfSession: (id: SessionId) => tournamentRepository.findTournamentOfSession(id),
+  };
   const games = new GameService({
     repository,
     publisher: bus,
@@ -110,7 +147,9 @@ export function createGameApiTestApp(
     timers,
     // Règle officielle R-18 par défaut, comme en production (create-game-service.ts).
     participationPolicy: options.participationPolicy ?? singleActiveGameParticipation(repository),
+    ...(options.stakePolicies && { stakePolicy: walletGameStakePolicy(stakeDeps) }),
     sessionSeats: sessionRepository,
+    settlements: new PostgresGameSettlementReader(sql),
     logger,
     rules: options.rules,
     random: options.random ?? defaultTestRandom(),
@@ -132,6 +171,19 @@ export function createGameApiTestApp(
     // Les tests historiques créent la partie suivante eux-mêmes (POST …/games).
     autoNextGame: options.autoNextGame ?? false,
     decisionWindowMs: options.decisionWindowMs,
+    // Interrupteur global fourni : l'option de détection des tables le suit (D-081).
+    ...(options.detectionSettings && { detectionSwitch: options.detectionSettings }),
+    ...(options.stakePolicies && {
+      admission: walletSessionStakeAdmission({
+        ...stakeDeps,
+        lastStakeOfSession: async (id) => {
+          const last = await sessionRepository.findLastGame(id);
+          const game = last ? await games.findGame(last.gameId) : null;
+          return game ? game.stakeAmount : null;
+        },
+      }),
+      continuation: walletStakeContinuation(stakeDeps),
+    }),
   });
   const supervisor = new DeadlineSupervisor({ games, sessions, logger });
   const app = createApp({
@@ -145,6 +197,7 @@ export function createGameApiTestApp(
     geolocation: options.geolocation,
     detectionAdmin: options.detectionAdmin,
     detectionSettings: options.detectionSettings,
+    gameCommissionSettings,
     admin: testAdminDependencies(sql, auth, logger),
   });
   return {

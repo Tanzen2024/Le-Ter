@@ -17,10 +17,11 @@ function gateway() {
   return { instance, createPayment, payments };
 }
 
-const customer = (firstName: string, lastName: string) => ({
+const customer = (firstName: string, lastName: string, phone = '+237692130271') => ({
   firstName,
   lastName,
   email: 'player@test.local',
+  phone,
 });
 
 describe('CinetPayGateway.assertCollectionEligible', () => {
@@ -51,6 +52,29 @@ describe('CinetPayGateway.assertCollectionEligible', () => {
     expect(error).toBeInstanceOf(PaymentProfileIncompleteError);
     expect((error as PaymentProfileIncompleteError).fields).toEqual(fields);
   });
+
+  it.each(['', '692130271', '+237', '+237 692130271', '00237692130271', '+2376921302711234567'])(
+    'numéro d’inscription non transmissible %p → ["phone"] (D-088)',
+    (phone) => {
+      let error: unknown;
+      try {
+        gateway().instance.assertCollectionEligible(customer('Awa', 'Ndiaye', phone));
+      } catch (err) {
+        error = err;
+      }
+      expect(error).toBeInstanceOf(PaymentProfileIncompleteError);
+      expect((error as PaymentProfileIncompleteError).fields).toEqual(['phone']);
+    },
+  );
+
+  it.each(['+237692130271', '+33612345678', '+2250707070700'])(
+    'numéro international %p accepté',
+    (phone) => {
+      expect(() =>
+        gateway().instance.assertCollectionEligible(customer('Awa', 'Ndiaye', phone)),
+      ).not.toThrow();
+    },
+  );
 
   it('requestCollection refuse aussi, sans écrire ni appeler CinetPay', async () => {
     const { instance, createPayment, payments } = gateway();

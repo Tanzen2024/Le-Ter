@@ -257,8 +257,8 @@ describe('Départ et fermeture', () => {
 describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
   const open = (s: Session = table()) => syncDecisionRound(s, finished(), NOW).session;
 
-  it('la fin de partie ouvre une ronde de 15 s pour tous les présents', () => {
-    expect(SESSION_DECISION_WINDOW_MS).toBe(15_000);
+  it('la fin de partie ouvre une ronde de 10 s pour tous les présents', () => {
+    expect(SESSION_DECISION_WINDOW_MS).toBe(10_000);
     const { session, events } = syncDecisionRound(table(), finished(), at(1));
     expect(session.round).toMatchObject({
       gameId: G1,
@@ -315,7 +315,7 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
     });
   });
 
-  it('absence de réponse : départ AUTOMATIQUE à 15 s, siège libéré', () => {
+  it('absence de réponse : départ AUTOMATIQUE à 10 s, siège libéré', () => {
     let s = decide(open(), A, 'continue', at(1)).session;
     s = decide(s, B, 'continue', at(1)).session;
     expect(syncDecisionRound(s, finished(), at(SESSION_DECISION_WINDOW_MS - 1)).events).toEqual([]); // pas encore

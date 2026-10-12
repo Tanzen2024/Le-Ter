@@ -1,4 +1,5 @@
 import type { PlayerId } from '../game/game-id';
+import { MAX_TOKENS_PER_OPERATION } from '../wallet/wallet';
 import { UnresolvedRuleError } from './unresolved-rule';
 
 /**
@@ -27,6 +28,73 @@ export interface KoraDetector {
 export function assertValidStake(amount: number): void {
   if (!Number.isInteger(amount) || amount < 0) {
     throw new RangeError(`Mise invalide : ${amount}`);
+  }
+}
+
+/**
+ * Mise d'une partie ORDINAIRE (D-073) : entier strictement positif, en jetons du compte de
+ * jeu. Plafond technique = plafond d'une opération du compte de jeu, pour que le double de la
+ * mise reste un entier sûr (aucune perte de précision, aucun dépassement).
+ */
+export const MAX_GAME_STAKE = MAX_TOKENS_PER_OPERATION;
+
+/** Solde disponible exigé pour jouer : au moins deux fois la mise (D-073). */
+export const GAME_STAKE_BALANCE_MULTIPLIER = 2;
+
+/** Mise valide d'une partie ordinaire : nombre entier, > 0, ≤ MAX_GAME_STAKE. */
+export function isValidGameStake(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= MAX_GAME_STAKE
+  );
+}
+
+/** Solde disponible minimal pour jouer avec cette mise (valide) : 2 × mise. */
+export function requiredBalanceForStake(stake: number): number {
+  return GAME_STAKE_BALANCE_MULTIPLIER * stake;
+}
+
+/** `soldeDisponible >= 2 × mise`, en entiers sûrs. */
+export function hasBalanceForStake(available: number, stake: number): boolean {
+  return Number.isSafeInteger(available) && available >= requiredBalanceForStake(stake);
+}
+
+/** Mise absente, nulle, négative ou malformée pour une partie ordinaire (D-073). */
+export class InvalidGameStakeError extends Error {
+  constructor(readonly stake: unknown) {
+    super(`Mise de partie invalide : ${String(stake)}`);
+    this.name = 'InvalidGameStakeError';
+  }
+}
+
+/** Solde disponible inférieur à 2 × la mise (D-073). Le solde n'est pas exposé. */
+export class InsufficientBalanceForStakeError extends Error {
+  readonly required: number;
+
+  constructor(readonly stake: number) {
+    super(`Solde disponible inférieur à ${requiredBalanceForStake(stake)} pour une mise de ${stake}`);
+    this.name = 'InsufficientBalanceForStakeError';
+    this.required = requiredBalanceForStake(stake);
+  }
+}
+
+/**
+ * Au démarrage, le disponible d'un joueur ne couvre plus le séquestre de 2 × mise (D-074) :
+ * il l'a utilisé entre son arrivée et le démarrage (retrait, inscription à un tournoi). Le
+ * démarrage est refusé et rien n'est réservé. Le solde n'est pas exposé.
+ */
+export class StakeNotCoveredAtStartError extends Error {
+  readonly required: number;
+
+  constructor(
+    readonly playerId: PlayerId,
+    readonly stake: number,
+  ) {
+    super(`Séquestre de ${GAME_STAKE_BALANCE_MULTIPLIER * stake} non couvert pour ${playerId}`);
+    this.name = 'StakeNotCoveredAtStartError';
+    this.required = GAME_STAKE_BALANCE_MULTIPLIER * stake;
   }
 }
 

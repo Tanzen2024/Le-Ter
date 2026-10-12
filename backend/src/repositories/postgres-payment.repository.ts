@@ -7,6 +7,7 @@ import type {
   PaymentRepository,
   PaymentSettlement,
   PaymentSettlementResult,
+  PendingReconciliationQuery,
 } from './payment.repository';
 import { settleWalletTransaction } from './postgres-wallet.repository';
 
@@ -24,6 +25,7 @@ interface PaymentRow {
   payment_method: string | null;
   payment_url: string | null;
   notify_token_hash: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: Date;
   updated_at: Date;
   completed_at: Date | null;
@@ -52,6 +54,8 @@ function toPayment(row: PaymentRow): Payment {
     ...(row.payment_method !== null && { paymentMethod: row.payment_method }),
     ...(row.payment_url !== null && { paymentUrl: row.payment_url }),
     ...(row.notify_token_hash !== null && { notifyTokenHash: row.notify_token_hash }),
+    ...(row.provider_reference === null &&
+      row.metadata?.initialization === 'UNCERTAIN' && { initializationUncertain: true }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.completed_at && { completedAt: row.completed_at }),
@@ -73,8 +77,11 @@ export class PostgresPaymentRepository implements PaymentRepository {
   async create(p: NewPayment): Promise<void> {
     await this.db.query(
       `INSERT INTO payments (id, wallet_transaction_id, provider, merchant_transaction_id,
-         amount, currency, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $7)`,
+         amount, currency, status, payment_method, metadata, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7,
+         CASE WHEN $9::boolean THEN jsonb_build_object('initialization', 'UNCERTAIN')
+              ELSE '{}'::jsonb END,
+         $8, $8)`,
       [
         p.id,
         p.walletTransactionId,
@@ -82,7 +89,9 @@ export class PostgresPaymentRepository implements PaymentRepository {
         p.merchantTransactionId,
         p.amount,
         p.currency,
+        p.paymentMethod ?? null,
         p.createdAt.toISOString(),
+        p.initializationUncertain === true,
       ],
     );
   }
@@ -95,15 +104,20 @@ export class PostgresPaymentRepository implements PaymentRepository {
     await this.db.query(
       `UPDATE payments
        SET provider_reference = $2, payment_url = $3, notify_token_hash = $4,
-           provider_status = $5, updated_at = $6
+           provider_status = $5, updated_at = $6,
+           -- Référence reçue : l'initialisation n'est plus incertaine (D-091).
+           metadata = (metadata - 'initialization') || jsonb_strip_nulls(jsonb_build_object(
+             'initialStatus', $7::text, 'mustBeRedirected', $8::boolean))
        WHERE id = $1 AND status = 'PENDING'`,
       [
         paymentId,
         data.providerReference,
-        data.paymentUrl,
+        data.paymentUrl ?? null,
         data.notifyTokenHash,
         data.providerStatus ?? null,
         now.toISOString(),
+        data.initialStatus ?? null,
+        data.mustBeRedirected ?? null,
       ],
     );
   }
@@ -116,6 +130,35 @@ export class PostgresPaymentRepository implements PaymentRepository {
        WHERE id = $1 AND status = 'PENDING'`,
       [paymentId, reason, now.toISOString()],
     );
+  }
+
+  async markInitializationUncertain(paymentId: string, reason: string, now: Date): Promise<void> {
+    await this.db.query(
+      `UPDATE payments
+       SET metadata = metadata || jsonb_build_object('initialization', 'UNCERTAIN',
+             'initializationError', $2::text),
+           updated_at = $3
+       WHERE id = $1 AND status = 'PENDING' AND provider_reference IS NULL`,
+      [paymentId, reason, now.toISOString()],
+    );
+  }
+
+  async recordRecoveredReference(
+    paymentId: string,
+    providerReference: string,
+    now: Date,
+  ): Promise<boolean> {
+    const { rows } = await this.db.query<{ id: string }>(
+      `UPDATE payments
+       SET provider_reference = $2,
+           metadata = metadata || jsonb_build_object('initialization', 'RECOVERED'),
+           updated_at = $3
+       WHERE id = $1 AND status = 'PENDING' AND provider_reference IS NULL
+         AND metadata->>'initialization' = 'UNCERTAIN'
+       RETURNING id`,
+      [paymentId, providerReference, now.toISOString()],
+    );
+    return rows.length > 0;
   }
 
   findById(paymentId: string): Promise<Payment | null> {
@@ -138,6 +181,26 @@ export class PostgresPaymentRepository implements PaymentRepository {
       provider,
       merchantTransactionId,
     ]);
+  }
+
+  async findPendingForReconciliation(query: PendingReconciliationQuery): Promise<Payment[]> {
+    const { rows } = await this.db.query<PaymentRow>(
+      `${SELECT_PAYMENT}
+       WHERE p.status = 'PENDING'
+         AND (p.provider_reference IS NOT NULL OR p.metadata->>'initialization' = 'UNCERTAIN')
+         AND p.created_at <= $1 AND p.created_at > $2 AND p.updated_at <= $3
+         AND NOT (p.id::text = ANY($4::text[]))
+       ORDER BY p.updated_at, p.id
+       LIMIT $5`,
+      [
+        query.createdBefore.toISOString(),
+        query.createdAfter.toISOString(),
+        query.lastCheckedBefore.toISOString(),
+        [...query.excludeIds],
+        query.limit,
+      ],
+    );
+    return rows.map(toPayment);
   }
 
   async recordProviderStatus(paymentId: string, providerStatus: string, now: Date): Promise<void> {
@@ -191,8 +254,8 @@ export class PostgresPaymentRepository implements PaymentRepository {
         await tx.query(
           `UPDATE payments
            SET status = $2, provider_status = $3, payment_method = COALESCE($4, payment_method),
-               metadata = CASE WHEN $6::text IS NULL THEN metadata
-                               ELSE metadata || jsonb_build_object('anomaly', $6::text) END,
+               metadata = metadata || jsonb_strip_nulls(jsonb_build_object(
+                 'anomaly', $6::text, 'settledBy', $7::text)),
                updated_at = $5, completed_at = $5
            WHERE id = $1`,
           [
@@ -202,6 +265,7 @@ export class PostgresPaymentRepository implements PaymentRepository {
             settlement.paymentMethod ?? null,
             now.toISOString(),
             anomaly,
+            settlement.settledBy ?? null,
           ],
         );
       }

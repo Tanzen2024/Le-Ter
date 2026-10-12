@@ -6,6 +6,7 @@ import { AppState } from 'react-native';
 
 import { ApiError } from '../../lib/api-client';
 import { geolocationApi } from '../../services/geolocation-api';
+import { useGameUiStore } from '../../stores/game-ui-store';
 import type { GeolocationStatus } from '../../types/geolocation';
 import { withAccessToken } from '../auth/session';
 import { isGameId } from '../games/hooks';
@@ -29,6 +30,8 @@ export const geolocationKeys = {
 
 /** Jamais plus d'une position toutes les 30 s, quelle que soit la réponse du serveur. */
 export const MIN_COLLECTION_INTERVAL_MS = 30_000;
+/** Lecture GPS sans réponse au-delà de ce délai : GPS indisponible, on réessaie plus tard. */
+export const POSITION_TIMEOUT_MS = 20_000;
 /** Une position plus imprécise serait refusée par le serveur : elle n'est pas envoyée. */
 const MAX_SENT_ACCURACY_METERS = 1_000;
 /** Refus définitifs du serveur : la collecte s'arrête pour cette partie. */
@@ -47,11 +50,40 @@ export function resetGeolocationConsent(): void {
   consentByTable.clear();
 }
 
+/**
+ * État de la géolocalisation d'UNE partie. Tant que le serveur collecte, il est relu à sa
+ * cadence : les distances suivent les positions des AUTRES joueurs même si ce téléphone n'en
+ * envoie pas (refus, GPS coupé). Relu aussi au retour du réseau ; arrêté dès que plus aucun
+ * écran de cette partie ne l'utilise.
+ */
 export function useGeolocationStatus(gameId: string) {
   return useQuery({
     queryKey: geolocationKeys.status(gameId),
     queryFn: () => withAccessToken((t) => geolocationApi.status(t, gameId)),
     enabled: isGameId(gameId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data?.detectionEnabled && data.collecting
+        ? Math.max(MIN_COLLECTION_INTERVAL_MS, data.collectionIntervalMs)
+        : false;
+    },
+  });
+}
+
+/** Position du téléphone, ou rejet si le GPS ne répond pas à temps. */
+function readPosition(): Promise<Location.LocationObject> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('GPS_TIMEOUT')), POSITION_TIMEOUT_MS);
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).then(
+      (position) => {
+        clearTimeout(timer);
+        resolve(position);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error('GPS_UNAVAILABLE'));
+      },
+    );
   });
 }
 
@@ -91,6 +123,7 @@ export function useGameGeolocation({
 }) {
   const queryClient = useQueryClient();
   const status = useGeolocationStatus(gameId);
+  const setLocalGps = useGameUiStore((s) => s.setLocalGps);
   // Un refus déjà exprimé pour cette table est respecté : aucune nouvelle explication.
   const [permission, setPermission] = useState<Permission>(() =>
     consentByTable.get(tableKey) === 'declined' ? 'refused' : 'unknown',
@@ -140,20 +173,39 @@ export function useGameGeolocation({
     setPermission('refused');
   }, [tableKey]);
 
+  // État GPS local (affichage des distances indisponibles), propre à CETTE partie et
+  // oublié à la sortie de la partie.
+  const refused = watched && permission === 'refused';
+  useEffect(() => {
+    if (refused) setLocalGps(gameId, 'refused');
+    else setLocalGps(gameId, null);
+  }, [refused, gameId, setLocalGps]);
+  useEffect(() => () => setLocalGps(gameId, null), [gameId, setLocalGps]);
+
   // Collecte : tout de suite, puis à la cadence du serveur, tant que tout est réuni.
   const collecting = watched && active && permission === 'granted';
   useEffect(() => {
     if (!collecting) return;
     let cancelled = false;
     const tick = async () => {
+      let position: Location.LocationObject;
       try {
-        const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-        const { latitude, longitude, accuracy } = position.coords;
-        if (cancelled || accuracy == null || accuracy <= 0 || accuracy > MAX_SENT_ACCURACY_METERS) {
-          return;
-        }
+        position = await readPosition();
+      } catch {
+        // GPS coupé, refusé par le système en cours de partie ou sans réponse : rien n'est
+        // envoyé, jamais de position fictive ; on réessaie au prochain intervalle.
+        if (!cancelled) setLocalGps(gameId, 'unavailable');
+        return;
+      }
+      if (cancelled) return;
+      const { latitude, longitude, accuracy } = position.coords;
+      if (accuracy == null || accuracy <= 0 || accuracy > MAX_SENT_ACCURACY_METERS) {
+        // Position trop imprécise : le serveur la refuserait, elle n'est pas envoyée.
+        setLocalGps(gameId, 'unavailable');
+        return;
+      }
+      setLocalGps(gameId, null);
+      try {
         const { distances } = await withAccessToken((t) =>
           geolocationApi.sendPosition(t, gameId, {
             latitude,
@@ -174,7 +226,7 @@ export function useGameGeolocation({
             queryKey: geolocationKeys.status(gameId),
           });
         }
-        // Autre panne (réseau, GPS indisponible) : on réessaie au prochain intervalle.
+        // Autre panne (réseau, serveur) : on réessaie au prochain intervalle.
       }
     };
     void tick();
@@ -183,7 +235,7 @@ export function useGameGeolocation({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [collecting, intervalMs, gameId, queryClient]);
+  }, [collecting, intervalMs, gameId, queryClient, setLocalGps]);
 
   return { askConsent: watched && permission === 'explain', accept, decline };
 }

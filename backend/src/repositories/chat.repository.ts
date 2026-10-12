@@ -6,6 +6,11 @@ import type { GameId, PlayerId } from '../domain/game/game-id';
 export interface ChatAccess {
   status: GameStatus;
   isPlayer: boolean;
+  /**
+   * Restriction du chat active pour ce joueur à l'heure demandée (D-079), ou null. Elle
+   * vaut pour toutes ses parties, et pour lui seul.
+   */
+  chatRestriction: { endsAt: Date | null } | null;
 }
 
 /** Message à enregistrer ; le pseudo de l'expéditeur est lu en base, jamais reçu du client. */
@@ -36,8 +41,8 @@ export interface ChatPageQuery {
  * écriture portent sur UNE partie. Aucune dépendance au moteur de jeu.
  */
 export interface ChatRepository {
-  /** `null` : partie inexistante. */
-  findAccess(gameId: GameId, playerId: PlayerId): Promise<ChatAccess | null>;
+  /** `null` : partie inexistante. `now` : heure du serveur pour la restriction du chat. */
+  findAccess(gameId: GameId, playerId: PlayerId, now: Date): Promise<ChatAccess | null>;
 
   findByClientMessageId(
     gameId: GameId,
@@ -46,8 +51,8 @@ export interface ChatRepository {
   ): Promise<StoredChatMessage | null>;
 
   /**
-   * Enregistre le message si l'expéditeur est TOUJOURS joueur de la partie et qu'elle n'est
-   * pas terminée (vérifié dans la même instruction SQL). `null` : refusé, ou clé d'envoi
+   * Enregistre le message si l'expéditeur est TOUJOURS joueur de la partie, qu'elle n'est
+   * pas terminée et que son chat n'est pas restreint (vérifié dans la même instruction SQL). `null` : refusé, ou clé d'envoi
    * déjà enregistrée par un envoi concurrent ; l'appelant relit pour savoir lequel.
    */
   insert(message: NewChatMessage): Promise<ChatMessage | null>;

@@ -16,6 +16,7 @@ import { playSound } from '../../services/audio-service';
 import { HomeTournamentSummary } from '../tournaments/HomeTournamentSummary';
 import { useLobbyMetrics, type LobbyMetrics } from './lobby-metrics';
 import { LobbyShell, useLobbyPanels } from './LobbyShell';
+import { ModerationNotice } from './ModerationNotice';
 
 /**
  * Accueil connecté (paysage, D-028) : « Choisis ton mode ! » et deux modes.
@@ -30,6 +31,7 @@ export function HomeScreen() {
   return (
     <LobbyShell decor={<HomeDecor />}>
       <ModeSelect />
+      <ModerationNotice />
     </LobbyShell>
   );
 }

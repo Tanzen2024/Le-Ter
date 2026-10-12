@@ -1,4 +1,8 @@
-import { PAYMENT_CURRENCY } from '../domain/payments/payment';
+import {
+  isDirectPayOperator,
+  PAYMENT_CURRENCY,
+  type DirectPayOperator,
+} from '../domain/payments/payment';
 import { isValidTokenAmount, MAX_TOKENS_PER_OPERATION } from '../domain/wallet/wallet';
 import { ValidationError } from './validation-error';
 
@@ -24,13 +28,35 @@ export function parseTokenAmountInput(body: unknown): { tokens: number } {
  * envoyée, doit être XAF (la devise est fixée par le serveur). Tout autre champ (`playerId`,
  * `amount`…) est ignoré : l'identité vient du JWT, le montant payé est calculé par le serveur.
  */
-export function parseDepositInput(body: unknown): { tokens: number } {
-  const currency =
-    typeof body === 'object' && body !== null
-      ? (body as Record<string, unknown>).currency
-      : undefined;
-  if (currency !== undefined && currency !== PAYMENT_CURRENCY) {
+export function parseDepositInput(body: unknown): {
+  tokens: number;
+  directOperator?: DirectPayOperator;
+  pageOperator?: DirectPayOperator;
+} {
+  const source =
+    typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+  if (source.currency !== undefined && source.currency !== PAYMENT_CURRENCY) {
     throw new ValidationError({ currency: `Seule la devise ${PAYMENT_CURRENCY} est acceptée.` });
   }
-  return parseTokenAmountInput(body);
+  // `method` (paiement direct, D-083) : opérateur seulement ; le numéro est celui du compte,
+  // le montant est calculé par le serveur. Absent ou null : page de paiement CinetPay.
+  const method = source.method;
+  if (method !== undefined && method !== null && !isDirectPayOperator(method)) {
+    throw new ValidationError({ method: 'Opérateur de paiement inconnu.' });
+  }
+  // `operator` (D-087) : opérateur souhaité sur la page CinetPay hébergée (Orange Money, repli
+  // MTN). Exclusif de `method` : un paiement est direct OU par page.
+  const operator = source.operator;
+  if (operator !== undefined && operator !== null && !isDirectPayOperator(operator)) {
+    throw new ValidationError({ operator: 'Opérateur de paiement inconnu.' });
+  }
+  if (isDirectPayOperator(method) && operator !== undefined && operator !== null) {
+    throw new ValidationError({ operator: 'Choisissez un paiement direct OU la page CinetPay.' });
+  }
+  const { tokens } = parseTokenAmountInput(body);
+  return {
+    tokens,
+    ...(isDirectPayOperator(method) && { directOperator: method }),
+    ...(isDirectPayOperator(operator) && { pageOperator: operator }),
+  };
 }

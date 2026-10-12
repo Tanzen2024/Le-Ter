@@ -5,7 +5,8 @@ import {
   type AuditTargetType,
 } from '../domain/admin/admin';
 import type { PaymentStatus } from '../domain/payments/payment';
-import { USER_ROLES, type UserRole, type UserStatus } from '../domain/users/user';
+import { WITHDRAWAL_STATUSES, type WithdrawalStatus } from '../domain/wallet/withdrawal';
+import { USER_ROLES, type UserRole } from '../domain/users/user';
 import type { AuditListQuery } from '../repositories/admin-audit.repository';
 import {
   GAME_ANOMALIES,
@@ -25,10 +26,12 @@ import {
   type Period,
   type UserListQuery,
   type UserSort,
+  type UserStatusFilter,
   type WalletKind,
   type WalletStatus,
   type WalletTransactionQuery,
 } from '../repositories/admin-query.repository';
+import type { AdminWithdrawalQuery } from '../repositories/withdrawal.repository';
 import { REPORTS, type ReportName } from '../services/admin/admin-query.service';
 import { ValidationError } from './validation-error';
 
@@ -165,7 +168,7 @@ export function parseUserListQuery(query: Query): UserListQuery {
     sort: r.oneOf<UserSort>('sort', USER_SORTS) ?? 'created_desc',
   };
   const q = r.string('q', 100);
-  const status = r.oneOf<UserStatus>('status', ['active', 'disabled']);
+  const status = r.oneOf<UserStatusFilter>('status', ['active', 'disabled', 'suspended']);
   const role = r.oneOf<UserRole>('role', USER_ROLES);
   r.done();
   return { ...result, ...(q && { q }), ...(status && { status }), ...(role && { role }) };
@@ -246,6 +249,21 @@ export function parsePaymentQuery(query: Query): PaymentQuery {
     ...(userId && { userId }),
     ...(minAmount !== undefined && { minAmount }),
     ...(maxAmount !== undefined && { maxAmount }),
+    ...(q && { q }),
+  };
+}
+
+export function parseWithdrawalQuery(query: Query): AdminWithdrawalQuery {
+  const r = new Reader(query, [...PAGE_KEYS, 'status', 'userId', 'from', 'to', 'q']);
+  const result: AdminWithdrawalQuery = { ...r.page(), ...r.range() };
+  const status = r.oneOf<WithdrawalStatus>('status', WITHDRAWAL_STATUSES);
+  const userId = r.uuid('userId');
+  const q = r.string('q', 128);
+  r.done();
+  return {
+    ...result,
+    ...(status && { status }),
+    ...(userId && { userId }),
     ...(q && { q }),
   };
 }
