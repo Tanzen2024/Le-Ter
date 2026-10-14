@@ -8,6 +8,7 @@ import {
   tablePalette as palette,
   useTableFonts,
 } from '../../../components/table/TableDecor';
+import { displayedDeadline } from '../../../hooks/use-server-countdown';
 import { ApiError } from '../../../lib/api-client';
 import { useMessages } from '../../../lib/i18n';
 import { useGameUiStore } from '../../../stores/game-ui-store';
@@ -31,20 +32,25 @@ import {
   useGameAction,
   useStartGame,
 } from '../hooks';
+import { useGameUpdates } from '../game-updates';
 import { TournamentTableWaiting } from './TournamentTableWaiting';
-import { CARD_RATIO, HiddenHand, PublicRow } from './Cards';
+import { CARD_RATIO, HiddenHand } from './Cards';
 import { GameChat, useGameChatWithUnread } from '../../chat/GameChat';
 import { GameGeolocation } from '../../geolocation/GameGeolocation';
 import { GameOverPanel } from './GameOverPanel';
 import { usePlayerDistances } from './distance';
-import { planPresentation, publicPlays } from './presentation-plan';
+import { planPresentation, publicPlays, turnHeld } from './presentation-plan';
+import { flightState, handWithFlight, type CardFlight } from './card-flight';
 import { useTableBalanceLabel } from './table-balance';
 import {
   DealFlight,
   handZoneRect,
   PlayedCardSpotlight,
+  PlayedCardsZone,
+  SPOT_ANGLE,
+  playedRowIn,
+  playedZones,
   publicCardLeft,
-  publicRowBox,
   seatZones,
   smallCardWidth,
   spotCardWidth,
@@ -58,6 +64,8 @@ import {
   type GameTableLayout,
   type SeatSide,
 } from './table-layout';
+import { useTableDealing } from './deal-phase';
+import { seatTurnFor, useTurnPhase } from './turn-phase';
 import {
   controllerOf,
   playerOfControlSignal,
@@ -95,6 +103,8 @@ export function GameTableScreen() {
   const { gameId, reprise } = useLocalSearchParams<{ gameId: string; reprise?: string }>();
   const valid = isGameId(gameId);
   const game = useGame(valid ? gameId : '');
+  // Carte acceptée par le serveur : nouvel état relu aussitôt chez tous les joueurs (D-101).
+  useGameUpdates(valid ? gameId : '');
   // Reprise après une absence : l'état est relu sur le serveur, jamais reconstruit localement.
   const reconnection = useGameReconnection(game, { resume: reprise === '1' });
 
@@ -175,8 +185,11 @@ const QUIT_REFUSAL_MS = 4_000;
 function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
+  // Place des dos de cartes du siège d'en face réservée entièrement s'il est OCCUPÉ ; siège vide,
+  // une part seulement (`EMPTY_TOP_SEAT_RESERVE`) : la table remonte sans toucher le haut.
   const layout = computeGameTableLayout(m, {
-    topSeat: arrangeSeats(game).some((s) => s.side === 'top'),
+    topSeat: arrangeSeats(game).some((s) => s.side === 'top' && s.player),
+    emptyTopSeat: arrangeSeats(game).some((s) => s.side === 'top' && !s.player),
   });
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [chatOpen, setChatOpen] = useState(false);
@@ -237,18 +250,16 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
     return () => subscription.remove();
   }, []);
 
-  // Distribution perceptible (D-032) : rejouée une fois par partie, juste après le
-  // démarrage (aucune carte encore jouée). L'état réel vient toujours du serveur.
+  // Distribution perceptible (D-032) : jouée une fois par partie, seulement tant que le
+  // serveur n'a pas confirmé la distribution (D-102). L'état réel vient toujours du serveur.
   const dealAnimated = useGameUiStore((s) => Boolean(s.dealAnimated[game.gameId]));
   const markDealAnimated = useGameUiStore((s) => s.markDealAnimated);
   const finishDeal = useCallback(
     () => markDealAnimated(game.gameId),
     [markDealAnimated, game.gameId],
   );
-  const play = game.play;
-  const noCardPlayed = play && play.currentTrick.length === 0 && play.completedTricks.length === 0;
   // La distribution se joue SUR la table, sans écran intermédiaire.
-  const dealing = Boolean(game.status === 'in_progress' && noCardPlayed && !dealAnimated);
+  const dealing = useTableDealing(game, dealAnimated);
 
   const controlsTop = m.safe.top;
   const chatTop = controlsTop + layout.control * 2 + layout.gap * 2;
@@ -480,7 +491,8 @@ function PlayArea({
 }) {
   const m = useLobbyMetrics();
   const act = useGameAction(game.gameId);
-  const { cx, cy, diameter, plateWidth: pw, plateHeight: ph } = layout;
+  // La table et ce qui est posé dessus suivent son centre dessiné (`tableCy`).
+  const { cx, tableCy: cy, diameter, plateWidth: pw, plateHeight: ph } = layout;
   const seats = arrangeSeats(game);
   const play = game.play;
   const inProgress = game.status === 'in_progress' && play;
@@ -565,7 +577,7 @@ function PlayArea({
   const spotWidth = spotCardWidth(diameter, sw);
   const playsBy = (playerId: string) => plays.filter((p) => p.playerId === playerId);
   const publicSlot = (playerId: string, cardId: string) => {
-    const row = zones(sideOf(playerId)).publicRow;
+    const row = playedRowIn(zones(sideOf(playerId)).publicRow);
     const index = playsBy(playerId).findIndex((p) => p.cardId === cardId);
     return {
       x: publicCardLeft(row, index) + row.cardWidth / 2,
@@ -578,7 +590,44 @@ function PlayArea({
     act.isPending && act.variables?.action.type === 'PLAY_CARD'
       ? act.variables.action.cardId
       : undefined;
-  const failure = act.error instanceof ApiError ? act.error.message : undefined;
+  // Carte que je viens de lâcher sur la table : elle y glisse d'un seul mouvement, attend la
+  // réponse du serveur à l'endroit exact où la carte jouée apparaîtra, puis lui cède la place
+  // (même identifiant de carte, même position, sans fondu) : aucun retour dans la main.
+  const [flight, setFlight] = useState<CardFlight | null>(null);
+  const onLanded = useCallback(
+    (cardId: string) =>
+      setFlight((f) => (f && f.cardId === cardId ? { ...f, landed: true } : f)),
+    [],
+  );
+  // Coup refusé par le serveur : la carte reste dans la main (comportement de refus inchangé).
+  const rejected =
+    act.isError &&
+    act.variables?.action.type === 'PLAY_CARD' &&
+    act.variables.action.cardId === flight?.cardId;
+  // Coup accepté pendant le trajet : la carte reste dessinée (main) jusqu'à son arrivée ; la
+  // carte jouée du serveur n'apparaît qu'ensuite, jamais deux fois à l'écran.
+  const { flightCard, inHand: flightInHand } = flightState(flight, rejected, play?.myHand ?? []);
+
+  // Conflit de version : la partie est déjà relue (useGameAction), rien à montrer au joueur.
+  const failure =
+    act.error instanceof ApiError && act.error.code !== 'VERSION_CONFLICT'
+      ? act.error.message
+      : undefined;
+
+  // Tour attendu selon le serveur : même état pour les barres des joueurs et le chrono. Aucun
+  // tour (attente, distribution, 5e tour automatique, fin) : aucune barre ne progresse.
+  // Barres et roulette suspendues : ma carte lâchée (arrêt immédiat), ou cartes d'un tour
+  // terminé pas encore rangées dans leurs zones (presentation-plan.ts).
+  const held = turnHeld({
+    pendingCardId: pendingCard,
+    droppedCardId: flight?.cardId,
+    rejected,
+    myHand: play?.myHand ?? [],
+    plays,
+    settled,
+    completedTricks,
+  });
+  const phase = useTurnPhase(game, receivedAt, dealing || held);
 
   // Halo lumineux de 5 s sur la zone du joueur qui DEVIENT actif (une fois par tour).
   const signalKey = useTurnSignal(turnKeyOf(game, dealing));
@@ -608,12 +657,26 @@ function PlayArea({
     );
   })();
 
+  // Cartes jouées de CHAQUE joueur présent (publiques, état du serveur), une fois rangées.
+  const played = playedZones(game, plays, settled, layout, m);
+
   // Ma main : cartes légèrement chevauchées, centrées dans l'emplacement de 5 cartes.
-  const handCards = [...myHand, ...notYetShown(game.viewerId).map((p) => p.cardId)];
+  const handCards = handWithFlight(
+    [...myHand, ...notYetShown(game.viewerId).map((p) => p.cardId)],
+    flightInHand,
+  );
   const handLeft =
     layout.handLeft + (layout.handSlotWidth - handWidthOf(handCards.length, layout)) / 2;
   const handStep = handStepFor(handCards.length, layout);
   const [draggedCard, setDraggedCard] = useState<string | null>(null);
+  // Place sur la table de MA carte jouée (celle de `PlayedCardSpotlight`), vue depuis sa place
+  // dans la main : décalage des centres et rapport des largeurs.
+  const mySpot = SPOT_OFFSET.bottom;
+  const landingTarget = (index: number) => ({
+    dx: cx + mySpot.x * diameter - (handLeft + index * handStep + layout.cardWidth / 2),
+    dy: cy + mySpot.y * diameter - (m.height - m.safe.bottom - layout.cardHeight / 2),
+    scale: spotWidth / layout.cardWidth,
+  });
 
   return (
     <>
@@ -656,6 +719,14 @@ function PlayArea({
       {/* Halo de contrôle : juste au-dessus de la table, DERRIÈRE plaques, cartes et contrôles. */}
       {controlGlow}
 
+      {/* Zones des cartes jouées (sièges occupés seulement), sous les panneaux du centre. */}
+      {played.map((zone) => (
+        <PlayedCardsZone
+          key={zone.seat}
+          zone={zone}
+          label={zone.playerId === game.viewerId ? 'moi' : playerLabel(game, zone.playerId)}
+        />
+      ))}
       {/* 3. L'état de la partie, au centre de la table. Après « Se coucher » : main d'au
           revoir pendant 3 s, puis le panneau de fin (il attend la fin de la main). */}
       <TableCenter
@@ -673,6 +744,7 @@ function PlayArea({
         layout={layout}
         dealing={dealing}
         presenting={presenting}
+        turnHeld={held}
         safeLeft={m.safe.left}
         safeBottom={m.safe.bottom}
       />
@@ -681,11 +753,6 @@ function PlayArea({
       {seats.map(({ seat, side, player }) => {
         const z = zones(side);
         const mine = player?.playerId === game.viewerId;
-        const settledCards = player
-          ? playsBy(player.playerId)
-              .filter((p) => settled.has(p.cardId))
-              .map((p) => p.cardId)
-          : [];
         const hidden = player ? cardsOf(player.playerId) + notYetShown(player.playerId).length : 0;
         return (
           <Fragment key={seat}>
@@ -693,22 +760,12 @@ function PlayArea({
             {player && !mine && z.backs && showHands ? (
               <HiddenHand count={hidden} width={sw} zone={z.backs} />
             ) : null}
-            {settledCards.length > 0 ? (
-              <PublicRow
-                cardIds={settledCards}
-                width={z.publicRow.cardWidth}
-                step={z.publicRow.step}
-                reverse={z.publicRow.reverse}
-                style={(({ left, top }) => ({ left, top }))(
-                  publicRowBox(z.publicRow, settledCards.length),
-                )}
-              />
-            ) : null}
             <SeatPlate
               state={player ? seatStateOf(game, player, presenting) : undefined}
               width={pw}
               height={ph}
               align={side === 'bottom' ? 'bottom' : 'top'}
+              turn={seatTurnFor(phase, player?.playerId, game.viewerId)}
               style={z.plate}
             />
             {player && !mine && z.distance && distances ? (
@@ -743,13 +800,19 @@ function PlayArea({
                 cardId={cardId}
                 width={layout.cardWidth}
                 pending={pendingCard === cardId}
+                held={flightCard === cardId}
+                landingTarget={landingTarget(index)}
+                onLanded={onLanded}
                 enabled={playable}
                 getDropZone={() => (playable ? dropZone.current : null)}
                 onDragChange={(active) => {
                   setDraggedCard(active ? cardId : null);
                   onDragChange(active);
                 }}
-                onDrop={(id) => act.send({ type: 'PLAY_CARD', cardId: id }, game.version)}
+                onDrop={(id) => {
+                  setFlight({ cardId: id, index, landed: false });
+                  act.send({ type: 'PLAY_CARD', cardId: id }, game.version);
+                }}
                 style={{
                   marginLeft: index === 0 ? 0 : handStep - layout.cardWidth,
                   zIndex: draggedCard === cardId ? 40 : 10 + index,
@@ -776,7 +839,10 @@ function PlayArea({
 
       {/* Cartes du tour : sur la table jusqu'à la dernière, puis 2 s après, vers leur joueur. */}
       {spotlights.map(({ play: p, delayMs, release }) => {
-        const offset = SPOT_OFFSET[sideOf(p.playerId)];
+        // Encore en route depuis ma main : la carte jouée prendra sa place à l'arrivée.
+        if (p.cardId === flightInHand?.cardId) return null;
+        const side = sideOf(p.playerId);
+        const offset = SPOT_OFFSET[side];
         const slot = publicSlot(p.playerId, p.cardId);
         return (
           <PlayedCardSpotlight
@@ -787,6 +853,8 @@ function PlayArea({
             width={spotWidth}
             targetWidth={slot.width}
             delayMs={delayMs}
+            angle={SPOT_ANGLE[side]}
+            instant={p.cardId === flightCard && p.playerId === game.viewerId}
             release={release}
             onReveal={reveal}
             onSettled={settle}
@@ -829,7 +897,7 @@ function TableCenter({
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const start = useStartGame(game.gameId);
-  const { cx, cy, diameter } = layout;
+  const { cx, tableCy: cy, diameter } = layout;
   const radius = diameter / 2;
   const play = game.play;
   const text = [styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.1 }];
@@ -953,10 +1021,12 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
   const data = session.data;
   const round = data?.decision?.open && data.decision.gameId === game.gameId ? data.decision : null;
   const awaitingMe = data ? Boolean(round?.pendingPlayerIds.includes(game.viewerId)) : undefined;
-  // Échéance du serveur ramenée à l'horloge du téléphone (décalage mesuré à la réception).
+  // Échéance AFFICHÉE (serveur − 3 s, D-098) ramenée à l'horloge du téléphone (décalage
+  // mesuré à la réception).
   const capAt =
     round && data
-      ? Date.parse(round.deadlineAt) - (Date.parse(data.serverNow) - session.dataUpdatedAt)
+      ? displayedDeadline(Date.parse(round.deadlineAt)) -
+        (Date.parse(data.serverNow) - session.dataUpdatedAt)
       : undefined;
   const footer =
     awaitingMe !== false || !data ? undefined : round ? (
@@ -972,6 +1042,7 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
       game={game}
       width={width}
       awaitingMe={awaitingMe}
+      canContinue={round?.canContinue}
       capAt={capAt}
       pending={pending}
       error={error}

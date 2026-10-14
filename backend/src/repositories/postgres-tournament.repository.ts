@@ -249,6 +249,11 @@ const SETTING_KEYS: Record<keyof TournamentSettings, string> = {
   tournamentTransitionMinutes: 'tournament_transition_minutes',
   rankingTokensWeightPercent: 'tournament_ranking_tokens_weight_percent',
   rankingGamesWeightPercent: 'tournament_ranking_games_weight_percent',
+  tournamentMinimumPlayers: 'tournament_minimum_players',
+  tournamentMaximumPlayers: 'tournament_maximum_players',
+  tournamentMinimumDurationMinutes: 'tournament_minimum_duration_minutes',
+  tournamentMaximumDurationMinutes: 'tournament_maximum_duration_minutes',
+  tournamentMinimumEntryFee: 'tournament_minimum_entry_fee',
 };
 
 async function readSettings(db: SqlExecutor): Promise<TournamentSettings> {
@@ -261,6 +266,8 @@ async function readSettings(db: SqlExecutor): Promise<TournamentSettings> {
   for (const [field, key] of Object.entries(SETTING_KEYS) as [keyof TournamentSettings, string][]) {
     const value = byKey.get(key);
     if (typeof value === 'number' && Number.isFinite(value)) settings[field] = value;
+    // JSON `null` enregistré : aucun plafond de joueurs (∞).
+    else if (value === null && field === 'tournamentMaximumPlayers') settings[field] = null;
   }
   return settings;
 }

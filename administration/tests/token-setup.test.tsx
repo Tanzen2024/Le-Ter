@@ -31,6 +31,11 @@ const settings: TournamentSettings = {
   tournamentTransitionMinutes: 0,
   rankingTokensWeightPercent: 60,
   rankingGamesWeightPercent: 40,
+  tournamentMinimumPlayers: 20,
+  tournamentMaximumPlayers: null,
+  tournamentMinimumDurationMinutes: 45,
+  tournamentMaximumDurationMinutes: 120,
+  tournamentMinimumEntryFee: 500,
 };
 
 const proposal: TournamentSummary = {
@@ -173,6 +178,41 @@ describe('Paramètres des tournois', () => {
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith('tournaments/settings', { stakePerGameCoefficient: 0.25 }),
     );
+  });
+
+  it('prix d’entrée minimal : 500 FCFA lu sur le serveur, modifiable et envoyé seul (D-105)', async () => {
+    serve({ 'tournaments/settings': { settings } });
+    patch.mockResolvedValue({ settings: { ...settings, tournamentMinimumEntryFee: 2000 } });
+    wrap(<SettingsView />);
+    const minimum = (await screen.findByLabelText(
+      'Prix d’entrée minimal (FCFA)',
+    )) as HTMLInputElement;
+    expect(minimum.value).toBe('500');
+    expect(
+      screen.getByText(
+        'Plus petit prix d’entrée accepté à la création d’un tournoi. Par défaut : 500 FCFA.',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.change(minimum, { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enregistrer' }));
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('tournaments/settings', {
+        tournamentMinimumEntryFee: 2000,
+      }),
+    );
+  });
+
+  it('prix d’entrée minimal décimal refusé sans appel', async () => {
+    serve({ 'tournaments/settings': { settings } });
+    wrap(<SettingsView />);
+    fireEvent.change(await screen.findByLabelText('Prix d’entrée minimal (FCFA)'), {
+      target: { value: '750,5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' }));
+    expect(await screen.findByText('Montant entier attendu (FCFA).')).toBeInTheDocument();
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it('saisie non numérique refusée sans appel', async () => {

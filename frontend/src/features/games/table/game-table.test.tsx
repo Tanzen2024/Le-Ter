@@ -117,7 +117,7 @@ function gameView(overrides: Partial<GameView> = {}): GameView {
     },
     activePlayerId: ME,
     turnStartedAt: '2026-10-09T10:01:00.000Z',
-    turnDeadlineAt: '2026-10-09T10:01:10.000Z',
+    turnDeadlineAt: '2026-10-09T10:01:13.000Z',
     myActions: {
       canPlayCard: true,
       playableCardIds: [],
@@ -138,7 +138,7 @@ describe('signal lumineux du joueur actif', () => {
 
   it("identifie un tour par le joueur attendu et l'échéance du serveur", () => {
     const key = turnKeyOf(gameView(), false);
-    expect(key).toBe(`${ME}|2026-10-09T10:01:10.000Z`);
+    expect(key).toBe(`${ME}|2026-10-09T10:01:13.000Z`);
     expect(playerOfTurnKey(key!)).toBe(ME);
     // Pas de signal pendant la distribution, ni hors partie en cours.
     expect(turnKeyOf(gameView(), true)).toBeUndefined();
@@ -396,7 +396,10 @@ describe('plaques des joueurs', () => {
     );
     expect(oneLine).toBeLessThan(L.plateHeight * 0.8);
     expect(plateContentHeight(L.plateHeight, true)).toBeLessThanOrEqual(L.plateHeight);
-    expect(screen.getByText('J1')).toBeTruthy();
+    // Aucun numéro de siège affiché (D-099) : ni « J1 » ni pastille, seulement le pseudo.
+    expect(screen.queryByText('J1')).toBeNull();
+    expect(screen.queryByTestId('first-player-chip')).toBeNull();
+    expect(screen.getByText('Kofi')).toBeTruthy();
   });
 
   it('la barre n’affiche QUE le pseudo : ni statut, ni siège, ni nombre de cartes', async () => {
@@ -943,9 +946,10 @@ describe('cartes déjà jouées : espacement (5 cartes au plus, une par tour)', 
         };
         for (const side of sides) {
           const z = seatZones(side, L, m);
-          // Largeur de la rangée : réduite (au plus de 25 %) seulement si la place manque.
+          // Cartes jouées : légèrement plus petites que la main, réduites seulement si la place
+          // manque, jamais sous 75 % d'un dos de carte (taille d'avant).
           const row = publicRowBox(z.publicRow, MAX_HAND_CARDS);
-          expect(z.publicRow.cardWidth).toBeLessThanOrEqual(sw);
+          expect(z.publicRow.cardWidth).toBeLessThanOrEqual(L.playedCard);
           expect(z.publicRow.cardWidth).toBeGreaterThanOrEqual(Math.ceil(sw * 0.75));
           expect(z.publicRow.step).toBeGreaterThanOrEqual(ROW_STEP);
           expect(z.publicRow.step).toBeLessThanOrEqual(PUBLIC_ROW_MAX_STEP);
@@ -977,12 +981,18 @@ describe('cartes déjà jouées : espacement (5 cartes au plus, une par tour)', 
     [800, 360],
     [853, 393],
     [915, 412],
-  ])('smartphone %i×%i : cartes des sièges latéraux nettement séparées', (width, height) => {
+  ])('smartphone %i×%i : cartes jouées légèrement empilées, plus grandes qu’un dos', (width, height) => {
     const m = metrics(width, height);
     const L = computeGameTableLayout(m);
-    expect(seatZones('right', L, m).publicRow.step).toBeGreaterThanOrEqual(1);
-    expect(seatZones('left', L, m).publicRow.step).toBeGreaterThanOrEqual(1);
-    expect(seatZones('bottom', L, m).publicRow.step).toBeGreaterThan(ROW_STEP);
+    for (const side of ['right', 'left', 'bottom'] as const) {
+      const row = seatZones(side, L, m).publicRow;
+      // Léger décalage : chevauchées, mais coin (valeur, famille) de chacune visible.
+      expect(row.step).toBeGreaterThanOrEqual(ROW_STEP);
+      expect(row.step).toBeLessThan(1);
+      // Sur smartphone, la taille des cartes jouées est tenue : plus grandes qu'un dos.
+      expect(row.cardWidth).toBeGreaterThan(L.smallCard);
+      expect(row.cardWidth).toBeLessThan(L.cardWidth);
+    }
   });
 
   it('rangée vers la gauche : la première carte reste au-dessus, son coin visible', async () => {
@@ -1056,7 +1066,7 @@ describe('chronomètre circulaire', () => {
   it('disque unique (aucun point), chiffre centré : temps restant de l’échéance serveur', async () => {
     const game = gameView({ serverNow: '2026-10-09T10:01:02.000Z' });
     await render(hud(game, Date.now()));
-    // 10:01:10 − 10:01:02 = 8 s.
+    // Échéance affichée 10:01:10 (serveur 10:01:13 − 3 s de marge) − 10:01:02 = 8 s.
     expect(screen.getByLabelText('8 secondes')).toHaveStyle({
       width: L.hud.ring,
       height: L.hud.ring,
@@ -1071,6 +1081,39 @@ describe('chronomètre circulaire', () => {
     expect(screen.getByText('5')).toBeTruthy();
   });
 
+  it('carte lâchée ou cartes du tour pas encore rangées : roulette arrêtée aussitôt', async () => {
+    const game = gameView({ serverNow: '2026-10-09T10:01:02.000Z' });
+    // Réception de l'état fixée : seul le temps qui passe fait varier le chrono.
+    const receivedAt = Date.now();
+    const held = (turnHeld: boolean) => (
+      <TurnHud
+        game={game}
+        receivedAt={receivedAt}
+        layout={L}
+        dealing={false}
+        presenting={false}
+        turnHeld={turnHeld}
+        safeLeft={12}
+        safeBottom={6}
+      />
+    );
+    const { rerender } = await render(held(false));
+    expect(screen.getByText('8')).toBeTruthy();
+    // Même tour du serveur, mais ma carte vient d'être lâchée : plus de compte à rebours.
+    await rerender(held(true));
+    expect(screen.queryByText('8')).toBeNull();
+    expect(
+      screen.getByTestId('turn-timer', { includeHiddenElements: true }).props
+        .accessibilityElementsHidden,
+    ).toBe(true);
+    // Coup refusé (ou cartes rangées) : le chrono reprend au temps réel restant du serveur.
+    await act(() => jest.advanceTimersByTime(1000));
+    await rerender(held(false));
+    // Horloge du chrono recalée au tick suivant.
+    await act(() => jest.advanceTimersByTime(250));
+    expect(screen.getByText('7')).toBeTruthy();
+  });
+
   it('nouveau tour : la valeur suit la nouvelle échéance fixée par le serveur', async () => {
     const { rerender } = await render(
       hud(gameView({ serverNow: '2026-10-09T10:01:02.000Z' }), Date.now()),
@@ -1079,15 +1122,34 @@ describe('chronomètre circulaire', () => {
     await rerender(
       hud(
         gameView({
-          activePlayerId: OTHER,
+          // Je reprends la main (contrôle) : nouveau tour, nouvelle échéance.
+          activePlayerId: ME,
           turnStartedAt: '2026-10-09T10:01:03.000Z',
-          turnDeadlineAt: '2026-10-09T10:01:23.000Z',
+          turnDeadlineAt: '2026-10-09T10:01:16.000Z',
           serverNow: '2026-10-09T10:01:03.000Z',
         }),
         Date.now(),
       ),
     );
-    expect(screen.getByText('20')).toBeTruthy();
+    // Tour de 13 s côté serveur : 10 affichées, jamais 13.
+    expect(screen.getByText('10')).toBeTruthy();
+    // Tour d'un adversaire : chrono masqué sur mon téléphone (D-099), il voit sa barre.
+    await rerender(
+      hud(
+        gameView({
+          activePlayerId: OTHER,
+          turnStartedAt: '2026-10-09T10:01:04.000Z',
+          turnDeadlineAt: '2026-10-09T10:01:17.000Z',
+          serverNow: '2026-10-09T10:01:04.000Z',
+        }),
+        Date.now(),
+      ),
+    );
+    expect(screen.queryByTestId('turn-timer')).toBeNull();
+    expect(
+      screen.getByTestId('turn-timer', { includeHiddenElements: true }).props
+        .accessibilityElementsHidden,
+    ).toBe(true);
   });
 });
 

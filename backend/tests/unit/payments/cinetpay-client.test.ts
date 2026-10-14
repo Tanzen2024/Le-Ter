@@ -5,6 +5,7 @@ import {
   CinetPayPaymentNotSentError,
   type CinetPayPaymentRequest,
 } from '../../../src/services/payments/cinetpay/cinetpay-client';
+import { failureReasonOf } from '../../../src/services/payments/cinetpay/cinetpay.gateway';
 import { MobileMoneyProviderError } from '../../../src/services/wallet/mobile-money.gateway';
 import { createLogger } from '../../../src/utils/logger';
 
@@ -261,6 +262,56 @@ describe('formats d’erreur observés sur api.cinetpay.net', () => {
     expectNoSecret(lines.join('\n'));
   });
 
+  // Observé le 2026-10-13 : origine CinetPay injoignable, Cloudflare répond 522 en texte brut.
+  it('login 522 (Cloudflare, origine CinetPay en panne) : erreur http 522, jamais un refus d’authentification', async () => {
+    const { client, calls } = setup(routes({ login: { status: 522, raw: 'error code: 522' } }));
+    const err = await client.authenticate().catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'http', details: { httpStatus: 522 } });
+    const notSent = await client.createPayment(REQUEST).catch((e: unknown) => e);
+    expect(notSent).toBeInstanceOf(CinetPayPaymentNotSentError);
+    expect(failureReasonOf(notSent)).toBe('CinetPayPaymentNotSentError:http:522');
+    expect(calls.some((c) => c.url.endsWith('/v1/payment'))).toBe(false);
+  });
+
+  // Matrice des échecs au login (D-094) : un refus (4xx) reste un refus d'authentification ;
+  // une panne (5xx, délai, réseau) garde son type. Dans tous les cas, POST /v1/payment n'est
+  // jamais émis : demande « non envoyée », jamais « issue inconnue ».
+  it.each<[string, Reply, string, string]>([
+    ['401', { status: 401, raw: 'Unauthorized' }, 'authentication', 'authentication:401'],
+    ['403', { status: 403, raw: 'Forbidden' }, 'authentication', 'authentication:403'],
+    [
+      '422 1005',
+      { status: 422, body: { code: 1005, status: 'INVALID_CREDENTIALS' } },
+      'authentication',
+      'authentication:1005:INVALID_CREDENTIALS',
+    ],
+    ['500', { status: 500, raw: 'Internal error' }, 'http', 'http:500'],
+    ['503', { status: 503, raw: 'Service unavailable' }, 'http', 'http:503'],
+    ['522', { status: 522, raw: 'error code: 522' }, 'http', 'http:522'],
+    ['délai', 'hang', 'timeout', 'timeout'],
+  ])('login %s : type %s, demande jamais envoyée', async (_label, login, kind, reason) => {
+    const { client, calls, lines } = setup(routes({ login }), { timeoutMs: 50 });
+    const err = await client.createPayment(REQUEST).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CinetPayPaymentNotSentError);
+    expect((err as CinetPayPaymentNotSentError).cause).toMatchObject({ kind });
+    expect(failureReasonOf(err)).toBe(`CinetPayPaymentNotSentError:${reason}`);
+    expect(calls.some((c) => c.url.endsWith('/v1/payment'))).toBe(false);
+    expectNoSecret(lines.join('\n'));
+  });
+
+  it('login, erreur réseau : type network, demande jamais envoyée', async () => {
+    const client = new CinetPayClient({
+      baseUrl: 'https://api.cinetpay.net',
+      apiKey: API_KEY,
+      apiPassword: API_PASSWORD,
+      logger: createLogger({}, () => undefined),
+      fetch: (() => Promise.reject(new TypeError('fetch failed'))) as unknown as typeof fetch,
+    });
+    const err = await client.createPayment(REQUEST).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CinetPayPaymentNotSentError);
+    expect(failureReasonOf(err)).toBe('CinetPayPaymentNotSentError:network');
+  });
+
   it('jeton invalide : 422 { code: 1002, INVALID_TOKEN } → erreur, sans boucle de renouvellement', async () => {
     const { client, calls } = setup(
       routes({
@@ -464,7 +515,12 @@ describe('createPayment() — paiement direct (sans redirection)', () => {
   const DIRECT_OK = {
     ...PAYMENT_OK,
     payment_url: undefined,
-    details: { code: 2001, status: 'INITIATED', message: 'Validez sur votre téléphone', must_be_redirected: false },
+    details: {
+      code: 2001,
+      status: 'INITIATED',
+      message: 'Validez sur votre téléphone',
+      must_be_redirected: false,
+    },
   };
 
   it('champs direct_pay, payment_method, client_phone_number ; jamais d’otp_code ; numéro jamais journalisé', async () => {
@@ -498,7 +554,11 @@ describe('createPayment() — paiement direct (sans redirection)', () => {
   });
 
   it('redirection exigée par CinetPay : URL HTTPS renvoyée, sinon réponse invalide', async () => {
-    const redirect = { ...DIRECT_OK, payment_url: PAYMENT_OK.payment_url, details: { ...DIRECT_OK.details, must_be_redirected: true } };
+    const redirect = {
+      ...DIRECT_OK,
+      payment_url: PAYMENT_OK.payment_url,
+      details: { ...DIRECT_OK.details, must_be_redirected: true },
+    };
     const ok = setup(routes({ payment: { body: redirect } }));
     expect(await ok.client.createPayment(DIRECT)).toMatchObject({
       mustBeRedirected: true,
@@ -508,14 +568,19 @@ describe('createPayment() — paiement direct (sans redirection)', () => {
     await expect(missing.client.createPayment(DIRECT)).rejects.toMatchObject({
       kind: 'malformed_response',
     });
-    const insecure = setup(routes({ payment: { body: { ...DIRECT_OK, payment_url: 'http://evil.test' } } }));
+    const insecure = setup(
+      routes({ payment: { body: { ...DIRECT_OK, payment_url: 'http://evil.test' } } }),
+    );
     await expect(insecure.client.createPayment(DIRECT)).rejects.toMatchObject({
       kind: 'malformed_response',
     });
   });
 
   it('« SUCCESS » annoncé à la création : simple statut initial, jamais interprété', async () => {
-    const instant = { ...DIRECT_OK, details: { ...DIRECT_OK.details, code: 100, status: 'SUCCESS' } };
+    const instant = {
+      ...DIRECT_OK,
+      details: { ...DIRECT_OK.details, code: 100, status: 'SUCCESS' },
+    };
     const { client } = setup(routes({ payment: { body: instant } }));
     expect(await client.createPayment(DIRECT)).toMatchObject({ initialStatus: 'SUCCESS' });
   });
@@ -571,7 +636,11 @@ describe('createPayment() — numéro du payeur (D-088)', () => {
 describe('erreurs du fournisseur (D-091)', () => {
   it('CinetPayError et CinetPayPaymentNotSentError sont des erreurs du FOURNISSEUR', () => {
     expect(new CinetPayError('timeout', 'x')).toBeInstanceOf(MobileMoneyProviderError);
-    expect(new CinetPayPaymentNotSentError(new Error('x'))).toBeInstanceOf(MobileMoneyProviderError);
-    expect(new Error('Connection terminated unexpectedly')).not.toBeInstanceOf(MobileMoneyProviderError);
+    expect(new CinetPayPaymentNotSentError(new Error('x'))).toBeInstanceOf(
+      MobileMoneyProviderError,
+    );
+    expect(new Error('Connection terminated unexpectedly')).not.toBeInstanceOf(
+      MobileMoneyProviderError,
+    );
   });
 });

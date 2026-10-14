@@ -564,6 +564,8 @@ describe('tableau de bord, finances, rapports, journal, système', () => {
       reason: 'PROVIDER_NOT_CONFIGURED',
       warnings: [],
     });
+    // Santé des paiements (D-100) absente de ce montage : annoncée comme telle, jamais « OK ».
+    expect(res.body.services.payments).toEqual({ status: 'NOT_CONFIGURED' });
     expect(res.body.maintenance.available).toBe(false);
     expect(JSON.stringify(res.body)).not.toMatch(/sk_test|sk_live|password|secret/i);
   });

@@ -10,6 +10,7 @@ import { gamesApi } from '../../services/games-api';
 import { sessionsApi } from '../../services/sessions-api';
 import type { GameView } from '../../types/game';
 import type { SessionView } from '../../types/session';
+import { restoreLastRoute } from '../navigation/last-route';
 import { gameKeys } from './hooks';
 import {
   gameToReturnTo,
@@ -20,6 +21,10 @@ import {
 
 jest.mock('../../services/games-api', () => ({ gamesApi: { listActive: jest.fn() } }));
 jest.mock('../../services/sessions-api', () => ({ sessionsApi: { listMine: jest.fn() } }));
+jest.mock('../navigation/last-route', () => ({
+  restoreLastRoute: jest.fn(() => Promise.resolve('none')),
+  useRememberRoute: jest.fn(),
+}));
 jest.mock('../auth/session', () => ({
   withAccessToken: (call: (token: string) => unknown) => call('token'),
 }));
@@ -259,6 +264,78 @@ describe('useActiveGameRestorer (toute l’application)', () => {
     await flush();
     expect(listActive).toHaveBeenCalledTimes(2);
     expect(push).toHaveBeenCalledWith('/game/g-1?reprise=1');
+  });
+
+  it('retour au premier plan : écran conservé, aucun panneau « Reconnexion » pendant la recherche', async () => {
+    listActive.mockResolvedValue({ games: [] });
+    const { wrapper } = setup();
+    const hook = await renderHook(() => useActiveGameRestorer(true, '/tournament/t-1'), { wrapper });
+    await flush();
+
+    let resolve: (value: { games: GameView[] }) => void = () => undefined;
+    listActive.mockReturnValue(new Promise((r) => (resolve = r)));
+    await act(async () => {
+      emitAppState('background');
+      emitAppState('active');
+    });
+    // Vérification en cours : l'écran consulté reste affiché tel quel.
+    expect(hook.result.current.phase).toBe('idle');
+    resolve({ games: [] });
+    await flush();
+    expect(hook.result.current.phase).toBe('idle');
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('retour au premier plan hors ligne : aucun échec affiché, le joueur reste sur son écran', async () => {
+    listActive.mockResolvedValue({ games: [] });
+    const { wrapper } = setup();
+    const hook = await renderHook(() => useActiveGameRestorer(true, '/tournament'), { wrapper });
+    await flush();
+
+    listActive.mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'hors ligne'));
+    await act(async () => {
+      emitAppState('background');
+      emitAppState('active');
+    });
+    await flush();
+    expect(hook.result.current.phase).toBe('idle');
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('processus relancé sans partie active : le dernier écran consulté est rouvert', async () => {
+    listActive.mockResolvedValue({ games: [] });
+    const { wrapper } = setup();
+    await renderHook(() => useActiveGameRestorer(true, '/'), { wrapper });
+    await flush();
+    const reopen = restoreLastRoute as jest.Mock;
+    expect(reopen).toHaveBeenCalledTimes(1);
+    // Rouvert seulement depuis l'écran initial.
+    expect(reopen.mock.calls[0][0]()).toBe('/');
+  });
+
+  it('processus relancé avec une partie active : la partie prime, aucun autre écran rouvert', async () => {
+    listActive.mockResolvedValue({ games: [game('g-1', 'in_progress')] });
+    const { wrapper } = setup();
+    await renderHook(() => useActiveGameRestorer(true, '/'), { wrapper });
+    await flush();
+    expect(push).toHaveBeenCalledWith('/game/g-1?reprise=1');
+    const reopen = restoreLastRoute as jest.Mock;
+    expect(reopen.mock.calls[0][0]()).toBe('');
+  });
+
+  it('simple retour au premier plan : l’instance garde sa navigation, rien n’est rouvert', async () => {
+    listActive.mockResolvedValue({ games: [] });
+    const { wrapper } = setup();
+    await renderHook(() => useActiveGameRestorer(true, '/tournament/t-1'), { wrapper });
+    await flush();
+    (restoreLastRoute as jest.Mock).mockClear();
+    await act(async () => {
+      emitAppState('background');
+      emitAppState('active');
+    });
+    await flush();
+    expect(restoreLastRoute).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('sur l’écran d’une partie ou déconnecté : aucune recherche (l’écran relit sa partie)', async () => {

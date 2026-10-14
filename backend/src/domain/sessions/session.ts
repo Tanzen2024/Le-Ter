@@ -29,8 +29,11 @@ export function newSessionId(): SessionId {
 /** OPEN : on peut la rejoindre et y créer des parties. CLOSED : historique seulement. */
 export type SessionStatus = 'open' | 'closed';
 
-/** Délai pour choisir Poursuivre ou Quitter après une partie (D-034 ; 10 s depuis D-092). */
-export const SESSION_DECISION_WINDOW_MS = 10_000;
+/**
+ * Délai pour choisir Poursuivre ou Quitter après une partie (D-034 ; 13 s depuis D-098, dont
+ * 10 s affichées et 3 s de marge réseau invisible).
+ */
+export const SESSION_DECISION_WINDOW_MS = 13_000;
 
 /**
  * Présentation du 5e tour automatique (D-041). Le serveur joue les dernières cartes en une

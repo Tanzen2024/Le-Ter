@@ -3,6 +3,8 @@ import type { PaymentRepository } from '../../repositories/payment.repository';
 import { BackgroundTasks } from '../../utils/background-tasks';
 import type { Logger } from '../../utils/logger';
 import { CinetPayError } from './cinetpay/cinetpay-client';
+import type { PaymentHealthMonitor } from './payment-health';
+import { STUCK_PAYMENT_AGE_MS } from './payment-health';
 import type { PaymentService } from './payment.service';
 
 /** Intervalle entre deux passages du réconciliateur. */
@@ -20,6 +22,13 @@ export const DEFAULT_RECONCILE_RETRY_BASE_MS = 60_000;
 export const DEFAULT_RECONCILE_RETRY_MAX_MS = 30 * 60_000;
 
 const MAX_TRACKED_FAILURES = 10_000;
+/** Contrôle des paiements bloqués : au plus une fois par période (journal `PAYMENTS_STUCK`). */
+export const STUCK_CHECK_INTERVAL_MS = 60 * 60_000;
+/**
+ * Vérification de l'accès au fournisseur (authentification seule, aucun paiement) : au plus une
+ * fois par période. Avec un jeton valide en cache, aucun appel réseau n'est fait.
+ */
+export const PROVIDER_PROBE_INTERVAL_MS = 5 * 60_000;
 
 export interface PaymentReconcilerOptions {
   tickMs?: number;
@@ -64,12 +73,19 @@ export class PaymentReconciler {
   private readonly background = new BackgroundTasks();
   /** Échecs consécutifs par paiement et date de la prochaine tentative autorisée. */
   private readonly failures = new Map<string, { count: number; retryAt: number }>();
+  private lastStuckCheck = Number.NEGATIVE_INFINITY;
+  private lastProbe = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly deps: {
       payments: Pick<PaymentService, 'reconcile'>;
-      repository: Pick<PaymentRepository, 'findPendingForReconciliation'>;
+      repository: Pick<PaymentRepository, 'findPendingForReconciliation'> &
+        Partial<Pick<PaymentRepository, 'summarizePending'>>;
       logger: Logger;
+      /** Surveillance (D-100) : passages, échecs de lecture, paiements bloqués. */
+      health?: PaymentHealthMonitor;
+      /** Authentification auprès du fournisseur (résultat relevé par la surveillance). */
+      probeProvider?: () => Promise<unknown>;
       clock?: () => Date;
       options?: PaymentReconcilerOptions;
     },
@@ -78,6 +94,7 @@ export class PaymentReconciler {
   start(): void {
     if (this.handle) return;
     this.stopped = false;
+    this.deps.health?.reconcileStarted();
     this.handle = setInterval(
       () => this.background.run(() => this.tick()),
       this.deps.options?.tickMs ?? DEFAULT_RECONCILE_TICK_MS,
@@ -90,6 +107,7 @@ export class PaymentReconciler {
   /** Plus aucun passage ; le passage en cours s'arrête après le paiement en cours. */
   stop(): void {
     this.stopped = true;
+    this.deps.health?.reconcileStopped();
     if (this.handle) clearInterval(this.handle);
     this.handle = undefined;
   }
@@ -114,6 +132,7 @@ export class PaymentReconciler {
     if (this.running) return report;
     this.running = true;
     const startedAt = Date.now();
+    let lookupFailed = false;
     try {
       const options = this.deps.options ?? {};
       const now = this.now();
@@ -135,22 +154,62 @@ export class PaymentReconciler {
           durationMs: Date.now() - startedAt,
         });
       }
+      await this.checkStuck();
+      await this.probeProvider();
     } catch (err) {
       // Base indisponible : journalisé, le passage suivant réessaie.
+      lookupFailed = true;
       this.deps.logger.error('payment reconciliation lookup failed', {
         errorName: err instanceof Error ? err.name : typeof err,
         durationMs: Date.now() - startedAt,
       });
     } finally {
       this.running = false;
+      this.deps.health?.recordReconcileTick({ ...report }, lookupFailed);
     }
     return report;
   }
 
+  /** Accès au fournisseur vérifié périodiquement ; un refus est relevé, jamais propagé. */
+  private async probeProvider(): Promise<void> {
+    const now = this.now();
+    if (!this.deps.probeProvider || now - this.lastProbe < PROVIDER_PROBE_INTERVAL_MS) return;
+    this.lastProbe = now;
+    try {
+      await this.deps.probeProvider();
+    } catch {
+      // État relevé par la surveillance (IP refusée, réseau…) ; aucun paiement n'est touché.
+    }
+  }
+
+  /**
+   * Paiements en attente depuis plus de `STUCK_PAYMENT_AGE_MS` : signalés (sans identifiant de
+   * payeur) au plus une fois par `STUCK_CHECK_INTERVAL_MS`. Jamais clos ni crédités pour leur
+   * âge : seul le statut relu chez CinetPay décide.
+   */
+  private async checkStuck(): Promise<void> {
+    const summarize = this.deps.repository.summarizePending?.bind(this.deps.repository);
+    const now = this.now();
+    if (!summarize || now - this.lastStuckCheck < STUCK_CHECK_INTERVAL_MS) return;
+    this.lastStuckCheck = now;
+    const summary = await summarize(new Date(now - STUCK_PAYMENT_AGE_MS));
+    if (summary.stuck > 0) {
+      this.deps.logger.warn('PAYMENTS_STUCK', {
+        stuck: summary.stuck,
+        uncertain: summary.uncertain,
+        pending: summary.pending,
+        ...(summary.oldestPendingAt && {
+          oldestAgeMinutes: Math.round((now - summary.oldestPendingAt.getTime()) / 60_000),
+        }),
+      });
+    }
+  }
+
   private async reconcileOne(paymentId: string, report: ReconcileReport): Promise<void> {
     try {
-      const { outcome } = await this.deps.payments.reconcile(paymentId);
+      const { outcome, status } = await this.deps.payments.reconcile(paymentId);
       this.failures.delete(paymentId);
+      this.deps.logger.info('payment reconciled', { paymentId, outcome, status });
       if (outcome === 'settled') report.settled += 1;
       else if (outcome === 'pending') report.pending += 1;
       else report.alreadyFinal += 1;

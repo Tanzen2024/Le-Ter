@@ -25,6 +25,7 @@ import {
   CinetPayPaymentNotSentError,
   type CinetPayClient,
 } from './cinetpay-client';
+import { classifyPaymentFailure, type PaymentFailureInfo } from '../payment-failure';
 
 /** Limite CinetPay des URL `success_url`, `failed_url` et `notify_url` (SDK officiel). */
 export const CINETPAY_MAX_URL_LENGTH = 120;
@@ -45,6 +46,8 @@ export interface CinetPayGatewayOptions {
   /** Opérateurs présélectionnés sur la page (`CINETPAY_PAGE_PRESELECT_METHODS`), vide par défaut. */
   pagePreselectOperators?: readonly DirectPayOperator[];
   clock?: () => Date;
+  /** Surveillance (D-100) : échecs d'initialisation classés. */
+  onInitializationFailure?: (info: PaymentFailureInfo) => void;
 }
 
 /**
@@ -194,6 +197,8 @@ export class CinetPayGateway implements MobileMoneyGateway {
       ...(direct && { initializationUncertain: true }),
     });
     const log = logger.child({ action: 'CINETPAY_INIT', paymentId, ...(direct && { direct }) });
+    // Durée réelle de l'appel au fournisseur, pour le diagnostic (jamais une donnée métier).
+    const startedAt = Date.now();
 
     try {
       const returnUrl = this.returnUrlOf(paymentId);
@@ -235,6 +240,9 @@ export class CinetPayGateway implements MobileMoneyGateway {
       );
       log.info('cinetpay payment initialized', {
         amount,
+        merchantTransactionId,
+        providerReference: created.transactionId,
+        durationMs: Date.now() - startedAt,
         mustBeRedirected: created.mustBeRedirected,
         ...(created.initialStatus && { initialStatus: created.initialStatus }),
       });
@@ -245,15 +253,37 @@ export class CinetPayGateway implements MobileMoneyGateway {
       };
     } catch (err) {
       const reason = failureReasonOf(err);
+      const failure = classifyPaymentFailure(err);
+      try {
+        this.options.onInitializationFailure?.(failure);
+      } catch {
+        // La surveillance ne doit jamais changer l'issue d'un paiement.
+      }
       if (direct && !isCertainRefusal(err)) {
         // La demande a pu atteindre le téléphone : ni échec déclaré ni crédit ; la
         // réconciliation recherche le paiement chez CinetPay par merchant_transaction_id.
-        log.warn('cinetpay direct payment initialization uncertain', { reason });
+        log.warn('cinetpay direct payment initialization uncertain', {
+          reason,
+          category: 'OUTCOME_UNKNOWN',
+          merchantTransactionId,
+          durationMs: Date.now() - startedAt,
+          pageFallback: false,
+        });
         await payments.markInitializationUncertain(paymentId, reason, this.clock());
         throw new PaymentInitializationUncertainError(paymentId);
       }
       log.warn('cinetpay payment initialization failed', {
         reason,
+        category: failure.category,
+        retryable: failure.retryable,
+        sent: failure.sent,
+        merchantTransactionId,
+        durationMs: Date.now() - startedAt,
+        // Repli vers la page CinetPay : seulement après un refus CERTAIN d'un paiement direct
+        // (D-090) ; une demande jamais partie (fournisseur injoignable) n'est pas repliée.
+        pageFallback: Boolean(
+          direct && isCertainRefusal(err) && !(err instanceof CinetPayPaymentNotSentError),
+        ),
         ...(err instanceof CinetPayError &&
           err.details.apiCode !== undefined && { apiCode: err.details.apiCode }),
       });

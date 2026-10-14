@@ -18,7 +18,8 @@ import { formatDateTime, formatNumber, formatXaf, localDayStartIso } from '@/lib
 import { TOURNAMENT_STATUS } from '@/lib/labels';
 import type { TournamentSummary } from '@/types/admin';
 
-import { tournamentLabel, tournamentsQuery } from './api';
+import { tournamentLabel, tournamentSettingsQuery, tournamentsQuery } from './api';
+import { creationRulesText } from './creation-rules';
 import {
   apiStatusFilter,
   onCategoryChange,
@@ -94,6 +95,8 @@ export function TournamentsList() {
       : available;
   }, [category, filters.status]);
   const query = useQuery(tournamentsQuery(apiStatusFilter(filters)));
+  // Règles de création réglées (D-103, D-104), affichées dans l'en-tête.
+  const settings = useQuery(tournamentSettingsQuery()).data?.settings;
   // L'API existante filtre par statut ; la période est filtrée ici, sur la date de début.
   const filtered = useMemo(() => {
     const from = filters.du ? new Date(localDayStartIso(filters.du)).getTime() : -Infinity;
@@ -113,7 +116,7 @@ export function TournamentsList() {
     <>
       <PageHeader
         title="Tournois"
-        description="Gestion selon les règles du serveur : durée de 30 à 120 minutes, 20 à 1 000 participants, aucun chevauchement."
+        description={`Gestion selon les règles du serveur : ${creationRulesText(settings)}, aucun chevauchement.`}
         actions={
           <Button asChild>
             <Link href="/tournois/nouveau">

@@ -126,7 +126,7 @@ afterEach(() => jest.useRealTimers());
 describe('Timer de tour — 10 secondes, autorité du serveur (D-034)', () => {
   it('le démarrage arme le timer de J1 ; début, échéance et joueur attendu sont persistés', async () => {
     const { game, repository, timers } = await startedGame();
-    expect(TURN_DURATION_MS).toBe(10_000);
+    expect(TURN_DURATION_MS).toBe(13_000); // D-098 : 10 s affichées + 3 s de marge;
     const stored = await repository.findById(game.id);
     expect(stored).toMatchObject({
       turnStartedAt: T0,

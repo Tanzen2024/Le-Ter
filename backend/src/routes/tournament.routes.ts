@@ -49,6 +49,7 @@ function writesLimiter(limit: typeof DEFAULT_TOURNAMENT_WRITE_LIMIT): RequestHan
  *   GET   /active                    tournoi à afficher (ou null) et `serverNow`
  *   GET   /mine                      mes propositions
  *   GET   /next                      mon prochain tournoi inscrit à venir (ou null)
+ *   GET   /rules                     règles de création réglées (joueurs, durée), D-103, D-104
  *   POST  /                          proposer un tournoi (brouillon)
  *   GET   /:tournamentId             détail : inscription, réservation, compte, podium
  *   PATCH /:tournamentId             modifier ma proposition (brouillon / en attente)
@@ -76,6 +77,7 @@ export function createTournamentRouter(
   router.get('/active', controller.active);
   router.get('/mine', controller.mine);
   router.get('/next', controller.next);
+  router.get('/rules', controller.rules);
   router.post('/', writes, controller.create);
   router.get('/:tournamentId', controller.get);
   router.patch('/:tournamentId', writes, controller.update);

@@ -2,6 +2,7 @@ import { apiRequest } from '../lib/api-client';
 import type {
   AppNotification,
   NextTournament,
+  TournamentCreationRules,
   TournamentProposalInput,
   TournamentSummary,
   TournamentList,
@@ -31,6 +32,10 @@ export const tournamentsApi = {
   /** Prochain tournoi à venir auquel je suis inscrit (date, début, fin), ou null. */
   next: (accessToken: string) =>
     apiRequest<{ tournament: NextTournament | null }>('/api/tournaments/next', { accessToken }),
+
+  /** Règles de création réglées par l'administration (joueurs, durée), D-103, D-104. */
+  rules: (accessToken: string) =>
+    apiRequest<{ rules: TournamentCreationRules }>('/api/tournaments/rules', { accessToken }),
 
   /** Détail d'un tournoi vu par moi (statut, prix d'entrée, joueurs, rangs, inscription). */
   get: (accessToken: string, tournamentId: string) =>

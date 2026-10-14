@@ -48,7 +48,19 @@ const gameAt = (sessionId: SessionId, stakeAmount?: number): Game => ({
 describe('Règle de mise (D-073)', () => {
   it('mise valide : entier > 0, plafond technique dont le double reste sûr', () => {
     for (const v of [1, 100, 1_000_000_000]) expect(isValidGameStake(v)).toBe(true);
-    for (const v of [0, -0, -1, 1.5, NaN, Infinity, -Infinity, null, undefined, '1', 1_000_000_001]) {
+    for (const v of [
+      0,
+      -0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      -Infinity,
+      null,
+      undefined,
+      '1',
+      1_000_000_001,
+    ]) {
       expect(isValidGameStake(v)).toBe(false);
     }
     expect(Number.isSafeInteger(requiredBalanceForStake(1_000_000_000))).toBe(true);
@@ -110,7 +122,9 @@ describe('walletSessionStakeAdmission', () => {
     await expect(admission({ bob: 199 }, 100).assertCanJoin(ORDINARY, bob)).rejects.toThrow(
       InsufficientBalanceForStakeError,
     );
-    await expect(admission({ bob: 200 }, 100).assertCanJoin(ORDINARY, bob)).resolves.toBeUndefined();
+    await expect(
+      admission({ bob: 200 }, 100).assertCanJoin(ORDINARY, bob),
+    ).resolves.toBeUndefined();
   });
 
   it('table antérieure sans mise → refusée ; table sans partie → laissée à l’entrée en partie', async () => {
@@ -159,6 +173,58 @@ describe('walletStakeContinuation (partie suivante, D-042)', () => {
   });
 });
 
+describe('walletStakeContinuation.assertCanContinue (« Poursuivre », D-073)', () => {
+  const check = (available: number, stake: number) =>
+    walletStakeContinuation(deps({ bob: available })).assertCanContinue!(
+      ORDINARY,
+      bob,
+      gameAt(ORDINARY, stake),
+    );
+
+  it.each([
+    [500, 250],
+    [501, 250],
+    [2_000, 1_000],
+  ])('solde %i, mise %i : autorisé (≥ 2 × mise)', async (available, stake) => {
+    await expect(check(available, stake)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    [460, 250],
+    [499, 250],
+    [1_999, 1_000],
+    [0, 250],
+  ])('solde %i, mise %i : refusé', async (available, stake) => {
+    await expect(check(available, stake)).rejects.toThrow(InsufficientBalanceForStakeError);
+  });
+
+  it('table de tournoi : non concernée ; mise invalide : refusée', async () => {
+    const policy = walletStakeContinuation(deps({}));
+    await expect(
+      policy.assertCanContinue!(TOURNAMENT, bob, gameAt(TOURNAMENT)),
+    ).resolves.toBeUndefined();
+    await expect(check(1_000, 0)).rejects.toThrow(InvalidGameStakeError);
+  });
+
+  it('une erreur technique reste une erreur technique (pas un refus de solde)', async () => {
+    const policy = walletStakeContinuation({
+      wallets: { getBalances: async () => Promise.reject(new Error('db down')) },
+      tournamentOfSession: async () => null,
+    });
+    await expect(policy.assertCanContinue!(ORDINARY, bob, gameAt(ORDINARY, 100))).rejects.toThrow(
+      'db down',
+    );
+  });
+
+  it('combinée : le premier refus est levé', async () => {
+    const ok: SessionContinuationPolicy = { allowsNewGame: async () => true };
+    const both = allSessionContinuations(ok, walletStakeContinuation(deps({ bob: 460 })));
+    await expect(both.assertCanContinue!(ORDINARY, bob, gameAt(ORDINARY, 250))).rejects.toThrow(
+      InsufficientBalanceForStakeError,
+    );
+  });
+});
+
 describe('Combinaison des politiques de session', () => {
   it('arrivée : toutes doivent accepter', async () => {
     const calls: string[] = [];
@@ -187,8 +253,9 @@ describe('Combinaison des politiques de session', () => {
     const both = allSessionContinuations(a, b);
     expect(await both.allowsNewGame(ORDINARY)).toBe(false);
     const players: PlayerId[] = [bob, alice];
-    expect(await both.playersBarredFromNextGame!(ORDINARY, players, gameAt(ORDINARY, 1))).toEqual(
-      [bob, alice],
-    );
+    expect(await both.playersBarredFromNextGame!(ORDINARY, players, gameAt(ORDINARY, 1))).toEqual([
+      bob,
+      alice,
+    ]);
   });
 });

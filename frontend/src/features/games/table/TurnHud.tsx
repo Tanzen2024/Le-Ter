@@ -17,12 +17,17 @@ import {
   fontOf,
   useTableFonts,
 } from '../../../components/table/TableDecor';
-import { useServerRemainingMs } from '../../../hooks/use-server-countdown';
 import { playSound } from '../../../services/audio-service';
 import type { GameView } from '../../../types/game';
 import { INSTANT_WIN_LABELS, playerLabel } from '../format';
 import type { GameTableLayout } from './table-layout';
-import { DEFAULT_TURN_MS, TURN_SIGNAL_MS, useReducedMotion } from './turn-signal';
+import {
+  dialVisibleFor,
+  remainingFraction,
+  useRemainingMs,
+  useTurnPhase,
+} from './turn-phase';
+import { TURN_SIGNAL_MS, useReducedMotion } from './turn-signal';
 
 /**
  * Indicateurs de tour de la table (bas gauche) et actions ponctuelles (bas droit), placés
@@ -112,8 +117,11 @@ export function turnMessage(
   return active === game.viewerId ? "C'est ton tour !" : `Tour de ${playerLabel(game, active)}`;
 }
 
+/** Fondu d'apparition et de disparition du chrono entre deux phases de jeu. */
+export const DIAL_FADE_MS = 220;
+
 /**
- * Bas gauche : chrono circulaire du joueur attendu (secondes restantes selon le serveur),
+ * Bas gauche : chrono circulaire du joueur attendu (secondes AFFICHÉES : 10 s, D-098),
  * « Tour n/5 » dessous (en entier, jamais tronqué) et bandeau « C'est ton tour ! » / « Tour de <pseudo> ».
  */
 export function TurnHud({
@@ -122,6 +130,7 @@ export function TurnHud({
   layout,
   dealing,
   presenting,
+  turnHeld = false,
   safeLeft,
   safeBottom,
 }: {
@@ -130,27 +139,42 @@ export function TurnHud({
   layout: GameTableLayout;
   dealing: boolean;
   presenting: boolean;
+  /**
+   * Chrono suspendu : ma carte vient d'être lâchée (arrêt immédiat), ou les cartes du tour
+   * précédent ne sont pas encore rangées dans leurs zones (voir PlayArea).
+   */
+  turnHeld?: boolean;
   safeLeft: number;
   safeBottom: number;
 }) {
   const fonts = useTableFonts();
-  const running = game.status === 'in_progress' && !dealing && !game.turnTimedOutAt;
-  const remainingMs = useServerRemainingMs(
-    running ? game.turnDeadlineAt : undefined,
-    game.serverNow,
-    receivedAt,
-  );
+  // Même tour que les barres des joueurs et l'anneau central (turn-phase.ts).
+  const phase = useTurnPhase(game, receivedAt, dealing || turnHeld);
+  const remainingMs = useRemainingMs(phase && !phase.timedOut ? phase : null);
+  // Chrono et roulette : uniquement chez le joueur attendu (D-099) ; les autres voient sa barre.
+  const showDial = dialVisibleFor(phase, game.viewerId);
+  const [dialOpacity] = useState(() => new Animated.Value(showDial ? 1 : 0));
+  useEffect(() => {
+    const animation = Animated.timing(dialOpacity, {
+      toValue: showDial ? 1 : 0,
+      duration: DIAL_FADE_MS,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [dialOpacity, showDial]);
   // 5e tour : joué par le système, aucun compte à rebours (D-041).
   const lastTrick = game.status === 'finished' && presenting;
   if ((game.status !== 'in_progress' && !lastTrick) || !game.play) return null;
 
   const { ring, columnWidth, labelHeight, labelFontSize, message } = layout.hud;
-  const totalMs =
-    game.turnDeadlineAt && game.turnStartedAt
-      ? Date.parse(game.turnDeadlineAt) - Date.parse(game.turnStartedAt)
-      : DEFAULT_TURN_MS;
   const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
-  const fraction = remainingMs === null ? (lastTrick || dealing ? 1 : 0) : remainingMs / totalMs;
+  const fraction =
+    phase && remainingMs !== null
+      ? remainingFraction(phase, phase.localDeadline - remainingMs)
+      : lastTrick || dealing
+        ? 1
+        : 0;
   const urgent = seconds !== null && seconds <= 3;
   const text = turnMessage(game, { dealing, lastTrick });
   const trick = lastTrick ? 5 : game.play.trickNumber;
@@ -170,13 +194,18 @@ export function TurnHud({
           },
         ]}
       >
-        <View
-          accessible
+        <Animated.View
+          accessible={showDial}
           testID="turn-timer"
+          accessibilityElementsHidden={!showDial}
+          importantForAccessibility={showDial ? 'auto' : 'no-hide-descendants'}
           accessibilityLabel={
             seconds === null ? 'Chrono du tour' : `${seconds} seconde${seconds > 1 ? 's' : ''}`
           }
-          style={[styles.ring, { width: ring, height: ring, borderRadius: ring / 2 }]}
+          style={[
+            styles.ring,
+            { width: ring, height: ring, borderRadius: ring / 2, opacity: dialOpacity },
+          ]}
         >
           <TimerDial size={ring} fraction={fraction} urgent={urgent} />
           <Text
@@ -185,7 +214,7 @@ export function TurnHud({
           >
             {seconds ?? '–'}
           </Text>
-        </View>
+        </Animated.View>
         {/* Toute la largeur de la colonne, dimensionnée pour « Tour 5/5 » ; si une police
             plus large que prévu dépasse, le texte rétrécit au lieu d'être coupé. */}
         <View

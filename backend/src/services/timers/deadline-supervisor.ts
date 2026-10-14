@@ -20,6 +20,10 @@ export interface RecoveryReport {
   startTimersScheduled: number;
   /** Démarrages automatiques échus pendant l'arrêt, traités immédiatement (D-065). */
   startDeadlinesProcessed: number;
+  /** Timers de fin de distribution réarmés (D-102). */
+  dealTimersScheduled: number;
+  /** Distributions échues pendant l'arrêt : COMPLETE_DEAL traité immédiatement (D-102). */
+  dealDeadlinesProcessed: number;
 }
 
 /**
@@ -28,7 +32,9 @@ export interface RecoveryReport {
  *   - timer A, décision Poursuivre/Quitter : `session_decision_rounds.deadline_at` → AUTO_LEAVE ;
  *   - timer B, tour de jeu : `games.turn_deadline_at` → TURN_TIMEOUT → coup automatique ;
  *   - timer C, démarrage d'une table de tournoi (D-065) : `games.start_deadline_at` →
- *     démarrage automatique de la partie en attente.
+ *     démarrage automatique de la partie en attente ;
+ *   - timer D, fin de la distribution (D-102) : `games.deal_ends_at` → COMPLETE_DEAL, qui
+ *     ouvre le premier tour (et seulement alors l'échéance du timer B).
  *
  * Les timers en mémoire n'en sont que des copies. Ce superviseur les RECONSTRUIT au
  * démarrage (échéance future → timer réarmé ; échéance passée → traitée immédiatement),
@@ -64,6 +70,8 @@ export class DeadlineSupervisor {
       decisionsProcessed: 0,
       startTimersScheduled: 0,
       startDeadlinesProcessed: 0,
+      dealTimersScheduled: 0,
+      dealDeadlinesProcessed: 0,
     };
     const now = this.now();
     for (const deadline of await this.deps.games.findTurnDeadlines()) {
@@ -81,6 +89,21 @@ export class DeadlineSupervisor {
             turnDeadlineAt: deadline.deadlineAt,
           });
           report.turnTimersScheduled += 1;
+        }
+      });
+    }
+    for (const deadline of await this.deps.games.findDealDeadlines()) {
+      await this.guard('COMPLETE_DEAL', deadline.gameId, async () => {
+        if (deadline.deadlineAt.getTime() <= now) {
+          await this.deps.games.handleDealDeadline(deadline.gameId);
+          report.dealDeadlinesProcessed += 1;
+        } else {
+          this.deps.games.syncTurnTimer({
+            id: deadline.gameId,
+            status: 'in_progress',
+            dealEndsAt: deadline.deadlineAt,
+          });
+          report.dealTimersScheduled += 1;
         }
       });
     }
@@ -127,6 +150,13 @@ export class DeadlineSupervisor {
         } else if (deadline.deadlineAt.getTime() <= now) {
           await this.guard('TURN_TIMEOUT', deadline.gameId, () =>
             this.deps.games.handleTurnTimeout(deadline.gameId),
+          );
+        }
+      }
+      for (const deadline of await this.deps.games.findDealDeadlines()) {
+        if (deadline.deadlineAt.getTime() <= now) {
+          await this.guard('COMPLETE_DEAL', deadline.gameId, () =>
+            this.deps.games.handleDealDeadline(deadline.gameId),
           );
         }
       }

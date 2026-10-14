@@ -17,6 +17,11 @@ export function createGeolocationController(geolocation: GeolocationService) {
       res.json(await geolocation.getStatus(gameIdOf(res), currentPlayer(res)));
     },
 
+    /** Consentement explicite (« Continuer », D-095) : renvoie l'état relu par le serveur. */
+    async consent(_req: Request, res: Response): Promise<void> {
+      res.json(await geolocation.recordConsent(gameIdOf(res), currentPlayer(res)));
+    },
+
     async record(req: Request, res: Response): Promise<void> {
       const gameId = gameIdOf(res);
       const input = parsePositionInput(req.body, gameId);

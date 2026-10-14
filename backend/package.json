@@ -19,6 +19,8 @@
     "test": "node --experimental-vm-modules --no-warnings=ExperimentalWarning node_modules/jest/bin/jest.js",
     "game:finish": "tsx src/cli/finish-game.ts",
     "game:finish:prod": "node dist/cli/finish-game.js",
+    "payments:diagnose": "tsx src/cli/payments-diagnose.ts",
+    "payments:diagnose:prod": "node dist/cli/payments-diagnose.js",
     "user:role": "tsx src/cli/set-user-role.ts",
     "user:role:prod": "node dist/cli/set-user-role.js",
     "tournament:create": "tsx src/cli/tournament-create.ts",

@@ -1,7 +1,15 @@
-import { PaymentProfileIncompleteError } from '../../../src/domain/payments/payment';
+import {
+  DirectPaymentUnavailableError,
+  PaymentInitializationUncertainError,
+  PaymentProfileIncompleteError,
+} from '../../../src/domain/payments/payment';
 import type { PaymentRepository } from '../../../src/repositories/payment.repository';
 import { CinetPayGateway } from '../../../src/services/payments/cinetpay/cinetpay.gateway';
-import { silentLogger } from '../../../src/utils/logger';
+import {
+  CinetPayError,
+  CinetPayPaymentNotSentError,
+} from '../../../src/services/payments/cinetpay/cinetpay-client';
+import { createLogger, silentLogger } from '../../../src/utils/logger';
 
 /** Exigences CinetPay v1 sur le payeur (D-050) : prénom et nom de 2 à 255 caractères. */
 function gateway() {
@@ -88,5 +96,93 @@ describe('CinetPayGateway.assertCollectionEligible', () => {
     ).rejects.toBeInstanceOf(PaymentProfileIncompleteError);
     expect(payments.create).not.toHaveBeenCalled();
     expect(createPayment).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Journal d'échec d'initialisation (D-094) : motif, durée, repli vers la page. Décisions
+ * inchangées (D-090/D-091) : demande non envoyée → échec sans repli ; refus certain d'un
+ * direct → repli possible ; issue inconnue d'un direct → incertain, sans repli.
+ */
+describe('CinetPayGateway — journal d’échec d’initialisation', () => {
+  const PHONE = '+237670000001';
+
+  function directGateway(createPayment: jest.Mock) {
+    const lines: string[] = [];
+    const payments = {
+      create: jest.fn(),
+      markInitializationFailed: jest.fn().mockResolvedValue(undefined),
+      markInitializationUncertain: jest.fn().mockResolvedValue(undefined),
+    } as unknown as PaymentRepository;
+    const instance = new CinetPayGateway({
+      client: { createPayment },
+      payments,
+      logger: createLogger({}, (line) => lines.push(line)),
+      notifyUrl: 'https://api.test.local/api/payments/cinetpay/notify',
+      returnUrl: 'https://api.test.local/api/payments/cinetpay/return',
+      directPayOperators: ['MTN_CM'],
+    });
+    const request = {
+      transactionId: '22222222-2222-4222-8222-222222222222',
+      msisdn: PHONE,
+      tokens: 500,
+      customer: customer('Awa', 'Ndiaye', PHONE),
+      directOperator: 'MTN_CM' as const,
+    };
+    const entries = () => lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    return { instance, payments, request, lines, entries };
+  }
+
+  it('demande jamais envoyée (login 522) : échec, durée, aucun repli, ni numéro ni secret', async () => {
+    const createPayment = jest
+      .fn()
+      .mockRejectedValue(
+        new CinetPayPaymentNotSentError(new CinetPayError('http', 'x', { httpStatus: 522 })),
+      );
+    const { instance, payments, request, lines, entries } = directGateway(createPayment);
+    await expect(instance.requestCollection(request)).rejects.toBeInstanceOf(
+      CinetPayPaymentNotSentError,
+    );
+    const failed = entries().find((e) => e.message === 'cinetpay payment initialization failed');
+    expect(failed).toMatchObject({
+      reason: 'CinetPayPaymentNotSentError:http:522',
+      pageFallback: false,
+    });
+    expect(typeof failed?.durationMs).toBe('number');
+    expect(payments.markInitializationFailed).toHaveBeenCalledTimes(1);
+    expect(payments.markInitializationUncertain).not.toHaveBeenCalled();
+    expect(lines.join('\n')).not.toContain(PHONE.slice(4));
+  });
+
+  it('refus certain du direct (422 NOT_ALLOWED) : repli vers la page annoncé', async () => {
+    const createPayment = jest
+      .fn()
+      .mockRejectedValue(
+        new CinetPayError('http', 'x', {
+          httpStatus: 422,
+          apiCode: 2011,
+          apiStatus: 'NOT_ALLOWED',
+        }),
+      );
+    const { instance, request, entries } = directGateway(createPayment);
+    await expect(instance.requestCollection(request)).rejects.toBeInstanceOf(
+      DirectPaymentUnavailableError,
+    );
+    expect(
+      entries().find((e) => e.message === 'cinetpay payment initialization failed'),
+    ).toMatchObject({ pageFallback: true, apiCode: 2011 });
+  });
+
+  it('délai APRÈS l’envoi d’un direct : incertain, aucun repli, aucun échec déclaré', async () => {
+    const createPayment = jest.fn().mockRejectedValue(new CinetPayError('timeout', 'x'));
+    const { instance, payments, request, entries } = directGateway(createPayment);
+    await expect(instance.requestCollection(request)).rejects.toBeInstanceOf(
+      PaymentInitializationUncertainError,
+    );
+    expect(
+      entries().find((e) => e.message === 'cinetpay direct payment initialization uncertain'),
+    ).toMatchObject({ reason: 'CinetPayError:timeout', pageFallback: false });
+    expect(payments.markInitializationUncertain).toHaveBeenCalledTimes(1);
+    expect(payments.markInitializationFailed).not.toHaveBeenCalled();
   });
 });

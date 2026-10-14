@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -101,6 +101,15 @@ function ModeSelect() {
   const t = useMessages();
   const layout = computeHomeLayout(m);
   const [appear] = useState(() => new Animated.Value(0));
+  const { panel } = useLocalSearchParams<{ panel?: string }>();
+
+  // Arrivée demandée sur la création de partie (ex. « Non merci » à la géolocalisation) :
+  // le panneau s'ouvre une fois, puis le paramètre est effacé pour ne pas le rouvrir.
+  useEffect(() => {
+    if (panel !== 'private') return;
+    openPanel('private');
+    router.setParams({ panel: undefined });
+  }, [panel, openPanel]);
 
   useEffect(() => {
     Animated.timing(appear, {

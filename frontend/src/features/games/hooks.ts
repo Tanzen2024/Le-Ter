@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { randomUUID } from 'expo-crypto';
 
-import { ApiError } from '../../lib/api-client';
 import { gamesApi } from '../../services/games-api';
 import type { GameAction, GameView } from '../../types/game';
 import { withAccessToken } from '../auth/session';
@@ -38,12 +37,32 @@ export function useActiveGames() {
 }
 
 export function useGame(gameId: string) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: gameKeys.detail(gameId),
-    queryFn: async () => (await withAccessToken((t) => gamesApi.get(t, gameId))).game,
+    queryFn: async () => {
+      const fetched = (await withAccessToken((t) => gamesApi.get(t, gameId))).game;
+      // Cache lu À LA RÉCEPTION, jamais au départ de la relecture : une carte acceptée pendant
+      // la relecture (réponse de l'action déjà enregistrée) n'est pas écrasée par l'état
+      // d'avant, qui ramènerait l'ancien tour et son chrono.
+      return newestGame(queryClient.getQueryData<GameView>(gameKeys.detail(gameId)), fetched);
+    },
     enabled: isGameId(gameId),
     refetchInterval: GAME_REFRESH_MS,
   });
+}
+
+/**
+ * Relecture partie AVANT une action mais reçue APRÈS sa réponse : son état (ancien tour,
+ * ancienne échéance) ne remplace jamais une version plus récente déjà affichée. L'heure du
+ * serveur de la réponse est gardée : elle correspond à l'heure de réception (`dataUpdatedAt`)
+ * qui sert à recaler le compte à rebours.
+ */
+export function newestGame(cached: GameView | undefined, fetched: GameView): GameView {
+  if (!cached || cached.gameId !== fetched.gameId || cached.version <= fetched.version) {
+    return fetched;
+  }
+  return { ...cached, serverNow: fetched.serverNow ?? cached.serverNow };
 }
 
 /** Met à jour le cache d'UNE partie, sans jamais revenir à une version plus ancienne. */
@@ -106,16 +125,25 @@ export function useGameAction(gameId: string) {
     mutationFn: async (command: GameCommand) =>
       (await withAccessToken((t) => gamesApi.act(t, gameId, command))).game,
     onSuccess: storeGame,
-    onError: (err) => {
-      // État périmé : on relit la partie depuis le serveur, source de vérité.
-      if (err instanceof ApiError && err.code === 'VERSION_CONFLICT') {
-        void queryClient.invalidateQueries({ queryKey: gameKeys.detail(gameId) });
-      }
+    // Refus, état périmé ou réponse perdue (réseau coupé : la commande a pu être appliquée) :
+    // la partie est relue aussitôt sur le serveur, source de vérité. Sans attendre cette
+    // relecture : le refus s'affiche et les boutons se réactivent tout de suite.
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: gameKeys.detail(gameId) });
     },
   });
   return {
     ...mutation,
+    /**
+     * Une carte se joue sur la version affichée (`expectedVersion`). « Se coucher » et « Main
+     * spéciale » n'en dépendent pas : le serveur les revalide sur l'état réel ; une carte
+     * jouée par un autre juste avant l'appui ne doit pas les faire échouer en silence.
+     */
     send: (action: GameAction, expectedVersion?: number) =>
-      mutation.mutate({ commandId: randomUUID(), action, expectedVersion }),
+      mutation.mutate({
+        commandId: randomUUID(),
+        action,
+        ...(action.type === 'PLAY_CARD' && { expectedVersion }),
+      }),
   };
 }

@@ -155,7 +155,8 @@ export async function apiRequest<T>(
       fields?: Record<string, string>;
     };
     if (response.status >= 500) {
-      logNetworkIssue('SERVER_ERROR', {
+      // 503 : service momentanément indisponible (base injoignable…), distinct d'une panne.
+      logNetworkIssue(response.status === 503 ? 'SERVICE_UNAVAILABLE' : 'SERVER_ERROR', {
         method,
         url: destination(`${API_URL}${path}`),
         status: response.status,

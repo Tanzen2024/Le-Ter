@@ -4,7 +4,7 @@ import type { ErrorRequestHandler, Request, Response } from 'express';
 
 import type { Logger } from '../utils/logger';
 import { toApiError } from './api-errors';
-import { getRequestId } from './request-id';
+import { getRequestDurationMs, getRequestId } from './request-id';
 
 export function notFoundHandler(_req: Request, res: Response): void {
   res.status(404).json({ error: 'Not Found' });
@@ -21,6 +21,11 @@ export function notFoundHandler(_req: Request, res: Response): void {
  *
  * - Erreur applicative connue (validation, authentification) : statut, `code` stable
  *   et message destiné à l'utilisateur (`toApiError`).
+ *
+ * - Erreur connue de statut 5xx (base injoignable, fournisseur indisponible…) : la CAUSE
+ *   d'origine est journalisée (nom, code `pg` ou système, message) avec la durée de la
+ *   requête ; sans elle, un 503 générique masquerait la panne réelle (pool saturé, base
+ *   arrêtée, délai dépassé). Le client ne reçoit toujours que le code stable.
  *
  * Les erreurs du domaine de jeu (partie introuvable, accès refusé, conflit de version…)
  * seront traduites avec les routes de partie (multi-game-architecture.md §7).
@@ -40,7 +45,12 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
 
     const known = toApiError(err);
     if (known) {
-      logger.warn('request rejected', { ...context, status: known.status, code: known.body.code });
+      logger.warn('request rejected', {
+        ...context,
+        status: known.status,
+        code: known.body.code,
+        ...(known.status >= 500 && { durationMs: getRequestDurationMs(res), cause: causeOf(err) }),
+      });
       if (known.status === 401) {
         // Ni token ni en-tête Authorization ne sont journalisés.
         res.setHeader('WWW-Authenticate', 'Bearer');
@@ -73,4 +83,21 @@ function clientErrorStatus(err: unknown): number | undefined {
   const { status, statusCode } = err as { status?: unknown; statusCode?: unknown };
   const value = typeof status === 'number' ? status : statusCode;
   return typeof value === 'number' && value >= 400 && value < 500 ? value : undefined;
+}
+
+/**
+ * Cause d'une panne, pour les logs : nom, code (`pg` : SQLSTATE, réseau : ECONNREFUSED…) et
+ * message, ainsi que ceux de l'erreur enveloppée (`cause`). Les messages de `pg` et du
+ * réseau ne contiennent ni mot de passe ni jeton (l'URL de connexion n'y figure jamais).
+ */
+function causeOf(err: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const { code } = err as { code?: unknown };
+  const inner = depth < 2 ? causeOf((err as { cause?: unknown }).cause, depth + 1) : undefined;
+  return {
+    name: err.name,
+    ...((typeof code === 'string' || typeof code === 'number') && { code }),
+    message: err.message,
+    ...(inner && { cause: inner }),
+  };
 }

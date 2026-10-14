@@ -15,7 +15,9 @@ import type { RandomSource } from '../cards/random-source';
 import {
   AUTOMATIC_TRICK_NUMBER,
   DEAL_PASSES,
+  HAND_SIZE,
   MAX_FLEES_PER_GAME,
+  dealPhaseDurationMs,
   TRICKS_PER_GAME,
   TURN_DURATION_MS,
   type PlayerProgress,
@@ -29,12 +31,14 @@ import {
   type GameEndMethod,
   type GameResult,
   type TerPlay,
+  type TrickPlay,
 } from './game';
 import { getNextPlayer, rotateFrom } from '../sessions/table-order';
 import { assertPlayerInGame } from './game-access';
 import {
   CardNotInHandError,
   CardNotPlayableError,
+  DealInProgressError,
   FirstPlayerNotInGameError,
   FleeNotAllowedError,
   GameAlreadyStartedError,
@@ -52,7 +56,7 @@ import type { PlayerId } from './game-id';
 export interface EngineContext {
   rules: TerRuleSet;
   now: Date;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034, D-092). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (13 s dont 10 s affichées, D-098). */
   turnDurationMs?: number;
 }
 
@@ -62,6 +66,12 @@ export interface StartContext {
   now: Date;
   random: RandomSource;
   turnDurationMs?: number;
+  /**
+   * Durée de la phase de distribution pour un nombre de lots (D-102). Par défaut
+   * `dealPhaseDurationMs`. 0 : distribution confirmée dans la transition de démarrage
+   * (premier tour immédiat, sans présentation).
+   */
+  dealDurationMs?: (batchCount: number) => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,14 +209,67 @@ export function startGame(game: Game, ctx: StartContext): GameEventDraft[] {
     return [...events, ...cancelForTie(game, play, resolution.playerIds, resolution.rank, ctx.now)];
   }
 
-  beginTurn(game, ctx.now, ctx.turnDurationMs);
   const started = events[0] as GameEventDraft;
+  // D-102 : la distribution est présentée sur les tables AVANT tout temps de décision. Le
+  // premier tour ne commence qu'à la confirmation serveur (COMPLETE_DEAL, `completeDeal`).
+  const dealMs = (ctx.dealDurationMs ?? dealPhaseDurationMs)(sequence.length);
+  if (dealMs > 0) {
+    clearTurn(game);
+    game.dealEndsAt = new Date(ctx.now.getTime() + dealMs);
+    started.payload = { ...started.payload, dealEndsAt: game.dealEndsAt.toISOString() };
+    return events;
+  }
+  beginTurn(game, ctx.now, ctx.turnDurationMs);
   started.payload = {
     ...started.payload,
     turnStartedAt: game.turnStartedAt?.toISOString(),
     turnDeadlineAt: game.turnDeadlineAt?.toISOString(),
   };
   return events;
+}
+
+/** La partie est-elle encore dans sa phase de distribution non confirmée ? (D-102) */
+export function isDealing(game: Pick<Game, 'status' | 'dealEndsAt'>): boolean {
+  return game.status === 'in_progress' && game.dealEndsAt !== undefined;
+}
+
+/**
+ * COMPLETE_DEAL (D-102) : le serveur confirme que la distribution est complète et ouvre le
+ * premier tour. Transition unique : sans phase de distribution en cours (déjà confirmée,
+ * partie terminée), renvoie null et ne change rien. Vérifie l'état officiel : chaque joueur
+ * servi détient ses HAND_SIZE cartes et aucune carte n'a été posée. Le temps de décision de
+ * J1 part de `now` (cette transition), pas du début de la distribution.
+ */
+export function completeDeal(game: Game, ctx: EngineContext): GameEventDraft[] | null {
+  if (!isDealing(game)) {
+    return null;
+  }
+  const play = requireInProgress(game);
+  const incomplete = play.dealOrder.some((id) => (play.hands[id]?.length ?? 0) !== HAND_SIZE);
+  if (incomplete || play.currentTrick.length > 0 || play.completedTricks.length > 0) {
+    throw new Error(`Distribution incomplète pour la partie ${game.id}`);
+  }
+  game.dealEndsAt = undefined;
+  beginTurn(game, ctx.now, ctx.turnDurationMs);
+  return [
+    {
+      type: 'game:deal_completed',
+      payload: {
+        trickNumber: play.trickNumber,
+        nextPlayerId: play.nextPlayerId,
+        controllerId: play.control.playerId,
+        turnStartedAt: game.turnStartedAt?.toISOString(),
+        turnDeadlineAt: game.turnDeadlineAt?.toISOString(),
+      },
+    },
+  ];
+}
+
+/** Aucune décision de joueur avant la confirmation de la distribution (D-102). */
+function requireDealt(game: Game): void {
+  if (isDealing(game)) {
+    throw new DealInProgressError(game.id);
+  }
 }
 
 /** [c1…c5] → [[c1, c2, c3], [c4, c5]] selon DEAL_PASSES. */
@@ -270,6 +333,7 @@ export function playCard(
   ctx: EngineContext,
 ): GameEventDraft[] {
   const play = requireInProgress(game);
+  requireDealt(game);
   requireActivePlayer(game, playerId);
   if (play.nextPlayerId !== playerId) {
     throw new NotYourTurnError(game.id, playerId);
@@ -354,20 +418,32 @@ function applyControl(play: TerPlay, playerId: PlayerId, card: Card, rules: TerR
  * précédent garde le contrôle (décision 41).
  */
 function trickController(game: Game, play: TerPlay, previousController: PlayerId): PlayerId {
+  return bestActiveLeadPlay(game, play)?.playerId ?? previousController;
+}
+
+/**
+ * Carte jouée la plus haute de la famille de la carte du meneur, parmi les joueurs qui n'ont
+ * pas fui (décision 52) ; undefined si aucune.
+ */
+function bestActiveLeadPlay(game: Game, play: TerPlay): TrickPlay | undefined {
   const lead = play.currentTrick[0];
   if (!lead) {
-    return previousController;
+    return undefined;
   }
   const leadSuit = cardFromId(lead.cardId).suit;
   const fled = new Set(game.players.filter((p) => p.fledAt).map((p) => p.playerId));
-  let best: { playerId: PlayerId; value: number } | undefined;
-  for (const { playerId, cardId } of play.currentTrick) {
-    const card = cardFromId(cardId);
-    if (card.suit === leadSuit && !fled.has(playerId) && (!best || card.value > best.value)) {
-      best = { playerId, value: card.value };
+  let best: { play: TrickPlay; value: number } | undefined;
+  for (const trickPlay of play.currentTrick) {
+    const card = cardFromId(trickPlay.cardId);
+    if (
+      card.suit === leadSuit &&
+      !fled.has(trickPlay.playerId) &&
+      (!best || card.value > best.value)
+    ) {
+      best = { play: trickPlay, value: card.value };
     }
   }
-  return best?.playerId ?? previousController;
+  return best?.play;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +457,7 @@ function trickController(game: Game, play: TerPlay, previousController: PlayerId
  */
 export function declareWin(game: Game, playerId: PlayerId, ctx: EngineContext): GameEventDraft[] {
   const play = requireInProgress(game);
+  requireDealt(game);
   requireActivePlayer(game, playerId);
   if (!ctx.rules.winDeclarationWindow(progressOf(play, playerId))) {
     throw new WinDeclarationNotAllowedError(game.id);
@@ -403,6 +480,7 @@ export function canDeclareInstantWin(game: Game, playerId: PlayerId, rules: TerR
   const play = game.play;
   return Boolean(
     game.status === 'in_progress' &&
+    !isDealing(game) &&
     play?.instantWins?.[playerId] &&
     !hasFled(game, playerId) &&
     rules.winDeclarationWindow(progressOf(play, playerId)),
@@ -418,6 +496,9 @@ function fleeRefusal(game: Game, playerId: PlayerId, rules: TerRuleSet): string 
   const play = game.play;
   if (game.status !== 'in_progress' || !play) {
     return 'la partie n’est pas en cours';
+  }
+  if (isDealing(game)) {
+    return 'la distribution n’est pas terminée';
   }
   if (game.players.filter((p) => p.fledAt).length >= MAX_FLEES_PER_GAME) {
     return 'un seul joueur peut fuir par partie';
@@ -446,6 +527,7 @@ export function canFlee(game: Game, playerId: PlayerId, rules: TerRuleSet): bool
  */
 export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEventDraft[] {
   const play = requireInProgress(game);
+  requireDealt(game);
   requireActivePlayer(game, playerId);
 
   const refusal = fleeRefusal(game, playerId, ctx.rules);
@@ -471,7 +553,28 @@ export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEv
       ...finish(game, play, remaining[0]!, 'OPPONENT_FLED', ctx.now, { victoryType: 'SIMPLE' }),
     ];
   }
-  if (play.control.playerId === playerId) {
+  const playedThisTrick = play.currentTrick.some((p) => p.playerId === playerId);
+  if (play.control.playerId === playerId && playedThisTrick) {
+    // Le contrôleur fuit APRÈS avoir posé sa carte dans le tour en cours (tour 1, D-089) :
+    // le tour n'est PAS rouvert (ceux qui ont joué ne rejouent pas, le joueur attendu garde
+    // son tour et son échéance) ; sa carte reste posée mais ne compte plus (décision 52). Le
+    // contrôle courant passe à la plus haute carte restante de la famille du meneur, sinon
+    // au joueur actif suivant, sens antihoraire (comme lorsque le meneur fuit, D-089).
+    const next = getNextPlayer(play.dealOrder, playerId, (id) => !hasFled(game, id));
+    if (!next) {
+      throw new Error(`Aucun joueur actif après la fuite dans ${game.id}`);
+    }
+    const best = bestActiveLeadPlay(game, play);
+    play.control = best ? { playerId: best.playerId, cardId: best.cardId } : { playerId: next };
+    events.push({
+      type: 'game:control_changed',
+      payload: {
+        controllerId: play.control.playerId,
+        ...(play.control.cardId && { cardId: play.control.cardId }),
+        trickNumber: play.trickNumber,
+      },
+    });
+  } else if (play.control.playerId === playerId) {
     // Le contrôleur fuit avant d'avoir joué (le meneur du tour en cours, tour 1 ou 2).
     // Les joueurs ayant fui sont ignorés dans l'ordre (décision 37) : le joueur actif
     // suivant, sens antihoraire, mène le tour et détient donc le contrôle (décision 38).
@@ -636,6 +739,7 @@ function beginTurn(game: Game, now: Date, durationMs: number = TURN_DURATION_MS)
 }
 
 export function clearTurn(game: Game): void {
+  game.dealEndsAt = undefined;
   game.turnStartedAt = undefined;
   game.turnDeadlineAt = undefined;
   game.turnTimedOutAt = undefined;

@@ -36,6 +36,10 @@ export function createTournamentController(tournaments: TournamentService) {
     },
 
     /** Tournoi à afficher (en cours, sinon à venir, sinon terminé récemment), ou null. */
+    async rules(_req: Request, res: Response): Promise<void> {
+      res.json({ rules: await tournaments.getCreationRules() });
+    },
+
     async active(_req: Request, res: Response): Promise<void> {
       const snapshot = await tournaments.getFeatured(getAuth(res).userId);
       res.json({

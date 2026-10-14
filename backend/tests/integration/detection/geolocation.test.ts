@@ -90,8 +90,16 @@ async function newPlayer() {
 }
 type Player = Awaited<ReturnType<typeof newPlayer>>;
 
-/** Table de `n` joueurs (partie en attente), détection activée ou non. */
-async function table(enabled: boolean, n = 2, given: Player[] = []) {
+/**
+ * Table de `n` joueurs (partie en attente), détection activée ou non. Table surveillée :
+ * chaque joueur consent (« Continuer », D-095) sauf `consent: false`.
+ */
+async function table(
+  enabled: boolean,
+  n = 2,
+  given: Player[] = [],
+  { consent = true }: { consent?: boolean } = {},
+) {
   const players = [...given];
   while (players.length < n) players.push(await newPlayer());
   const [owner, ...guests] = players as [Player, ...Player[]];
@@ -105,8 +113,14 @@ async function table(enabled: boolean, n = 2, given: Player[] = []) {
     await expectStatus(guest.api.post(`/api/sessions/${sessionId}/join`), 200);
     await expectStatus(guest.api.post(`/api/games/${gameId}/join`), 200);
   }
+  if (enabled && consent) {
+    for (const p of players) await expectStatus(giveConsent(p, gameId), 200);
+  }
   return { players, owner, guest: guests[0]!, sessionId, gameId };
 }
+
+const giveConsent = (p: Player, gameId: string) =>
+  p.api.post(`/api/games/${gameId}/geolocation/consent`, {});
 
 const sendPosition = (
   p: Player,
@@ -217,13 +231,20 @@ describe('Activation par la table', () => {
       201,
     );
     expect(res.body).toEqual({
-      distances: [{ playerId: guest.id, meters: null, unavailable: 'WAITING' }],
+      distances: [
+        { playerId: guest.id, meters: null, unavailable: 'WAITING', missingPosition: 'OTHER' },
+      ],
     });
     const { rows } = await database.sql.query<{ latitude: string; longitude: string }>(
       'SELECT latitude, longitude, player_id FROM detection_positions WHERE game_id = $1',
       [gameId],
     );
     expect(rows.map((r) => [Number(r.latitude), Number(r.longitude)])).toEqual([[4.0512, 9.7679]]);
+    // Vu de l'invité, c'est SA position qui manque : jamais celle de l'autre, jamais de coordonnée.
+    const guestView = await expectStatus(guest.api.get(`/api/games/${gameId}/geolocation`), 200);
+    expect(guestView.body.distances).toEqual([
+      { playerId: owner.id, meters: null, unavailable: 'WAITING', missingPosition: 'VIEWER' },
+    ]);
     const status = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
     expect(status.body).toMatchObject({
       detectionEnabled: true,
@@ -321,7 +342,7 @@ describe('Distances calculées par le serveur', () => {
     expect(view.body.distances).toEqual([
       { playerId: p2.id, meters: 100 },
       { playerId: p3.id, meters: 1_000 },
-      { playerId: p4.id, meters: null, unavailable: 'WAITING' },
+      { playerId: p4.id, meters: null, unavailable: 'WAITING', missingPosition: 'OTHER' },
     ]);
     const refused = await expectStatus(p4.api.get(`/api/games/${gameId}/geolocation`), 200);
     expect(refused.body.distances.map((d: { meters: unknown }) => d.meters)).toEqual([
@@ -344,7 +365,9 @@ describe('Distances calculées par le serveur', () => {
       [gameId],
     );
     const old = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
-    expect(old.body.distances).toEqual([{ playerId: guest.id, meters: null, unavailable: 'STALE' }]);
+    expect(old.body.distances).toEqual([
+      { playerId: guest.id, meters: null, unavailable: 'STALE', missingPosition: 'BOTH' },
+    ]);
   });
 
   it('TEST 19 — aucune coordonnée dans les réponses aux joueurs', async () => {
@@ -516,7 +539,7 @@ describe('TEST 15 — isolation entre deux parties', () => {
     // Même lieu que les joueurs de A, mais aucune distance vers eux : B ne voit que B.
     const viewB = await expectStatus(b.owner.api.get(`/api/games/${b.gameId}/geolocation`), 200);
     expect(viewB.body.distances).toEqual([
-      { playerId: b.guest.id, meters: null, unavailable: 'WAITING' },
+      { playerId: b.guest.id, meters: null, unavailable: 'WAITING', missingPosition: 'OTHER' },
     ]);
 
     await Promise.all([
@@ -533,7 +556,7 @@ describe('TEST 15 — isolation entre deux parties', () => {
 });
 
 describe('TEST 16 — conservation : 24 h au plus après la fin de la partie', () => {
-  it('les positions d’une partie terminée sont supprimées après 24 h, pas avant', async () => {
+  it('les positions d’une partie terminée sont supprimées avant 24 h, pas trop tôt', async () => {
     const ended = await table(true);
     const running = await table(true);
     await closeTogether(ended.gameId, ended.owner.id, ended.guest.id);
@@ -552,12 +575,18 @@ describe('TEST 16 — conservation : 24 h au plus après la fin de la partie', (
     );
     const endedAt = rows[0]!.finished_at.getTime();
 
-    clock.now = new Date(endedAt + 23 * 3600_000);
+    // Nettoyage horaire : une position doit partir dès 23 h pour ne jamais dépasser 24 h.
+    clock.now = new Date(endedAt + 22 * 3600_000);
     expect(await geolocation.purgeExpired()).toBe(0);
     expect(await count('detection_positions', ended.gameId)).toBe(6);
 
-    clock.now = new Date(endedAt + 25 * 3600_000);
-    expect(await geolocation.purgeExpired()).toBe(6 + 1); // + position de plus de 24 h
+    clock.now = new Date(endedAt + 23 * 3600_000 + 1);
+    expect(await geolocation.purgeExpired()).toBeGreaterThanOrEqual(6);
+    expect(await count('detection_positions', ended.gameId)).toBe(0);
+
+    // Partie en cours : au plus tard 24 h après la capture.
+    clock.now = new Date(Date.now() + 23 * 3600_000 + 60_000);
+    await geolocation.purgeExpired();
     expect(await count('detection_positions')).toBe(0);
     // Les signaux (sans coordonnées) restent rattachés à leur partie.
     expect(await count('detection_signals', ended.gameId)).toBe(1);
@@ -577,5 +606,141 @@ describe('TEST 16 — conservation : 24 h au plus après la fin de la partie', (
     expect(calls).toBeGreaterThanOrEqual(2);
     await new Promise((r) => setTimeout(r, 50));
     expect(purged).toHaveLength(calls);
+  });
+});
+
+describe('Consentement par participation (D-095)', () => {
+  const geoStatus = async (p: Player, gameId: GameId) =>
+    (await expectStatus(p.api.get(`/api/games/${gameId}/geolocation`), 200)).body;
+  const consentRows = async () => count('detection_consents');
+
+  it('table surveillée sans consentement : explication due, aucune position acceptée', async () => {
+    const { owner, gameId } = await table(true, 2, [], { consent: false });
+    expect(await geoStatus(owner, gameId)).toMatchObject({
+      detectionEnabled: true,
+      collecting: true,
+      consentGiven: false,
+    });
+    const refused = await expectStatus(sendPosition(owner, gameId, DOUALA), 403);
+    expect(refused.body.code).toBe('DETECTION_CONSENT_REQUIRED');
+    expect(await count('detection_positions')).toBe(0);
+  });
+
+  it('« Continuer » : consentement enregistré par le serveur, puis position acceptée', async () => {
+    const { owner, guest, sessionId, gameId } = await table(true, 2, [], { consent: false });
+    const res = await expectStatus(giveConsent(owner, gameId), 200);
+    expect(res.body).toMatchObject({ detectionEnabled: true, consentGiven: true });
+    const { rows } = await database.sql.query<{ session_id: string; player_id: string; game_id: string }>(
+      'SELECT session_id, player_id, game_id FROM detection_consents',
+    );
+    expect(rows).toEqual([{ session_id: sessionId, player_id: owner.id, game_id: gameId }]);
+    await expectStatus(sendPosition(owner, gameId, DOUALA), 201);
+    // Le consentement de l'un ne vaut jamais pour l'autre.
+    expect((await geoStatus(guest, gameId)).consentGiven).toBe(false);
+  });
+
+  it('double clic / appels simultanés : un seul consentement, réponse identique', async () => {
+    const { owner, gameId } = await table(true, 2, [], { consent: false });
+    const [a, b] = await Promise.all([giveConsent(owner, gameId), giveConsent(owner, gameId)]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    await expectStatus(giveConsent(owner, gameId), 200);
+    expect(await consentRows()).toBe(1);
+  });
+
+  it('table non surveillée : aucun consentement demandé ni enregistré, démarrage libre', async () => {
+    const { owner, guest, gameId } = await table(false);
+    const res = await expectStatus(giveConsent(owner, gameId), 409);
+    expect(res.body.code).toBe('DETECTION_DISABLED');
+    expect(await consentRows()).toBe(0);
+    await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 200);
+    void guest;
+  });
+
+  it('démarrage refusé tant qu’un joueur n’a pas consenti, accepté ensuite', async () => {
+    const { owner, guest, gameId } = await table(true, 2, [], { consent: false });
+    await expectStatus(giveConsent(owner, gameId), 200);
+    const refused = await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 409);
+    expect(refused.body).toMatchObject({
+      code: 'DETECTION_CONSENT_PENDING',
+      details: { pendingPlayers: 1 },
+    });
+    // Aucune identité ni coordonnée dans le refus.
+    expect(JSON.stringify(refused.body)).not.toContain(guest.id);
+    expect((await gameRecord(gameId)).status).toBe('waiting');
+    await expectStatus(giveConsent(guest, gameId), 200);
+    await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 200);
+  });
+
+  it('« Non merci » : départ réel de la table et de la partie, idempotent, plus aucun accès', async () => {
+    const { owner, guest, sessionId, gameId } = await table(true, 2, [], { consent: false });
+    await expectStatus(giveConsent(owner, gameId), 200);
+    // Double clic : deux départs, un seul effet.
+    const [first, second] = await Promise.all([
+      guest.api.post(`/api/sessions/${sessionId}/leave`),
+      guest.api.post(`/api/sessions/${sessionId}/leave`),
+    ]);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    await expectStatus(guest.api.post(`/api/sessions/${sessionId}/leave`), 200);
+
+    const game = await gameRecord(gameId);
+    expect(game.players.map((p) => p.playerId)).toEqual([owner.id]);
+    const session = (await expectStatus(owner.api.get(`/api/sessions/${sessionId}`), 200)).body
+      .session;
+    expect(session.seats.map((s: { playerId: string | null }) => s.playerId)).toEqual([
+      owner.id,
+      null,
+    ]);
+    // Le joueur parti n'a plus accès à la partie refusée.
+    await expectStatus(guest.api.get(`/api/games/${gameId}/geolocation`), 403);
+    await expectStatus(giveConsent(guest, gameId), 403);
+    await expectStatus(sendPosition(guest, gameId, DOUALA), 403);
+    expect((await expectStatus(guest.api.get('/api/games/me/active'), 200)).body.games).toEqual(
+      [],
+    );
+    // L'autre joueur garde sa place, sa partie et son consentement.
+    expect((await geoStatus(owner, gameId)).consentGiven).toBe(true);
+  });
+
+  it('retour à la table après un départ : nouvelle participation, nouveau consentement', async () => {
+    const { owner, guest, sessionId, gameId } = await table(true);
+    await expectStatus(guest.api.post(`/api/sessions/${sessionId}/leave`), 200);
+    await expectStatus(guest.api.post(`/api/sessions/${sessionId}/join`), 200);
+    await expectStatus(guest.api.post(`/api/games/${gameId}/join`), 200);
+    expect((await geoStatus(guest, gameId)).consentGiven).toBe(false);
+    await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 409);
+  });
+
+  it('reconnexion : l’état relu du serveur fait foi, consentement conservé pour la partie suivante', async () => {
+    const { owner, guest, sessionId, gameId } = await table(true);
+    // Relecture après reconnexion : même réponse, aucun nouveau consentement demandé.
+    expect((await geoStatus(guest, gameId)).consentGiven).toBe(true);
+    await playToEnd(owner, guest, gameId);
+    await expectStatus(owner.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }), 200);
+    await expectStatus(guest.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }), 200);
+    const until = Date.now() + 5_000;
+    let next: GameId | null = null;
+    while (!next) {
+      const res = await expectStatus(owner.api.get(`/api/sessions/${sessionId}`), 200);
+      const current = res.body.session.currentGame as { gameId: GameId } | null;
+      if (current && current.gameId !== gameId) next = current.gameId;
+      else if (Date.now() > until) throw new Error('partie suivante non créée');
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    expect((await geoStatus(owner, next)).consentGiven).toBe(true);
+    expect((await geoStatus(guest, next)).consentGiven).toBe(true);
+    await expectStatus(sendPosition(guest, next, DOUALA), 201);
+  });
+
+  it('isolation : consentement et départ d’une table sans effet sur une autre table', async () => {
+    const a = await table(true, 2, [], { consent: false });
+    const b = await table(true, 2, [], { consent: false });
+    await expectStatus(giveConsent(a.owner, a.gameId), 200);
+    expect((await geoStatus(b.owner, b.gameId)).consentGiven).toBe(false);
+    await expectStatus(giveConsent(b.owner, b.gameId), 200);
+    await expectStatus(giveConsent(b.guest, b.gameId), 200);
+    await expectStatus(a.guest.api.post(`/api/sessions/${a.sessionId}/leave`), 200);
+    expect((await gameRecord(b.gameId)).players).toHaveLength(2);
+    expect((await geoStatus(b.guest, b.gameId)).consentGiven).toBe(true);
+    await expectStatus(b.owner.api.post(`/api/games/${b.gameId}/start`), 200);
   });
 });

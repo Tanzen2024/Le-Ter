@@ -35,6 +35,8 @@ import {
   START_FAILURE_ALERT_THRESHOLD,
   START_RECOVERY_MS,
   SETTINGS_LIMITS,
+  playerLimitsError,
+  durationLimitsError,
   coefficientHundredths,
   tokenCoefficientsError,
   settleGameTokens,
@@ -1277,6 +1279,32 @@ export class TournamentService {
   }
 
   /**
+   * Règles de création d'un tournoi lisibles par tout joueur connecté (D-103, D-104) : bornes
+   * du nombre de joueurs (maximum `null` = ∞) et de la durée en minutes, réglées dans les
+   * Paramètres des tournois. Le serveur les applique lui-même ; l'application s'en sert pour
+   * ses valeurs par défaut et un retour immédiat.
+   */
+  async getCreationRules(): Promise<{
+    minimumPlayers: number;
+    maximumPlayers: number | null;
+    minimumDurationMinutes: number;
+    maximumDurationMinutes: number;
+    /** Prix d'entrée minimal (FCFA, D-105) et maximal (plateforme). */
+    minimumEntryFee: number;
+    maximumEntryFee: number;
+  }> {
+    const s = await this.deps.tournaments.readSettings();
+    return {
+      minimumPlayers: s.tournamentMinimumPlayers,
+      maximumPlayers: s.tournamentMaximumPlayers,
+      minimumDurationMinutes: s.tournamentMinimumDurationMinutes,
+      maximumDurationMinutes: s.tournamentMaximumDurationMinutes,
+      minimumEntryFee: s.tournamentMinimumEntryFee,
+      maximumEntryFee: TOURNAMENT_LIMITS.maxEntryFee,
+    };
+  }
+
+  /**
    * Les tournois déjà publiés gardent le taux, les poids de classement, les jetons de départ
    * et la mise copiés à leur publication. Les deux poids sont validés ensemble (somme
    * exactement 100 %), les deux coefficients aussi (mise ≤ moitié des jetons, D-071).
@@ -1289,6 +1317,8 @@ export class TournamentService {
         fields[key] = 'Paramètre inconnu.';
         continue;
       }
+      // Maximum de joueurs : `null` = aucun plafond (∞).
+      if (key === 'tournamentMaximumPlayers' && value === null) continue;
       const coefficient = (COEFFICIENT_SETTING_KEYS as readonly string[]).includes(key);
       const integer = key !== 'platformFeePercent' && !coefficient;
       const ok =
@@ -1320,6 +1350,14 @@ export class TournamentService {
       const coefficientsError = tokenCoefficientsError(next);
       if (coefficientsError) {
         throw new InvalidTournamentError({ stakePerGameCoefficient: coefficientsError });
+      }
+      const playersError = playerLimitsError(next);
+      if (playersError) {
+        throw new InvalidTournamentError({ tournamentMaximumPlayers: playersError });
+      }
+      const durationError = durationLimitsError(next);
+      if (durationError) {
+        throw new InvalidTournamentError({ tournamentMaximumDurationMinutes: durationError });
       }
       await uow.writeSettings(next, adminId, now);
       await uow.audit({

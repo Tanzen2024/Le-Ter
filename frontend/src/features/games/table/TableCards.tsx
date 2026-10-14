@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 
-import type { DealBatch } from '../../../types/game';
+import type { DealBatch, GameView } from '../../../types/game';
 import type { LobbyMetrics } from '../../lobby/lobby-metrics';
-import { CARD_RATIO, CardBack, CardFace, ROW_STEP } from './Cards';
+import { CARD_RATIO, CardBack, CardFace, PublicRow, ROW_STEP } from './Cards';
+import { settledCardsOf, type PublicPlay } from './presentation-plan';
 import {
+  arrangeSeats,
   handWidthOf,
   MAX_HAND_CARDS,
   tableHalfWidthOver,
@@ -34,6 +36,19 @@ export const TRICK_CLEAR_DELAY_MS = 2000;
 const PLAYED_CARD_MOVE_MS = 450;
 
 /**
+ * Orientation d'une carte posée au centre (degrés, sens horaire) : droite DEVANT le joueur qui
+ * l'a jouée, le haut de la carte tourné vers le centre de la table, et vue ainsi par tous.
+ * Moi (bas) : droite ; en face : renversée ; à gauche : haut vers la droite ; à droite : haut
+ * vers la gauche.
+ */
+export const SPOT_ANGLE: Record<SeatSide, number> = {
+  bottom: 0,
+  top: 180,
+  left: 90,
+  right: -90,
+};
+
+/**
  * Rangée des cartes déjà jouées par un joueur. `left` : bord gauche de la PREMIÈRE carte ;
  * `step` : pas entre deux cartes, en largeurs de carte (≥ 1 : cartes séparées) ; `reverse` :
  * la rangée s'étend vers la gauche (siège de gauche, pour ne pas mordre sur la table).
@@ -47,15 +62,18 @@ export interface PublicRowZone {
   cardWidth: number;
 }
 
-/** Pas maximal : cartes séparées par un espace de 12 % de leur largeur. */
-export const PUBLIC_ROW_MAX_STEP = 1.12;
+/**
+ * Pas maximal : cartes empilées avec un léger décalage (20 % de chaque carte recouvert), la
+ * valeur et la famille de chacune restant lisibles.
+ */
+export const PUBLIC_ROW_MAX_STEP = 0.8;
 /** Réduction maximale des cartes jouées quand même le pas minimal ne suffit pas. */
 export const PUBLIC_ROW_MIN_SCALE = 0.75;
 
 /**
  * Pas le plus large qui fait tenir les 5 cartes possibles (5 tours) dans `available` px, entre
- * le pas chevauché d'origine (`ROW_STEP`, jamais moins lisible qu'avant) et des cartes
- * nettement séparées. La taille des cartes ne change pas.
+ * le pas chevauché d'origine (`ROW_STEP`, jamais moins lisible qu'avant) et un léger
+ * décalage (`PUBLIC_ROW_MAX_STEP`). La taille des cartes ne change pas.
  */
 export function publicRowStep(available: number, cardWidth: number): number {
   const step = (available - cardWidth) / ((MAX_HAND_CARDS - 1) * cardWidth);
@@ -71,14 +89,15 @@ const minRowSpan = (cardWidth: number) => cardWidth * (1 + (MAX_HAND_CARDS - 1) 
  * `PUBLIC_ROW_MIN_SCALE` de leur taille. La place étant réservée pour 5 cartes dès le départ,
  * la rangée ne bouge jamais au fil des tours.
  */
-export function fitPublicRow(available: number, cardWidth: number) {
+export function fitPublicRow(
+  available: number,
+  cardWidth: number,
+  minWidth = Math.ceil(cardWidth * PUBLIC_ROW_MIN_SCALE),
+) {
   if (available >= minRowSpan(cardWidth)) {
     return { cardWidth, step: publicRowStep(available, cardWidth) };
   }
-  const width = Math.max(
-    Math.ceil(cardWidth * PUBLIC_ROW_MIN_SCALE),
-    Math.floor(available / minRowSpan(1)),
-  );
+  const width = Math.max(minWidth, Math.floor(available / minRowSpan(1)));
   return { cardWidth: width, step: ROW_STEP };
 }
 
@@ -101,6 +120,106 @@ export function publicRowBox(row: PublicRowZone, count: number, cardWidth = row.
     width: span,
     height: cardWidth * CARD_RATIO,
   };
+}
+
+/** Marge intérieure du cadre (part de la largeur d'une carte jouée). */
+export const PLAYED_ZONE_PAD = 0.08;
+
+/**
+ * Cadre de la zone « cartes jouées » d'un siège (référence annotée, zones 1 à 4) : exactement
+ * la place réservée aux 5 cartes possibles. Toujours de la même taille, même vide : il ne
+ * bouge jamais au fil des tours et ne déborde jamais sur ses voisins.
+ */
+export function playedZoneRect(row: PublicRowZone): Rect {
+  return publicRowBox(row, MAX_HAND_CARDS);
+}
+
+/**
+ * Rangée réellement dessinée DANS le cadre : cartes un peu réduites pour laisser une fine
+ * marge, même pas, même sens. Cible aussi du trajet d'une carte jouée.
+ */
+export function playedRowIn(row: PublicRowZone): PublicRowZone {
+  const pad = Math.max(2, Math.round(row.cardWidth * PLAYED_ZONE_PAD));
+  const cardWidth = row.cardWidth - (pad * 2) / CARD_RATIO;
+  const top = row.top + pad;
+  return row.reverse
+    ? { ...row, cardWidth, top, left: row.left + row.cardWidth - cardWidth - pad }
+    : { ...row, cardWidth, top, left: row.left + pad };
+}
+
+/** Zone « cartes jouées » d'un siège OCCUPÉ dans cette partie. */
+export interface PlayedZone {
+  seat: number;
+  side: SeatSide;
+  playerId: string;
+  /** Cadre visible, même vide (place des 5 cartes). */
+  rect: Rect;
+  /** Rangée dessinée dans le cadre (`playedRowIn`). */
+  row: PublicRowZone;
+  /** Cartes rangées de ce joueur, dans l'ordre chronologique du serveur. */
+  cardIds: string[];
+}
+
+/**
+ * Les zones de cartes jouées de la table (référence annotée, zones 1 à 4) : une par siège
+ * occupé par un joueur de CETTE partie (fuyard compris : ses cartes restent publiques), aucune
+ * pour un siège vide. La correspondance siège-joueur vient de l'état courant de la partie
+ * (`arrangeSeats`, le joueur connecté en bas) ; les cartes, de `completedTricks` /
+ * `currentTrick` du serveur, publiques pour tous, une fois leur présentation finie.
+ */
+export function playedZones(
+  game: GameView,
+  plays: PublicPlay[],
+  settled: ReadonlySet<string>,
+  L: GameTableLayout,
+  m: LobbyMetrics,
+): PlayedZone[] {
+  return arrangeSeats(game).flatMap(({ seat, side, player }) => {
+    if (!player) return [];
+    const reserved = seatZones(side, L, m).publicRow;
+    return [
+      {
+        seat,
+        side,
+        playerId: player.playerId,
+        rect: playedZoneRect(reserved),
+        row: playedRowIn(reserved),
+        cardIds: settledCardsOf(plays, player.playerId, settled),
+      },
+    ];
+  });
+}
+
+/**
+ * Cadre translucide (matière des barres des joueurs) et cartes déjà jouées d'un siège,
+ * légèrement empilées dans l'ordre de jeu : valeur et famille de chacune restent visibles.
+ */
+export function PlayedCardsZone({ zone, label }: { zone: PlayedZone; label: string }) {
+  const { rect, row, cardIds } = zone;
+  return (
+    <>
+      <View
+        testID="played-zone"
+        accessible
+        accessibilityLabel={`Cartes jouées par ${label} : ${cardIds.length}`}
+        style={[
+          styles.absolute,
+          styles.passThrough,
+          styles.playedZone,
+          { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        ]}
+      />
+      {cardIds.length > 0 ? (
+        <PublicRow
+          cardIds={cardIds}
+          width={row.cardWidth}
+          step={row.step}
+          reverse={row.reverse}
+          style={(({ left, top }) => ({ left, top }))(publicRowBox(row, cardIds.length))}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export interface SeatZones {
@@ -152,8 +271,9 @@ function rowIn(
   baseline: number,
   sw: number,
   reverse = false,
+  minWidth?: number,
 ): PublicRowZone {
-  const fit = fitPublicRow(to - from, sw);
+  const fit = fitPublicRow(to - from, sw, minWidth);
   const top = baseline - fit.cardWidth * CARD_RATIO;
   return reverse
     ? { left: to - fit.cardWidth, top, step: fit.step, cardWidth: fit.cardWidth, reverse: true }
@@ -174,22 +294,74 @@ function rowIn(
  * - le joueur connecté (bas) : plaque à droite de sa main, cartes jouées au-dessus d'elle,
  *   après le bois, jusqu'aux boutons d'action.
  *
- * Chaque rangée est réservée pour 5 cartes et s'adapte à sa place (`fitPublicRow`).
+ * Chaque rangée est réservée pour 5 cartes ; toutes les zones de cartes jouées de la table ont
+ * ensuite les MÊMES dimensions (`uniformPlayedRow`), et le cadre (`playedZoneRect`) en garde la
+ * place, même vide.
  */
 export function seatZones(side: SeatSide, L: GameTableLayout, m: LobbyMetrics): SeatZones {
+  const zones = reservedZones(side, L, m);
+  return { ...zones, publicRow: uniformPlayedRow(zones.publicRow, playedRowSize(L, m)) };
+}
+
+/** Sièges dont la zone de cartes jouées compte à cette table (en face seulement s'il existe). */
+const playedSides = (L: GameTableLayout): SeatSide[] =>
+  L.topSeat ? ['bottom', 'right', 'top', 'left'] : ['bottom', 'right', 'left'];
+
+/**
+ * Taille commune des zones de cartes jouées : la plus petite carte et le plus petit pas parmi
+ * les places réservées des sièges. Chaque zone tient donc dans sa propre place (aucun nouveau
+ * chevauchement) et toutes ont exactement la même largeur et la même hauteur.
+ */
+export function playedRowSize(L: GameTableLayout, m: LobbyMetrics) {
+  const rows = playedSides(L).map((side) => reservedZones(side, L, m).publicRow);
+  return {
+    cardWidth: Math.min(...rows.map((row) => row.cardWidth)),
+    step: Math.min(...rows.map((row) => row.step)),
+  };
+}
+
+/**
+ * Rangée à la taille commune, posée dans la place réservée du siège : centrée verticalement,
+ * collée au même bord (côté table : à gauche, ou à droite pour une rangée inversée).
+ */
+export function uniformPlayedRow(
+  row: PublicRowZone,
+  size: { cardWidth: number; step: number },
+): PublicRowZone {
+  const top = row.top + ((row.cardWidth - size.cardWidth) * CARD_RATIO) / 2;
+  const left = row.reverse ? row.left + row.cardWidth - size.cardWidth : row.left;
+  return { ...row, ...size, top, left };
+}
+
+/** Places réservées d'un siège, avant la mise à la taille commune des zones. */
+function reservedZones(side: SeatSide, L: GameTableLayout, m: LobbyMetrics): SeatZones {
   const { cx, cy, diameter, plateWidth: pw, plateHeight: ph, gap } = L;
   const r = diameter / 2;
   const sw = L.smallCard;
   const sh = sw * CARD_RATIO;
-  const tagWidth = distanceTagWidth(m);
+  // Cartes déjà jouées : légèrement plus petites que celles de la main.
+  const pc = L.playedCard;
+  const pch = pc * CARD_RATIO;
+  // Faute de place, jamais plus petites qu'avant (75 % d'un dos de carte d'adversaire).
+  const pmin = Math.ceil(sw * PUBLIC_ROW_MIN_SCALE);
+  /**
+   * Rangée de cartes jouées dans [from, to] : à leur taille (`pc`), réduites au besoin ; si
+   * même ainsi les 5 cartes ne tiennent pas, la rangée d'origine (taille d'un dos de carte).
+   */
+  const playedRow = (from: number, to: number, baseline: number, reverse = false) => {
+    const row = rowIn(from, to, baseline, pc, reverse, pmin);
+    return publicRowBox(row, MAX_HAND_CARDS).width <= to - from + 0.5
+      ? row
+      : rowIn(from, to, baseline, sw, reverse);
+  };  const tagWidth = distanceTagWidth(m);
   const tagHeight = distanceTagHeight(m);
   const screenLeft = m.safe.left + gap;
   const screenRight = m.width - m.safe.right - gap;
   /** Bas d'un coin haut, s'il est au-dessus de la bande [left, right] ; sinon le bord sûr. */
-  const ceiling = (left: number, right: number) =>
+  const ceiling = (left: number, right: number, extra: Rect[] = []) =>
     Math.max(
       m.safe.top,
-      ...[L.corners.left, L.corners.right]
+      ...[L.corners.left, L.corners.right, ...extra]
         .filter((c) => spans(left, right, c))
         .map((c) => c.top + c.height + gap),
     );
@@ -198,28 +370,34 @@ export function seatZones(side: SeatSide, L: GameTableLayout, m: LobbyMetrics): 
     case 'bottom': {
       const plateTop = m.height - m.safe.bottom - ph;
       const baseline = plateTop - gap * 0.5;
-      // Après le bois de la table sur la bande de la rangée, jusqu'aux boutons d'action.
-      const clear = cx + tableHalfWidthOver(baseline - sh, baseline, L) + gap;
+      // Après le bois de la table sur la bande de la rangée, jusqu'aux boutons d'action. Des
+      // cartes plus hautes élargissent la bande de bois à éviter : sans assez de place, la
+      // rangée reprend la taille d'un dos de carte.
+      const limit = m.width - m.safe.right - L.action.width - gap;
+      const rowFor = (width: number) => {
+        const clear = cx + tableHalfWidthOver(baseline - width * CARD_RATIO, baseline, L) + gap;
+        const from = Math.max(L.localPlateLeft, clear);
+        const row = rowIn(from, limit, baseline, width, false, pmin);
+        return { row, fits: publicRowBox(row, MAX_HAND_CARDS).width <= limit - from + 0.5 };
+      };
+      const played = rowFor(pc);
       return {
         plate: { left: L.localPlateLeft, top: plateTop },
-        publicRow: rowIn(
-          Math.max(L.localPlateLeft, clear),
-          m.width - m.safe.right - L.action.width - gap,
-          baseline,
-          sw,
-        ),
+        publicRow: played.fits ? played.row : rowFor(sw).row,
       };
     }
     case 'top': {
       const backsTop = m.safe.top;
-      const top = backsTop + sh + 2;
+      // Siège en face vide : aucun dos dessiné, une part seulement de leur bande est gardée
+      // au-dessus de sa plaque vide (`EMPTY_TOP_SEAT_RESERVE`).
+      const top = L.topPlateTop;
       const left = cx - pw / 2;
-      const baseline = top + ph / 2 + sh / 2;
-      const clear = cx + tableHalfWidthOver(baseline - sh, baseline, L) + gap;
+      const baseline = top + ph / 2 + pch / 2;
+      const clear = cx + tableHalfWidthOver(baseline - pch, baseline, L) + gap;
       return {
         plate: { left, top },
         backs: { left, top: backsTop, width: pw },
-        publicRow: rowIn(Math.max(left + pw + gap, clear), L.corners.right.left - gap, baseline, sw),
+        publicRow: playedRow(Math.max(left + pw + gap, clear), L.corners.right.left - gap, baseline),
         // À gauche de sa plaque, côté du joueur connecté.
         distance: {
           left: left - gap - tagWidth,
@@ -236,20 +414,29 @@ export function seatZones(side: SeatSide, L: GameTableLayout, m: LobbyMetrics): 
       const colLeft = right ? left : screenLeft;
       const colRight = right ? screenRight : left + pw;
       // Plafond : sous les contrôles d'un coin situé au-dessus de la plaque ou de la rangée.
-      const plateCeiling = ceiling(left, left + pw);
-      const rowCeiling = ceiling(colLeft, colRight);
+      // Siège en face : sa zone de cartes jouées et sa distance sont des plafonds de plus.
+      const facing = L.topSeat ? reservedZones('top', L, m) : undefined;
+      const topZone = facing
+        ? [
+            publicRowBox(facing.publicRow, MAX_HAND_CARDS),
+            // Son étiquette de distance (partie surveillée) aussi.
+            { ...facing.distance!, height: tagHeight },
+          ]
+        : [];
+      const plateCeiling = ceiling(left, left + pw, topZone);
+      const rowCeiling = ceiling(colLeft, colRight, topZone);
       // Plancher : cartes jouées du joueur connecté et boutons d'action (droite), chrono et
       // bandeau de tour (gauche).
-      const local = seatZones('bottom', L, m).publicRow;
+      const local = reservedZones('bottom', L, m).publicRow;
       const floor = right ? Math.min(local.top, L.action.top) - gap : L.hud.top;
       const preferred = cy - ph / 2 + sh * 0.3;
       const tag = tagHeight + 3;
 
       // Rangée sous la plaque (colonne entière), ou à côté d'elle vers le bord de l'écran.
-      const under = rowIn(colLeft, colRight, 0, sw, !right);
+      const under = playedRow(colLeft, colRight, 0, !right);
       const beside = right
-        ? rowIn(left + pw + gap, screenRight, 0, sw)
-        : rowIn(screenLeft, left - gap, 0, sw, true);
+        ? playedRow(left + pw + gap, screenRight, 0)
+        : playedRow(screenLeft, left - gap, 0, true);
       const underHeight = under.cardWidth * CARD_RATIO;
       const besideHeight = beside.cardWidth * CARD_RATIO;
       /**
@@ -257,17 +444,24 @@ export function seatZones(side: SeatSide, L: GameTableLayout, m: LobbyMetrics): 
        * jouées, distance) tient entre plafond et plancher est retenue, au plus près du
        * centre de la table. `rowTop` et `tagTop` sont relatifs au haut de la plaque.
        */
+      // Sous la plaque, des cartes jouées à leur taille d'origine si les plus grandes n'y
+      // tiennent pas, avant de passer la rangée à côté de la plaque.
+      const underSmall = rowIn(colLeft, colRight, 0, sw, !right);
+      const underSmallHeight = underSmall.cardWidth * CARD_RATIO;
       const options = [
         // Rangée sous la plaque, distance dessous (vers le joueur connecté).
         { row: under, rowTop: ph + gap * 0.5, tagTop: ph + gap * 0.5 + underHeight + 3, tagAbove: false },
         // Rangée sous la plaque, distance au-dessus des dos.
         { row: under, rowTop: ph + gap * 0.5, tagTop: -2 - sh - tag, tagAbove: true },
+        // Idem, cartes à la taille d'un dos.
+        { row: underSmall, rowTop: ph + gap * 0.5, tagTop: ph + gap * 0.5 + underSmallHeight + 3, tagAbove: false },
+        { row: underSmall, rowTop: ph + gap * 0.5, tagTop: -2 - sh - tag, tagAbove: true },
         // Rangée à côté de la plaque, distance sous la plaque, puis au-dessus des dos.
         { row: beside, rowTop: ph / 2 - besideHeight / 2, tagTop: ph + 3, tagAbove: false },
         { row: beside, rowTop: ph / 2 - besideHeight / 2, tagTop: -2 - sh - tag, tagAbove: true },
       ];
       for (const [index, option] of options.entries()) {
-        const rowHeight = option.row === under ? underHeight : besideHeight;
+        const rowHeight = option.row.cardWidth * CARD_RATIO;
         const blockTop = Math.min(-2 - sh, option.tagAbove ? option.tagTop : 0);
         const blockBottom = Math.max(
           ph,
@@ -440,11 +634,23 @@ export function PlayedCardSpotlight({
   width,
   targetWidth,
   delayMs = 0,
+  angle = 0,
+  instant = false,
   release,
   onReveal,
   onSettled,
 }: {
   cardId: string;
+  /**
+   * Orientation au centre (`SPOT_ANGLE` du siège de son joueur) ; la carte se redresse en
+   * rejoignant la zone de cartes jouées, où toutes les cartes sont droites.
+   */
+  angle?: number;
+  /**
+   * La carte est DÉJÀ à cet endroit (ma carte glissée, posée là avant la réponse du serveur) :
+   * elle s'affiche telle quelle, sans fondu ni grossissement, lu à la création.
+   */
+  instant?: boolean;
   /** Attente avant l'apparition (pause entre deux cartes du 5e tour), lue à la création. */
   delayMs?: number;
   /** Tour complet : la carte quitte la table `TRICK_CLEAR_DELAY_MS` après son apparition. */
@@ -459,7 +665,7 @@ export function PlayedCardSpotlight({
   targetWidth: number;
   onSettled: (cardId: string) => void;
 }) {
-  const [appear] = useState(() => new Animated.Value(0));
+  const [appear] = useState(() => new Animated.Value(instant ? 1 : 0));
   const [move] = useState(() => new Animated.Value(0));
   // Délai d'apparition figé à la création : une nouvelle valeur ne rejoue jamais l'apparition.
   const [initialDelay] = useState(delayMs);
@@ -530,6 +736,12 @@ export function PlayedCardSpotlight({
                 }),
               ),
             },
+            {
+              rotate: move.interpolate({
+                inputRange: [0, 1],
+                outputRange: [`${angle}deg`, '0deg'],
+              }),
+            },
           ],
         },
       ]}
@@ -544,6 +756,14 @@ export function PlayedCardSpotlight({
 const styles = StyleSheet.create({
   absolute: { position: 'absolute' },
   passThrough: { pointerEvents: 'none' },
+  // Même matière que les barres des joueurs : vert très sombre translucide.
+  playedZone: {
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.25)',
+    backgroundColor: 'rgba(4, 30, 12, 0.55)',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.25)',
+  },
   spotGlow: {
     borderRadius: 8,
     boxShadow: '0 0 18px rgba(255, 220, 140, 0.55)',

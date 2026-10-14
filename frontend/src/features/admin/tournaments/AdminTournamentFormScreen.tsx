@@ -16,12 +16,15 @@ import {
   MAX_RANKS,
   sharesTotal,
   toTournamentPayload,
+  withRuleDefaults,
   type TournamentFormErrors,
   type TournamentFormField,
   type TournamentFormValues,
 } from '../../tournaments/tournament-form';
 import { AdminGate } from './AdminGate';
 import { AdminPage, adminStyles } from './AdminTournamentsScreen';
+import type { TournamentCreationRules } from '../../../types/tournament';
+import { useTournamentRules } from '../../tournaments/hooks';
 import { useCreateTournament } from './hooks';
 
 /**
@@ -40,6 +43,14 @@ export function AdminTournamentFormScreen() {
 function AdminTournamentForm() {
   const [values, setValues] = useState<TournamentFormValues>(() => defaultTournamentForm());
   const [errors, setErrors] = useState<TournamentFormErrors>({});
+  // Règles réglées dans les Paramètres des tournois (D-103, D-104) : valeurs par défaut
+  // ajustées dès leur lecture (sans toucher une saisie déjà modifiée), contrôle immédiat.
+  const rules = useTournamentRules().data;
+  const [appliedRules, setAppliedRules] = useState<TournamentCreationRules>();
+  if (rules && rules !== appliedRules) {
+    setAppliedRules(rules);
+    setValues((v) => withRuleDefaults(v, rules));
+  }
   const create = useCreateTournament();
   const apiError = create.error instanceof ApiError ? create.error : undefined;
 
@@ -49,7 +60,7 @@ function AdminTournamentForm() {
   };
 
   const submit = () => {
-    const parsed = toTournamentPayload(values);
+    const parsed = toTournamentPayload(values, undefined, rules);
     if (!parsed.ok) {
       setErrors(parsed.errors);
       return;

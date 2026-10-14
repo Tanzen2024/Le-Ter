@@ -2,7 +2,11 @@ import { isPgError, type SqlClient } from '../database/sql-client';
 import { GeolocationDisabledError, type PositionSample } from '../domain/detection/geo';
 import type { GameStatus } from '../domain/game/game';
 import type { GameId, PlayerId } from '../domain/game/game-id';
-import type { GeolocationAccess, GeolocationRepository } from './geolocation.repository';
+import type {
+  ConsentGate,
+  GeolocationAccess,
+  GeolocationRepository,
+} from './geolocation.repository';
 
 const PG_CHECK_VIOLATION = '23514';
 
@@ -34,13 +38,20 @@ export class PostgresGeolocationRepository implements GeolocationRepository {
       status: GameStatus;
       enabled: boolean | null;
       player_ids: PlayerId[] | null;
+      consented: boolean;
     }>(
       `SELECT g.status, s.suspicion_detection_enabled AS enabled,
               (SELECT array_agg(gp.player_id ORDER BY gp.seat)
-               FROM game_players gp WHERE gp.game_id = g.id) AS player_ids
+               FROM game_players gp WHERE gp.game_id = g.id) AS player_ids,
+              EXISTS (SELECT 1 FROM session_players sp
+                      JOIN detection_consents c
+                        ON c.session_id = sp.session_id AND c.player_id = sp.player_id
+                       AND c.joined_at = sp.joined_at
+                      WHERE sp.session_id = g.session_id AND sp.player_id = $2
+                        AND sp.active) AS consented
        FROM games g LEFT JOIN sessions s ON s.id = g.session_id
        WHERE g.id = $1`,
-      [gameId],
+      [gameId, playerId],
     );
     const row = rows[0];
     if (!row) return null;
@@ -50,7 +61,47 @@ export class PostgresGeolocationRepository implements GeolocationRepository {
       enabled: row.enabled === true,
       isPlayer: playerIds.includes(playerId),
       playerIds,
+      consented: row.consented === true,
     };
+  }
+
+  async recordConsent(gameId: GameId, playerId: PlayerId, at: Date): Promise<boolean> {
+    // Participation actuelle lue dans la même instruction : un départ concurrent ne laisse
+    // jamais un consentement rattaché à une place quittée (`sp.active`).
+    const { rows } = await this.db.query<{ joined_at: Date }>(
+      `WITH seat AS (
+         SELECT sp.session_id, sp.player_id, sp.joined_at
+         FROM games g
+         JOIN session_players sp ON sp.session_id = g.session_id AND sp.player_id = $2
+         WHERE g.id = $1 AND sp.active
+       ), saved AS (
+         INSERT INTO detection_consents (session_id, player_id, joined_at, game_id, consented_at)
+         SELECT session_id, player_id, joined_at, $1, $3 FROM seat
+         ON CONFLICT (session_id, player_id, joined_at) DO NOTHING
+       )
+       SELECT joined_at FROM seat`,
+      [gameId, playerId, at.toISOString()],
+    );
+    return rows.length > 0;
+  }
+
+  async consentGate(sessionId: string, playerIds: readonly PlayerId[]): Promise<ConsentGate> {
+    const { rows } = await this.db.query<{ enabled: boolean; missing: PlayerId[] | null }>(
+      `SELECT s.suspicion_detection_enabled AS enabled,
+              (SELECT array_agg(p.id ORDER BY p.id)
+               FROM unnest($2::uuid[]) AS p(id)
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM session_players sp
+                 JOIN detection_consents c
+                   ON c.session_id = sp.session_id AND c.player_id = sp.player_id
+                  AND c.joined_at = sp.joined_at
+                 WHERE sp.session_id = s.id AND sp.player_id = p.id AND sp.active
+               )) AS missing
+       FROM sessions s WHERE s.id = $1`,
+      [sessionId, [...playerIds]],
+    );
+    const row = rows[0];
+    return { enabled: row?.enabled === true, missing: row?.missing ?? [] };
   }
 
   async insertPosition(sample: PositionSample & { id: string; receivedAt: Date }): Promise<void> {

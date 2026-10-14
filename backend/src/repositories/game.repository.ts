@@ -31,6 +31,12 @@ export interface TurnDeadline {
   timedOut: boolean;
 }
 
+/** Fin persistée de la phase de distribution d'une partie en cours (D-102). */
+export interface DealDeadline {
+  gameId: GameId;
+  deadlineAt: Date;
+}
+
 /** Échéance de démarrage automatique persistée d'une partie en attente (D-065). */
 export interface StartDeadline {
   gameId: GameId;
@@ -64,6 +70,9 @@ export interface GameRepository {
 
   /** Parties en cours ayant une échéance de tour, la plus proche d'abord. */
   findTurnDeadlines(): Promise<TurnDeadline[]>;
+
+  /** Parties en cours dont la distribution n'est pas confirmée (D-102), la plus proche d'abord. */
+  findDealDeadlines(): Promise<DealDeadline[]>;
 
   /** Parties en attente ayant une échéance de démarrage (D-065), la plus proche d'abord. */
   findStartDeadlines(): Promise<StartDeadline[]>;

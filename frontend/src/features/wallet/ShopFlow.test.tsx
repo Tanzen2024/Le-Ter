@@ -324,7 +324,13 @@ describe('Recharger mon portefeuille', () => {
   });
 
   it.each([
-    [new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', 'Indisponible.'), 'Service de paiement momentanément indisponible. Aucun montant n’a été débité.'],
+    // Cause classée par le serveur (D-100) : son message est affiché tel quel.
+    [
+      new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', 'Le service de paiement CinetPay est injoignable pour le moment. Aucun montant n’a été débité. Réessayez dans quelques minutes.'),
+      'Le service de paiement CinetPay est injoignable pour le moment. Aucun montant n’a été débité. Réessayez dans quelques minutes.',
+    ],
+    // Ancien serveur sans message : texte de secours.
+    [new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', ''), 'Service de paiement momentanément indisponible. Aucun montant n’a été débité.'],
     [new ApiError(0, 'NETWORK_ERROR', 'Réseau.'), 'Impossible de contacter le service de paiement. Réessayez.'],
     [new ApiError(409, 'DIRECT_PAYMENT_UNAVAILABLE', 'CinetPay a refusé le paiement direct.'), 'Paiement refusé. CinetPay a refusé le paiement direct.'],
   ])('erreur %# : message distinct, aucune page, aucun second appel', async (error, message) => {

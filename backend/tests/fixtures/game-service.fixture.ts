@@ -24,6 +24,11 @@ export function createGameServiceFixture(
     rules?: TerRuleSet;
     random?: RandomSource;
     turnDurationMs?: number;
+    /**
+     * Phase de distribution (D-102). Par défaut 0 dans les tests : distribution confirmée
+     * au démarrage, premier tour immédiat. La phase réelle se teste par `deal-phase.test.ts`.
+     */
+    dealDurationMs?: (batchCount: number) => number;
     autoCardSelection?: AutomaticCardSelectionStrategy;
   } = {},
 ) {
@@ -43,6 +48,7 @@ export function createGameServiceFixture(
     rules: options.rules,
     random: options.random ?? defaultTestRandom(),
     turnDurationMs: options.turnDurationMs,
+    dealDurationMs: options.dealDurationMs ?? (() => 0),
     autoCardSelection: options.autoCardSelection,
   });
 

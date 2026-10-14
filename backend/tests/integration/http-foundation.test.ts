@@ -72,4 +72,41 @@ describe('Socle HTTP', () => {
       }),
     );
   });
+
+  it('un 503 connu journalise sa cause (code système) et la durée, sans la renvoyer au client', async () => {
+    const { logger, lines } = captureLogger();
+    const app = express();
+    app.use(requestId);
+    app.get('/db', () => {
+      throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5433'), { code: 'ECONNREFUSED' });
+    });
+    app.use(createErrorHandler(logger));
+
+    const res = await request(app).get('/db');
+
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
+    expect(JSON.stringify(res.body)).not.toContain('ECONNREFUSED');
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        status: 503,
+        durationMs: expect.any(Number),
+        cause: { name: 'Error', code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:5433' },
+      }),
+    );
+  });
+
+  it('une erreur client connue (4xx) ne journalise pas de cause', async () => {
+    const { logger, lines } = captureLogger();
+    const app = express();
+    app.use(requestId);
+    app.post('/json', express.json(), (_req, res) => {
+      res.json({});
+    });
+    app.use(createErrorHandler(logger));
+
+    await request(app).post('/json').set('Content-Type', 'application/json').send('{oops').expect(400);
+    expect(lines.some((l) => 'cause' in l)).toBe(false);
+  });
 });

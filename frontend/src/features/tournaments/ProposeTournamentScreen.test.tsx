@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import type { ReactElement } from 'react';
 
 import { ApiError } from '../../lib/api-client';
@@ -17,6 +17,7 @@ jest.mock('../../services/tournaments-api', () => ({
     submit: jest.fn(),
     withdraw: jest.fn(),
     mine: jest.fn(),
+    rules: jest.fn(),
   },
 }));
 jest.mock('expo-router', () => ({
@@ -55,7 +56,25 @@ async function renderWith(ui: ReactElement) {
 beforeEach(() => {
   jest.clearAllMocks();
   useAuthStore.getState().signIn('jeton');
+  // Règles réglées dans les Paramètres des tournois (valeurs initiales, D-103, D-104).
+  api.rules.mockResolvedValue({
+    rules: {
+      minimumPlayers: 20,
+      maximumPlayers: null,
+      minimumDurationMinutes: 45,
+      maximumDurationMinutes: 120,
+      minimumEntryFee: 500,
+      maximumEntryFee: 100_000,
+    },
+  });
 });
+
+/** Formulaire affiché, règles réglées lues sur le serveur. */
+async function renderForm() {
+  await renderWith(<ProposalForm onSaved={jest.fn()} />);
+  await waitFor(() => expect(api.rules).toHaveBeenCalled());
+  await act(async () => undefined);
+}
 afterEach(async () => {
   await cleanup();
   clients.splice(0).forEach((client) => client.clear());
@@ -129,25 +148,25 @@ describe('formulaire de proposition', () => {
     expect([start.getHours(), start.getMinutes()]).toEqual([20, 30]);
   });
 
-  it.each(['29', '121'])(
-    'durée de %s minutes : message exact, aucun appel API',
+  it.each(['44', '121'])(
+    'durée de %s minutes : message exact (bornes réglées), aucun appel API',
     async (minutes) => {
-      await renderWith(<ProposalForm onSaved={jest.fn()} />);
+      await renderForm();
       await type('Durée (minutes)', minutes);
       await fireEvent.press(screen.getByText('Proposer'));
-      expect(screen.getByText('Durée entre 30 minutes et 120 minutes.')).toBeTruthy();
+      expect(screen.getByText('Durée entre 45 minutes et 120 minutes.')).toBeTruthy();
       expect(api.propose).not.toHaveBeenCalled();
     },
   );
 
-  it('durée de 30 minutes : proposition envoyée (fin = début + 30 min)', async () => {
+  it('durée de 45 minutes : proposition envoyée (fin = début + 45 min)', async () => {
     api.propose.mockResolvedValue({ tournament: summary() });
-    await renderWith(<ProposalForm onSaved={jest.fn()} />);
-    await type('Durée (minutes)', '30');
+    await renderForm();
+    await type('Durée (minutes)', '45');
     await fireEvent.press(screen.getByText('Enregistrer le brouillon'));
     await waitFor(() => expect(api.propose).toHaveBeenCalled());
     const payload = api.propose.mock.calls[0][1];
-    expect(Date.parse(payload.endsAt) - Date.parse(payload.startsAt)).toBe(30 * 60_000);
+    expect(Date.parse(payload.endsAt) - Date.parse(payload.startsAt)).toBe(45 * 60_000);
   });
 
   it('« Enregistrer le brouillon » : proposition créée sans soumission', async () => {

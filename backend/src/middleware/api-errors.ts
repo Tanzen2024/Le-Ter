@@ -12,6 +12,7 @@ import {
   PaymentVerificationError,
 } from '../domain/payments/payment';
 import { CinetPayError } from '../services/payments/cinetpay/cinetpay-client';
+import { unavailableMessageOf } from '../services/payments/payment-failure';
 import { DepositOutcomeUnknownError } from '../services/wallet/mobile-money.gateway';
 import { STATUS_CODES } from 'node:http';
 
@@ -25,7 +26,11 @@ import {
   AlertStatusConflictError,
   AlertTransitionNotAllowedError,
 } from '../domain/detection/alert-admin';
-import { GeolocationDisabledError } from '../domain/detection/geo';
+import {
+  DetectionConsentPendingError,
+  DetectionConsentRequiredError,
+  GeolocationDisabledError,
+} from '../domain/detection/geo';
 import { AccessForbiddenError } from './require-role';
 import {
   WithdrawalAccountBlockedError,
@@ -66,6 +71,7 @@ import {
   NotYourTurnError,
   ParticipationRefusedError,
   TurnExpiredError,
+  DealInProgressError,
   PlayerHasFledError,
   WinDeclarationNotAllowedError,
 } from '../domain/game/game-errors';
@@ -229,6 +235,22 @@ export function toApiError(err: unknown): ApiError | undefined {
       "La détection anti-collusion n'est pas activée pour cette partie.",
     );
   }
+  if (err instanceof DetectionConsentRequiredError) {
+    return apiError(
+      403,
+      'DETECTION_CONSENT_REQUIRED',
+      'Acceptez la localisation de la partie protégée avant d’envoyer votre position.',
+    );
+  }
+  if (err instanceof DetectionConsentPendingError) {
+    // Jamais l'identité des joueurs en attente : seulement leur nombre.
+    return apiError(
+      409,
+      'DETECTION_CONSENT_PENDING',
+      'Tous les joueurs doivent accepter la localisation de la partie protégée avant le démarrage.',
+      { details: { pendingPlayers: err.playerIds.length } },
+    );
+  }
   // --- Chat de partie (D-045) -------------------------------------------------
   if (err instanceof ChatClosedError) {
     return apiError(409, 'CHAT_CLOSED', 'La partie est terminée : le chat est en lecture seule.');
@@ -290,11 +312,14 @@ export function toApiError(err: unknown): ApiError | undefined {
     );
   }
   if (err instanceof MobileMoneyUnavailableError) {
-    return apiError(
-      503,
-      'MOBILE_MONEY_UNAVAILABLE',
-      'Le service de paiement est indisponible : l’opération n’a pas été effectuée.',
-    );
+    // Cause classée (D-100) : message adapté, jamais de détail interne (IP, clé, code brut).
+    return apiError(503, 'MOBILE_MONEY_UNAVAILABLE', unavailableMessageOf(err.failure?.category), {
+      details: {
+        cause: err.failure?.category ?? 'UNKNOWN',
+        retryable: err.failure?.retryable ?? true,
+        charged: false,
+      },
+    });
   }
 
   // --- Retraits Mobile Money (D-075) -------------------------------------------
@@ -567,6 +592,9 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   if (err instanceof GameFinishedError) {
     return apiError(409, 'GAME_FINISHED', 'La partie est terminée.');
+  }
+  if (err instanceof DealInProgressError) {
+    return apiError(409, 'DEAL_IN_PROGRESS', 'La distribution des cartes est en cours.');
   }
   if (err instanceof TurnExpiredError) {
     return apiError(409, 'TURN_EXPIRED', 'Le temps de votre tour est écoulé.');

@@ -12,7 +12,7 @@ import {
   prizeRulesError,
   settleGameTokens,
   tokenCoefficientsError,
-  TOURNAMENT_DURATION_ERROR,
+  tournamentDurationError,
   TOURNAMENT_STATUSES,
   tournamentLabel,
   tournamentTokenSetup,
@@ -105,26 +105,28 @@ describe('règles de durée (D-058) et de participants (D-057)', () => {
     input({ startsAt: START, endsAt: new Date(START.getTime() + minutes * 60_000) });
 
   it.each([
-    [29, false],
-    [30, true],
+    [30, false],
+    [44, false],
     [45, true],
     [120, true],
     [121, false],
-  ])('durée de %i minutes : acceptée = %s', (minutes, accepted) => {
+  ])('durée de %i minutes (45 à 120 par défaut) : acceptée = %s', (minutes, accepted) => {
     for (const creator of ['ADMIN', 'PLAYER'] as const) {
       if (accepted) expect(() => validate(lasting(minutes), creator)).not.toThrow();
       else expect(fieldsOf(() => validate(lasting(minutes), creator))).toContain('endsAt');
     }
   });
 
-  it.each([29, 121])('durée de %i minutes : message exact', (minutes) => {
-    expect(TOURNAMENT_DURATION_ERROR).toBe('Durée entre 30 minutes et 120 minutes.');
+  it.each([44, 121])('durée de %i minutes : message exact', (minutes) => {
+    expect(tournamentDurationError(DEFAULT_TOURNAMENT_SETTINGS)).toBe(
+      'Durée entre 45 minutes et 120 minutes.',
+    );
     try {
       validate(lasting(minutes));
       throw new Error('aurait dû être refusé');
     } catch (err) {
       expect((err as InvalidTournamentError).fields.endsAt).toBe(
-        'Durée entre 30 minutes et 120 minutes.',
+        'Durée entre 45 minutes et 120 minutes.',
       );
     }
   });
@@ -132,16 +134,60 @@ describe('règles de durée (D-058) et de participants (D-057)', () => {
   it('une seconde de part et d’autre des bornes suffit à refuser', () => {
     const lastingMs = (ms: number) =>
       input({ startsAt: START, endsAt: new Date(START.getTime() + ms) });
-    expect(fieldsOf(() => validate(lastingMs(30 * 60_000 - 1000)))).toContain('endsAt');
+    expect(fieldsOf(() => validate(lastingMs(45 * 60_000 - 1000)))).toContain('endsAt');
     expect(fieldsOf(() => validate(lastingMs(120 * 60_000 + 1000)))).toContain('endsAt');
+  });
+
+  it('prix d’entrée minimal réglé par l’administration : borne et message suivent les paramètres', () => {
+    const at = (entryFee: number, minimum = 500) => () =>
+      validateTournamentInput(input({ entryFee }), {
+        now: NOW,
+        creatorType: 'ADMIN',
+        settings: { ...DEFAULT_TOURNAMENT_SETTINGS, tournamentMinimumEntryFee: minimum },
+      });
+    expect(DEFAULT_TOURNAMENT_SETTINGS.tournamentMinimumEntryFee).toBe(500);
+    expect(at(500)).not.toThrow();
+    expect(fieldsOf(at(499))).toContain('entryFee');
+    expect(at(2000, 2000)).not.toThrow();
+    try {
+      at(1999, 2000)();
+      throw new Error('aurait dû être refusé');
+    } catch (err) {
+      expect((err as InvalidTournamentError).fields.entryFee).toBe(
+        'Montant entier entre 2000 et 100000.',
+      );
+    }
+  });
+  it('durées réglées par l’administration : bornes et message suivent les paramètres', () => {
+    const settings = {
+      ...DEFAULT_TOURNAMENT_SETTINGS,
+      tournamentMinimumDurationMinutes: 30,
+      tournamentMaximumDurationMinutes: 180,
+    };
+    const check = (minutes: number) => () =>
+      validateTournamentInput(lasting(minutes), { now: NOW, creatorType: 'ADMIN', settings });
+    expect(check(30)).not.toThrow();
+    expect(check(180)).not.toThrow();
+    for (const minutes of [29, 181]) {
+      try {
+        check(minutes)();
+        throw new Error('aurait dû être refusé');
+      } catch (err) {
+        expect((err as InvalidTournamentError).fields.endsAt).toBe(
+          'Durée entre 30 minutes et 180 minutes.',
+        );
+      }
+    }
+    expect(DEFAULT_TOURNAMENT_SETTINGS).toMatchObject({
+      tournamentMinimumDurationMinutes: 45,
+      tournamentMaximumDurationMinutes: 120,
+    });
   });
 
   it.each([
     [{ minimumPlayers: 19 }, 'minimumPlayers'],
     [{ minimumPlayers: 20, maximumPlayers: 19 }, 'maximumPlayers'],
     [{ minimumPlayers: 2, maximumPlayers: 10 }, 'maximumPlayers'],
-    [{ maximumPlayers: 1001 }, 'maximumPlayers'],
-    [{ minimumPlayers: 1001, maximumPlayers: undefined }, 'minimumPlayers'],
   ] as const)('participants refusés : %j (%s)', (overrides, field) => {
     for (const creator of ['ADMIN', 'PLAYER'] as const) {
       expect(fieldsOf(() => validate(input(overrides), creator))).toContain(field);
@@ -153,10 +199,40 @@ describe('règles de durée (D-058) et de participants (D-057)', () => {
     { minimumPlayers: 20, maximumPlayers: 1000 },
     { minimumPlayers: 1000, maximumPlayers: 1000 },
     { minimumPlayers: 20, maximumPlayers: undefined },
+    // Aucun plafond par défaut (∞).
+    { minimumPlayers: 20, maximumPlayers: 1001 },
+    { minimumPlayers: 1001, maximumPlayers: undefined },
+    { minimumPlayers: 20, maximumPlayers: 1_000_000 },
   ])('participants acceptés : %j', (overrides) => {
     for (const creator of ['ADMIN', 'PLAYER'] as const) {
       expect(() => validate(input(overrides), creator)).not.toThrow();
     }
+  });
+
+  it('bornes réglées par l’administration : minimum et maximum appliqués à la création', () => {
+    const settings = {
+      ...DEFAULT_TOURNAMENT_SETTINGS,
+      tournamentMinimumPlayers: 30,
+      tournamentMaximumPlayers: 100,
+    };
+    const check = (overrides: Partial<TournamentInput>) =>
+      fieldsOf(() =>
+        validateTournamentInput(input(overrides), { now: NOW, creatorType: 'ADMIN', settings }),
+      );
+    expect(check({ minimumPlayers: 29, maximumPlayers: 50 })).toContain('minimumPlayers');
+    expect(check({ minimumPlayers: 30, maximumPlayers: 101 })).toContain('maximumPlayers');
+    expect(check({ minimumPlayers: 101, maximumPlayers: undefined })).toContain('minimumPlayers');
+    expect(() =>
+      validateTournamentInput(input({ minimumPlayers: 30, maximumPlayers: 100 }), {
+        now: NOW,
+        creatorType: 'ADMIN',
+        settings,
+      }),
+    ).not.toThrow();
+    expect(DEFAULT_TOURNAMENT_SETTINGS).toMatchObject({
+      tournamentMinimumPlayers: 20,
+      tournamentMaximumPlayers: null,
+    });
   });
 });
 

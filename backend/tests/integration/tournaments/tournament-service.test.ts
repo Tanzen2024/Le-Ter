@@ -683,7 +683,7 @@ describe('règles revérifiées à la soumission, à l’approbation et à la mo
       name: 'InvalidTournamentError',
       fields: expect.objectContaining({
         minimumPlayers: expect.any(String),
-        endsAt: 'Durée entre 30 minutes et 120 minutes.',
+        endsAt: 'Durée entre 45 minutes et 120 minutes.',
       }),
     });
     expect((await stack.repository.findById(draft.id))?.status).toBe('DRAFT');
@@ -701,12 +701,12 @@ describe('règles revérifiées à la soumission, à l’approbation et à la mo
     );
     await expect(stack.tournaments.approve(draft.id, admin)).rejects.toMatchObject({
       name: 'InvalidTournamentError',
-      fields: expect.objectContaining({ endsAt: 'Durée entre 30 minutes et 120 minutes.' }),
+      fields: expect.objectContaining({ endsAt: 'Durée entre 45 minutes et 120 minutes.' }),
     });
     expect((await stack.repository.findById(draft.id))?.status).toBe('PENDING_APPROVAL');
   });
 
-  it('modification autorisée validée elle aussi (maximum 19 refusé, 1 000 accepté)', async () => {
+  it('modification autorisée validée elle aussi (maximum 19 refusé ; au-delà du plafond réglé, refusé)', async () => {
     const t = await published();
     const actor = { userId: admin, isAdmin: true };
     await expect(
@@ -715,6 +715,11 @@ describe('règles revérifiées à la soumission, à l’approbation et à la mo
     await expect(
       stack.tournaments.update(t.id, actor, { maximumPlayers: 1000 }),
     ).resolves.toMatchObject({ maximumPlayers: 1000 });
+    // Aucun plafond par défaut (∞) ; un plafond réglé s'applique aux modifications.
+    await expect(
+      stack.tournaments.update(t.id, actor, { maximumPlayers: 1001 }),
+    ).resolves.toMatchObject({ maximumPlayers: 1001 });
+    await stack.tournaments.updateSettings(admin, { tournamentMaximumPlayers: 1000 });
     await expect(
       stack.tournaments.update(t.id, actor, { maximumPlayers: 1001 }),
     ).rejects.toMatchObject({ name: 'InvalidTournamentError' });
@@ -952,7 +957,8 @@ describe('chevauchement des périodes (D-059 : début A < fin B ET début B < fi
   it('durée complète prise en compte : englobant, englobé, début avant et fin pendant', async () => {
     await period(14, 15);
     await expect(period(13.5, 15.5)).rejects.toBeInstanceOf(TournamentOverlapError);
-    await expect(period(14.25, 14.75)).rejects.toBeInstanceOf(TournamentOverlapError);
+    // Englobé : 48 min, dans la durée minimale par défaut (45 min, D-104).
+    await expect(period(14.1, 14.9)).rejects.toBeInstanceOf(TournamentOverlapError);
     await expect(period(13.5, 14.5)).rejects.toBeInstanceOf(TournamentOverlapError);
   });
 

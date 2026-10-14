@@ -29,7 +29,8 @@ function table(players: PlayerId[], firstPlayerId: PlayerId): Game {
 /** Démarre puis impose des mains choisies (le moteur a déjà fixé ordre, J1 et contrôle). */
 function started(players: PlayerId[], firstPlayerId: PlayerId, hands: Record<string, CardId[]>) {
   const game = table(players, firstPlayerId);
-  startGame(game, { rules: testRules, random: identityRandom, now: NOW });
+  // Distribution confirmée au démarrage (D-102 : phase testée dans deal-phase.test.ts).
+  startGame(game, { rules: testRules, random: identityRandom, now: NOW, dealDurationMs: () => 0 });
   const dealt = new Set(Object.values(hands).flat());
   game.play!.hands = structuredClone(hands);
   game.play!.stock = createDeck().filter((c) => !dealt.has(c));

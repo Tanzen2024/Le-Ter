@@ -13,7 +13,7 @@ import type {
   TrickPlay,
 } from './game';
 import type { GameId, PlayerId } from './game-id';
-import { canDeclareInstantWin, canFlee, playableCards } from './ter-engine';
+import { canDeclareInstantWin, canFlee, isDealing, playableCards } from './ter-engine';
 
 /** Partie de l'état de jeu visible par un joueur. */
 export interface PlayerPlayView {
@@ -87,6 +87,12 @@ export interface PlayerGameView {
   turnDeadlineAt?: Date;
   turnTimedOutAt?: Date;
   /**
+   * Phase de distribution (D-102) : présent tant que le serveur n'a pas confirmé la
+   * distribution. Aucune échéance de tour n'existe alors : roulette et barres restent
+   * inactives. À la confirmation, il disparaît et `turnDeadlineAt` apparaît.
+   */
+  dealEndsAt?: Date;
+  /**
    * Table de tournoi (D-065) : `autoStart` signale le démarrage automatique ; `startDeadlineAt`
    * est l'échéance fixée par le serveur dès 2 joueurs (le créateur peut démarrer avant). Le
    * client n'affiche qu'un compte à rebours ; seul le serveur démarre.
@@ -120,6 +126,7 @@ export function toPlayerView(
     game.play?.nextPlayerId === viewerId &&
     game.play.trickNumber < AUTOMATIC_TRICK_NUMBER &&
     !game.turnTimedOutAt &&
+    !isDealing(game) &&
     !game.players.some((p) => p.playerId === viewerId && p.fledAt);
   const myInstantWin =
     game.status === 'in_progress' ? game.play?.instantWins?.[viewerId] : undefined;
@@ -142,6 +149,7 @@ export function toPlayerView(
     turnStartedAt: game.turnStartedAt,
     turnDeadlineAt: game.turnDeadlineAt,
     turnTimedOutAt: game.turnTimedOutAt,
+    ...(isDealing(game) && { dealEndsAt: game.dealEndsAt }),
     ...(game.autoStartDelayMs !== undefined && { autoStart: true }),
     ...(game.status === 'waiting' &&
       game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt }),

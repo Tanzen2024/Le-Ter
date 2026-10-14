@@ -1,14 +1,15 @@
-import type { TournamentProposalInput } from '../../types/tournament';
+import type { TournamentCreationRules, TournamentProposalInput } from '../../types/tournament';
 
 /**
  * Formulaire d'un tournoi (proposition d'un joueur, création par l'admin), D-054.
  *
  * Le FORMAT des saisies est vérifié ici (date, heure, nombres entiers, pourcentages), ainsi que
- * la durée (30 à 120 min, D-058) pour un retour immédiat. Les autres règles (au moins 1 h à
- * l'avance, prix 0 à 100 000, 20 à 1 000 joueurs, 1 à 10 rangs, somme 100 %, une proposition
- * en attente) sont celles du SERVEUR, qui reste la source de vérité pour toutes (durée
- * comprise) et renvoie ses erreurs par champ ; `fieldErrorsFromApi` les replace sur le
- * formulaire.
+ * la durée, le nombre de joueurs et le prix d'entrée minimal dans les bornes réglées dans les
+ * Paramètres des tournois (D-103, D-104, D-105, lues sur le serveur) pour un retour immédiat.
+ * Les autres règles (au moins 1 h à l'avance, 1 à 10 rangs, somme 100 %, une proposition en
+ * attente) sont celles du
+ * SERVEUR, qui reste la source de vérité pour toutes et renvoie ses erreurs par champ ;
+ * `fieldErrorsFromApi` les replace sur le formulaire.
  */
 export interface TournamentFormValues {
   /** JJ/MM/AAAA, heure locale du téléphone. */
@@ -30,20 +31,54 @@ export type TournamentFormErrors = Partial<Record<TournamentFormField, string>>;
 export const MAX_RANKS = 10;
 
 /**
- * Durée d'un tournoi en minutes : bornes incluses (D-058, miroir du serveur) et valeur
- * proposée par défaut dans les formulaires.
+ * Durée proposée par défaut dans les formulaires, en minutes (ramenée dans les bornes réglées,
+ * `withRuleDefaults`).
  */
 export const TOURNAMENT_DURATION_MINUTES = {
-  min: 30,
-  max: 120,
   default: 60,
 } as const;
 
+/** Minimum de joueurs proposé avant la lecture des règles (valeur initiale du serveur). */
+export const DEFAULT_MINIMUM_PLAYERS = 20;
+
+/** Prix d'entrée proposé par défaut (FCFA), relevé au minimum réglé s'il est plus élevé. */
+export const DEFAULT_ENTRY_FEE = 1000;
+
+/** Message d'un prix d'entrée hors limites, identique à celui du serveur. */
+export function entryFeeError(rules: TournamentCreationRules): string {
+  return `Montant entier entre ${rules.minimumEntryFee} et ${rules.maximumEntryFee}.`;
+}
+
+/** Message d'une durée hors limites, identique à celui du serveur (forme imposée par D-058). */
+export function tournamentDurationError(rules: TournamentCreationRules): string {
+  return `Durée entre ${rules.minimumDurationMinutes} minutes et ${rules.maximumDurationMinutes} minutes.`;
+}
+
 /**
- * Message EXACT d'une durée hors limites (D-058), identique à celui du serveur : texte imposé,
- * à ne pas reformuler (point final compris).
+ * Valeurs par défaut ajustées aux règles réglées : minimum de joueurs du paramètre, durée
+ * ramenée dans les bornes, prix d'entrée relevé au minimum réglé. Une saisie déjà modifiée par
+ * le joueur n'est jamais touchée.
  */
-export const TOURNAMENT_DURATION_ERROR = 'Durée entre 30 minutes et 120 minutes.';
+export function withRuleDefaults(
+  values: TournamentFormValues,
+  rules: TournamentCreationRules,
+): TournamentFormValues {
+  const next = { ...values };
+  if (values.minimumPlayers === String(DEFAULT_MINIMUM_PLAYERS)) {
+    next.minimumPlayers = String(rules.minimumPlayers);
+  }
+  if (values.durationMinutes === String(TOURNAMENT_DURATION_MINUTES.default)) {
+    const duration = Math.min(
+      rules.maximumDurationMinutes,
+      Math.max(rules.minimumDurationMinutes, TOURNAMENT_DURATION_MINUTES.default),
+    );
+    next.durationMinutes = String(duration);
+  }
+  if (values.entryFee === String(DEFAULT_ENTRY_FEE) && DEFAULT_ENTRY_FEE < rules.minimumEntryFee) {
+    next.entryFee = String(rules.minimumEntryFee);
+  }
+  return next;
+}
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -54,8 +89,8 @@ export function defaultTournamentForm(now: Date = new Date()): TournamentFormVal
     date: `${pad(tomorrow.getDate())}/${pad(tomorrow.getMonth() + 1)}/${tomorrow.getFullYear()}`,
     startTime: '18:00',
     durationMinutes: String(TOURNAMENT_DURATION_MINUTES.default),
-    entryFee: '1000',
-    minimumPlayers: '20',
+    entryFee: String(DEFAULT_ENTRY_FEE),
+    minimumPlayers: String(DEFAULT_MINIMUM_PLAYERS),
     maximumPlayers: '',
     shares: defaultShares(3),
   };
@@ -108,6 +143,8 @@ export function deviceTimezone(): string | undefined {
 export function toTournamentPayload(
   values: TournamentFormValues,
   timezone: string | undefined = deviceTimezone(),
+  /** Règles réglées (serveur) ; absentes (pas encore lues) : seul le format est vérifié. */
+  rules?: TournamentCreationRules,
 ): { ok: true; payload: TournamentProposalInput } | { ok: false; errors: TournamentFormErrors } {
   const errors: TournamentFormErrors = {};
   const start = parseLocalStart(values.date, values.startTime);
@@ -123,17 +160,12 @@ export function toTournamentPayload(
     return Number(raw.trim());
   };
   const duration = integer('durationMinutes', values.durationMinutes, 'Durée en minutes.');
-  if (
-    !errors.durationMinutes &&
-    (duration < TOURNAMENT_DURATION_MINUTES.min || duration > TOURNAMENT_DURATION_MINUTES.max)
-  ) {
-    errors.durationMinutes = TOURNAMENT_DURATION_ERROR;
-  }
   const entryFee = integer('entryFee', values.entryFee, 'Montant entier en FCFA.');
   const minimumPlayers = integer('minimumPlayers', values.minimumPlayers, 'Nombre entier.');
   const maximumPlayers = values.maximumPlayers.trim()
     ? integer('maximumPlayers', values.maximumPlayers, 'Nombre entier (ou vide).')
     : undefined;
+  if (rules) checkRules(rules, { duration, entryFee, minimumPlayers, maximumPlayers }, errors);
   const shares = values.shares.map((s) => s.trim().replace(',', '.'));
   if (shares.length < 1 || shares.length > MAX_RANKS || shares.some((s) => !PERCENT.test(s))) {
     errors.shares = 'Un pourcentage par rang récompensé.';
@@ -152,6 +184,44 @@ export function toTournamentPayload(
       prizeRules: shares.map((s, i) => ({ rank: i + 1, percent: Number(s) })),
     },
   };
+}
+
+/**
+ * Bornes réglées dans les Paramètres des tournois (D-103, D-104, D-105), mêmes messages que le
+ * serveur : durée en minutes, prix d'entrée, minimum et maximum de joueurs (maximum `null` = ∞).
+ */
+function checkRules(
+  rules: TournamentCreationRules,
+  input: { duration: number; entryFee: number; minimumPlayers: number; maximumPlayers?: number },
+  errors: TournamentFormErrors,
+) {
+  if (
+    !errors.entryFee &&
+    (input.entryFee < rules.minimumEntryFee || input.entryFee > rules.maximumEntryFee)
+  ) {
+    errors.entryFee = entryFeeError(rules);
+  }
+  const { minimumDurationMinutes: minMinutes, maximumDurationMinutes: maxMinutes } = rules;
+  if (!errors.durationMinutes && (input.duration < minMinutes || input.duration > maxMinutes)) {
+    errors.durationMinutes = tournamentDurationError(rules);
+  }
+  const { minimumPlayers: minLimit, maximumPlayers: maxLimit } = rules;
+  const within = (n: number) => n >= minLimit && (maxLimit === null || n <= maxLimit);
+  if (!errors.minimumPlayers && !within(input.minimumPlayers)) {
+    errors.minimumPlayers =
+      maxLimit === null ? `Au moins ${minLimit}.` : `Entre ${minLimit} et ${maxLimit}.`;
+  }
+  const max = input.maximumPlayers;
+  if (
+    max !== undefined &&
+    !errors.maximumPlayers &&
+    (!within(max) || (!errors.minimumPlayers && max < input.minimumPlayers))
+  ) {
+    errors.maximumPlayers =
+      maxLimit === null
+        ? `Au moins le minimum (${minLimit} ou plus).`
+        : `Au moins le minimum (${minLimit} ou plus), au plus ${maxLimit}.`;
+  }
 }
 
 /** Somme des pourcentages saisis (affichage : « Total : 100 % »). */

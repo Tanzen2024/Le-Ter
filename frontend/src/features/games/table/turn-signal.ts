@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AccessibilityInfo } from 'react-native';
 
+import { DISPLAYED_DELAY_MS } from '../../../hooks/use-server-countdown';
 import type { GameView } from '../../../types/game';
 
 /**
@@ -10,11 +11,11 @@ import type { GameView } from '../../../types/game';
 export const TURN_SIGNAL_MS = 5000;
 
 /**
- * Durée d'un tour (D-034, 10 s depuis D-092), seulement pour l'échelle de l'anneau quand le
+ * Durée AFFICHÉE d'un tour (10 s, D-098 : 13 s côté serveur), seulement pour l'échelle quand le
  * serveur n'envoie pas le début du tour. Le compte à rebours suit TOUJOURS `turnDeadlineAt`
  * du serveur (`TURN_DURATION_MS` côté backend) : le client ne décide jamais du délai.
  */
-export const DEFAULT_TURN_MS = 10_000;
+export const DEFAULT_TURN_MS = DISPLAYED_DELAY_MS;
 
 /**
  * Identité d'UN tour de jeu, tirée de l'état synchronisé : joueur attendu + échéance fixée par
@@ -25,6 +26,8 @@ export const DEFAULT_TURN_MS = 10_000;
 export function turnKeyOf(game: GameView, dealing: boolean): string | undefined {
   const play = game.play;
   if (dealing || game.status !== 'in_progress' || !play) return undefined;
+  // D-102 : le premier tour n'existe qu'après la confirmation de la distribution.
+  if (game.dealEndsAt) return undefined;
   const playerId = game.activePlayerId ?? play.nextPlayerId;
   if (!playerId) return undefined;
   const marker =

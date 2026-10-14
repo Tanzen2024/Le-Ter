@@ -49,8 +49,10 @@ class FakeGateway implements MobileMoneyGateway {
   }
 }
 
-function setup(gateway?: MobileMoneyGateway): { app: Express; wallet: WalletService } {
-  const logger = createLogger({}, () => undefined);
+function setup(
+  gateway?: MobileMoneyGateway,
+  logger = createLogger({}, () => undefined),
+): { app: Express; wallet: WalletService } {
   const auth = createAuthService(
     database.sql,
     {
@@ -130,6 +132,9 @@ describe('GET /api/wallet', () => {
       // Montant saisi (D-085) : limites du contrat CinetPay v1, annoncées à l'application.
       depositLimits: { min: 100, max: 2_500_000, currency: 'XAF' },
       withdrawalAvailable: false,
+      // État des retraits (D-077, docs/withdrawals.md) : sans CinetPay configuré.
+      withdrawalMode: 'unavailable',
+      withdrawalUnavailableReason: 'PROVIDER_NOT_CONFIGURED',
     });
     expect(wallet.mobileMoneyNumber).not.toBe(A.phone);
     expect(wallet.mobileMoneyNumber.slice(-3)).toBe(A.phone.slice(-3));
@@ -139,6 +144,41 @@ describe('GET /api/wallet', () => {
   it('401 sans jeton', async () => {
     const { app } = setup();
     await request(app).get('/api/wallet').expect(401);
+  });
+
+  it('pool PostgreSQL saturé : 503 SERVICE_TEMPORARILY_UNAVAILABLE, cause réelle et durée journalisées', async () => {
+    const lines: Record<string, unknown>[] = [];
+    const { app } = setup(undefined, createLogger({}, (line) => lines.push(JSON.parse(line))));
+    const A = await player(app);
+    // Authentification réussie, puis plus aucune connexion libre pour lire le solde (constat
+    // du 2026-10-14 : base ralentie par la pression mémoire du poste, pool de 10 épuisé).
+    const query = database.sql.query.bind(database.sql);
+    const spy = jest.spyOn(database.sql, 'query').mockImplementation((text, params) =>
+      text.includes('FROM wallets')
+        ? Promise.reject(new Error('timeout exceeded when trying to connect'))
+        : query(text, params),
+    );
+    try {
+      const res = await A.wallet();
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
+      expect(JSON.stringify(res.body)).not.toContain('timeout exceeded');
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          level: 'warn',
+          path: '/api/wallet',
+          status: 503,
+          code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+          durationMs: expect.any(Number),
+          cause: { name: 'Error', message: 'timeout exceeded when trying to connect' },
+        }),
+      );
+      expect(JSON.stringify(lines)).not.toMatch(/Bearer|eyJ/);
+    } finally {
+      spy.mockRestore();
+    }
+    // La base répond de nouveau : le même jeton suffit, aucune donnée n'a été touchée.
+    expect(await balanceOf(A)).toBe(0);
   });
 });
 

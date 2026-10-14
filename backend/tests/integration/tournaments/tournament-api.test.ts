@@ -302,6 +302,11 @@ describe('proposition par un joueur et paramètres', () => {
       tournamentTransitionMinutes: 0,
       rankingTokensWeightPercent: 50,
       rankingGamesWeightPercent: 50,
+      tournamentMinimumPlayers: 20,
+      tournamentMaximumPlayers: null,
+      tournamentMinimumDurationMinutes: 45,
+      tournamentMaximumDurationMinutes: 120,
+      tournamentMinimumEntryFee: 500,
     });
     const updated = await admin
       .patch('/api/admin/tournaments/settings', { platformFeePercent: 12.5 })
@@ -310,10 +315,73 @@ describe('proposition par un joueur et paramètres', () => {
     const bad = await admin.patch('/api/admin/tournaments/settings', { platformFeePercent: 90 });
     expect(bad.status).toBe(400);
   });
+
+  it('bornes de joueurs : minimum 20 et maximum ∞ par défaut, réglables, appliquées à la création', async () => {
+    const admin = await user(0, 'admin');
+    const startsAt = (hours: number) => new Date(stack.clock.now().getTime() + hours * HOUR);
+    const create = (hours: number, extra: Record<string, unknown>) =>
+      admin.post('/api/admin/tournaments', {
+        ...body(hours * HOUR),
+        endsAt: new Date(startsAt(hours).getTime() + HOUR).toISOString(),
+        ...extra,
+      });
+    // ∞ par défaut : aucun plafond au-delà de l'ancien 1 000.
+    await create(2, { maximumPlayers: 5000 }).expect(201);
+
+    // Réglage : maximum 100, minimum 30 ; `null` repasse en illimité.
+    const set = await admin
+      .patch('/api/admin/tournaments/settings', {
+        tournamentMinimumPlayers: 30,
+        tournamentMaximumPlayers: 100,
+      })
+      .expect(200);
+    expect(set.body.settings).toMatchObject({
+      tournamentMinimumPlayers: 30,
+      tournamentMaximumPlayers: 100,
+    });
+    for (const extra of [{ minimumPlayers: 29 }, { minimumPlayers: 30, maximumPlayers: 101 }]) {
+      const res = await create(5, extra);
+      expect(res.status).toBe(400);
+    }
+    expect((await create(5, { minimumPlayers: 29 })).body.fields.minimumPlayers).toBe(
+      'Entre 30 et 100.',
+    );
+    await create(5, { minimumPlayers: 30, maximumPlayers: 100 }).expect(201);
+
+    // Incohérent (maximum sous le minimum) ou hors bornes : refusé, rien n'est enregistré.
+    const inverted = await admin.patch('/api/admin/tournaments/settings', {
+      tournamentMaximumPlayers: 1,
+    });
+    expect([inverted.status, inverted.body.fields?.tournamentMaximumPlayers]).toEqual([
+      400,
+      'Entre 2 et 2147483647.',
+    ]);
+    const below = await admin.patch('/api/admin/tournaments/settings', {
+      tournamentMaximumPlayers: 25,
+    });
+    expect([below.status, below.body.fields?.tournamentMaximumPlayers]).toEqual([
+      400,
+      'Le maximum doit être au moins égal au minimum.',
+    ]);
+    await admin
+      .patch('/api/admin/tournaments/settings', { tournamentMinimumPlayers: 1 })
+      .expect(400);
+    await admin
+      .patch('/api/admin/tournaments/settings', { tournamentMaximumPlayers: 'infini' })
+      .expect(400);
+
+    const unlimited = await admin
+      .patch('/api/admin/tournaments/settings', { tournamentMaximumPlayers: null })
+      .expect(200);
+    expect(unlimited.body.settings.tournamentMaximumPlayers).toBeNull();
+    const again = (await admin.get('/api/admin/tournaments/settings').expect(200)).body.settings;
+    expect(again).toMatchObject({ tournamentMinimumPlayers: 30, tournamentMaximumPlayers: null });
+    await create(8, { minimumPlayers: 30, maximumPlayers: 100_000 }).expect(201);
+  });
 });
 
 describe('règles de durée (D-058) et de participants (D-057)', () => {
-  it('durée 29 et 121 min refusées ; 30, 45 et 120 min acceptées ; participants 19 / 1 001 refusés', async () => {
+  it('durée 44 et 121 min refusées ; 45 et 120 min acceptées (par défaut) ; participants 19 refusés', async () => {
     const admin = await user(0, 'admin');
     const lasting = (startsIn: number, minutes: number, extra: Record<string, unknown> = {}) => {
       const startsAt = new Date(stack.clock.now().getTime() + startsIn);
@@ -322,43 +390,154 @@ describe('règles de durée (D-058) et de participants (D-057)', () => {
         ...extra,
       });
     };
-    for (const minutes of [29, 121]) {
+    for (const minutes of [30, 44, 121]) {
       const res = await admin.post('/api/admin/tournaments', lasting(HOUR, minutes));
-      expect([res.status, res.body.fields?.endsAt]).toEqual([
-        400,
-        'Durée entre 30 minutes et 120 minutes.',
-      ]);
+      expect([res.status, res.body.fields?.endsAt]).toEqual([400, 'Durée entre 45 minutes et 120 minutes.']);
     }
     for (const extra of [
       { minimumPlayers: 19 },
       { maximumPlayers: 19 },
-      { maximumPlayers: 1001 },
     ]) {
       const res = await admin.post('/api/admin/tournaments', lasting(HOUR, 60, extra));
       expect(res.status).toBe(400);
     }
     await admin.post('/api/admin/tournaments', lasting(HOUR, 45)).expect(201);
-    await admin.post('/api/admin/tournaments', lasting(2 * HOUR, 30)).expect(201);
     await admin
-      .post('/api/admin/tournaments', lasting(4 * HOUR, 120, { maximumPlayers: 1000 }))
+      .post('/api/admin/tournaments', lasting(4 * HOUR, 120, { maximumPlayers: 1001 }))
       .expect(201);
   });
 
-  it('les mêmes règles s’appliquent à une proposition de joueur (29 / 121 min refusées, 30 acceptée)', async () => {
+  it('règles de création lisibles par tout joueur : valeurs par défaut puis réglages', async () => {
+    const ana = await user();
+    const rules = async () => (await ana.get('/api/tournaments/rules').expect(200)).body.rules;
+    expect(await rules()).toEqual({
+      minimumPlayers: 20,
+      maximumPlayers: null,
+      minimumDurationMinutes: 45,
+      maximumDurationMinutes: 120,
+      minimumEntryFee: 500,
+      maximumEntryFee: 100_000,
+    });
+    const admin = await user(0, 'admin');
+    await admin
+      .patch('/api/admin/tournaments/settings', {
+        tournamentMinimumPlayers: 30,
+        tournamentMaximumPlayers: 200,
+        tournamentMinimumDurationMinutes: 60,
+        tournamentMaximumDurationMinutes: 90,
+        tournamentMinimumEntryFee: 1000,
+      })
+      .expect(200);
+    expect(await rules()).toEqual({
+      minimumPlayers: 30,
+      maximumPlayers: 200,
+      minimumDurationMinutes: 60,
+      maximumDurationMinutes: 90,
+      minimumEntryFee: 1000,
+      maximumEntryFee: 100_000,
+    });
+    await request(stack.app).get('/api/tournaments/rules').expect(401);
+  });
+
+  it('durées réglables : 30 à 180 min appliquées à la création, incohérence refusée', async () => {
+    const admin = await user(0, 'admin');
+    const lasting = (startsIn: number, minutes: number) => {
+      const startsAt = new Date(stack.clock.now().getTime() + startsIn);
+      return body(startsIn, {
+        endsAt: new Date(startsAt.getTime() + minutes * 60_000).toISOString(),
+      });
+    };
+    const set = await admin
+      .patch('/api/admin/tournaments/settings', {
+        tournamentMinimumDurationMinutes: 30,
+        tournamentMaximumDurationMinutes: 180,
+      })
+      .expect(200);
+    expect(set.body.settings).toMatchObject({
+      tournamentMinimumDurationMinutes: 30,
+      tournamentMaximumDurationMinutes: 180,
+    });
+    for (const minutes of [29, 181]) {
+      const res = await admin.post('/api/admin/tournaments', lasting(HOUR, minutes));
+      expect([res.status, res.body.fields?.endsAt]).toEqual([
+        400,
+        'Durée entre 30 minutes et 180 minutes.',
+      ]);
+    }
+    await admin.post('/api/admin/tournaments', lasting(HOUR, 30)).expect(201);
+    await admin.post('/api/admin/tournaments', lasting(3 * HOUR, 180)).expect(201);
+
+    // Maximum sous le minimum, ou hors de 1 à 1 440 : refusé, rien n'est enregistré.
+    const inverted = await admin.patch('/api/admin/tournaments/settings', {
+      tournamentMaximumDurationMinutes: 20,
+    });
+    expect([inverted.status, inverted.body.fields?.tournamentMaximumDurationMinutes]).toEqual([
+      400,
+      'La durée maximale doit être au moins égale à la durée minimale.',
+    ]);
+    for (const value of [0, 1441, 45.5]) {
+      await admin
+        .patch('/api/admin/tournaments/settings', { tournamentMinimumDurationMinutes: value })
+        .expect(400);
+    }
+    const again = (await admin.get('/api/admin/tournaments/settings').expect(200)).body.settings;
+    expect(again).toMatchObject({
+      tournamentMinimumDurationMinutes: 30,
+      tournamentMaximumDurationMinutes: 180,
+    });
+  });
+
+  it('prix d’entrée minimal : 500 par défaut, réglable, appliqué à la création et aux propositions', async () => {
+    const admin = await user(0, 'admin');
+    const ana = await user();
+    const fee = (startsIn: number, entryFee: number) => body(startsIn, { entryFee });
+    // Valeur par défaut : 500 FCFA.
+    const below = await admin.post('/api/admin/tournaments', fee(HOUR, 499));
+    expect([below.status, below.body.fields?.entryFee]).toEqual([
+      400,
+      'Montant entier entre 500 et 100000.',
+    ]);
+    await admin.post('/api/admin/tournaments', fee(HOUR, 500)).expect(201);
+
+    // Réglé à 2 000 : appliqué aux tournois de l'administration ET aux propositions de joueur.
+    const set = await admin
+      .patch('/api/admin/tournaments/settings', { tournamentMinimumEntryFee: 2000 })
+      .expect(200);
+    expect(set.body.settings.tournamentMinimumEntryFee).toBe(2000);
+    const adminBelow = await admin.post('/api/admin/tournaments', fee(3 * HOUR, 1999));
+    expect([adminBelow.status, adminBelow.body.fields?.entryFee]).toEqual([
+      400,
+      'Montant entier entre 2000 et 100000.',
+    ]);
+    const proposal = await ana.post('/api/tournaments', fee(2 * HOUR, 1500));
+    expect([proposal.status, proposal.body.fields?.entryFee]).toEqual([
+      400,
+      'Montant entier entre 2000 et 100000.',
+    ]);
+    await admin.post('/api/admin/tournaments', fee(3 * HOUR, 2000)).expect(201);
+
+    // Jamais gratuit, jamais au-delà du prix maximal, entier : refusé, rien n'est enregistré.
+    for (const value of [0, 100_001, 750.5]) {
+      await admin
+        .patch('/api/admin/tournaments/settings', { tournamentMinimumEntryFee: value })
+        .expect(400);
+    }
+    const again = (await admin.get('/api/admin/tournaments/settings').expect(200)).body.settings;
+    expect(again.tournamentMinimumEntryFee).toBe(2000);
+  });
+
+  it('les mêmes règles s’appliquent à une proposition de joueur (44 / 121 min refusées, 45 acceptée)', async () => {
     const ana = await user();
     const startsAt = new Date(stack.clock.now().getTime() + 2 * HOUR);
     const lasting = (minutes: number) =>
       body(2 * HOUR, {
         endsAt: new Date(startsAt.getTime() + minutes * 60_000).toISOString(),
       });
-    for (const minutes of [29, 121]) {
+    for (const minutes of [44, 121]) {
       const res = await ana.post('/api/tournaments', lasting(minutes));
-      expect([res.status, res.body.fields?.endsAt]).toEqual([
-        400,
-        'Durée entre 30 minutes et 120 minutes.',
-      ]);
+      expect([res.status, res.body.fields?.endsAt]).toEqual([400, 'Durée entre 45 minutes et 120 minutes.']);
     }
-    await ana.post('/api/tournaments', lasting(30)).expect(201);
+    await ana.post('/api/tournaments', lasting(45)).expect(201);
   });
 });
 

@@ -33,6 +33,19 @@ export function publicPlays(play: PlayerPlayView | undefined): PublicPlay[] {
   return all.filter((p) => !seen.has(p.cardId) && seen.add(p.cardId));
 }
 
+/**
+ * Cartes déjà rangées chez un joueur (sa zone publique ; pour le joueur connecté, le cadre
+ * « mes cartes jouées ») : SEULEMENT les siennes, dans l'ordre chronologique du serveur, chacune
+ * une fois (`publicPlays` dédoublonne), et seulement une fois sa présentation au centre finie.
+ */
+export function settledCardsOf(
+  plays: PublicPlay[],
+  playerId: string,
+  settled: ReadonlySet<string>,
+): string[] {
+  return plays.filter((p) => p.playerId === playerId && settled.has(p.cardId)).map((p) => p.cardId);
+}
+
 /** Une carte jouée présentée sur la table, et quand elle doit rejoindre son joueur. */
 export interface Spotlight {
   play: PublicPlay;
@@ -97,4 +110,36 @@ export function planPresentation(
       finalQueue.filter((p) => p.playerId === playerId && !revealed.has(p.cardId)),
     presenting: unsettled.length > 0,
   };
+}
+
+/**
+ * Barres de progression et roulette SUSPENDUES (l'échéance reste celle du serveur) :
+ * - dès que le joueur connecté a lâché sa carte (`droppedCardId`), tant que le serveur ne l'a
+ *   ni acceptée (elle quitte alors sa main) ni refusée (`rejected` : le tour reprend) ;
+ * - tant qu'une carte d'un tour TERMINÉ n'est pas encore rangée dans la zone de son joueur.
+ * Pendant un tour en cours, les cartes restent au centre jusqu'à la dernière : elles ne
+ * suspendent rien (le joueur suivant doit pouvoir jouer).
+ */
+export function turnHeld({
+  pendingCardId,
+  droppedCardId,
+  rejected,
+  myHand,
+  plays,
+  settled,
+  completedTricks,
+}: {
+  pendingCardId?: string;
+  droppedCardId?: string;
+  rejected: boolean;
+  myHand: readonly string[];
+  plays: PublicPlay[];
+  settled: ReadonlySet<string>;
+  completedTricks: ReadonlySet<number>;
+}): boolean {
+  const myCardPlayed =
+    pendingCardId !== undefined ||
+    (droppedCardId !== undefined && !rejected && myHand.includes(droppedCardId));
+  const trickSettling = plays.some((p) => completedTricks.has(p.trick) && !settled.has(p.cardId));
+  return myCardPlayed || trickSettling;
 }

@@ -5,12 +5,13 @@ import { useServerCountdown } from './use-server-countdown';
 
 /**
  * Compte à rebours vers une échéance FIXÉE PAR LE SERVEUR (tour, Poursuivre/Quitter, départ
- * d'une table de tournoi : 10 s depuis D-092). Le téléphone n'affiche que le temps restant ;
- * il ne déclenche jamais lui-même la fin du délai.
+ * d'une table de tournoi : 13 s côté serveur depuis D-098, dont 10 s affichées). Le téléphone
+ * n'affiche que le temps restant ; il ne déclenche jamais lui-même la fin du délai.
  */
 const T0 = Date.parse('2026-10-09T10:00:00.000Z');
 const iso = (ms: number) => new Date(ms).toISOString();
-const DEADLINE = iso(T0 + 10_000);
+/** Échéance du serveur : 13 s, dont 10 s affichées (D-098). */
+const DEADLINE = iso(T0 + 13_000);
 
 type Props = { deadlineAt?: string; serverNow?: string; receivedAt: number };
 
@@ -31,8 +32,8 @@ function renderCountdown(initial: Props) {
   );
 }
 
-describe('compte à rebours serveur — délai de 10 s (D-092)', () => {
-  it('affiche 10 s au début, décompte, puis reste à 0 sans jamais devenir négatif', async () => {
+describe('compte à rebours serveur — 13 s côté serveur, 10 s affichées (D-098)', () => {
+  it('affiche 10 s au début (jamais 13), décompte, puis reste à 0 sans jamais devenir négatif', async () => {
     const { result } = await renderCountdown({ deadlineAt: DEADLINE, serverNow: iso(T0), receivedAt: T0 });
     expect(result.current).toBe(10);
     await act(() => jest.advanceTimersByTime(1_000));
@@ -79,7 +80,7 @@ describe('compte à rebours serveur — délai de 10 s (D-092)', () => {
     });
     await act(() => jest.advanceTimersByTime(5_000));
     expect(result.current).toBe(5);
-    await rerender({ deadlineAt: iso(T0 + 15_000), serverNow: iso(T0 + 5_000), receivedAt: T0 + 5_000 });
+    await rerender({ deadlineAt: iso(T0 + 18_000), serverNow: iso(T0 + 5_000), receivedAt: T0 + 5_000 });
     expect(result.current).toBe(10);
     // Un seul intervalle par échéance, retiré avec elle : pas d'accumulation de minuteurs.
     expect(active.size).toBe(1);
@@ -90,5 +91,12 @@ describe('compte à rebours serveur — délai de 10 s (D-092)', () => {
     expect(active.size).toBe(1);
     await unmount();
     expect(active.size).toBe(0);
+  });
+
+  it('les 3 dernières secondes du serveur sont invisibles : 0 affiché, échéance serveur pas encore atteinte', async () => {
+    const { result } = await renderCountdown({ deadlineAt: DEADLINE, serverNow: iso(T0), receivedAt: T0 });
+    await act(() => jest.advanceTimersByTime(10_000));
+    expect(result.current).toBe(0);
+    expect(Date.now()).toBeLessThan(Date.parse(DEADLINE));
   });
 });

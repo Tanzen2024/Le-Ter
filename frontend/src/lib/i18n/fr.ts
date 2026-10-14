@@ -85,15 +85,28 @@ export const fr = {
   /** Panneau de fin de partie, posé sur la table (gagnant, bilan, Quitter / Rejouer). */
   gameOver: {
     wonBy: (name: string) => `${name} a gagné la partie.`,
-    youWon: 'Vous avez gagné la partie.',
+    youWon: 'Vous avez gagné !',
     stopped: 'Partie arrêtée.',
     youWin: 'Vous gagnez',
     youLose: 'Vous perdez',
     youFled: 'Vous avez fui la partie',
+    bySpecialHand: (combination?: string) =>
+      combination ? `Victoire par main spéciale : ${combination}` : 'Victoire par main spéciale',
+    opponentFled: (name: string) => `${name} s’est couché.`,
+    combinations: {
+      THREE_SEVENS: 'Trois 7',
+      SUM_AT_MOST_21: 'Somme ≤ 21',
+      FIVE_SAME_SUIT: 'Cinq cartes de la même famille',
+      FOUR_OF_A_VALUE: 'Quatre cartes de même valeur',
+      THREE_AND_TWO: 'Trois + deux',
+      THREE_THREES: 'Trois 3',
+    } as Record<string, string>,
     noChange: 'Aucun gain ni perte',
     amountA11y: (signed: string) => `${signed} jetons`,
     quit: 'Quitter',
     replay: 'Rejouer',
+    cannotContinue: 'Solde insuffisant pour poursuivre : il faut au moins le double de la mise.',
+    continueUnchecked: 'Vérification du solde impossible pour le moment : vous pouvez quitter la partie.',
     leavingIn: (seconds: number) =>
       `La partie sera quittée dans ${seconds} seconde${seconds > 1 ? 's' : ''}`,
     leaving: 'Sortie de la partie…',

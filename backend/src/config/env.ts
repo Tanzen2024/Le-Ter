@@ -6,6 +6,7 @@ import {
   OTP_REQUIRED_OPERATORS,
   type DirectPayOperator,
 } from '../domain/payments/payment';
+import { describePublicUrlProblems, publicUrlProblems } from './public-url';
 
 export type NodeEnv = 'development' | 'test' | 'production';
 
@@ -223,6 +224,19 @@ function readCinetPayEnv(source: NodeJS.ProcessEnv, nodeEnv: NodeEnv): CinetPayE
   const returnUrl = optionalUrl(source.CINETPAY_RETURN_URL, 'CINETPAY_RETURN_URL', publicProtocols);
   if (!notifyUrl || !returnUrl) {
     throw new Error('CINETPAY_NOTIFY_URL et CINETPAY_RETURN_URL sont requis avec CinetPay');
+  }
+  // Production : CinetPay doit pouvoir joindre ces URL depuis Internet (D-100). En
+  // développement, le démarrage le signale seulement (voir `server.ts`).
+  if (nodeEnv === 'production') {
+    for (const [name, url] of [
+      ['CINETPAY_NOTIFY_URL', notifyUrl],
+      ['CINETPAY_RETURN_URL', returnUrl],
+    ] as const) {
+      const problems = publicUrlProblems(url).filter((p) => p !== 'NOT_HTTPS');
+      if (problems.length > 0) {
+        throw new Error(`${name} invalide : ${describePublicUrlProblems(problems)}`);
+      }
+    }
   }
   const appReturnUrl = source.CINETPAY_APP_RETURN_URL?.trim() || 'leter://payment/return';
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(appReturnUrl)) {

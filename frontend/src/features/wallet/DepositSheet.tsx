@@ -92,9 +92,13 @@ function noticeOf(error: unknown): Notice {
           text: 'Service momentanément indisponible. Réessayez dans quelques instants.',
         };
       case 'MOBILE_MONEY_UNAVAILABLE':
+        // Message du serveur, propre à la cause (D-100) : accès au fournisseur suspendu,
+        // CinetPay injoignable, incident ou refus. Rien n'a été débité dans tous les cas.
         return {
           tone: 'error',
-          text: 'Service de paiement momentanément indisponible. Aucun montant n’a été débité.',
+          text:
+            error.message ||
+            'Service de paiement momentanément indisponible. Aucun montant n’a été débité.',
         };
       case 'PAYMENT_OPERATOR_UNSUPPORTED':
         return { tone: 'error', text: error.message };

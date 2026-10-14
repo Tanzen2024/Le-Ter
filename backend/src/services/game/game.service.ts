@@ -47,6 +47,7 @@ import { cryptoRandomSource } from '../../utils/crypto-random-source';
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type DealDeadline,
   type StartDeadline,
   type TurnDeadline,
 } from '../../repositories/game.repository';
@@ -77,6 +78,14 @@ export interface ParticipationPolicy {
  */
 export interface GameStakePolicy {
   assertCanStake(playerId: PlayerId, game: Game): Promise<void>;
+}
+
+/**
+ * Condition supplémentaire au démarrage MANUEL d'une partie (D-095 : consentements d'une
+ * table surveillée). Lève une erreur explicite pour refuser ; la partie reste en attente.
+ */
+export interface GameStartPolicy {
+  assertCanStart(game: Game): Promise<void>;
 }
 
 /** Paramètres de création (R-23 : maxPlayers ∈ {2, 3, 4}). */
@@ -153,6 +162,8 @@ export interface GameServiceDependencies {
   participationPolicy: ParticipationPolicy;
   /** Mise et solde des parties ordinaires (D-073). */
   stakePolicy?: GameStakePolicy;
+  /** Démarrage manuel : consentements d'une table surveillée (D-095). */
+  startPolicy?: GameStartPolicy;
   logger: Logger;
   clock?: () => Date;
   /** Règles coup par coup. Par défaut : OFFICIAL_TER_RULES (D-035, socle de vérité). */
@@ -161,8 +172,14 @@ export interface GameServiceDependencies {
   random?: RandomSource;
   /** Obligatoire pour les parties rattachées à une session (D-033). */
   sessionSeats?: SessionSeatLookup;
-  /** Durée d'un tour. Par défaut TURN_DURATION_MS (10 s, D-034, D-092). */
+  /** Durée d'un tour. Par défaut TURN_DURATION_MS (13 s dont 10 s affichées, D-098). */
   turnDurationMs?: number;
+  /**
+   * Durée de la phase de distribution selon le nombre de lots (D-102). Par défaut
+   * `dealPhaseDurationMs`. Renvoyer 0 confirme la distribution dans la transition de
+   * démarrage (tests du moteur qui ne portent pas sur la distribution).
+   */
+  dealDurationMs?: (batchCount: number) => number;
   /**
    * Choix de la carte jouée automatiquement après TURN_TIMEOUT (tours 1 à 4). Par défaut :
    * règle officielle D-036 (LowestCardAutomaticSelectionStrategy).
@@ -494,9 +511,14 @@ export class GameService {
       'START_GAME',
       actorId,
       meta,
-      (game, { now }) => {
+      async (game, { now }) => {
         if (game.creatorId !== actorId) {
           throw new GameStartForbiddenError(gameId, actorId);
+        }
+        // Vérifié sur l'état lu : l'enregistrement est conditionné à cette version, une
+        // arrivée concurrente fait donc échouer le démarrage (conflit de version).
+        if (game.status === 'waiting') {
+          await this.deps.startPolicy?.assertCanStart(structuredClone(game));
         }
         // Distribution, J1, contrôle et ordre du tour dans la même transition (D-032,
         // D-033). Les règles encore ouvertes (R-03, R-08…) ne concernent que les coups.
@@ -505,6 +527,7 @@ export class GameService {
           random: this.random,
           now,
           turnDurationMs: this.turnDurationMs,
+          dealDurationMs: this.deps.dealDurationMs,
         });
       },
       true,
@@ -641,6 +664,7 @@ export class GameService {
         random: this.random,
         now,
         turnDurationMs: this.turnDurationMs,
+        dealDurationMs: this.deps.dealDurationMs,
       });
     });
     this.syncStartTimer(game);
@@ -770,12 +794,85 @@ export class GameService {
     return this.deps.repository.findTurnDeadlines();
   }
 
+  /** Fins de distribution persistées (D-102), pour reconstruire les timers. */
+  findDealDeadlines(): Promise<DealDeadline[]> {
+    return this.deps.repository.findDealDeadlines();
+  }
+
+  // --- Confirmation de la distribution (D-102) -----------------------------------
+
+  /**
+   * COMPLETE_DEAL : commande système déclenchée par le timer de la partie (ou par la reprise
+   * après redémarrage) à la fin PERSISTÉE de la phase de distribution. Elle passe par la
+   * file de la partie et relit l'état : elle n'a d'effet que si la distribution n'est pas
+   * encore confirmée ET que son échéance est atteinte. Le moteur vérifie alors que chaque
+   * main est complète, puis ouvre le premier tour : c'est le SEUL point où le premier timer
+   * de décision est créé. Doublons (timer + balayage, deux instances) : un seul effet.
+   */
+  async handleDealDeadline(gameId: GameId): Promise<Game> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.applyDealDeadline(gameId);
+      } catch (err) {
+        if (!(err instanceof GameVersionConflictError) || attempt >= 3) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private async applyDealDeadline(gameId: GameId): Promise<Game> {
+    let completed = false;
+    const game = await this.mutate(gameId, 'COMPLETE_DEAL', undefined, {}, (g, { now }) => {
+      if (!engine.isDealing(g) || !g.dealEndsAt) {
+        return null; // déjà confirmée, ou partie terminée entre-temps
+      }
+      if (now.getTime() < g.dealEndsAt.getTime()) {
+        return null; // déclenchement anticipé : le timer est réarmé ci-dessous
+      }
+      const events = engine.completeDeal(g, this.engineContext(now));
+      completed = events !== null;
+      return events;
+    });
+    this.syncTurnTimer(game);
+    if (completed) {
+      this.deps.logger.info('DEAL_COMPLETED', {
+        gameId,
+        sessionId: game.sessionId,
+        playerId: game.play?.nextPlayerId,
+        version: game.version,
+        deadline: game.turnDeadlineAt?.toISOString(),
+      });
+    }
+    return game;
+  }
+
   /**
    * Arme (ou annule) le timer en mémoire de la partie d'après son échéance PERSISTÉE.
    * Échéance déjà dépassée : déclenchement immédiat. Utilisé après chaque commande et à
    * la reconstruction des timers après un redémarrage.
+   *
+   * Un seul timer par partie : pendant la distribution (D-102), il vise la fin de la
+   * distribution (COMPLETE_DEAL) ; il n'existe alors aucune échéance de tour.
    */
-  syncTurnTimer(game: Pick<Game, 'id' | 'status' | 'turnDeadlineAt' | 'turnTimedOutAt'>): void {
+  syncTurnTimer(
+    game: Pick<Game, 'id' | 'status' | 'turnDeadlineAt' | 'turnTimedOutAt' | 'dealEndsAt'>,
+  ): void {
+    if (game.status === 'in_progress' && game.dealEndsAt) {
+      const delay = game.dealEndsAt.getTime() - this.clock().getTime();
+      this.deps.timers.schedule(game.id, delay, () => {
+        this.background.run(() =>
+          this.handleDealDeadline(game.id).catch((err: unknown) => {
+            this.deps.logger.error('deal completion failed', {
+              gameId: game.id,
+              action: 'COMPLETE_DEAL',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }),
+        );
+      });
+      return;
+    }
     if (game.status !== 'in_progress' || !game.turnDeadlineAt || game.turnTimedOutAt) {
       this.deps.timers.cancel(game.id);
       return;
@@ -922,6 +1019,7 @@ export class GameService {
       random: this.random,
       now,
       turnDurationMs: this.turnDurationMs,
+      dealDurationMs: this.deps.dealDurationMs,
     });
     return {
       game,
@@ -992,6 +1090,7 @@ export class GameService {
       random: this.random,
       now,
       turnDurationMs: this.turnDurationMs,
+      dealDurationMs: this.deps.dealDurationMs,
     });
     return { game, events: [created, ...started] };
   }

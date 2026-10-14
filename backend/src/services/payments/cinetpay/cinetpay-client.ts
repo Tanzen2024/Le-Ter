@@ -51,6 +51,18 @@ export class CinetPayError extends MobileMoneyProviderError {
   }
 }
 
+/**
+ * Résultat d'un appel HTTP réel, pour la surveillance du fournisseur (D-100). Jamais de
+ * secret, de jeton, de corps ni de donnée de payeur.
+ */
+export type CinetPayCallOutcome =
+  | { type: 'auth_accepted' }
+  | { type: 'auth_refused'; httpStatus?: number; apiCode?: number; ipNotAllowed: boolean }
+  | { type: 'unreachable' }
+  | { type: 'timeout' }
+  | { type: 'server_error'; httpStatus: number }
+  | { type: 'response' };
+
 export interface CinetPayClientOptions {
   baseUrl: string;
   apiKey: string;
@@ -60,6 +72,8 @@ export interface CinetPayClientOptions {
   /** Injection pour les tests ; `fetch` natif par défaut. */
   fetch?: typeof fetch;
   clock?: () => number;
+  /** Surveillance (D-100) : appelé après chaque appel ; une erreur du listener est ignorée. */
+  onOutcome?: (outcome: CinetPayCallOutcome) => void;
 }
 
 /** Corps de POST /v1/payment (noms de champs du SDK officiel). */
@@ -460,6 +474,14 @@ export class CinetPayClient {
     };
   }
 
+  private emit(outcome: CinetPayCallOutcome): void {
+    try {
+      this.options.onOutcome?.(outcome);
+    } catch {
+      // La surveillance ne doit jamais faire échouer un paiement.
+    }
+  }
+
   private async login(): Promise<string> {
     let data: Json;
     try {
@@ -467,18 +489,29 @@ export class CinetPayClient {
         body: { api_key: this.#apiKey, api_password: this.#apiPassword },
       });
     } catch (err) {
-      if (err instanceof CinetPayError && (err.kind === 'timeout' || err.kind === 'network')) {
+      // Panne du fournisseur (délai, réseau, 5xx dont les 52x de Cloudflare) : jamais présentée
+      // comme un refus d'authentification (clé ou IP), qui orienterait vers une fausse cause.
+      if (
+        err instanceof CinetPayError &&
+        (err.kind === 'timeout' ||
+          err.kind === 'network' ||
+          (err.kind === 'http' && (err.details.httpStatus ?? 0) >= 500))
+      ) {
         throw err;
       }
       const details = err instanceof CinetPayError ? err.details : {};
+      this.emitAuthRefused(details);
       throw new CinetPayError('authentication', 'Authentification CinetPay refusée', details);
     }
     if (data.code !== API_CODE_OK || !nonEmptyString(data.access_token)) {
-      throw new CinetPayError('authentication', 'Authentification CinetPay refusée', {
+      const details = {
         ...(typeof data.code === 'number' && { apiCode: data.code }),
         ...(typeof data.status === 'string' && { apiStatus: data.status }),
-      });
+      };
+      this.emitAuthRefused(details);
+      throw new CinetPayError('authentication', 'Authentification CinetPay refusée', details);
     }
+    this.emit({ type: 'auth_accepted' });
     const announced =
       typeof data.expires_in === 'number' && data.expires_in > 0
         ? data.expires_in
@@ -489,6 +522,16 @@ export class CinetPayClient {
     );
     this.#token = { value: data.access_token, expiresAt: this.clock() + ttl * 1000 };
     return data.access_token;
+  }
+
+  private emitAuthRefused(details: { httpStatus?: number; apiCode?: number; apiStatus?: string }) {
+    this.emit({
+      type: 'auth_refused',
+      ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
+      ...(details.apiCode !== undefined && { apiCode: details.apiCode }),
+      // Code 2011 NOT_ALLOWED : « This Ip is not withlisted » (adresse IP du serveur).
+      ipNotAllowed: details.apiCode === 2011 || details.apiStatus === 'NOT_ALLOWED',
+    });
   }
 
   /** Exécute l'appel avec le jeton ; s'il a expiré côté CinetPay, ré-authentifie UNE fois. */
@@ -531,9 +574,21 @@ export class CinetPayClient {
       const name = typeof raw === 'string' ? raw : '';
       if (name === 'TimeoutError' || name === 'AbortError') {
         log.warn('cinetpay request timeout', { method, path, timeoutMs: this.timeoutMs });
+        this.emit({ type: 'timeout' });
         throw new CinetPayError('timeout', `CinetPay n'a pas répondu à temps (${method} ${path})`);
       }
-      log.warn('cinetpay network error', { method, path, errorName: name || typeof err });
+      // Cause système (DNS : ENOTFOUND / EAI_AGAIN, ECONNREFUSED…) : seul son code est noté.
+      const cause =
+        typeof err === 'object' && err !== null
+          ? (err as { cause?: { code?: unknown } }).cause?.code
+          : undefined;
+      log.warn('cinetpay network error', {
+        method,
+        path,
+        errorName: name || typeof err,
+        ...(typeof cause === 'string' && { cause }),
+      });
+      this.emit({ type: 'unreachable' });
       throw new CinetPayError('network', `CinetPay injoignable (${method} ${path})`);
     }
 
@@ -553,6 +608,10 @@ export class CinetPayClient {
       apiStatus,
     });
 
+    if (response.status >= 500) this.emit({ type: 'server_error', httpStatus: response.status });
+    else if (response.ok && path !== '/v1/oauth/login' && !(isObject(data) && isExpiredToken(data))) {
+      this.emit({ type: 'response' });
+    }
     if (isObject(data) && isExpiredToken(data)) return data;
     if (!response.ok) {
       throw new CinetPayError('http', `CinetPay a répondu ${response.status} (${method} ${path})`, {

@@ -53,6 +53,13 @@
       ],
       "expo-web-browser",
       "expo-asset"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "2e5e676f-1207-4550-ae50-4e2e30805d53"
+      }
+    },
+    "owner": "lamat1986"
   }
 }

@@ -87,7 +87,7 @@ describe('Timer de tour : redémarrage (turn_deadline_at)', () => {
     const { A, gameId } = await startedGame(one);
     const row = await gameRow(gameId);
     expect(row.active_player_id).toBe(A.id);
-    expect(row.turn_deadline_at!.getTime() - row.turn_started_at!.getTime()).toBe(10_000);
+    expect(row.turn_deadline_at!.getTime() - row.turn_started_at!.getTime()).toBe(13_000);
     expect(row.turn_timed_out_at).toBeNull();
   });
 

@@ -51,7 +51,9 @@ export function startedGame(
   rules: TerRuleSet = testRules,
 ): { game: Game; players: PlayerId[] } {
   const game = waitingGame(Object.keys(hands));
-  startGame(game, { rules, random: identityRandom, now: NOW });
+  // Distribution confirmée dans la transition de démarrage (D-102 : la phase de distribution
+  // se teste à part, `deal-phase.test.ts`) : premier tour ouvert à NOW, comme avant.
+  startGame(game, { rules, random: identityRandom, now: NOW, dealDurationMs: () => 0 });
   const dealt = new Set(Object.values(hands).flat());
   game.play!.hands = structuredClone(hands);
   game.play!.stock = createDeck().filter((card) => !dealt.has(card));

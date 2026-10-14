@@ -24,6 +24,11 @@ import type { TournamentService } from './services/tournaments/tournament.servic
 import type { ChatService } from './services/chat/chat.service';
 import { createChatService } from './services/chat/create-chat-service';
 import { createPaymentServices } from './services/payments/create-payment-service';
+import {
+  createPaymentHealthReport,
+  type PaymentHealthReport,
+} from './services/payments/payment-health-report';
+import { describePublicUrlProblems, publicUrlProblems } from './config/public-url';
 import type { PaymentReconciler } from './services/payments/payment-reconciler';
 import type { PaymentService } from './services/payments/payment.service';
 import { createWalletService } from './services/wallet/create-wallet-service';
@@ -128,6 +133,7 @@ async function main(): Promise<void> {
   let wallet: WalletService | undefined;
   let payments: PaymentService | undefined;
   let paymentReconciler: PaymentReconciler | undefined;
+  let paymentHealth: (() => Promise<PaymentHealthReport>) | undefined;
   let withdrawals: WithdrawalService | undefined;
   let withdrawalReconciler: WithdrawalReconciler | undefined;
   let platformFinance: ReturnType<typeof createPlatformFinanceServices> | undefined;
@@ -135,6 +141,27 @@ async function main(): Promise<void> {
     const paymentServices = createPaymentServices({ sql, logger, cinetpay: env.cinetpay });
     payments = paymentServices.payments;
     paymentReconciler = paymentServices.reconciler;
+    paymentHealth = createPaymentHealthReport({
+      health: paymentServices.health,
+      repository: paymentServices.repository,
+      cinetpay: env.cinetpay,
+    });
+    // URL que CinetPay doit joindre depuis Internet (D-100) : signalées dès le démarrage.
+    if (env.cinetpay) {
+      for (const [name, url] of [
+        ['CINETPAY_NOTIFY_URL', env.cinetpay.notifyUrl],
+        ['CINETPAY_RETURN_URL', env.cinetpay.returnUrl],
+      ] as const) {
+        const problems = publicUrlProblems(url);
+        if (problems.length > 0) {
+          logger.warn(`${name} non joignable par CinetPay : notifications perdues, réconciliation seule`, {
+            variable: name,
+            problems,
+            detail: describePublicUrlProblems(problems),
+          });
+        }
+      }
+    }
     // Schéma : une migration en attente ne bloque pas le démarrage, mais les retraits restent
     // indisponibles tant que les leurs ne sont pas appliquées (`npm run db:migrate`).
     const pending = await pendingMigrations(sql, await loadMigrations());
@@ -247,6 +274,7 @@ async function main(): Promise<void> {
           : ('sandbox' as const)
         : null,
       ...(withdrawals && { withdrawals: withdrawals.availability }),
+      ...(paymentHealth && { payments: paymentHealth }),
     },
   };
   if (env.trustProxy !== undefined) {
@@ -286,11 +314,23 @@ async function main(): Promise<void> {
   }).listen(env.port, () => {
     logger.info(`API Le Ter démarrée sur le port ${env.port} (${env.nodeEnv})`);
   });
+  // Port déjà pris (souvent une 2e instance `npm run dev`) : arrêt immédiat et explicite. Sans
+  // cela, l'instance restait vivante SANS servir l'API, avec ses minuteurs branchés sur la base.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    logger.error('Serveur HTTP en échec', { code: err.code, port: env.port, error: err.message });
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `Le port ${env.port} est déjà utilisé : une autre instance de l'API tourne probablement. ` +
+          'Arrêtez-la avant d’en démarrer une nouvelle.',
+      );
+    }
+    process.exit(1);
+  });
 
   // Temps réel (D-045) : WebSocket sur le même serveur HTTP, chemin /ws.
   let realtime: RealtimeGateway | undefined;
   if (auth && chat) {
-    realtime = attachRealtimeGateway(server, { auth, chat, logger });
+    realtime = attachRealtimeGateway(server, { auth, chat, games, logger });
     logger.info('Temps réel disponible sur /ws');
   }
 

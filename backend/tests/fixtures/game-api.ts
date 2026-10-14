@@ -22,6 +22,10 @@ import { createAuthService } from '../../src/services/auth/create-auth-service';
 import type { ChatService } from '../../src/services/chat/chat.service';
 import type { DetectionAdminService } from '../../src/services/detection/detection-admin.service';
 import type { DetectionSettingsService } from '../../src/services/detection/detection-settings.service';
+import {
+  detectionConsentContinuation,
+  detectionConsentStartPolicy,
+} from '../../src/services/detection/detection-consent-policies';
 import type { GeolocationService } from '../../src/services/detection/geolocation.service';
 import { GameService, type ParticipationPolicy } from '../../src/services/game/game.service';
 import {
@@ -34,6 +38,7 @@ import { singleActiveGameParticipation } from '../../src/services/game/participa
 import {
   walletGameStakePolicy,
   walletSessionStakeAdmission,
+  allSessionContinuations,
   walletStakeContinuation,
 } from '../../src/services/game/stake-policies';
 import { PostgresTournamentRepository } from '../../src/repositories/postgres-tournament.repository';
@@ -109,6 +114,11 @@ export function createGameApiTestApp(
     stakeLedger?: boolean;
     /** Horloge du séquestre (dates des écritures). */
     ledgerClock?: () => Date;
+    /**
+     * Phase de distribution (D-102). Par défaut 0 dans les tests : distribution confirmée
+     * au démarrage, premier tour immédiat. La phase réelle se teste par `deal-phase.test.ts`.
+     */
+    dealDurationMs?: (batchCount: number) => number;
   } = {},
 ): GameApiTestContext {
   const logLines: Record<string, unknown>[] = [];
@@ -148,12 +158,17 @@ export function createGameApiTestApp(
     // Règle officielle R-18 par défaut, comme en production (create-game-service.ts).
     participationPolicy: options.participationPolicy ?? singleActiveGameParticipation(repository),
     ...(options.stakePolicies && { stakePolicy: walletGameStakePolicy(stakeDeps) }),
+    // Géolocalisation fournie : consentement exigé au démarrage, comme en production (D-095).
+    ...(options.geolocation && {
+      startPolicy: detectionConsentStartPolicy(options.geolocation),
+    }),
     sessionSeats: sessionRepository,
     settlements: new PostgresGameSettlementReader(sql),
     logger,
     rules: options.rules,
     random: options.random ?? defaultTestRandom(),
     turnDurationMs: options.turnDurationMs,
+    dealDurationMs: options.dealDurationMs ?? (() => 0),
     autoCardSelection: options.autoCardSelection,
   });
   const sessionEvents = new InMemorySessionEventHub();
@@ -184,6 +199,17 @@ export function createGameApiTestApp(
       }),
       continuation: walletStakeContinuation(stakeDeps),
     }),
+    ...(options.geolocation &&
+      !options.stakePolicies && {
+        continuation: detectionConsentContinuation(options.geolocation),
+      }),
+    ...(options.geolocation &&
+      options.stakePolicies && {
+        continuation: allSessionContinuations(
+          walletStakeContinuation(stakeDeps),
+          detectionConsentContinuation(options.geolocation),
+        ),
+      }),
   });
   const supervisor = new DeadlineSupervisor({ games, sessions, logger });
   const app = createApp({

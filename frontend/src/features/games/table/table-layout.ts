@@ -41,9 +41,19 @@ export function arrangeSeats(game: GameView): SeatView[] {
 }
 
 export interface GameTableLayout {
+  /** Un siège en face (haut) existe à cette table : sa zone de cartes jouées compte. */
+  topSeat: boolean;
+  /** Haut de la plaque du siège d'en face (sous ses dos s'il est occupé). */
+  topPlateTop: number;
   /** Centre et diamètre de la table en bois : l'élément dominant de l'écran. */
   cx: number;
+  /** Centre de RÉFÉRENCE : place des plaques, des mains et des zones de cartes jouées. */
   cy: number;
+  /**
+   * Centre DESSINÉ de la table (bois, anneau gravé, zone de dépôt, cartes posées dessus) :
+   * `cy` abaissé de `TABLE_DROP`, sans déplacer les autres éléments de l'écran.
+   */
+  tableCy: number;
   diameter: number;
   plateWidth: number;
   plateHeight: number;
@@ -56,8 +66,13 @@ export interface GameTableLayout {
   handSlotWidth: number;
   /** Plaque du joueur connecté, à droite de sa main. */
   localPlateLeft: number;
-  /** Petites cartes : dos des adversaires, cartes publiques. */
+  /** Petites cartes : dos des adversaires. */
   smallCard: number;
+  /**
+   * Cartes déjà jouées (zones des sièges) : légèrement plus petites que celles de la main
+   * (`PLAYED_CARD_SCALE`), jamais plus petites qu'un dos d'adversaire.
+   */
+  playedCard: number;
   control: number;
   gap: number;
   /** Bas gauche : chrono circulaire, « Tour n/5 » et bandeau « C'est ton tour ! ». */
@@ -141,6 +156,29 @@ export function centerCircles(diameter: number): { ring: number; ringBorder: num
   return { ring, ringBorder, drop: ring - ringBorder * 2 };
 }
 
+/**
+ * Remontée de la table, en hauteur de plaque : le haut de la table est à 5 % sous le haut de la
+ * plaque du siège d'en face (30 % avant), ou à un quart de plaque du bord sûr sans siège en face
+ * (une demie avant). Un quart de plaque de gagné en haut (≈ 9 dp sur un écran de 393 dp).
+ */
+export const TABLE_LIFT = { belowTopPlate: 0.05, margin: 0.25 } as const;
+
+/**
+ * Siège d'en face VIDE : part de la bande des dos de cartes gardée au-dessus de sa plaque vide
+ * (aucun dos n'y est dessiné). 0 collerait la table au bord haut ; 1 la laisserait aussi bas
+ * qu'un siège occupé. Trois quarts : la table remonte légèrement, loin du haut de l'écran.
+ */
+export const EMPTY_TOP_SEAT_RESERVE = 0.75;
+
+/**
+ * Descente de la table et de ses cercles, en part de la hauteur de l'écran (≈ 10 dp sur un
+ * écran de 393 dp) : seuls la table et ce qui est posé dessus descendent.
+ */
+export const TABLE_DROP = 0.025;
+
+/** Taille des cartes déjà jouées, en largeur d'une carte de la main. */
+export const PLAYED_CARD_SCALE = 0.7;
+
 /** Cartes distribuées à chaque joueur (D-032). */
 export const MAX_HAND_CARDS = 5;
 
@@ -173,7 +211,7 @@ export const handWidthOf = (count: number, L: GameTableLayout) =>
  */
 export function computeGameTableLayout(
   m: LobbyMetrics,
-  options: { topSeat?: boolean } = {},
+  options: { topSeat?: boolean; emptyTopSeat?: boolean } = {},
 ): GameTableLayout {
   const { width, height, safe } = m;
   const gap = Math.round(clamp(height * 0.02, 6, 14));
@@ -183,6 +221,7 @@ export function computeGameTableLayout(
   const cardHeight = Math.round(cardWidth * CARD_RATIO);
   const handStep = Math.round(cardWidth * TABLE_REFERENCE.handStep);
   const smallCard = Math.round(clamp(height * 0.085, 24, 48));
+  const playedCard = Math.max(smallCard, Math.round(cardWidth * PLAYED_CARD_SCALE));
   const control = Math.round(clamp(height * 0.11, 44, 52));
 
   // Bas gauche : chrono + étiquette « Tour n/5 ».
@@ -197,10 +236,17 @@ export function computeGameTableLayout(
   const actionSize = Math.round(clamp(height * 0.18, 60, 92));
   const actionWidth = actionSize * 2 + Math.round(gap * 0.6);
 
-  // La plaque du haut mord sur le bord de la table, ses dos de carte au-dessus d'elle.
-  const top = options.topSeat
-    ? safe.top + smallCard * CARD_RATIO + 2 + plateHeight * 0.3
-    : safe.top + plateHeight * 0.5;
+  // La plaque du haut mord sur le bord de la table, ses dos de carte au-dessus d'elle : la table
+  // remonte d'autant (`TABLE_LIFT`), sans rien changer à l'ordre des éléments.
+  // Siège d'en face occupé : bande des dos entière ; vide : une part seulement.
+  const backsBand = smallCard * CARD_RATIO + 2;
+  const topPlateTop = options.topSeat
+    ? safe.top + backsBand
+    : safe.top + backsBand * EMPTY_TOP_SEAT_RESERVE;
+  const top =
+    options.topSeat || options.emptyTopSeat
+      ? topPlateTop + plateHeight * TABLE_LIFT.belowTopPlate
+      : safe.top + plateHeight * TABLE_LIFT.margin;
   // Table de la référence : 72,5 % de la hauteur ; la main du bas la chevauche, comme sur
   // la capture, sans jamais la faire sortir de l'écran.
   const bottom = safe.bottom + height * 0.06;
@@ -243,8 +289,11 @@ export function computeGameTableLayout(
     height - Math.max(blockHeight + safe.bottom, message.bottom + message.height) - gap;
 
   return {
+    topSeat: Boolean(options.topSeat),
+    topPlateTop,
     cx,
     cy,
+    tableCy: cy + Math.round(height * TABLE_DROP),
     diameter,
     plateWidth,
     plateHeight,
@@ -255,6 +304,7 @@ export function computeGameTableLayout(
     handSlotWidth,
     localPlateLeft,
     smallCard,
+    playedCard,
     control,
     gap,
     hud: {

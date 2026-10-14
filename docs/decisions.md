@@ -2893,3 +2893,357 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   `backend/tests/unit/sessions/session-domain.test.ts`,
   `frontend/src/features/games/table/table-timings.test.ts`,
   `frontend/src/hooks/use-server-countdown.test.ts`.
+
+## D-093 — APK Android de test par EAS Build (profil `preview`)
+
+- **Date** : 2026-10-12 · **Statut** : demandé par le propriétaire du projet (APK de test
+  installable, utilisable depuis tous les réseaux Internet).
+- **Règle** : l'APK de test est produite par EAS Build, profil `preview` de `frontend/eas.json`
+  (distribution interne, `buildType: apk`, environnement EAS `preview`, `versionCode` géré par
+  EAS). Le bundle JavaScript est embarqué (ni `expo-dev-client` ni `expo-updates`) : ni Metro,
+  ni Expo Go, ni tunnel Expo.
+- **URL du backend** : uniquement `EXPO_PUBLIC_API_URL` (HTTP et WebSocket `/ws` dérivé),
+  définie dans les variables EAS de l'environnement `preview`, jamais dans le code source ni
+  `eas.json` (une URL de Quick Tunnel est temporaire). `frontend/app.config.js` fait échouer un
+  build EAS dont l'URL est absente, non HTTPS ou `localhost`. Toute nouvelle URL impose une
+  nouvelle APK (valeur inlinée au build).
+- **Inchangé** : `app.json`, protocole temps réel (D-045), authentification, règles métier.
+  `android.package` reste `com.anonymous.leter` (à décider avant diffusion large).
+- **Doc** : `docs/android-apk-test.md`.
+
+## D-094 — Recharge : panne CinetPay identifiée comme telle ; diagnostic du fournisseur
+
+- **Date** : 2026-10-13 · **Statut** : correction de diagnostic après un incident · **Complète** :
+  D-050, D-083, D-090, D-091 · **Ne change pas** : règles financières, sélection du moyen de
+  paiement (D-090), repli direct → page seulement sur refus certain, crédit seulement après
+  `SUCCESS` relu, idempotence, réconciliation, codes d'erreur de l'API.
+- **Constat** : `503 MOBILE_MONEY_UNAVAILABLE` sur six recharges (motif
+  `CinetPayPaymentNotSentError:timeout`). Cause : l'authentification CinetPay
+  (`POST /v1/oauth/login`) n'aboutissait pas ; `api.cinetpay.net` et `api.cinetpay.co`
+  répondaient `522` (Cloudflare, origine injoignable) après ≈ 20 s, au-delà du délai client de
+  15 s. Demande de paiement jamais envoyée, rien crédité ni débité : le 503 était exact.
+- **Pas de nouveau fournisseur ni de nouveau repli** : il n'existe aucune intégration MTN MoMo ou
+  Orange Money hors de CinetPay ; le « paiement direct MTN » est l'option `direct_pay` de la même
+  API. Une panne de cette API rend tous les parcours indisponibles ; un repli vers la page ne
+  ferait qu'allonger l'attente. Orange Money reste sur la page CinetPay (OTP, D-087).
+- **Défaut corrigé** : un 5xx (dont les 52x de Cloudflare) reçu à l'authentification était
+  classé « authentification refusée » (motif `…:authentication:522`), orientant vers une fausse
+  cause (clé, IP). Il reste une erreur `http` du fournisseur ; la demande reste « jamais
+  envoyée » (503, aucun crédit). Les refus 4xx et les codes API restent des refus.
+- **Ajouts** : `npm run payments:diagnose` (configuré / joignable / authentification acceptée,
+  panne d'origine reconnue, aucun paiement créé ni secret affiché) ; journal
+  `cinetpay payment initialization failed` complété par `durationMs` et `pageFallback`.
+- **Code** : `backend/src/services/payments/cinetpay/cinetpay-diagnostics.ts`,
+  `backend/src/cli/payments-diagnose.ts`, `cinetpay-client.ts` (`login`), `cinetpay.gateway.ts`.
+- **Tests** : `backend/tests/unit/payments/cinetpay-diagnostics.test.ts`,
+  `backend/tests/unit/payments/cinetpay-client.test.ts` (login 401, 403, 422, 500, 503, 522,
+  délai, réseau : toujours « non envoyée »), `backend/tests/unit/payments/cinetpay-gateway.test.ts`
+  (journal : motif, durée, repli).
+- **Doc** : `docs/payments.md` (dépannage, diagnostic).
+
+## D-096 — Temps réel : 4401 réservé aux refus d'authentification ; incident du 2026-10-13
+
+- **Date** : 2026-10-13 · **Statut** : correction d'un défaut constaté pendant un audit ·
+  **Complète** : D-045 (temps réel), D-091, D-094 · **Ne change pas** : authentification par
+  la 1re trame, expiration (4401 à l'`exp` du jeton), R-32, règles métier et financières.
+- **Constat (2026-10-13, 06:20 → 07:01 UTC)** : `503 SERVICE_TEMPORARILY_UNAVAILABLE` sur
+  `GET /api/tournaments`, `500` puis délai dépassé (30 s) sur `POST /api/sessions/:id/leave`,
+  fermetures WebSocket `4401`. Cause commune : poste hôte à court de mémoire (7,7 Go de RAM,
+  0,3 Go libres, 25,6 Go engagés) qui fige la VM WSL2 de Docker. Preuves PostgreSQL : requêtes
+  triviales (`system_settings` par clé) annulées par `statement_timeout`, `canceling
+  authentication due to timeout` (60 s), `connection to client lost`, décalage d'horodatage
+  de 13 s entre PostgreSQL et Docker. Aucune requête SQL ni verrou applicatif en cause ; les
+  deux sessions citées ont ensuite été supprimées normalement (dernier départ, sans historique).
+- **Défaut corrigé** : la passerelle fermait en `4401` (« jeton expiré ») TOUTE erreur de
+  vérification, y compris une base indisponible : le client renouvelait inutilement son jeton
+  pendant la panne. Désormais : `AuthenticationRequiredError` → `4401` (inchangé) ; toute
+  autre erreur → trame `SERVICE_TEMPORARILY_UNAVAILABLE` puis fermeture `1013` (Try Again
+  Later) ; le client se reconnecte avec délai croissant SANS renouveler le jeton.
+- **Inchangé, volontairement** : `57014` (statement timeout) reste une erreur `500` (D-091 :
+  ne pas masquer une requête réellement lente) ; à revoir seulement sur décision.
+- **Recharges (même jour)** : `503 MOBILE_MONEY_UNAVAILABLE` exact. CinetPay répond à
+  l'authentification `422 {code: 2011, status: NOT_ALLOWED, description: "This Ip is not
+  withlisted"}` : l'IP publique sortante du poste (et non l'adresse Tailscale) n'est pas sur la
+  liste blanche du compte. Demande jamais envoyée, rien débité ni crédité. Action : déclarer
+  l'IP publique ACTUELLE chez CinetPay (`npm run payments:diagnose` pour vérifier).
+- **Code** : `backend/src/websocket/realtime-gateway.ts`, `frontend/src/lib/realtime-client.ts`
+  (commentaire).
+- **Tests** : `backend/tests/integration/chat/chat-realtime.test.ts` (session révoquée → 4401
+  puis reconnexion avec le jeton renouvelé ; base indisponible → 1013 puis même jeton accepté),
+  `backend/tests/integration/sessions/session-api.test.ts` (départ répété, deux départs
+  simultanés du même joueur, session supprimée → 404, non-membre → 403, erreur SQL → 500 et
+  rollback, départ répété pendant la ronde sans mouvement financier),
+  `frontend/src/lib/realtime-client.test.ts` (1013 : pas de renouvellement du jeton).
+
+## D-097 — Table : barres de progression, anneau central, temps réel et GPS fiabilisés
+
+- **Date** : 2026-10-13 · **Statut** : demandé par le propriétaire du projet (capture du
+  2026-10-13 : `TEMPS_RÉEL_FERMÉ … code 1006`, « GPS indisponible ») · **Complète** : D-034,
+  D-041, D-045, D-046, D-092, D-096 · **Ne change pas** : règles de jeu, durée du tour (10 s,
+  `TURN_DURATION_MS`), 5e tour automatique, mises, gains, authentification, consentement.
+- **État de tour unique** (`frontend/src/features/games/table/turn-phase.ts`) : joueur attendu,
+  échéance et durée lus dans l'état du serveur (`activePlayerId`, `turnStartedAt`,
+  `turnDeadlineAt`, `turnTimedOutAt`), échéance ramenée à l'horloge du téléphone par
+  `serverNow` (écart recalé seulement au-delà de 250 ms). Aucun tour (`null`) : attente,
+  distribution, partie terminée — dont le 5e tour automatique (D-041 : aucun compte à rebours).
+  Barres, chrono et anneau lisent ce même état.
+- **Barres des joueurs** : la plaque du pseudo devient une barre ; pendant le tour de son
+  joueur, un remplissage or (bordeaux sous 30 %) se vide de `restant / durée` (borné à [0, 1])
+  jusqu'à 0 à l'échéance, en une seule animation native par tour. Un état reçu en retard ou
+  après reconnexion reprend au bon niveau, jamais à 10 s. Échéance dépassée : barre vide, le
+  serveur joue la carte (D-036).
+- **Chrono en bas à gauche (« roulette »)** : affiché seulement pendant un tour où un joueur
+  doit jouer une carte (état de tour non nul et non expiré), masqué en fondu sinon
+  (distribution, entre deux parties, fin, 5e tour automatique) ; le compteur « Tour n/5 » et
+  le bandeau restent affichés. L'anneau gravé « L » au centre de la table reste toujours
+  visible (précision du propriétaire du projet, 2026-10-14).
+- **Relecture** : une réponse de relecture plus ancienne que l'état affiché (version
+  inférieure) ne le remplace plus (`newestGame`).
+- **Temps réel** : arrêt du serveur = fermeture annoncée `1001` (plus une coupure `1006`) ;
+  une ligne de journal par fermeture (`realtime connection closed` : code, famille
+  `normal` / `server_shutdown` / `auth_rejected` / `dependency_unavailable` / `protocol_error` /
+  `heartbeat_timeout` / `transport_lost`, durée ; jamais de jeton) ; port déjà occupé : arrêt
+  immédiat de la 2e instance (`EADDRINUSE`). Client : ouverture sans `ready` en 15 s abandonnée
+  (`4408`), une seule tentative à la fois, connexion vérifiée par un ping au retour au premier
+  plan, un seul avertissement par panne puis « TEMPS_RÉEL_RÉTABLI ».
+- **Constat 1006 (non tranché)** : au moment de l'audit, DEUX `npm run dev` (deux `tsx watch`)
+  tournaient ; la seconde instance, sans port, gardait ses connexions PostgreSQL/Redis et ses
+  minuteurs ; chaque modification redémarrait les deux, coupant les WebSocket. Mémoire libre du
+  poste : 0,3 Go sur 7,7 Go (23,5 Go engagés), comme D-096. Cause exacte des 1006 à confirmer
+  avec les nouveaux journaux.
+- **GPS** : localisation désactivée détectée (`hasServicesEnabledAsync` : « Localisation
+  désactivée ») ; dernière position du système de moins de 60 s utilisée d'abord, sinon mesure
+  en précision `Balanced` (la précision `High` n'aboutissait souvent pas en intérieur en 20 s,
+  d'où « GPS indisponible » permanent) ; première mesure : « Recherche GPS… » ; échec : nouvel
+  essai après 15 s ; permission accordée plus tard dans les réglages relue au retour (jamais
+  redemandée). Serveur : `missingPosition` (`VIEWER` / `OTHER` / `BOTH`) sur une distance
+  inconnue → « Position de <pseudo> non reçue » ; jamais de coordonnée ni d'accusation.
+- **Tests** : `turn-phase.test.tsx`, `realtime-client.test.ts`, `GameGeolocation.test.tsx`,
+  `chat-realtime.test.ts` (1001, familles, aucun jeton journalisé), `geolocation.test.ts`,
+  `geo.test.ts`.
+
+## D-098 — Délais de jeu à 13 s côté serveur, 10 s affichées
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet (« remettre les
+  timings à 13 secondes mais afficher 10 secondes, dans la barre de progression ou partout
+  ailleurs ») · **Révise** : D-092 (10 s) · **Ne change pas** : règles du tour, coup
+  automatique (D-036), 5e tour automatique (D-041, sans compte à rebours), présentation des
+  cartes, `RANKING_REFERENCE_GAME_MS` (170 s, D-062, figé).
+- **Serveur** : `TURN_DURATION_MS`, `SESSION_DECISION_WINDOW_MS` et
+  `TOURNAMENT_TABLE_AUTO_START_MS` valent **13 000 ms** ; échéances en PostgreSQL inchangées
+  dans leur principe (le serveur reste seul juge).
+- **Écrans** : chaque compte à rebours montre **10 s**. Les 3 dernières secondes du serveur sont
+  une marge invisible (latence du réseau mobile) : l'échéance affichée vaut l'échéance du
+  serveur moins 3 s (`HIDDEN_MARGIN_MS`, `displayedDeadline`,
+  `frontend/src/hooks/use-server-countdown.ts`). Concerné : barres de progression des joueurs
+  et chrono (`turn-phase.ts`), panneau de fin de partie (10 s, plafonné par l'échéance
+  affichée de la ronde), démarrage d'une table de tournoi. À 0 affiché, une carte posée dans
+  la marge reste acceptée par le serveur.
+- **Parties en cours** : une échéance déjà posée à 10 s s'affiche sur 7 s.
+- **Tests** : `turn-phase.test.tsx`, `use-server-countdown.test.ts`, `game-table.test.tsx`,
+  `game-over-panel.test.tsx`, `turn-timer.test.ts`, `turn-timeout-http.test.ts`,
+  `deadline-recovery.test.ts`, `session-domain.test.ts`, `tournament-table-auto-start.test.ts`.
+
+## D-099 — Qui voit le chrono et les barres ; plus de pastille « J1 »
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet · **Révise** :
+  D-097 (visibilité du chrono et des barres), D-064 (pastille J1) · **Ne change pas** : D-098
+  (13 s serveur, 10 s affichées), règles du tour, 5e tour automatique, J1 dans les règles.
+- **Chrono et roulette** (bas gauche) : visibles UNIQUEMENT sur le téléphone du joueur attendu,
+  pendant un tour où il doit jouer une carte (état du serveur, échéance non dépassée selon lui),
+  de 10 à 0. Masqués chez les autres joueurs, pendant la distribution, entre deux tours, en fin
+  de partie et pendant le 5e tour automatique (aucune carte à choisir). « Tour n/5 » et le
+  bandeau (« C'est ton tour ! » / « Tour de <pseudo> ») restent affichés pour tous.
+- **Barres** : barre d'une plaque affichée si `joueur de la plaque ≠ joueur connecté ET joueur
+  de la plaque = joueur attendu` (identifiants réels, jamais les sièges). Pleine au début du
+  tour, elle se vide de la fin vers le début en 10 s, calculée sur `turnStartedAt` /
+  `turnDeadlineAt` du serveur (`seatTurnFor`, `dialVisibleFor`, `turn-phase.ts`). Nouveau
+  joueur attendu : l'ancienne barre disparaît, la nouvelle part de son niveau réel.
+- **Pastille « J1 »** supprimée de la plaque : seule reste le pseudo réel. Aucun numéro de siège
+  n'est affiché comme pseudo (`playerLabel` : pseudo, sinon « Vous » / « Adversaire »). Le
+  premier joueur reste annoncé aux lecteurs d'écran.
+- **Tests** : `turn-phase.test.tsx` (table de 4 téléphones : barres, chrono, même tour partout,
+  changement de joueur, distribution et fin), `game-table.test.tsx`.
+
+## D-100 — Paiements : causes classées, santé du fournisseur, URL publiques vérifiées
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet (« Service de
+  paiement momentanément indisponible ») · **Complète** : D-050, D-083, D-090, D-091, D-094,
+  D-096 · **Ne change pas** : règles financières, crédit seulement après `SUCCESS` relu chez
+  CinetPay et vérifié (références, montant, devise), règlement atomique et idempotent, repli
+  direct → page seulement sur refus certain, Orange Money par la page (OTP non collecté),
+  idempotence, réconciliation par `merchant_transaction_id`.
+- **Causes confirmées (2026-10-14)** : (1) `POST /v1/oauth/login` → `422 {code: 2011, status:
+  NOT_ALLOWED}` : l'IP publique ACTUELLE du poste (129.0.76.35) n'est pas sur la liste blanche du
+  compte (déjà vu le 2026-10-12 avec une autre IP) ; aucune demande de paiement envoyée, rien
+  débité ni crédité ; le domaine répond (< 1 s). (2) `CINETPAY_NOTIFY_URL` et
+  `CINETPAY_RETURN_URL` en `http` sur une adresse de réseau privé (10.x) : CinetPay ne peut pas
+  livrer ses notifications, seule la réconciliation règle les paiements ; le navigateur du
+  payeur ne joint pas la page de retour.
+- **Défaut corrigé** : toutes les pannes donnaient le même message. Désormais une
+  classification unique (`payment-failure.ts`) : IP refusée, identifiants refusés, réseau/DNS,
+  délai avant / après l'envoi, 5xx, réponse illisible, refus métier, moyen indisponible, issue
+  inconnue. `503 MOBILE_MONEY_UNAVAILABLE` porte `details { cause, retryable, charged: false }`
+  et un message propre à la cause, sans détail interne ; l'application l'affiche.
+- **Surveillance** (`payment-health.ts`, en mémoire de l'instance) : état du fournisseur déduit
+  des appels réels, revérifié toutes les 5 min (authentification seule) ; alertes journalisées
+  à chaque changement d'état (`PAYMENT_PROVIDER_ALERT`, `PAYMENT_PROVIDER_RECOVERED`), seuil de
+  5 pannes en 15 min ; réconciliateur (dernier passage réussi, arrêt détecté) ; paiements
+  bloqués (> 60 min, `PAYMENTS_STUCK`, jamais clos pour leur âge). Exposé à l'administration :
+  `GET /api/admin/system` → `services.payments` (aucun secret, aucune URL).
+- **URL publiques** (`config/public-url.ts`) : adresse locale, privée, Tailscale ou Quick
+  Tunnel signalée au démarrage ; en production, refus de démarrer.
+- **Hors code (action restante)** : ajouter l'IP publique actuelle à la liste blanche CinetPay,
+  ou exécuter le backend sur une machine à IP publique FIXE ; exposer le backend par une URL
+  HTTPS publique stable pour `CINETPAY_NOTIFY_URL` / `CINETPAY_RETURN_URL`.
+- **Tests** : `tests/unit/payments/payment-health.test.ts` (classification, moniteur, rapport,
+  URL, réconciliateur, DNS), `cinetpay-payments.test.ts` (cause 2011, délai, 5xx),
+  `admin-api.test.ts`, `ShopFlow.test.tsx`.
+
+## D-101 — Carte acceptée : fin du tour signalée en temps réel à tous les joueurs
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet (« la roulette et
+  la barre continuent après une carte jouée ») · **Complète** : D-045, D-097, D-099 · **Ne
+  change pas** : règles du tour, ordre de jeu, D-098 (13 s serveur, 10 s affichées), coup
+  automatique (D-036), 5e tour automatique (D-041), autorité du serveur, mises, tournois.
+- **Constat** : le serveur clôt déjà le tour à l'acceptation d'une carte (le moteur fixe la
+  nouvelle échéance ou l'efface ; `syncTurnTimer` réarme ou annule le timer de LA partie ;
+  `handleTurnTimeout` ignore une échéance périmée). Mais les AUTRES téléphones ne
+  l'apprenaient qu'à la relecture suivante (toutes les 3 s) : la barre du joueur qui avait joué
+  continuait de baisser, et le joueur suivant voyait sa roulette jusqu'à 3 s après le début réel
+  de son tour.
+- **Décision** : la passerelle WebSocket accepte `game:subscribe` / `game:unsubscribe` ;
+  l'abonnement passe par `GameService.subscribe` (appartenance vérifiée). À chaque commande
+  acceptée, `game:changed { gameId, version }`, une trame par version, sans aucun contenu
+  d'événement. Le téléphone relit alors sa vue joueur par `GET /api/games/:id` (seule source de
+  l'état), ignore une version déjà affichée et relit après chaque (ré)abonnement. La relecture
+  toutes les 3 s reste le filet de sécurité (temps réel coupé). Le client ne décide jamais seul
+  de la fin d'un tour : carte refusée ou requête en échec, la roulette continue.
+- **Tests** : `chat-realtime.test.ts` (signal aussitôt chez l'adversaire, carte refusée sans
+  signal, une trame par version, non-membre refusé, isolation de deux parties),
+  `realtime-client.test.ts`, `game-updates.test.tsx`, `turn-phase.test.tsx` (carte acceptée à
+  3 s sur 10).
+
+## D-102 — Timers de décision seulement après la distribution confirmée par le serveur
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet (« les chronomètres
+  ne démarrent qu'une fois la distribution complète terminée et confirmée par le serveur »)
+  · **Complète** : D-032, D-034, D-036, D-097, D-098, D-099, D-101 · **Ne change pas** : règles
+  et nombre de cartes de la distribution (3 + 2, antihoraire), ordre de jeu, durée du tour
+  (13 s serveur, 10 s affichées), coup automatique (D-036), 5e tour automatique (D-041, sans
+  compte à rebours), fin de partie, tournois, mises, paiements.
+- **Constat** : `startGame` distribuait ET ouvrait le premier tour dans la même transition
+  (`beginTurn(now)`) : l'échéance de J1 et son timer serveur partaient au début de la
+  distribution, pendant que les téléphones animaient encore les lots (≈ 2 s à 2 joueurs,
+  ≈ 3,7 s à 4). J1 perdait ce temps sur ses 10 s affichées ; à la reconnexion, l'animation
+  était même rejouée alors que le tour courait déjà.
+- **Décision** : phase de distribution explicite et persistée.
+  - Démarrage (manuel, automatique de tournoi, partie suivante, reprise après égalité) :
+    distribution complète dans la transition, puis `games.deal_ends_at` (migration 0039) ;
+    AUCUNE échéance de tour (`turn_deadline_at` NULL, contrainte en base), aucun timer de
+    décision, aucune action de joueur (carte, fuite, déclaration → `409 DEAL_IN_PROGRESS`).
+    Victoire automatique et égalité à la donne : inchangées (pas de phase).
+  - Durée de la phase (`dealPhaseDurationMs`, `rule-set.ts`) calculée sur le nombre de lots,
+    calquée sur le calendrier des téléphones (250 ms, 420 ms par lot, 510 ms de vol et pose)
+    + 500 ms de marge de réception : 2,52 s à 2 joueurs, 4,2 s à 4.
+  - Fin de phase : commande système COMPLETE_DEAL (`GameService.handleDealDeadline`, file par
+    `gameId`, version optimiste). Elle vérifie que chaque joueur servi a ses 5 cartes et
+    qu'aucune carte n'est posée, efface `deal_ends_at` et ouvre le premier tour : c'est le
+    SEUL point où naît le premier timer de décision ; J1 dispose de toute la durée.
+    Événement `game:deal_completed`. Doublons (timer, balayage, deux instances) : un seul
+    effet ; déclenchement anticipé : sans effet, timer réarmé.
+  - Un seul timer par partie (`GameTimerRegistry`) : il vise la fin de distribution, puis
+    l'échéance du tour. `DeadlineSupervisor` reconstruit les fins de distribution au
+    démarrage (`findDealDeadlines`) ; une distribution échue pendant un arrêt est confirmée
+    au redémarrage, le tour de J1 partant de cet instant.
+  - Téléphone : `dealEndsAt` dans la vue ; l'animation ne démarre que si le serveur est
+    encore en phase de distribution (une reconnexion après la confirmation affiche le temps
+    restant réel, sans rejouer la distribution) ; roulette, barres et halo de tour restent
+    inactifs tant que `dealEndsAt` est présent (`turnPhaseOf`, `turnKeyOf`,
+    `useTableDealing`).
+- **Limite connue** : la fin de phase est une échéance serveur, pas un accusé de réception
+  des téléphones. Un téléphone qui reçoit l'état du démarrage avec plus de 500 ms de retard
+  finit son animation après le début du tour ; il affiche alors le temps restant réel.
+- **Tests** : `tests/integration/game/deal-phase.test.ts` (backend),
+  `frontend/src/features/games/table/deal-phase.test.tsx`.
+
+## D-103 — Tournois : bornes de joueurs réglables dans les paramètres (minimum 20, maximum ∞)
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet ·
+  **Remplace** : les bornes fixes de participants de D-057 (20 à 1 000) ; le reste de D-057
+  (« Tournoi complet », contrôles à la soumission, à l'approbation et à la modification) et
+  D-058 sont inchangés.
+- **Règle** (tournois de l'administration ET propositions de joueurs, bornes incluses) : le
+  minimum de participants d'un tournoi et son maximum, s'il est fixé, sont compris entre deux
+  paramètres plateforme réglés par l'administration (page Paramètres, « Paramètres des
+  tournois ») ; le maximum reste au moins égal au minimum.
+  - `tournamentMinimumPlayers` (clé `tournament_minimum_players`) : entier ≥ 2 ; valeur
+    initiale **20**.
+  - `tournamentMaximumPlayers` (clé `tournament_maximum_players`) : entier ≥ 2, ou `null` =
+    aucun plafond ; valeur initiale **∞** (`null`). Au moins égal au minimum réglé.
+- **Stockage** : `system_settings` (migration 0040). Aucune ligne insérée : tant qu'une clé
+  n'a jamais été enregistrée, le serveur applique la valeur initiale du code. Plafond
+  technique : 2 147 483 647 (colonne `integer`).
+- **Contrôles serveur** : `validateTournamentInput` lit les deux paramètres ; la modification
+  des paramètres est validée (`updateSettings`) et inscrite au journal d'audit
+  (`TOURNAMENT_SETTINGS_UPDATED`). Les tournois déjà publiés ne sont pas modifiés.
+- **Conséquence** : avec un minimum réglé sous 10, la part « non attribuée » de D-054 peut de
+  nouveau se produire (calcul inchangé).
+- **Tests** : `tests/unit/tournaments/tournament-domain.test.ts`,
+  `tests/integration/tournaments/tournament-api.test.ts`.
+
+## D-104 — Tournois : durée minimale et maximale réglables (45 et 120 min par défaut), appliquées partout
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet ·
+  **Remplace** : les bornes fixes de durée de D-058 (30 à 120 minutes). La FORME du message
+  imposée par D-058 est conservée, avec les bornes réglées : « Durée entre X minutes et Y
+  minutes. » (point final compris).
+- **Règle** (tournois de l'administration ET propositions de joueurs, bornes incluses) : la
+  durée d'un tournoi est comprise entre deux paramètres plateforme réglés UNIQUEMENT dans
+  l'administration (page Paramètres, « Paramètres des tournois ») :
+  - `tournamentMinimumDurationMinutes` (clé `tournament_minimum_duration_minutes`) : valeur
+    initiale **45** ;
+  - `tournamentMaximumDurationMinutes` (clé `tournament_maximum_duration_minutes`) : valeur
+    initiale **120**.
+  Entiers de 1 à 1 440 (24 h, borne haute historique de D-054) ; le maximum est au moins égal
+  au minimum.
+- **Stockage** : `system_settings` (migration 0041). Aucune ligne insérée : tant qu'une clé
+  n'a jamais été enregistrée, le serveur applique la valeur initiale du code.
+- **Pris en compte partout** (le serveur reste seul juge, `validateTournamentInput`) :
+  - lecture par tout joueur connecté : `GET /api/tournaments/rules` (bornes de durée et de
+    joueurs de D-103) ;
+  - application mobile (proposition d'un joueur, création par l'administrateur) : contrôle
+    immédiat avec les bornes réglées et les mêmes messages que le serveur ; valeurs par défaut
+    ajustées (minimum de joueurs, durée ramenée dans les bornes), sans toucher une saisie ;
+  - administration : formulaire de création (valeurs par défaut, règles affichées) et liste
+    des tournois affichent les bornes réglées.
+- **Tournois existants** : non modifiés. Une modification, une soumission ou une approbation
+  est revérifiée avec les bornes en vigueur (comme D-057).
+- **Tests** : backend `tournament-domain.test.ts`, `tournament-api.test.ts` ; mobile
+  `tournament-form.test.ts`, `ProposeTournamentScreen.test.tsx`, `AdminTournaments.test.tsx`.
+
+## D-105 — Tournois : prix d'entrée minimal réglable (500 FCFA par défaut)
+
+- **Date** : 2026-10-14 · **Statut** : demandé par le propriétaire du projet ·
+  **Remplace** : le minimum fixe de 500 FCFA (`TOURNAMENT_LIMITS.minEntryFee`, D-054, D-071).
+  Le maximum reste fixe (100 000 FCFA) et un tournoi n'est jamais gratuit (D-071).
+- **Règle** (tournois de l'administration ET propositions de joueurs) : le prix d'entrée est
+  au moins égal au paramètre plateforme `tournamentMinimumEntryFee` (clé
+  `tournament_minimum_entry_fee`), réglé UNIQUEMENT dans l'administration (« Paramètres des
+  tournois », champ « Prix d'entrée minimal (FCFA) ») : valeur initiale **500** ; entier de 1 à
+  100 000. Message du serveur : « Montant entier entre X et 100000. ».
+- **Stockage** : `system_settings` (migration 0042). Aucune ligne insérée : tant que la clé
+  n'a jamais été enregistrée, le serveur applique 500.
+- **Pris en compte partout** (le serveur reste seul juge, `validateTournamentInput`) :
+  - `GET /api/tournaments/rules` expose `minimumEntryFee` et `maximumEntryFee` ;
+  - application mobile : contrôle immédiat du prix avec le même message que le serveur ; le
+    prix proposé par défaut (1 000 FCFA) est relevé au minimum s'il est plus élevé, sans
+    toucher une saisie ; champ aussi dans l'écran Paramètres des tournois de l'administration
+    mobile ;
+  - administration web : champ dans « Paramètres des tournois » ; règles affichées dans le
+    formulaire de création et la liste des tournois.
+- **Tournois existants** : non modifiés. Une modification est revérifiée avec le minimum en
+  vigueur (comme D-057).
+- **Tests** : backend `tournament-domain.test.ts`, `tournament-api.test.ts`,
+  `tournament-token-setup.test.ts` ; mobile `tournament-form.test.ts`,
+  `AdminTournaments.test.tsx` ; administration `token-setup.test.tsx`.

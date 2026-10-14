@@ -566,6 +566,14 @@ export interface TournamentSettings {
   tournamentTransitionMinutes: number;
   rankingTokensWeightPercent: number;
   rankingGamesWeightPercent: number;
+  /** Bornes du nombre de joueurs à la création d'un tournoi ; maximum `null` = illimité (∞). */
+  tournamentMinimumPlayers: number;
+  tournamentMaximumPlayers: number | null;
+  /** Durée d'un tournoi en minutes, bornes incluses (D-104). */
+  tournamentMinimumDurationMinutes: number;
+  tournamentMaximumDurationMinutes: number;
+  /** Prix d'entrée minimal pour créer un tournoi, en FCFA (D-105, 500 par défaut). */
+  tournamentMinimumEntryFee: number;
 }
 
 // --- Anti-collusion (routes existantes /api/admin/detection) ---------------------------------

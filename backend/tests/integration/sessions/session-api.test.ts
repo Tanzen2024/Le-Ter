@@ -543,6 +543,84 @@ describe('Quitter une session (R-19, D-037)', () => {
     for (const p of [A, B, C]) await createSession(p, 2);
   });
 
+  it('départ répété (nouvel essai après un délai mobile) : 200, aucun second départ ni événement', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+    const events: SessionEvent[] = [];
+    ctx.sessionEvents.subscribe(sessionId, (e) => events.push(e));
+
+    await expectStatus(leaveSession(B, sessionId), 200);
+    const version = (await view(A, sessionId)).version;
+    const again = await expectStatus(leaveSession(B, sessionId), 200);
+
+    expect(again.body.session.version).toBe(version);
+    expect(events.filter((e) => e.type === 'session:player_left')).toHaveLength(1);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, null, C.id, null]);
+    expect((await gamePlayers(gameId)).map((p) => p.player_id)).toEqual([A.id, C.id]);
+  });
+
+  it('deux départs simultanés du MÊME joueur : un seul départ, état cohérent', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+    const events: SessionEvent[] = [];
+    ctx.sessionEvents.subscribe(sessionId, (e) => events.push(e));
+
+    const results = await Promise.all([leaveSession(B, sessionId), leaveSession(B, sessionId)]);
+
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    expect(events.filter((e) => e.type === 'session:player_left')).toHaveLength(1);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, null, C.id, null]);
+    expect((await gamePlayers(gameId)).map((p) => p.player_id)).toEqual([A.id, C.id]);
+  });
+
+  it('session déjà supprimée par le dernier départ : 404 SESSION_NOT_FOUND, pas 500', async () => {
+    const A = await newPlayer();
+    const { sessionId } = await createSession(A, 2);
+    await expectStatus(leaveSession(A, sessionId), 200);
+    const again = await expectStatus(leaveSession(A, sessionId), 404);
+    expect(again.body.code).toBe('SESSION_NOT_FOUND');
+  });
+
+  it('joueur étranger à la session : refusé, rien ne change', async () => {
+    const { players, sessionId } = await waitingTable(2);
+    const [A, B] = players as [Player, Player];
+    const outsider = await newPlayer();
+    const before = await view(A, sessionId);
+
+    const res = await leaveSession(outsider, sessionId);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('NOT_A_SESSION_MEMBER');
+    expect(await seatsOf(B, sessionId)).toEqual(
+      (before.seats as { playerId: string | null }[]).map((s) => s.playerId),
+    );
+  });
+
+  it('erreur SQL pendant le départ : 500, transaction annulée, nouvel essai accepté', async () => {
+    const { players, sessionId, gameId } = await waitingTable(3);
+    const [A, B, C] = players as [Player, Player, Player];
+    await database.sql.query(`
+      CREATE FUNCTION test_fail_leave() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'panne simulée'; END $$`);
+    await database.sql.query(`
+      CREATE TRIGGER test_fail_leave BEFORE UPDATE ON session_players
+      FOR EACH ROW EXECUTE FUNCTION test_fail_leave()`);
+    try {
+      const failed = await leaveSession(B, sessionId);
+      expect(failed.status).toBe(500);
+      expect(failed.body).toEqual({ error: 'Internal Server Error', requestId: expect.any(String) });
+    } finally {
+      await database.sql.query('DROP TRIGGER test_fail_leave ON session_players');
+      await database.sql.query('DROP FUNCTION test_fail_leave()');
+    }
+    // Rien d'écrit : B toujours assis et dans la partie en attente.
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, B.id, C.id, null]);
+    expect((await gamePlayers(gameId)).map((p) => p.player_id)).toEqual([A.id, B.id, C.id]);
+
+    await expectStatus(leaveSession(B, sessionId), 200);
+    expect(await seatsOf(A, sessionId)).toEqual([A.id, null, C.id, null]);
+  });
+
   it('Q1 — créateur seul (scénario mobile) : « Quitter la session » supprime session et partie', async () => {
     const A = await newPlayer();
     const { sessionId, gameId } = await createSession(A, 2);
@@ -623,6 +701,30 @@ describe('Quitter une session (R-19, D-037)', () => {
     expect(session.decision.open).toBe(false);
     expect(await seatsOf(A, sessionId)).toEqual([A.id, null, null, D.id]);
     expect((await gameRow(game1))?.status).toBe('finished');
+  });
+
+  it('ronde ouverte : /leave répété après une partie terminée, aucun mouvement financier ajouté', async () => {
+    const { A, C, sessionId, game1 } = await sessionWonByB();
+    const ledger = async () =>
+      (
+        await database.sql.query<{ n: number }>(
+          `SELECT (SELECT count(*) FROM wallet_transactions)::int
+                + (SELECT count(*) FROM game_settlements)::int AS n`,
+        )
+      ).rows[0]?.n;
+    const before = await ledger();
+
+    await expectStatus(leaveSession(C, sessionId), 200);
+    await expectStatus(leaveSession(C, sessionId), 200);
+
+    expect(await ledger()).toBe(before);
+    const { rows } = await database.sql.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM session_decisions WHERE game_id = $1 AND player_id = $2',
+      [game1, C.id],
+    );
+    expect(rows[0]?.n).toBe(1);
+    expect((await gameRow(game1))?.status).toBe('finished');
+    expect((await view(A, sessionId)).decision.open).toBe(true);
   });
 
   it('Q1 avec historique : tous partent après une partie terminée → session FERMÉE, historique conservé', async () => {

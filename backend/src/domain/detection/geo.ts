@@ -65,6 +65,8 @@ export interface PairDistance {
   meters: number | null;
   /** Cause d'une distance inconnue (`null` quand la distance est connue). */
   unavailable: DistanceUnavailable | null;
+  /** Joueurs de la paire sans position récente (vide quand la distance est connue). */
+  missing: PlayerId[];
 }
 
 /**
@@ -88,11 +90,14 @@ export function pairDistances(
   return playerPairs(playerIds).map(([a, b]) => {
     const pa = fresh.get(a);
     const pb = fresh.get(b);
-    if (pa && pb) return { pair: [a, b], meters: haversineMeters(pa, pb), unavailable: null };
+    if (pa && pb) {
+      return { pair: [a, b], meters: haversineMeters(pa, pb), unavailable: null, missing: [] };
+    }
     return {
       pair: [a, b],
       meters: null,
       unavailable: seen.has(a) && seen.has(b) ? 'STALE' : 'WAITING',
+      missing: [a, b].filter((p) => !fresh.has(p)),
     };
   });
 }
@@ -107,5 +112,27 @@ export class GeolocationDisabledError extends Error {
   constructor(readonly gameId: GameId) {
     super(`Détection désactivée pour la partie ${gameId}`);
     this.name = 'GeolocationDisabledError';
+  }
+}
+
+/** Table surveillée : le joueur n'a pas encore consenti (D-095), aucune position acceptée. */
+export class DetectionConsentRequiredError extends Error {
+  constructor(
+    readonly gameId: GameId,
+    readonly playerId: PlayerId,
+  ) {
+    super(`Consentement à la géolocalisation absent : partie ${gameId}, joueur ${playerId}`);
+    this.name = 'DetectionConsentRequiredError';
+  }
+}
+
+/** Table surveillée : démarrage refusé tant qu'un joueur n'a pas consenti (D-095). */
+export class DetectionConsentPendingError extends Error {
+  constructor(
+    readonly gameId: GameId,
+    readonly playerIds: readonly PlayerId[],
+  ) {
+    super(`Consentements en attente pour la partie ${gameId} : ${playerIds.join(', ')}`);
+    this.name = 'DetectionConsentPendingError';
   }
 }

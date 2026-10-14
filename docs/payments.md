@@ -402,13 +402,57 @@ Le serveur répond `503 MOBILE_MONEY_UNAVAILABLE` quand la création du paiement
 |---|---|---|
 | `CinetPayPaymentNotSentError:authentication:2011:NOT_ALLOWED` | adresse IP publique du serveur non autorisée par le compte marchand (liste blanche) | ajouter l'IP publique ACTUELLE du serveur dans le tableau de bord CinetPay ; elle change avec le réseau (Wi-Fi, box, partage de connexion) |
 | `CinetPayPaymentNotSentError:authentication:1005:INVALID_CREDENTIALS` | clé ou mot de passe refusés | vérifier `CINETPAY_API_KEY` / `CINETPAY_API_PASSWORD` (sans les copier ailleurs) |
-| `CinetPayPaymentNotSentError:network` / `:timeout` | CinetPay injoignable avant l'envoi | réseau du serveur |
+| `CinetPayPaymentNotSentError:network` / `:timeout` | CinetPay injoignable avant l'envoi : réseau sortant du serveur OU panne chez CinetPay (Cloudflare attend ≈ 20 s avant un 522, au-delà de `CINETPAY_TIMEOUT_MS` = 15 s) | `npm run payments:diagnose` pour trancher |
+| `CinetPayPaymentNotSentError:http:52x` | serveur d'origine CinetPay injoignable derrière Cloudflare (520-527) | aucune action locale : attendre le rétablissement ou contacter CinetPay |
 | `CinetPayError:timeout`, `CinetPayError:http:500` | erreur après l'envoi | réessayer plus tard (nouvelle demande) |
 
 Constat du 2026-10-12 : `2011 NOT_ALLOWED` à l'authentification après un changement de réseau
-du poste de développement (IP publique 102.244.220.227 à cette date). En développement, mettre
-aussi à jour `CINETPAY_NOTIFY_URL` / `CINETPAY_RETURN_URL` et `EXPO_PUBLIC_API_URL` avec
-l'adresse LAN actuelle du poste (`ipconfig`), puis redémarrer le backend.
+du poste de développement (IP publique 102.244.220.227 à cette date). Constat du 2026-10-14 :
+même refus, IP publique devenue 129.0.76.35 (D-100) ; l'après-midi du même jour, nouveau refus
+(4 recharges MTN `FAILED`, aucune créée chez CinetPay, rien crédité), IP publique devenue
+102.244.222.245, confirmé par `npm run payments:diagnose` (`REACHABLE`, `authentication: REFUSED`,
+2011). **Cause récurrente** : un poste sans IP
+publique fixe change d'adresse avec le réseau ; seule une machine à IP publique FIXE (serveur
+hébergé) supprime durablement ce refus. `EXPO_PUBLIC_API_URL` peut viser l'adresse LAN ou
+Tailscale du poste (le téléphone la joint) ; **pas** `CINETPAY_NOTIFY_URL` ni
+`CINETPAY_RETURN_URL`, que CinetPay et le navigateur du payeur doivent joindre depuis Internet
+(une adresse LAN, privée ou Tailscale ne reçoit jamais la notification : seule la
+réconciliation règle alors les paiements).
+
+### Diagnostic : `npm run payments:diagnose` (D-094)
+
+Depuis `backend/`, lecture seule (aucun paiement créé, aucune écriture en base, aucun secret
+affiché ; en production : `npm run payments:diagnose:prod` après `npm run build`). Trois niveaux
+distincts :
+
+| Champ | Signification |
+|---|---|
+| `configured` | variables CinetPay présentes et valides (sinon le backend refuse déjà de démarrer, ou CinetPay est désactivé) |
+| `reachability` | `REACHABLE` (l'API répond, même 404) · `ORIGIN_UNREACHABLE` (Cloudflare 52x : panne chez CinetPay) · `TIMEOUT` / `NETWORK_ERROR` (réseau sortant du serveur) · `HTTP_ERROR` (autre 5xx) |
+| `authentication` | `ACCEPTED` · `REFUSED` (`apiCode` 2011 = IP non autorisée, 1005 = identifiants) · `TIMEOUT` · `PROVIDER_ERROR` |
+| `payment` | toujours `NOT_VERIFIED` : un paiement réel ne se prouve qu'en sandbox |
+
+Code de sortie 0 si l'authentification est acceptée, 2 sinon. La dernière ligne donne la cause
+probable et l'action. Une authentification acceptée ne prouve PAS que MTN ou Orange Money sont
+activés sur le compte marchand, ni qu'un paiement aboutira.
+
+### Six situations à ne pas confondre
+
+| Situation | Signe | Argent | Suite |
+|---|---|---|---|
+| Panne du service distant | diagnostic `ORIGIN_UNREACHABLE` (52x) ; motif `…NotSentError:http:52x` ou `:timeout` | rien débité ni crédité | attendre CinetPay ; nouvelle demande ensuite |
+| Erreur de configuration | le backend refuse de démarrer (message sans valeur), ou `configured: false` | aucun achat possible | corriger `backend/.env` |
+| Refus d'authentification | `authentication: REFUSED` ; motif `…NotSentError:authentication:<code>` (2011 = IP, 1005 = identifiants) | rien débité ni crédité | IP publique ou identifiants |
+| Échec avant l'envoi | `CinetPayPaymentNotSentError` (toute cause) : aucun `POST /v1/payment` émis | paiement `FAILED`, aucun crédit, `503 MOBILE_MONEY_UNAVAILABLE` | aucun repli (D-090) |
+| Résultat incertain | direct parti sans réponse : `metadata.initialization = UNCERTAIN`, `202` en attente | paiement `PENDING`, aucun crédit | réconciliation par `merchant_transaction_id` ; jamais de second paiement |
+| Confirmé mais pas encore relu | le joueur a validé, mais la relecture du statut échoue (CinetPay injoignable) | paiement `PENDING`, crédit différé | relu par le réconciliateur à chaque passage (`CINETPAY_RECONCILE_INTERVAL_MS`) ; crédit unique dès `SUCCESS` relu |
+
+Constat du 2026-10-13 (05:18-05:19, heure du Cameroun) : six recharges en `503
+MOBILE_MONEY_UNAVAILABLE`, motif `CinetPayPaymentNotSentError:timeout`, aucune référence
+CinetPay, rien crédité ni débité. `api.cinetpay.net` (sandbox) et `api.cinetpay.co`
+(production) répondaient `522` (Cloudflare : serveur d'origine injoignable) après ≈ 20 s, alors
+que DNS, TCP et TLS aboutissaient et que `www.cinetpay.com` répondait. Panne chez CinetPay ; le
+503 était exact. Aucun repli : le paiement direct MTN et la page passent par la même API.
 
 ## Orange Money Cameroun (`OM_CM`) — vérifié le 2026-10-12
 
@@ -466,3 +510,59 @@ camerounais), direct d'abord si ouvert, page CinetPay en repli sur refus certain
 `:page-fallback`). `GET /api/wallet.paymentOperator` pilote l'unique bouton de l'application.
 Limite CinetPay : numéro transmis (prérempli si la page l'utilise) mais aucun verrouillage possible
 via l'API v1.
+
+## Causes classées, santé et alertes (D-100)
+
+### Ce que reçoit le joueur
+
+`503 MOBILE_MONEY_UNAVAILABLE` porte désormais `details: { cause, retryable, charged: false }` et
+un message propre à la cause (l'application l'affiche tel quel). Cette erreur n'est rendue que
+lorsque rien n'a pu être payé : demande jamais partie, ou page de paiement jamais remise au
+joueur. Un paiement direct parti sans réponse reste `PENDING` (`202` ou `503
+PAYMENT_VERIFICATION_PENDING`), jamais présenté comme un échec.
+
+| `cause` | Situation | Réessayer ? | Message (résumé) |
+|---|---|---|---|
+| `PROVIDER_IP_NOT_ALLOWED` | 2011 NOT_ALLOWED : IP publique hors liste blanche | non (compte marchand) | recharges suspendues, rien débité |
+| `PROVIDER_AUTH_REFUSED` | identifiants refusés, jeton refusé | non (configuration) | recharges suspendues, rien débité |
+| `PROVIDER_UNREACHABLE` | réseau, DNS (code système journalisé : `ENOTFOUND`…) | oui | CinetPay injoignable, rien débité |
+| `PROVIDER_TIMEOUT_BEFORE_SEND` | délai à l'authentification | oui | CinetPay injoignable, rien débité |
+| `PROVIDER_TIMEOUT_AFTER_SEND` | délai après l'envoi d'une page (jamais remise au joueur) | oui | incident CinetPay, rien débité |
+| `PROVIDER_HTTP_ERROR` | 5xx dont 52x Cloudflare | oui | incident CinetPay, rien débité |
+| `PROVIDER_MALFORMED_RESPONSE` | réponse illisible | oui | incident CinetPay, rien débité |
+| `PROVIDER_REFUSED` | refus métier (code API) | non | CinetPay a refusé, rien débité |
+
+Classification unique : `backend/src/services/payments/payment-failure.ts`. Journal
+`cinetpay payment initialization failed` : `reason`, `category`, `retryable`, `sent`,
+`merchantTransactionId`, `durationMs`, `apiCode` — jamais de secret, de jeton ni de numéro.
+
+### Santé : `GET /api/admin/system` → `services.payments`
+
+Réservé à l'administration (JWT + rôle + session admin). Niveaux distincts, aucun paiement créé,
+aucun secret, aucune URL, aucune donnée de payeur :
+
+- `status` : `OK`, `DEGRADED` (alerte sans panne d'accès) ou `DOWN` (IP refusée,
+  identifiants refusés, CinetPay injoignable, fournisseur non configuré) ;
+- `provider.state` : déduit des appels RÉELS (`OK`, `IP_NOT_ALLOWED`, `AUTH_REFUSED`,
+  `UNREACHABLE`, `UNKNOWN`), avec la dernière authentification ; l'accès est revérifié toutes
+  les 5 min par le réconciliateur (authentification seule ; jeton valide en cache : aucun appel) ;
+- `urls.notify` / `urls.return` : problèmes de forme (`PRIVATE_ADDRESS`, `VPN_ADDRESS`,
+  `LOCALHOST`, `TEMPORARY_TUNNEL`, `NOT_HTTPS`) ; aucune résolution DNS, aucune preuve de
+  joignabilité ;
+- `initializationFailures` : échecs des 15 dernières minutes par cause ; alerte à 5 pannes du
+  fournisseur (les refus individuels ne comptent pas) ;
+- `reconciler` : dernier passage, dernier passage réussi, dernier bilan, échecs de lecture,
+  `stale` (aucun passage réussi depuis 5 min) ;
+- `pending` : paiements en attente, initialisations incertaines, bloqués (> 60 min), plus ancien ;
+- `alerts` : `PROVIDER_IP_NOT_ALLOWED`, `PROVIDER_AUTH_REFUSED`, `PROVIDER_UNREACHABLE`,
+  `INITIALIZATION_FAILURES`, `RECONCILER_STALE`, `NOTIFY_URL_NOT_PUBLIC`,
+  `RETURN_URL_NOT_PUBLIC`, `PAYMENTS_STUCK`, `PROVIDER_NOT_CONFIGURED`.
+
+Journaux d'alerte (une ligne par changement d'état, pas une par appel) :
+`PAYMENT_PROVIDER_ALERT` (`error`), `PAYMENT_PROVIDER_RECOVERED`, `PAYMENTS_STUCK` (au plus une
+fois par heure). Démarrage : avertissement si `CINETPAY_NOTIFY_URL` / `CINETPAY_RETURN_URL` ne
+sont pas joignables depuis Internet ; en production, refus de démarrer.
+
+Un paiement bloqué n'est JAMAIS clos ni crédité pour son âge : seul le statut relu chez CinetPay
+décide. Au-delà de 7 jours, il n'est plus revérifié automatiquement : revérification depuis
+l'administration (`POST /api/admin/payments/:paymentId/verify`).

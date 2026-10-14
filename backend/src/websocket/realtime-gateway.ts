@@ -11,6 +11,7 @@ import { toApiError } from '../middleware/api-errors';
 import type { AuthService } from '../services/auth/auth.service';
 import { AuthenticationRequiredError } from '../services/auth/auth-errors';
 import type { ChatService } from '../services/chat/chat.service';
+import type { GameService } from '../services/game/game.service';
 import type { Logger } from '../utils/logger';
 import { parseChatMessageInput } from '../validators/chat.validators';
 
@@ -25,11 +26,14 @@ import { parseChatMessageInput } from '../validators/chat.validators';
  *     { type: 'chat:subscribe', gameId }                    → chat:subscribed | error
  *     { type: 'chat:unsubscribe', gameId }
  *     { type: 'chat:send', gameId, clientMessageId, content } → chat:ack | error
+ *     { type: 'game:subscribe', gameId }                    → game:subscribed | error
+ *     { type: 'game:unsubscribe', gameId }
  *     { type: 'ping' }                                      → pong
  *
  *   serveur → client
  *     { type: 'ready' }                                     authentifié
  *     { type: 'chat:message', gameId, message }             salle `game:{gameId}:chat`
+ *     { type: 'game:changed', gameId, version }             salle `game:{gameId}` (D-101)
  *
  * Sécurité :
  * - Le jeton est envoyé dans la 1re trame, jamais dans l'URL (journaux, proxys) ; il n'est
@@ -38,6 +42,9 @@ import { parseChatMessageInput } from '../validators/chat.validators';
  *   ailleurs révoque l'ancienne).
  * - L'identité est celle du jeton ; aucun `senderId`/`userId` reçu n'est lu.
  * - Abonnement et envoi passent par ChatService, qui vérifie l'appartenance à la partie.
+ * - Partie (D-101) : l'abonnement passe par GameService, qui vérifie l'appartenance. Seuls
+ *   `gameId` et `version` sont transmis, jamais le contenu d'un événement : le client relit
+ *   sa vue joueur par l'API HTTP, seule source de l'état (mains privées, actions permises).
  * - Trames limitées en taille (`maxPayload`) et en débit par connexion.
  */
 export const REALTIME_PATH = '/ws';
@@ -45,11 +52,49 @@ export const REALTIME_PATH = '/ws';
 export const WS_CLOSE = {
   unauthenticated: 4401,
   protocolError: 4400,
+  /**
+   * Vérification impossible (base indisponible…) : code standard « Try Again Later ». Le jeton
+   * n'est PAS en cause ; le client se reconnecte après un délai, sans le renouveler.
+   */
+  tryAgainLater: 1013,
+  /** Arrêt du serveur (redémarrage, redéploiement) : « Going Away », le client se reconnecte. */
+  goingAway: 1001,
 } as const;
+
+/** Délai laissé aux clients pour accuser la fermeture 1001 avant la coupure forcée. */
+const SHUTDOWN_GRACE_MS = 1_000;
+
+/**
+ * Famille d'une fermeture, pour les journaux : un 1006 (coupure sans trame de fermeture) ne
+ * se confond plus avec un refus d'authentification ou une panne de dépendance.
+ */
+export type CloseCategory =
+  | 'normal'
+  | 'server_shutdown'
+  | 'auth_rejected'
+  | 'dependency_unavailable'
+  | 'protocol_error'
+  | 'heartbeat_timeout'
+  | 'transport_lost';
+
+export function closeCategoryOf(code: number, heartbeatTimeout = false): CloseCategory {
+  if (heartbeatTimeout) return 'heartbeat_timeout';
+  // 1005 : trame de fermeture reçue, sans code (fermeture volontaire du client).
+  if (code === 1000 || code === 1005) return 'normal';
+  if (code === WS_CLOSE.goingAway) return 'server_shutdown';
+  if (code === WS_CLOSE.unauthenticated) return 'auth_rejected';
+  if (code === WS_CLOSE.tryAgainLater) return 'dependency_unavailable';
+  if (code === WS_CLOSE.protocolError || code === 1002 || code === 1003 || code === 1007 || code === 1009) {
+    return 'protocol_error';
+  }
+  return 'transport_lost';
+}
 
 export interface RealtimeGatewayOptions {
   auth: AuthService;
   chat: ChatService;
+  /** Suivi des parties (D-101) ; absent, `game:subscribe` est refusé. */
+  games?: Pick<GameService, 'subscribe'>;
   logger: Logger;
   /** Délai pour s'authentifier après l'ouverture. */
   authTimeoutMs?: number;
@@ -79,6 +124,9 @@ export function attachRealtimeGateway(
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const alive = new WeakMap<WebSocket, boolean>();
+  /** Connexions coupées faute de réponse au ping (journal de fermeture). */
+  const timedOut = new WeakSet<WebSocket>();
+  let nextConnectionId = 1;
 
   const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
@@ -94,12 +142,13 @@ export function attachRealtimeGateway(
   wss.on('connection', (ws: WebSocket) => {
     alive.set(ws, true);
     ws.on('pong', () => alive.set(ws, true));
-    new Connection(ws, options).start();
+    new Connection(ws, options, nextConnectionId++, () => timedOut.has(ws)).start();
   });
 
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
       if (!alive.get(ws)) {
+        timedOut.add(ws);
         ws.terminate();
         continue;
       }
@@ -117,10 +166,19 @@ export function attachRealtimeGateway(
       new Promise<void>((resolve) => {
         clearInterval(heartbeat);
         server.off('upgrade', onUpgrade);
+        // Fermeture annoncée (1001) plutôt qu'une coupure : le client reçoit une vraie trame
+        // de fermeture au lieu d'un 1006 et se reconnecte au redémarrage.
         for (const ws of wss.clients) {
-          ws.terminate();
+          ws.close(WS_CLOSE.goingAway, 'server shutdown');
         }
-        wss.close(() => resolve());
+        const grace = setTimeout(() => {
+          for (const ws of wss.clients) ws.terminate();
+        }, SHUTDOWN_GRACE_MS);
+        grace.unref();
+        wss.close(() => {
+          clearTimeout(grace);
+          resolve();
+        });
       }),
   };
 }
@@ -136,13 +194,21 @@ class Connection {
   private readonly subscriptions = new Map<GameId, () => void>();
   /** Abonnements en cours de vérification : un double `chat:subscribe` n'abonne qu'une fois. */
   private readonly subscribing = new Set<GameId>();
+  /** Suivi des parties (D-101), distinct du chat de la même partie. */
+  private readonly gameSubscriptions = new Map<GameId, () => void>();
+  private readonly gameSubscribing = new Set<GameId>();
   private frames = { count: 0, resetAt: 0 };
   /** Trames traitées dans l'ordre de réception (l'abonnement suit toujours l'`auth`). */
   private queue: Promise<void> = Promise.resolve();
 
+  private readonly openedAt = Date.now();
+
   constructor(
     private readonly ws: WebSocket,
     private readonly options: RealtimeGatewayOptions,
+    /** Numéro technique de la connexion (journaux) : jamais le jeton. */
+    private readonly connectionId: number,
+    private readonly heartbeatTimedOut: () => boolean,
   ) {
     this.authTimer = setTimeout(
       () => this.ws.close(WS_CLOSE.unauthenticated, 'authentication timeout'),
@@ -157,13 +223,21 @@ class Connection {
         .then(() => this.onFrame(data, isBinary))
         .catch((err: unknown) =>
           this.options.logger.error('realtime frame failed', {
+            connectionId: this.connectionId,
+            category: 'message_processing',
             error: err instanceof Error ? err.message : String(err),
           }),
         );
     });
-    this.ws.on('close', () => this.dispose());
+    this.ws.on('close', (code) => {
+      this.dispose();
+      this.logClose(code);
+    });
     this.ws.on('error', (err) =>
-      this.options.logger.warn('realtime connection error', { error: err.message }),
+      this.options.logger.warn('realtime connection error', {
+        connectionId: this.connectionId,
+        error: err.message,
+      }),
     );
   }
 
@@ -211,6 +285,15 @@ class Connection {
       case 'chat:send':
         await this.sendMessage(frame);
         return;
+      case 'game:subscribe':
+        await this.subscribeGame(frame.gameId);
+        return;
+      case 'game:unsubscribe':
+        if (isGameId(frame.gameId)) {
+          this.gameSubscriptions.get(frame.gameId)?.();
+          this.gameSubscriptions.delete(frame.gameId);
+        }
+        return;
       default:
         this.send({ type: 'error', code: 'BAD_FRAME', message: 'Type de trame inconnu.' });
     }
@@ -233,11 +316,37 @@ class Connection {
       this.scheduleExpiry(token);
       this.send({ type: 'ready' });
     } catch (err) {
-      const reason = err instanceof AuthenticationRequiredError ? err.reason : 'error';
-      this.options.logger.warn('realtime auth rejected', { reason });
+      this.closeAfterAuthFailure(err, 'realtime auth rejected');
+    }
+  }
+
+  /**
+   * Refus d'authentification (jeton invalide ou expiré, session révoquée) : 4401, le client
+   * renouvelle son jeton. Toute autre erreur (base indisponible…) n'est pas un refus : 1013,
+   * le client réessaie plus tard avec le même jeton.
+   */
+  private closeAfterAuthFailure(err: unknown, event: string): void {
+    if (err instanceof AuthenticationRequiredError) {
+      this.options.logger.warn(event, {
+        connectionId: this.connectionId,
+        category: 'auth_rejected',
+        reason: err.reason,
+      });
       this.send({ type: 'error', code: 'UNAUTHENTICATED', message: 'Connexion expirée.' });
       this.ws.close(WS_CLOSE.unauthenticated, 'unauthenticated');
+      return;
     }
+    this.options.logger.error(`${event}: verification unavailable`, {
+      connectionId: this.connectionId,
+      category: 'dependency_unavailable',
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+    this.send({
+      type: 'error',
+      code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+      message: 'Service momentanément indisponible.',
+    });
+    this.ws.close(WS_CLOSE.tryAgainLater, 'try again later');
   }
 
   /** Fermeture à l'expiration du jeton (`exp`, signé et déjà vérifié par `authenticate`). */
@@ -259,9 +368,8 @@ class Connection {
     try {
       await this.options.auth.authenticate(this.token ?? '');
       return true;
-    } catch {
-      this.send({ type: 'error', code: 'UNAUTHENTICATED', message: 'Connexion expirée.' });
-      this.ws.close(WS_CLOSE.unauthenticated, 'unauthenticated');
+    } catch (err) {
+      this.closeAfterAuthFailure(err, 'realtime session check failed');
       return false;
     }
   }
@@ -279,7 +387,7 @@ class Connection {
       }
       return;
     }
-    if (this.subscriptions.size + this.subscribing.size >= MAX_SUBSCRIPTIONS) {
+    if (this.subscriptionCount() >= MAX_SUBSCRIPTIONS) {
       this.send({
         type: 'error',
         code: 'TOO_MANY_SUBSCRIPTIONS',
@@ -313,6 +421,81 @@ class Connection {
       this.sendError(err, { gameId });
     } finally {
       this.subscribing.delete(gameId);
+    }
+  }
+
+  private subscriptionCount(): number {
+    return (
+      this.subscriptions.size +
+      this.subscribing.size +
+      this.gameSubscriptions.size +
+      this.gameSubscribing.size
+    );
+  }
+
+  /**
+   * Suivi d'une partie (D-101) : à chaque commande acceptée par le serveur (carte jouée, tour
+   * expiré, fuite…), `game:changed` avec la NOUVELLE version, aussitôt et sur tous les
+   * téléphones abonnés. Plusieurs événements d'une même commande partagent la même version :
+   * une seule trame par version. Aucun contenu d'événement n'est transmis.
+   */
+  private async subscribeGame(value: unknown): Promise<void> {
+    if (!isGameId(value)) {
+      this.sendValidationError('Identifiant de partie invalide.');
+      return;
+    }
+    const gameId = value;
+    if (this.gameSubscriptions.has(gameId) || this.gameSubscribing.has(gameId)) {
+      // Réabonnement (reconnexion, double envoi) : aucun second abonnement, donc aucun doublon.
+      if (this.gameSubscriptions.has(gameId)) this.send({ type: 'game:subscribed', gameId });
+      return;
+    }
+    const games = this.options.games;
+    if (!games) {
+      this.send({
+        type: 'error',
+        code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+        message: 'Service momentanément indisponible.',
+        gameId,
+        channel: 'game',
+      });
+      return;
+    }
+    if (this.subscriptionCount() >= MAX_SUBSCRIPTIONS) {
+      this.send({
+        type: 'error',
+        code: 'TOO_MANY_SUBSCRIPTIONS',
+        message: 'Trop de parties suivies.',
+        gameId,
+        channel: 'game',
+      });
+      return;
+    }
+    if (!(await this.stillAuthenticated())) {
+      return;
+    }
+    this.gameSubscribing.add(gameId);
+    try {
+      let lastVersion = 0;
+      const unsubscribe = await games.subscribe(
+        gameId,
+        playerIdOf(this.userId as UserId),
+        (event) => {
+          if (event.gameId !== gameId || event.version <= lastVersion) return;
+          lastVersion = event.version;
+          this.send({ type: 'game:changed', gameId, version: event.version });
+        },
+      );
+      if (this.ws.readyState !== WebSocket.OPEN) {
+        unsubscribe();
+        return;
+      }
+      this.gameSubscriptions.set(gameId, unsubscribe);
+      this.send({ type: 'game:subscribed', gameId });
+    } catch (err) {
+      this.sendError(err, { gameId, channel: 'game' });
+    } finally {
+      this.gameSubscribing.delete(gameId);
     }
   }
 
@@ -394,13 +577,35 @@ class Connection {
     }
   }
 
+  /**
+   * Une ligne par fermeture : code, famille, durée et état d'authentification. Ni jeton, ni
+   * contenu de trame. Les fermetures normales restent en `info` ; les autres en `warn`.
+   */
+  private logClose(code: number): void {
+    const category = closeCategoryOf(code, this.heartbeatTimedOut());
+    const context = {
+      connectionId: this.connectionId,
+      code,
+      category,
+      authenticated: this.userId !== undefined,
+      ...(this.userId && { playerId: playerIdOf(this.userId) }),
+      durationMs: Date.now() - this.openedAt,
+    };
+    if (category === 'normal' || category === 'server_shutdown') {
+      this.options.logger.info('realtime connection closed', context);
+    } else {
+      this.options.logger.warn('realtime connection closed', context);
+    }
+  }
+
   private dispose(): void {
     clearTimeout(this.authTimer);
     clearTimeout(this.expiryTimer);
-    for (const unsubscribe of this.subscriptions.values()) {
+    for (const unsubscribe of [...this.subscriptions.values(), ...this.gameSubscriptions.values()]) {
       unsubscribe();
     }
     this.subscriptions.clear();
+    this.gameSubscriptions.clear();
   }
 }
 

@@ -123,6 +123,20 @@ it('5xx avec message de l’API : le message du serveur est conservé', async ()
   expect(error.message).toBe('Administration indisponible.');
 });
 
+it('503 : service momentanément indisponible, journalisé comme tel (ni panne, ni réseau)', async () => {
+  fetchMock.mockResolvedValueOnce(
+    json(503, { code: 'SERVICE_TEMPORARILY_UNAVAILABLE', message: 'Service momentanément indisponible.' }),
+  );
+  const error = await failureOf(apiRequest('/api/wallet'));
+  expect(error).toMatchObject({ status: 503, code: 'SERVICE_TEMPORARILY_UNAVAILABLE' });
+  expect(warn).toHaveBeenCalledWith('[réseau] SERVICE_UNAVAILABLE', {
+    method: 'GET',
+    url: `${API_URL}/api/wallet`,
+    status: 503,
+    code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+  });
+});
+
 it('204 : aucune donnée, aucune erreur', async () => {
   fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
   await expect(apiRequest('/api/auth/logout', { method: 'POST' })).resolves.toBeUndefined();

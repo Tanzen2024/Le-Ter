@@ -33,6 +33,7 @@ import {
 } from '../../repositories/wallet.repository';
 import type { Logger } from '../../utils/logger';
 import { ValidationError } from '../../validators/validation-error';
+import { classifyPaymentFailure } from '../payments/payment-failure';
 import type {
   WithdrawalAvailability,
   WithdrawalMode,
@@ -387,9 +388,11 @@ export class WalletService {
         });
         throw err;
       }
-      // Échec immédiat : achat abandonné (rien n'a été crédité).
+      // Échec immédiat : achat abandonné (rien n'a été crédité). Cause classée (D-100) :
+      // configuration, accès refusé, réseau, délai, incident ou refus du fournisseur.
+      const { category, retryable } = classifyPaymentFailure(err);
       await this.settle(transaction.id, { status: 'failed', failureCode: PROVIDER_UNAVAILABLE });
-      throw new MobileMoneyUnavailableError(transaction.id);
+      throw new MobileMoneyUnavailableError(transaction.id, { category, retryable });
     }
   }
 

@@ -13,6 +13,10 @@ import { PostgresSessionRepository } from '../../repositories/postgres-session.r
 import { PostgresTournamentRepository } from '../../repositories/postgres-tournament.repository';
 import { PostgresWalletRepository } from '../../repositories/postgres-wallet.repository';
 import { createBehaviorAnalyzers } from '../detection/behavior-analyzers';
+import {
+  detectionConsentContinuation,
+  detectionConsentStartPolicy,
+} from '../detection/detection-consent-policies';
 import { DetectionService } from '../detection/detection.service';
 import { DetectionSettingsService } from '../detection/detection-settings.service';
 import { createGeoAnalyzers } from '../detection/geo-analyzers';
@@ -101,6 +105,20 @@ export function createGameService(options: {
     wallets: new PostgresWalletRepository(options.sql),
     tournamentOfSession: (id: SessionId) => tournamentRepository.findTournamentOfSession(id),
   };
+  // Interrupteur GLOBAL de la détection (D-053) : lu par la création des tables (D-081) et par
+  // la détection elle-même (plus bas).
+  const detectionSettings = new DetectionSettingsService({
+    repository: new PostgresDetectionSettingsRepository(options.sql),
+    logger: options.logger,
+  });
+  // Géolocalisation de la détection (D-046) et consentement des tables surveillées (D-095) :
+  // construite avant les parties, dont elle conditionne le démarrage.
+  const geolocationRepository = new PostgresGeolocationRepository(options.sql);
+  const geolocation = new GeolocationService({
+    repository: geolocationRepository,
+    globalSwitch: detectionSettings,
+    logger: options.logger,
+  });
   const games = new GameService({
     repository,
     publisher: bus,
@@ -109,14 +127,10 @@ export function createGameService(options: {
     // R-18 : une seule partie active par joueur (garantie en base, migration 0004).
     participationPolicy: singleActiveGameParticipation(repository),
     stakePolicy: walletGameStakePolicy(stakeDeps),
+    // Table surveillée : aucun démarrage sans le consentement de chaque joueur (D-095).
+    startPolicy: detectionConsentStartPolicy(geolocation),
     sessionSeats: sessionRepository,
     settlements: new PostgresGameSettlementReader(options.sql),
-    logger: options.logger,
-  });
-  // Interrupteur GLOBAL de la détection (D-053) : lu par la création des tables (D-081) et par
-  // la détection elle-même (plus bas).
-  const detectionSettings = new DetectionSettingsService({
-    repository: new PostgresDetectionSettingsRepository(options.sql),
     logger: options.logger,
   });
   const sessionTimers = new SessionTimerRegistry();
@@ -149,6 +163,8 @@ export function createGameService(options: {
     continuation: allSessionContinuations(
       tournamentTableContinuation(tournamentRepository, undefined, settlePending),
       walletStakeContinuation(stakeDeps),
+      // Table surveillée : joueur assis sans consentement écarté de la partie suivante (D-095).
+      detectionConsentContinuation(geolocation),
     ),
     detectionSwitch: detectionSettings,
   });
@@ -160,7 +176,6 @@ export function createGameService(options: {
   // comportementales sur l'historique surveillé. Aucun score (étape 4).
   // Interrupteur GLOBAL (D-053), relu dans PostgreSQL à chaque consultation : désactivé
   // (défaut), aucune analyse, aucun score, aucune alerte, aucune position acceptée.
-  const geolocationRepository = new PostgresGeolocationRepository(options.sql);
   const detection = new DetectionService({
     repository: new PostgresDetectionRepository(options.sql),
     globalSwitch: detectionSettings,
@@ -171,11 +186,6 @@ export function createGameService(options: {
     ],
   });
   games.onGameFinished((game) => detection.observeFinishedGame(game));
-  const geolocation = new GeolocationService({
-    repository: geolocationRepository,
-    globalSwitch: detectionSettings,
-    logger: options.logger,
-  });
   // Tournois (D-054) : jetons de tournoi réglés à la fin de chaque partie d'une table de
   // tournoi ; échéances (début, fin, résultats, gains) appliquées par le planificateur.
   const tournaments = new TournamentService({

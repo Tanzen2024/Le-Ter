@@ -57,7 +57,9 @@ async function newPlayer(balance?: number) {
 type Player = Awaited<ReturnType<typeof newPlayer>>;
 
 const count = async (table: 'games' | 'sessions') =>
-  Number((await database.sql.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`)).rows[0]!.n);
+  Number(
+    (await database.sql.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`)).rows[0]!.n,
+  );
 
 const balanceOf = async (p: Player) =>
   Number(
@@ -201,15 +203,18 @@ describe('Rejoindre une partie (D-073)', () => {
     expect(body.game.players).toHaveLength(1);
   });
 
-  it.each([200, 500])('solde %i pour une mise de 100 : table puis partie rejointes', async (balance) => {
-    const A = await newPlayer(1_000);
-    const B = await newPlayer(balance);
-    const { sessionId, gameId } = await createTable(A, 100);
-    await expectStatus(B.api.post(`/api/sessions/${sessionId}/join`), 200);
-    await expectStatus(B.api.post(`/api/games/${gameId}/join`), 200);
-    expect(await balanceOf(B)).toBe(balance);
-    expect(await walletTransactions()).toBe(0);
-  });
+  it.each([200, 500])(
+    'solde %i pour une mise de 100 : table puis partie rejointes',
+    async (balance) => {
+      const A = await newPlayer(1_000);
+      const B = await newPlayer(balance);
+      const { sessionId, gameId } = await createTable(A, 100);
+      await expectStatus(B.api.post(`/api/sessions/${sessionId}/join`), 200);
+      await expectStatus(B.api.post(`/api/games/${gameId}/join`), 200);
+      expect(await balanceOf(B)).toBe(balance);
+      expect(await walletTransactions()).toBe(0);
+    },
+  );
 
   it('la mise lue est celle de la partie enregistrée, pas celle du client', async () => {
     const A = await newPlayer(10_000);
@@ -240,9 +245,11 @@ describe('Rejoindre une partie (D-073)', () => {
     );
     expect(results.filter((r) => r.status === 200).length).toBeGreaterThanOrEqual(1);
     expect(await activePlayers(sessionId)).toBe(2);
-    const seated = (await Promise.all(
-      [B, C].map(async (p) => ({ p, res: await p.api.post(`/api/games/${gameId}/join`) })),
-    )).filter(({ res }) => res.status === 200);
+    const seated = (
+      await Promise.all(
+        [B, C].map(async (p) => ({ p, res: await p.api.post(`/api/games/${gameId}/join`) })),
+      )
+    ).filter(({ res }) => res.status === 200);
     expect(seated).toHaveLength(1);
     const { body } = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
     expect(body.game.players).toHaveLength(2);
@@ -306,8 +313,17 @@ describe('Partie suivante après « Poursuivre » (D-042, D-073)', () => {
     }
     // Retrait (simulé) pendant la ronde : B n'a plus 2 × la mise.
     await database.sql.query('UPDATE wallets SET balance = 199 WHERE user_id = $1', [B.userId]);
-    await expectStatus(A.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }), 200);
-    await expectStatus(B.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }), 200);
+    await expectStatus(
+      A.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }),
+      200,
+    );
+    // « Poursuivre » refusé dès le choix (solde relu) ; B ne peut que quitter.
+    const refused = await expectStatus(
+      B.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }),
+      409,
+    );
+    expect(refused.body.code).toBe('INSUFFICIENT_BALANCE_FOR_STAKE');
+    await expectStatus(B.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'leave' }), 200);
     await ctx.sessions.idle();
 
     const until = Date.now() + 5_000;
@@ -333,5 +349,77 @@ describe('Partie suivante après « Poursuivre » (D-042, D-073)', () => {
       [next!.gameId],
     );
     expect(nextMoves.rows).toHaveLength(0);
+  });
+
+  /** Termine une partie à 2 où le CRÉATEUR perd (le second joueur prend le contrôle). */
+  async function playToEnd(loser: Player, winner: Player, gameId: string) {
+    for (const [who, cardId] of SECOND_WINS) {
+      await expectStatus(
+        (who === 0 ? loser : winner).api.post(`/api/games/${gameId}/actions`, {
+          commandId: randomUUID(),
+          type: 'PLAY_CARD',
+          payload: { cardId },
+        }),
+        200,
+      );
+    }
+  }
+
+  const roundOf = async (p: Player, sessionId: string) =>
+    (await expectStatus(p.api.get(`/api/sessions/${sessionId}`), 200)).body.session.decision;
+
+  it('solde du perdant relu APRÈS le débit : 700 − perte < 2 × 250 → « Poursuivre » refusé', async () => {
+    const L = await newPlayer(700);
+    const W = await newPlayer(1_000);
+    const { sessionId, gameId } = await createTable(L, 250, 2);
+    await expectStatus(W.api.post(`/api/sessions/${sessionId}/join`), 200);
+    await expectStatus(W.api.post(`/api/games/${gameId}/join`), 200);
+    await expectStatus(L.api.post(`/api/games/${gameId}/start`), 200);
+    await playToEnd(L, W, gameId);
+
+    const after = await balanceOf(L);
+    expect(after).toBeLessThan(700); // la perte est débitée avant la ronde
+    expect(after).toBeLessThan(500);
+    const loserRound = await roundOf(L, sessionId);
+    expect(loserRound.open).toBe(true);
+    expect(loserRound.canContinue).toBe(false);
+    expect((await roundOf(W, sessionId)).canContinue).toBe(true);
+
+    // Requête forcée (bouton masqué contourné), deux fois : refusée, rien de débité en plus.
+    const transactions = await walletTransactions();
+    for (let i = 0; i < 2; i += 1) {
+      const res = await expectStatus(
+        L.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }),
+        409,
+      );
+      expect(res.body.details).toEqual({ stake: 250, requiredBalance: 500 });
+    }
+    expect(await balanceOf(L)).toBe(after);
+    expect(await walletTransactions()).toBe(transactions);
+    expect((await roundOf(L, sessionId)).pendingPlayerIds).toContain(L.id);
+    // La sortie reste possible.
+    await expectStatus(L.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'leave' }), 200);
+  });
+
+  it('solde exactement 2 × la mise : « Poursuivre » permis ; double clic sans double débit', async () => {
+    const L = await newPlayer(1_000);
+    const W = await newPlayer(1_000);
+    const { sessionId, gameId } = await createTable(L, 100, 2);
+    await expectStatus(W.api.post(`/api/sessions/${sessionId}/join`), 200);
+    await expectStatus(W.api.post(`/api/games/${gameId}/join`), 200);
+    await expectStatus(L.api.post(`/api/games/${gameId}/start`), 200);
+    await playToEnd(L, W, gameId);
+    // Solde ramené à 2 × la mise pendant la ronde : seuil atteint (≥), donc permis.
+    await database.sql.query('UPDATE wallets SET balance = 200 WHERE user_id = $1', [L.userId]);
+    expect((await roundOf(L, sessionId)).canContinue).toBe(true);
+
+    const transactions = await walletTransactions();
+    const [first, second] = await Promise.all([
+      L.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }),
+      L.api.post(`/api/sessions/${sessionId}/decision`, { choice: 'continue' }),
+    ]);
+    expect([first.status, second.status]).toContain(200);
+    expect(await balanceOf(L)).toBe(200);
+    expect(await walletTransactions()).toBe(transactions);
   });
 });

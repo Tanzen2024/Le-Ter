@@ -102,6 +102,11 @@ export interface GameView {
   turnDeadlineAt?: string;
   turnTimedOutAt?: string;
   /**
+   * Phase de distribution (D-102) : présent tant que le serveur n'a pas confirmé la
+   * distribution. Aucune échéance de tour n'existe alors (ni roulette ni barres).
+   */
+  dealEndsAt?: string;
+  /**
    * Table de tournoi (D-065) : démarrage automatique par le serveur. `startDeadlineAt` :
    * échéance fixée dès 2 joueurs (le créateur peut démarrer avant) ; absente sinon.
    */

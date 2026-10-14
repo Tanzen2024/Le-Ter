@@ -118,6 +118,17 @@ export interface PaymentRepository {
    */
   findPendingForReconciliation(query: PendingReconciliationQuery): Promise<Payment[]>;
 
+  /**
+   * Synthèse des paiements PENDING (surveillance, D-100) : nombre, initialisations incertaines,
+   * paiements créés avant `stuckBefore` (bloqués) et date du plus ancien. Lecture seule.
+   */
+  summarizePending(stuckBefore: Date): Promise<{
+    pending: number;
+    uncertain: number;
+    stuck: number;
+    oldestPendingAt?: Date;
+  }>;
+
   /** Dernier statut brut du fournisseur pour un paiement encore PENDING. */
   recordProviderStatus(paymentId: string, providerStatus: string, now: Date): Promise<void>;
 

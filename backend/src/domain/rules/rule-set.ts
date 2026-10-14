@@ -22,8 +22,35 @@ export const MAX_FLEES_PER_GAME = 1; // un seul joueur peut fuir par partie
  */
 export const AUTOMATIC_TRICK_NUMBER = 5;
 
-/** Temps maximal du joueur attendu pour jouer sa carte (D-034 ; 10 s depuis D-092). */
-export const TURN_DURATION_MS = 10_000;
+/**
+ * Temps maximal du joueur attendu pour jouer sa carte (D-034 ; 13 s depuis D-098). Les écrans
+ * n'en affichent que 10 s : les 3 dernières secondes sont une marge réseau invisible.
+ */
+export const TURN_DURATION_MS = 13_000;
+
+/**
+ * Phase de distribution (D-102) : temps réservé à la présentation des lots sur la table,
+ * pendant lequel AUCUN temps de décision ne court. Calqué sur le calendrier des téléphones
+ * (`useDealProgress`, `TableCards.tsx`) : premier lot à 250 ms, un lot toutes les 420 ms,
+ * vol + pose 510 ms, plus une marge de réception réseau. La fin de phase est une échéance
+ * PERSISTÉE (`games.deal_ends_at`) ; le premier tour ne commence qu'à la transition
+ * COMPLETE_DEAL, jamais par le seul passage du temps côté client.
+ */
+export const DEAL_FIRST_BATCH_DELAY_MS = 250;
+export const DEAL_BATCH_STEP_MS = 420;
+export const DEAL_BATCH_LANDING_MS = 510;
+export const DEAL_DELIVERY_MARGIN_MS = 500;
+
+/** Durée de la phase de distribution pour `batchCount` lots (2 passages × joueurs). */
+export function dealPhaseDurationMs(batchCount: number): number {
+  if (batchCount <= 0) return 0;
+  return (
+    DEAL_FIRST_BATCH_DELAY_MS +
+    (batchCount - 1) * DEAL_BATCH_STEP_MS +
+    DEAL_BATCH_LANDING_MS +
+    DEAL_DELIVERY_MARGIN_MS
+  );
+}
 
 /** Deux cartes sont-elles « de même couleur » ? Officiellement : même famille (D-035). */
 export type ColorEquivalence = (a: Card, b: Card) => boolean;

@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
-import { useIsFocused } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { router, useIsFocused } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import { ApiError } from '../../lib/api-client';
@@ -9,7 +9,8 @@ import { geolocationApi } from '../../services/geolocation-api';
 import { useGameUiStore } from '../../stores/game-ui-store';
 import type { GeolocationStatus } from '../../types/geolocation';
 import { withAccessToken } from '../auth/session';
-import { isGameId } from '../games/hooks';
+import { gameKeys, isGameId } from '../games/hooks';
+import { useLeaveSession } from '../sessions/hooks';
 
 /**
  * Géolocalisation de la détection anti-collusion (R-36, étape 2, D-046), côté téléphone.
@@ -19,8 +20,12 @@ import { isGameId } from '../games/hooks';
  *   aucune position lue ni envoyée.
  * - Premier plan seulement : écran de la partie affiché ET application active. Aucune
  *   géolocalisation en arrière-plan.
- * - Une explication est toujours montrée avant la demande de permission native. Le refus
- *   n'est jamais transmis au serveur : la partie continue normalement, sans distances.
+ * - Une explication est toujours montrée avant la demande de permission native. Le
+ *   consentement (« Continuer ») est ENREGISTRÉ PAR LE SERVEUR pour la participation du joueur
+ *   à la table (D-095) : il est relu du serveur à chaque ouverture, jamais déduit d'un état
+ *   local. Refuser (« Non merci »), c'est quitter la table (`useDeclineAndLeave`).
+ * - Consentement donné mais permission système refusée : le joueur joue normalement, sans
+ *   position envoyée ; ses distances affichent « Localisation refusée » (D-046).
  * - Le téléphone n'envoie que latitude, longitude, précision et date ; il ne calcule
  *   aucune distance (elles viennent du serveur).
  */
@@ -32,6 +37,14 @@ export const geolocationKeys = {
 export const MIN_COLLECTION_INTERVAL_MS = 30_000;
 /** Lecture GPS sans réponse au-delà de ce délai : GPS indisponible, on réessaie plus tard. */
 export const POSITION_TIMEOUT_MS = 20_000;
+/** Lecture en échec : nouvel essai après ce délai (sans attendre toute la cadence du serveur). */
+export const GPS_RETRY_MS = 15_000;
+/**
+ * Dernière position connue du système acceptée si elle a moins de 60 s : réponse immédiate en
+ * intérieur, où une nouvelle mesure peut prendre longtemps. C'est une vraie mesure du
+ * téléphone, datée de sa capture (le serveur refuse au-delà de 2 min).
+ */
+export const LAST_KNOWN_MAX_AGE_MS = 60_000;
 /** Une position plus imprécise serait refusée par le serveur : elle n'est pas envoyée. */
 const MAX_SENT_ACCURACY_METERS = 1_000;
 /** Refus définitifs du serveur : la collecte s'arrête pour cette partie. */
@@ -42,12 +55,15 @@ const STOP_CODES = new Set([
   'GAME_NOT_FOUND',
 ]);
 
-/** Choix du joueur, par table, pour la durée de l'application (jamais envoyé au serveur). */
-const consentByTable = new Map<string, 'accepted' | 'declined'>();
+/**
+ * Tables où la permission système a déjà été demandée pendant cette exécution : un refus
+ * n'est pas redemandé à chaque partie de la même table. Ce n'est PAS le consentement (serveur).
+ */
+const permissionAskedByTable = new Set<string>();
 
-/** Réservé aux tests : oublie les choix mémorisés. */
+/** Réservé aux tests : oublie les demandes de permission mémorisées. */
 export function resetGeolocationConsent(): void {
-  consentByTable.clear();
+  permissionAskedByTable.clear();
 }
 
 /**
@@ -70,18 +86,58 @@ export function useGeolocationStatus(gameId: string) {
   });
 }
 
-/** Position du téléphone, ou rejet si le GPS ne répond pas à temps. */
-function readPosition(): Promise<Location.LocationObject> {
+/** Pourquoi la position n'a pas pu être lue (diagnostic local, jamais envoyé). */
+export class GpsReadError extends Error {
+  constructor(readonly reason: 'SERVICES_OFF' | 'TIMEOUT' | 'UNAVAILABLE') {
+    super(reason);
+    this.name = 'GpsReadError';
+  }
+}
+
+/**
+ * Position du téléphone : services de localisation vérifiés d'abord (désactivés = cause
+ * distincte), puis dernière position récente du système, sinon nouvelle mesure en précision
+ * « équilibrée » (réseau + GPS, environ 100 m) : la précision « haute » (GPS seul) n'aboutit
+ * souvent pas en intérieur dans le délai, d'où « GPS indisponible » en permanence.
+ */
+async function readPosition(): Promise<Location.LocationObject> {
+  let servicesOn = true;
+  try {
+    servicesOn = await Location.hasServicesEnabledAsync();
+  } catch {
+    // Vérification impossible : la lecture dira elle-même si la position est disponible.
+  }
+  if (!servicesOn) throw new GpsReadError('SERVICES_OFF');
+  try {
+    const last = await Location.getLastKnownPositionAsync({
+      maxAge: LAST_KNOWN_MAX_AGE_MS,
+      requiredAccuracy: MAX_SENT_ACCURACY_METERS,
+    });
+    if (last) return last;
+  } catch {
+    // Pas de position en cache : nouvelle mesure.
+  }
+  return freshPosition();
+}
+
+/** Nouvelle mesure, ou rejet si elle ne répond pas à temps. */
+function freshPosition(): Promise<Location.LocationObject> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('GPS_TIMEOUT')), POSITION_TIMEOUT_MS);
-    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).then(
+    const timer = setTimeout(() => reject(new GpsReadError('TIMEOUT')), POSITION_TIMEOUT_MS);
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then(
       (position) => {
         clearTimeout(timer);
         resolve(position);
       },
       (err: unknown) => {
         clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error('GPS_UNAVAILABLE'));
+        // Android rejette notamment quand la localisation est coupée pendant la mesure.
+        if (__DEV__) {
+          console.info('[gps] mesure refusée par le système', {
+            code: (err as { code?: unknown } | null)?.code,
+          });
+        }
+        reject(new GpsReadError('UNAVAILABLE'));
       },
     );
   });
@@ -103,11 +159,13 @@ export function useScreenActive(): boolean {
   return focused && foreground;
 }
 
-type Permission = 'unknown' | 'explain' | 'granted' | 'refused';
+type Permission = 'unknown' | 'granted' | 'refused';
 
 /**
- * Collecte des positions d'UNE partie. Renvoie `askConsent` quand l'explication doit être
- * affichée, et les choix du joueur (`accept`, `decline`).
+ * Collecte des positions d'UNE partie. Renvoie `askConsent` tant que le serveur n'a pas
+ * enregistré le consentement du joueur (explication bloquante), et `accept` : consentement
+ * envoyé au serveur, confirmé, PUIS permission système demandée. Aucune position n'est lue
+ * avant la confirmation du serveur.
  */
 export function useGameGeolocation({
   gameId,
@@ -124,54 +182,78 @@ export function useGameGeolocation({
   const queryClient = useQueryClient();
   const status = useGeolocationStatus(gameId);
   const setLocalGps = useGameUiStore((s) => s.setLocalGps);
-  // Un refus déjà exprimé pour cette table est respecté : aucune nouvelle explication.
-  const [permission, setPermission] = useState<Permission>(() =>
-    consentByTable.get(tableKey) === 'declined' ? 'refused' : 'unknown',
-  );
+  const [permission, setPermission] = useState<Permission>('unknown');
   const [stopped, setStopped] = useState(false);
 
   const server: GeolocationStatus | undefined = status.data;
   const watched = server?.detectionEnabled === true && server.collecting && !finished && !stopped;
+  const consentGiven = server?.detectionEnabled === true && server.consentGiven === true;
+
+  // Consentement : enregistré par le serveur, jamais supposé. Un seul envoi à la fois.
+  const consent = useMutation({
+    mutationFn: () => withAccessToken((t) => geolocationApi.consent(t, gameId)),
+    onSuccess: (confirmed) => {
+      queryClient.setQueryData(geolocationKeys.status(gameId), confirmed);
+    },
+  });
   const intervalMs = Math.max(
     MIN_COLLECTION_INTERVAL_MS,
     server?.detectionEnabled ? server.collectionIntervalMs : 0,
   );
 
-  // Permission : lue sans jamais la demander ; l'explication précède toute demande native.
+  // Permission système : seulement APRÈS le consentement confirmé par le serveur. Demandée
+  // une fois par table (l'explication a été acceptée) ; ensuite seulement lue.
   useEffect(() => {
-    if (!watched || permission !== 'unknown') return;
+    if (!watched || !consentGiven || permission !== 'unknown') return;
     let cancelled = false;
+    const settle = (granted: boolean) => {
+      if (!cancelled) setPermission(granted ? 'granted' : 'refused');
+    };
     Location.getForegroundPermissionsAsync()
       .then((current) => {
-        if (cancelled) return;
-        if (current.granted && consentByTable.get(tableKey) === 'accepted') {
-          setPermission('granted');
-        } else if (current.granted || current.canAskAgain) {
-          setPermission('explain');
-        } else {
-          setPermission('refused');
+        if (current.granted || !current.canAskAgain || permissionAskedByTable.has(tableKey)) {
+          settle(current.granted);
+          return;
         }
+        permissionAskedByTable.add(tableKey);
+        return Location.requestForegroundPermissionsAsync().then((answer) =>
+          settle(answer.granted),
+        );
       })
-      .catch(() => {
-        if (!cancelled) setPermission('refused');
-      });
+      .catch(() => settle(false));
     return () => {
       cancelled = true;
     };
-  }, [watched, permission, tableKey]);
+  }, [watched, consentGiven, permission, tableKey]);
 
+  // Permission refusée puis accordée dans les réglages Android : relue (jamais redemandée)
+  // au retour sur l'écran de jeu, sans boucle de demandes.
+  useEffect(() => {
+    if (!active || permission !== 'refused' || !watched) return;
+    let cancelled = false;
+    Location.getForegroundPermissionsAsync()
+      .then((current) => {
+        if (!cancelled && current.granted) setPermission('granted');
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [active, permission, watched]);
+
+  // Double appui : un seul envoi tant que le premier n'a pas répondu (le serveur est en plus
+  // idempotent). Le verrou est synchrone : deux appuis dans la même image n'envoient qu'un appel.
+  const { mutate: sendConsent } = consent;
+  const sending = useRef(false);
   const accept = useCallback(() => {
-    consentByTable.set(tableKey, 'accepted');
-    Location.requestForegroundPermissionsAsync()
-      .then((answer) => setPermission(answer.granted ? 'granted' : 'refused'))
-      .catch(() => setPermission('refused'));
-  }, [tableKey]);
-
-  const decline = useCallback(() => {
-    // Le refus reste sur le téléphone : aucun appel, aucun signal, aucune pénalité.
-    consentByTable.set(tableKey, 'declined');
-    setPermission('refused');
-  }, [tableKey]);
+    if (sending.current) return;
+    sending.current = true;
+    sendConsent(undefined, {
+      onSettled: () => {
+        sending.current = false;
+      },
+    });
+  }, [sendConsent]);
 
   // État GPS local (affichage des distances indisponibles), propre à CETTE partie et
   // oublié à la sortie de la partie.
@@ -187,14 +269,24 @@ export function useGameGeolocation({
   useEffect(() => {
     if (!collecting) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let located = false;
+    const next = (ms: number) => {
+      if (!cancelled) timer = setTimeout(() => void tick(), ms);
+    };
     const tick = async () => {
+      // Première mesure en cours : « Recherche GPS… », jamais « en attente » sans cause.
+      if (!located) setLocalGps(gameId, 'acquiring');
       let position: Location.LocationObject;
       try {
         position = await readPosition();
-      } catch {
-        // GPS coupé, refusé par le système en cours de partie ou sans réponse : rien n'est
-        // envoyé, jamais de position fictive ; on réessaie au prochain intervalle.
-        if (!cancelled) setLocalGps(gameId, 'unavailable');
+      } catch (err) {
+        // Localisation coupée, refusée par le système en cours de partie ou sans réponse :
+        // rien n'est envoyé, jamais de position fictive ; nouvel essai bientôt.
+        if (cancelled) return;
+        const off = err instanceof GpsReadError && err.reason === 'SERVICES_OFF';
+        setLocalGps(gameId, off ? 'services-off' : 'unavailable');
+        next(GPS_RETRY_MS);
         return;
       }
       if (cancelled) return;
@@ -202,9 +294,12 @@ export function useGameGeolocation({
       if (accuracy == null || accuracy <= 0 || accuracy > MAX_SENT_ACCURACY_METERS) {
         // Position trop imprécise : le serveur la refuserait, elle n'est pas envoyée.
         setLocalGps(gameId, 'unavailable');
+        next(GPS_RETRY_MS);
         return;
       }
+      located = true;
       setLocalGps(gameId, null);
+      next(intervalMs);
       try {
         const { distances } = await withAccessToken((t) =>
           geolocationApi.sendPosition(t, gameId, {
@@ -230,12 +325,83 @@ export function useGameGeolocation({
       }
     };
     void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [collecting, intervalMs, gameId, queryClient, setLocalGps]);
 
-  return { askConsent: watched && permission === 'explain', accept, decline };
+  return {
+    /** Explication bloquante : table surveillée, consentement pas encore confirmé. */
+    askConsent: watched && !consentGiven,
+    accept,
+    accepting: consent.isPending,
+    /** Échec de l'enregistrement : le panneau reste affiché, « Continuer » réessaie. */
+    acceptError: consent.error,
+  };
+}
+
+/** Message affiché quand le départ n'est pas confirmé ; jamais une fausse confirmation. */
+export function departureFailureMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status !== 0) return error.message;
+  const cause = error instanceof ApiError ? ` ${error.message}` : '';
+  return `Votre départ n’est pas confirmé.${cause} Réessayez.`;
+}
+
+/**
+ * « Non merci » (D-095) : refuser la localisation, c'est QUITTER la table. Départ réel par
+ * l'API existante (`POST /api/sessions/:id/leave`, idempotente côté serveur) :
+ * - un seul départ à la fois (double appui ignoré) ;
+ * - confirmé par le serveur : retour au panneau Partie privée (création / recherche de
+ *   partie), que le joueur soit ou non le créateur de la table ; à la
+ *   disparition de l'écran, l'état local de CETTE partie seule est oublié (requêtes
+ *   ['games', gameId] dont chat et géolocalisation, état d'interface) ; les relectures, le
+ *   chat temps réel et les minuteries de l'écran s'arrêtent avec lui ;
+ * - échec (réseau, refus) : aucune navigation, l'erreur est rendue et le panneau reste
+ *   affiché : la partie n'est pas accessible tant que le départ n'est pas confirmé.
+ */
+export function useDeclineAndLeave(game: { gameId: string; sessionId?: string | null }) {
+  const queryClient = useQueryClient();
+  const forgetGame = useGameUiStore((s) => s.forgetGame);
+  const { mutateAsync: leaveSession } = useLeaveSession();
+  const [leaving, setLeaving] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const inFlight = useRef(false);
+  const left = useRef(false);
+  const { gameId, sessionId } = game;
+
+  useEffect(
+    () => () => {
+      if (!left.current) return;
+      void queryClient.cancelQueries({ queryKey: gameKeys.detail(gameId) });
+      queryClient.removeQueries({ queryKey: gameKeys.detail(gameId) });
+      void queryClient.invalidateQueries({ queryKey: gameKeys.active });
+      forgetGame(gameId);
+    },
+    [queryClient, forgetGame, gameId],
+  );
+
+  const decline = useCallback(async () => {
+    if (inFlight.current || left.current) return;
+    inFlight.current = true;
+    setLeaving(true);
+    setError(null);
+    try {
+      if (!sessionId) throw new Error('Partie sans table : départ impossible.');
+      await leaveSession(sessionId);
+      left.current = true;
+      router.dismissTo({ pathname: '/', params: { panel: 'private' } });
+    } catch (err) {
+      setError(err);
+    } finally {
+      inFlight.current = false;
+      setLeaving(false);
+    }
+  }, [leaveSession, sessionId]);
+
+  return {
+    decline,
+    leaving,
+    error: error ? departureFailureMessage(error) : null,
+  };
 }

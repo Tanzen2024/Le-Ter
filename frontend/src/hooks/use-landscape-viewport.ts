@@ -1,5 +1,9 @@
 import { useWindowDimensions } from 'react-native';
-import { useSafeAreaInsets, type EdgeInsets } from 'react-native-safe-area-context';
+import {
+  useSafeAreaFrame,
+  useSafeAreaInsets,
+  type EdgeInsets,
+} from 'react-native-safe-area-context';
 
 /** Marges minimales, même sur un appareil sans encoche ni barre gestuelle. */
 const MIN_SIDE_MARGIN = 12;
@@ -15,16 +19,31 @@ export interface LandscapeViewport {
 }
 
 /**
+ * Taille réellement disponible : celle de la vue racine (`useSafeAreaFrame`), pas celle de la
+ * fenêtre. Sur Android, la fenêtre peut compter la barre d'état alors que la vue racine commence
+ * sous elle : tout serait alors dessiné ~36 dp trop bas et le bas de l'écran (main, plaque du
+ * joueur, boutons) sortirait de l'écran. Repli sur la fenêtre tant que la vue n'est pas mesurée.
+ */
+export function viewportSize(
+  frame: { width: number; height: number },
+  window: { width: number; height: number },
+): { width: number; height: number } {
+  const measured = frame.width > 0 && frame.height > 0;
+  const { width, height } = measured ? frame : window;
+  return { width: Math.max(width, height), height: Math.min(width, height) };
+}
+
+/**
  * Surface paysage de l'écran. L'application est verrouillée en paysage, mais la fenêtre peut
  * transitoirement être mesurée en portrait (démarrage, rotation) : la surface est donc toujours
  * construite à partir de la grande et de la petite dimension, jamais d'un gabarit portrait.
  */
 export function useLandscapeViewport(): LandscapeViewport {
-  const { width, height } = useWindowDimensions();
+  const window = useWindowDimensions();
+  const frame = useSafeAreaFrame();
   const insets = useSafeAreaInsets();
   return {
-    width: Math.max(width, height),
-    height: Math.min(width, height),
+    ...viewportSize(frame, window),
     safe: {
       top: Math.max(insets.top, MIN_VERTICAL_MARGIN),
       bottom: Math.max(insets.bottom, MIN_VERTICAL_MARGIN),

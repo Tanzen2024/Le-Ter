@@ -147,14 +147,14 @@ describe('TESTS 8 / 9 / 10 — paires et distances', () => {
       now,
       fresh,
     );
-    expect(result.map((r) => [r.pair, r.meters, r.unavailable])).toEqual([
-      [[A, B], null, 'STALE'],
-      [[A, C], null, 'WAITING'],
-      [[B, C], null, 'WAITING'],
+    expect(result.map((r) => [r.pair, r.meters, r.unavailable, r.missing])).toEqual([
+      [[A, B], null, 'STALE', [B]],
+      [[A, C], null, 'WAITING', [C]],
+      [[B, C], null, 'WAITING', [B, C]],
     ]);
     const known = pairDistances([A, B], [at(A, DOUALA, 50), at(B, DOUALA, 50)], now, fresh);
     // Même lieu : 0 m est une vraie distance, distincte d'une distance inconnue.
-    expect(known[0]).toMatchObject({ meters: 0, unavailable: null });
+    expect(known[0]).toMatchObject({ meters: 0, unavailable: null, missing: [] });
   });
 });
 

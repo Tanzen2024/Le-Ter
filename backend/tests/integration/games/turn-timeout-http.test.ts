@@ -86,7 +86,7 @@ describe('HTTP — aucune action du joueur pendant 10 s : le serveur joue à sa 
 
     // Timer de production : 10 s, décidé par le serveur.
     const deadlineA = Date.parse(started.body.game.turnDeadlineAt as string);
-    expect(deadlineA - Date.parse(started.body.game.turnStartedAt as string)).toBe(10_000);
+    expect(deadlineA - Date.parse(started.body.game.turnStartedAt as string)).toBe(13_000);
 
     // Aucune action, peu avant l'échéance : le serveur n'a encore rien joué. L'assertion
     // ne vaut que si le serveur lui-même situe la lecture avant l'échéance (`serverNow`).
@@ -115,7 +115,7 @@ describe('HTTP — aucune action du joueur pendant 10 s : le serveur joue à sa 
 
     // Échéance de B (10 s après le début de SON tour) : il possède des ♠ → 7♠, pas le 4♥.
     const deadlineB = Date.parse(afterA.body.game.turnDeadlineAt as string);
-    expect(deadlineB - Date.parse(afterA.body.game.turnStartedAt as string)).toBe(10_000);
+    expect(deadlineB - Date.parse(afterA.body.game.turnStartedAt as string)).toBe(13_000);
     await sleep(Math.max(0, deadlineB - Date.now()));
     const viewB = await until(
       () => expectStatus(B.api.get(`/api/games/${gameId}`), 200),

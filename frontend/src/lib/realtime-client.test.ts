@@ -1,5 +1,7 @@
 /// <reference types="jest" />
 import {
+  HANDSHAKE_TIMEOUT_CLOSE,
+  HANDSHAKE_TIMEOUT_MS,
   RealtimeClient,
   realtimeUrl,
   UNAUTHENTICATED_CLOSE,
@@ -179,6 +181,18 @@ describe('RealtimeClient', () => {
     expect(last().sent[0]).toEqual({ type: 'auth', token: 'jeton-neuf' });
   });
 
+  it('fermeture 1013 (serveur indisponible) : se reconnecte avec le même jeton, sans refresh', async () => {
+    const { client, timers, refreshToken, last } = setup();
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    await connectReady(last);
+    last().drop(1013);
+    timers.fire(1_000);
+    await flush();
+    expect(refreshToken).not.toHaveBeenCalled();
+    last().open();
+    expect(last().sent[0]).toEqual({ type: 'auth', token: 'jeton' });
+  });
+
   it('session invalide : pas de connexion, nouvel essai plus tard', async () => {
     const { client, sockets, timers } = setup({ token: null, refreshed: null });
     client.subscribeChat(GAME, { onEvent: jest.fn() });
@@ -216,5 +230,126 @@ describe('RealtimeClient', () => {
     await connectReady(last);
     last().receive({ type: 'error', code: 'NOT_A_MEMBER', message: 'Refusé', gameId: GAME });
     expect(onError).toHaveBeenCalledWith({ code: 'NOT_A_MEMBER', message: 'Refusé' });
+  });
+  it('ouverture sans réponse : abandonnée après le délai, puis nouvelle tentative', async () => {
+    const { client, sockets, timers } = setup();
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    await flush();
+    expect(sockets).toHaveLength(1); // Socket restée en CONNECTING (aucun onopen).
+    timers.fire(HANDSHAKE_TIMEOUT_MS);
+    expect(sockets[0]!.closedWith).toBe(HANDSHAKE_TIMEOUT_CLOSE);
+    expect(client.getStatus()).toBe('offline');
+    expect(timers.delays()).toEqual([1_000]);
+    // Une fermeture tardive de l'ancienne socket ne touche pas à la nouvelle tentative.
+    sockets[0]!.drop(1006);
+    expect(timers.delays()).toEqual([1_000]);
+  });
+
+  it('une seule tentative à la fois, même pendant le renouvellement du jeton', async () => {
+    const { client, sockets, refreshToken } = setup({ token: null });
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    client.subscribeChat(OTHER, { onEvent: jest.fn() });
+    client.wake();
+    await flush();
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('panne : un seul avertissement, quel que soit le nombre de tentatives', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const info = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    try {
+      const { client, timers, last } = setup();
+      client.subscribeChat(GAME, { onEvent: jest.fn() });
+      await connectReady(last);
+      last().drop(1006);
+      for (const delay of [1_000, 2_000, 4_000]) {
+        timers.fire(delay);
+        await flush();
+        last().drop(1006);
+      }
+      const closes = warn.mock.calls.filter((c) => String(c[0]).includes('TEMPS_RÉEL_FERMÉ'));
+      expect(closes).toHaveLength(1);
+      expect(closes[0]![1]).toMatchObject({ code: 1006 });
+      timers.fire(8_000);
+      await connectReady(last);
+      expect(info.mock.calls.some((c) => String(c[0]).includes('TEMPS_RÉEL_RÉTABLI'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it('retour au premier plan : une connexion ouverte est vérifiée par un ping immédiat', async () => {
+    const { client, timers, last } = setup();
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    await connectReady(last);
+    client.wake();
+    expect(last().types()).toContain('ping');
+    timers.fire(10_000); // Aucun pong : connexion morte pendant la veille.
+    expect(last().closedWith).toBe(4000);
+    expect(client.getStatus()).toBe('offline');
+  });
+});
+
+describe('RealtimeClient : suivi de partie (D-101)', () => {
+  it('s’abonne à la partie et ne signale une version qu’aux abonnés de SA partie', async () => {
+    const { client, last } = setup();
+    const mine = jest.fn();
+    const other = jest.fn();
+    const onSubscribed = jest.fn();
+    client.subscribeGame(GAME, { onChanged: mine, onSubscribed });
+    client.subscribeGame(OTHER, { onChanged: other });
+    await connectReady(last);
+    expect(last().sent).toContainEqual({ type: 'game:subscribe', gameId: GAME });
+    last().receive({ type: 'game:subscribed', gameId: GAME });
+    expect(onSubscribed).toHaveBeenCalledTimes(1);
+
+    last().receive({ type: 'game:changed', gameId: GAME, version: 7 });
+    expect(mine).toHaveBeenCalledWith(7);
+    expect(other).not.toHaveBeenCalled();
+    // Trame incomplète : ignorée.
+    last().receive({ type: 'game:changed', gameId: GAME });
+    expect(mine).toHaveBeenCalledTimes(1);
+  });
+
+  it('partage la connexion du chat ; réabonnement et rattrapage après une reconnexion', async () => {
+    const { client, sockets, timers, last } = setup();
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    const onSubscribed = jest.fn();
+    client.subscribeGame(GAME, { onChanged: jest.fn(), onSubscribed });
+    await connectReady(last);
+    expect(sockets).toHaveLength(1);
+    expect(last().types()).toEqual(['auth', 'chat:subscribe', 'game:subscribe']);
+
+    last().drop();
+    timers.fire(1_000);
+    await connectReady(last);
+    expect(last().types()).toEqual(['auth', 'chat:subscribe', 'game:subscribe']);
+    last().receive({ type: 'game:subscribed', gameId: GAME });
+    expect(onSubscribed).toHaveBeenCalledTimes(1);
+  });
+
+  it('dernier abonné parti : désabonnement, puis fermeture s’il ne reste rien', async () => {
+    const { client, last } = setup();
+    const stopChat = client.subscribeChat(GAME, { onEvent: jest.fn() });
+    const stopGame = client.subscribeGame(GAME, { onChanged: jest.fn() });
+    await connectReady(last);
+    stopGame();
+    expect(last().sent).toContainEqual({ type: 'game:unsubscribe', gameId: GAME });
+    expect(client.getStatus()).toBe('connected'); // Le chat suit encore la partie.
+    stopChat();
+    expect(last().closedWith).toBe(1000);
+    expect(client.getStatus()).toBe('idle');
+  });
+
+  it('suivi refusé par le serveur : aucun abonné du chat n’est prévenu à tort', async () => {
+    const { client, last } = setup();
+    const onError = jest.fn();
+    client.subscribeChat(GAME, { onEvent: jest.fn(), onError });
+    client.subscribeGame(GAME, { onChanged: jest.fn() });
+    await connectReady(last);
+    last().receive({ type: 'error', code: 'NOT_A_MEMBER', gameId: GAME, channel: 'game' });
+    expect(onError).not.toHaveBeenCalled();
   });
 });

@@ -17,9 +17,15 @@ export type DistanceView =
   | { kind: 'known'; meters: number }
   /** Ce téléphone n'a pas donné sa position : refus du joueur ou du système. */
   | { kind: 'refused' }
-  /** Ce téléphone ne parvient pas à lire sa position (GPS coupé, délai dépassé). */
+  /** Ce téléphone ne parvient pas à lire sa position (délai dépassé, mesure refusée). */
   | { kind: 'gps-unavailable' }
-  /** Une des deux positions n'est jamais arrivée au serveur. */
+  /** Localisation désactivée dans les réglages du téléphone. */
+  | { kind: 'services-off' }
+  /** Première mesure de ce téléphone en cours. */
+  | { kind: 'acquiring' }
+  /** Ce téléphone a une position, celle de l'autre joueur n'est pas (encore) arrivée. */
+  | { kind: 'other-missing' }
+  /** Une des deux positions n'est jamais arrivée au serveur (cause non précisée). */
   | { kind: 'waiting' }
   /** Une des deux positions est trop ancienne pour être comparée. */
   | { kind: 'stale' };
@@ -34,9 +40,14 @@ export type PlayerDistances = { of(playerId: string): DistanceView } | null;
 function unknownDistance(
   local: LocalGpsState | undefined,
   server: 'WAITING' | 'STALE' | undefined,
+  missing?: 'VIEWER' | 'OTHER' | 'BOTH',
 ): DistanceView {
   if (local === 'refused') return { kind: 'refused' };
+  if (local === 'services-off') return { kind: 'services-off' };
   if (local === 'unavailable') return { kind: 'gps-unavailable' };
+  if (local === 'acquiring') return { kind: 'acquiring' };
+  // Ma position est arrivée : c'est l'autre joueur qui n'en fournit pas (refus, GPS…).
+  if (missing === 'OTHER') return { kind: 'other-missing' };
   return server === 'STALE' ? { kind: 'stale' } : { kind: 'waiting' };
 }
 
@@ -50,12 +61,12 @@ export function usePlayerDistances(game: GameView): PlayerDistances {
   return useMemo(() => {
     if (!data?.detectionEnabled) return null;
     const views = new Map<string, DistanceView>();
-    for (const { playerId, meters, unavailable } of data.distances) {
+    for (const { playerId, meters, unavailable, missingPosition } of data.distances) {
       views.set(
         playerId,
         meters !== null && Number.isFinite(meters) && meters >= 0
           ? { kind: 'known', meters }
-          : unknownDistance(local, unavailable),
+          : unknownDistance(local, unavailable, missingPosition),
       );
     }
     const missing = unknownDistance(local, undefined);
@@ -75,13 +86,22 @@ export function formatDistance(meters: number | undefined): string {
   return km >= 100 ? `${Math.round(km)} km` : `${km.toFixed(1).replace('.', ',')} km`;
 }
 
-/** Texte affiché pour une distance, connue ou non (cause explicite, jamais de valeur inventée). */
-export function distanceLabel(view: DistanceView): string {
+/**
+ * Texte affiché pour une distance, connue ou non (cause explicite, jamais de valeur inventée,
+ * jamais d'accusation). `playerName` : l'autre joueur, pour une position qui lui manque.
+ */
+export function distanceLabel(view: DistanceView, playerName?: string): string {
   switch (view.kind) {
     case 'known':
       return formatDistance(view.meters);
     case 'refused':
       return 'Localisation refusée';
+    case 'services-off':
+      return 'Localisation désactivée';
+    case 'acquiring':
+      return 'Recherche GPS…';
+    case 'other-missing':
+      return playerName ? `Position de ${playerName} non reçue` : 'Position adverse non reçue';
     case 'gps-unavailable':
       return 'GPS indisponible';
     case 'waiting':

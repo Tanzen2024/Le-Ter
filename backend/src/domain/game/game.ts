@@ -200,6 +200,13 @@ export interface Game {
   turnStartedAt?: Date;
   turnDeadlineAt?: Date;
   /**
+   * Phase de distribution (D-102) : présent tant que la partie est en cours mais que la
+   * distribution n'a pas été CONFIRMÉE par le serveur (transition COMPLETE_DEAL). Pendant
+   * cette phase il n'existe aucune échéance de tour (`turnDeadlineAt` absent), aucun timer
+   * de décision et aucune action de joueur n'est acceptée.
+   */
+  dealEndsAt?: Date;
+  /**
    * Échéance constatée par le serveur (TURN_TIMEOUT) : le joueur attendu ne peut plus
    * jouer lui-même ; le coup automatique (AutomaticCardSelectionStrategy, non définie)
    * reste à jouer. Absent tant que le tour n'a pas expiré.

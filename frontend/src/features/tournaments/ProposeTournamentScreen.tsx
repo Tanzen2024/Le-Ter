@@ -7,11 +7,16 @@ import { DatePickerField } from '../../components/ui/DatePickerField';
 import { TimePickerField } from '../../components/ui/TimePickerField';
 import { ApiError } from '../../lib/api-client';
 import { todayOf } from '../../lib/date-time';
-import type { TournamentSummary } from '../../types/tournament';
+import type { TournamentCreationRules, TournamentSummary } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { LobbyShell } from '../lobby/LobbyShell';
 import { ChoiceGroup, InnerFrame, LobbyPanel, PanelButton } from '../lobby/LobbyUi';
-import { useMyTournaments, useProposalAction, useProposeTournament } from './hooks';
+import {
+  useMyTournaments,
+  useProposalAction,
+  useProposeTournament,
+  useTournamentRules,
+} from './hooks';
 import { proposalStatus, type ProposalTone } from './proposal-status';
 import {
   defaultShares,
@@ -20,6 +25,7 @@ import {
   MAX_RANKS,
   sharesTotal,
   toTournamentPayload,
+  withRuleDefaults,
   type TournamentFormErrors,
   type TournamentFormField,
   type TournamentFormValues,
@@ -67,6 +73,14 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
   const t = useTournamentMessages();
   const [values, setValues] = useState<TournamentFormValues>(() => defaultTournamentForm());
   const [errors, setErrors] = useState<TournamentFormErrors>({});
+  // Règles réglées dans les Paramètres des tournois (D-103, D-104) : valeurs par défaut
+  // ajustées dès leur lecture (sans toucher une saisie déjà modifiée), contrôle immédiat.
+  const rules = useTournamentRules().data;
+  const [appliedRules, setAppliedRules] = useState<TournamentCreationRules>();
+  if (rules && rules !== appliedRules) {
+    setAppliedRules(rules);
+    setValues((v) => withRuleDefaults(v, rules));
+  }
   const propose = useProposeTournament();
   const apiError = propose.error instanceof ApiError ? propose.error : undefined;
 
@@ -87,7 +101,7 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
   };
 
   const send = (submit: boolean) => {
-    const parsed = toTournamentPayload(values);
+    const parsed = toTournamentPayload(values, undefined, rules);
     if (!parsed.ok) {
       setErrors(parsed.errors);
       return;
@@ -96,7 +110,9 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
       { input: parsed.payload, submit },
       {
         onSuccess: () => {
-          setValues(defaultTournamentForm());
+          setValues(
+            rules ? withRuleDefaults(defaultTournamentForm(), rules) : defaultTournamentForm(),
+          );
           setErrors({});
           onSaved();
         },

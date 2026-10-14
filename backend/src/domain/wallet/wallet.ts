@@ -75,7 +75,14 @@ export class IdempotencyKeyReusedError extends Error {
 
 /** Le fournisseur Mobile Money n'est pas configuré ou est injoignable. */
 export class MobileMoneyUnavailableError extends Error {
-  constructor(readonly transactionId?: string) {
+  constructor(
+    readonly transactionId?: string,
+    /**
+     * Cause classée (D-100, `classifyPaymentFailure`) : catégorie et possibilité de réessayer.
+     * Absente : cause inconnue (rejeu d'une ancienne opération).
+     */
+    readonly failure?: { category: string; retryable: boolean },
+  ) {
     super('Fournisseur Mobile Money indisponible');
     this.name = 'MobileMoneyUnavailableError';
   }

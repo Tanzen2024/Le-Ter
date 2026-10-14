@@ -18,6 +18,7 @@ import {
 } from '../../../components/table/TableDecor';
 import { useLobbyMetrics } from '../../lobby/lobby-metrics';
 import { distanceLabel, type DistanceView } from './distance';
+import { remainingFraction, type TurnPhase } from './turn-phase';
 import { CONTROL_SIGNAL_MS, useReducedMotion } from './turn-signal';
 
 /**
@@ -339,18 +340,23 @@ export function SeatPlate({
   width,
   height,
   align = 'top',
+  turn = null,
   style,
 }: {
   state?: SeatState;
   width: number;
   height: number;
   align?: 'top' | 'bottom';
+  /**
+   * Tour en cours de CE joueur, vu par UN AUTRE joueur (sinon `null`) : la barre se vide
+   * jusqu'à l'échéance affichée. Jamais sur sa propre plaque (voir `seatTurnFor`).
+   */
+  turn?: TurnPhase | null;
   style: StyleProp<ViewStyle>;
 }) {
   const fonts = useTableFonts();
   const nameSize = Math.round(Math.max(12, height * 0.36));
   const plateHeight = plateContentHeight(height, false);
-  const chip = Math.round(Math.min(height * 0.62, plateHeight * 0.9));
   const slot = [
     styles.plateSlot,
     {
@@ -388,6 +394,7 @@ export function SeatPlate({
           { height: plateHeight, paddingHorizontal: plateHeight * 0.4 },
         ]}
       >
+        {turn && !state.dimmed ? <TurnProgressFill key={turn.key} turn={turn} /> : null}
         {/* Pseudo long : il rétrécit un peu puis s'arrête en « … », la barre ne se déforme pas. */}
         <Text
           numberOfLines={1}
@@ -398,30 +405,56 @@ export function SeatPlate({
           {state.name}
         </Text>
       </View>
-      {state.firstPlayer ? (
-        // Pastille J1 posée à cheval sur le bord gauche, hors du contenu de la barre (qui
-        // n'affiche que le pseudo) : elle ne recouvre ni dos, ni cartes jouées, ni étiquette.
-        <View
-          testID="first-player-chip"
-          style={[
-            styles.firstChip,
-            {
-              width: chip,
-              height: chip,
-              borderRadius: chip / 2,
-              left: -chip * 0.6,
-              [align === 'top' ? 'top' : 'bottom']: (plateHeight - chip) / 2,
-            },
-          ]}
-        >
-          <Text
-            allowFontScaling={false}
-            style={[styles.firstChipText, fontOf(fonts.button), { fontSize: chip * 0.42 }]}
-          >
-            J1
-          </Text>
-        </View>
-      ) : null}
+    </View>
+  );
+}
+
+/** Part restante sous laquelle la barre passe au bordeaux (≈ 3 dernières secondes de 10 s). */
+export const URGENT_FRACTION = 0.3;
+
+/**
+ * Remplissage de la barre d'un joueur pendant SON tour : part restante du délai fixé par le
+ * serveur (`restant / durée`, bornée à [0, 1]). Une seule animation linéaire par tour, du
+ * niveau réel au moment de l'affichage jusqu'à 0 à l'échéance : jamais un compteur local, et
+ * un état reçu en retard ou après une reconnexion reprend au bon niveau (sans repartir de
+ * 10 s). Relancée seulement si l'échéance locale change (`localDeadline`, déjà stabilisée).
+ * Or sur fond vert, bordeaux à la fin ; pilote natif (`scaleX`), aucun geste capté.
+ */
+export function TurnProgressFill({ turn }: { turn: TurnPhase }) {
+  const [progress] = useState(() => new Animated.Value(remainingFraction(turn, Date.now())));
+  const { localDeadline, totalMs, timedOut } = turn;
+  useEffect(() => {
+    const now = Date.now();
+    const from = remainingFraction({ key: '', playerId: '', localDeadline, totalMs, timedOut }, now);
+    progress.setValue(from);
+    if (from <= 0) return;
+    const animation = Animated.timing(progress, {
+      toValue: 0,
+      duration: Math.max(0, localDeadline - now),
+      easing: Easing.linear,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [progress, localDeadline, totalMs, timedOut]);
+  const urgent = progress.interpolate({
+    inputRange: [0, URGENT_FRACTION, URGENT_FRACTION + 0.001, 1],
+    outputRange: [1, 1, 0, 0],
+  });
+  return (
+    <View
+      testID="turn-progress"
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+      style={[StyleSheet.absoluteFill, styles.progressTrack]}
+    >
+      <Animated.View
+        testID="turn-progress-fill"
+        style={[StyleSheet.absoluteFill, styles.progressFill, { transform: [{ scaleX: progress }] }]}
+      >
+        <Animated.View style={[StyleSheet.absoluteFill, styles.progressUrgent, { opacity: urgent }]} />
+        <View style={styles.progressEdge} />
+      </Animated.View>
     </View>
   );
 }
@@ -429,7 +462,8 @@ export function SeatPlate({
 /**
  * Étiquette de distance entre le joueur connecté et un adversaire : petite pastille
  * translucide « ↔ 850 m », posée entre les deux joueurs, hors de la table. Affichée SEULEMENT
- * pour une partie surveillée (D-043 et D-053). Distance inconnue : sa cause (« En attente de
+ * pour une partie surveillée (D-043 et D-053). Distance inconnue : sa cause (« Recherche
+ * GPS… », « Localisation désactivée », « Position de <pseudo> non reçue », « En attente de
  * position », « Position obsolète », « GPS indisponible », « Localisation refusée »), jamais
  * une valeur inventée ni « 0 m », jamais de coordonnées. Un changement se fait en fondu, sans
  * clignoter ni déplacer la mise en page (largeur fixe, texte réduit si besoin).
@@ -447,7 +481,7 @@ export function DistanceTag({
   style?: StyleProp<ViewStyle>;
 }) {
   const { smallSize } = useLobbyMetrics();
-  const label = distanceLabel(distance);
+  const label = distanceLabel(distance, playerName);
   const known = distance.kind === 'known';
   const [opacity] = useState(() => new Animated.Value(1));
   useEffect(() => {
@@ -664,6 +698,27 @@ const styles = StyleSheet.create({
     boxShadow: '0 4px 14px rgba(0, 0, 0, 0.25)',
   },
   plateSlot: { position: 'absolute' },
+  progressTrack: { borderRadius: 6, overflow: 'hidden' },
+  // Ancrée à gauche : la barre se vide de droite à gauche.
+  progressFill: {
+    transformOrigin: 'left',
+    backgroundColor: 'rgba(214, 160, 40, 0.55)',
+    experimental_backgroundImage:
+      'linear-gradient(180deg, rgba(255, 214, 102, 0.62) 0%, rgba(190, 132, 24, 0.55) 100%)',
+  },
+  progressUrgent: {
+    backgroundColor: 'rgba(150, 24, 36, 0.78)',
+    experimental_backgroundImage:
+      'linear-gradient(180deg, rgba(198, 47, 55, 0.85) 0%, rgba(122, 20, 30, 0.8) 100%)',
+  },
+  progressEdge: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: 2,
+    backgroundColor: 'rgba(255, 240, 190, 0.9)',
+  },
   // Barre de pseudo de la référence : vert très sombre translucide, sans relief marqué.
   plate: {
     alignSelf: 'stretch',
@@ -686,19 +741,12 @@ const styles = StyleSheet.create({
     boxShadow: '0 0 14px rgba(242, 196, 81, 0.45)',
   },
   plateDimmed: { opacity: 0.5 },
-  firstChip: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: palette.gold,
-    experimental_backgroundImage: 'linear-gradient(180deg, #FFE08A 0%, #E9A92A 100%)',
-    borderWidth: 1.5,
-    borderColor: '#7A4A10',
-    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.4)',
-  },
-  firstChipText: { color: '#5A3208', includeFontPadding: false },
   plateName: {
     color: '#FFFFFF',
+    // Lisible sur le vert comme sur le remplissage or ou bordeaux.
+    textShadowColor: 'rgba(0, 0, 0, 0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
     textAlign: 'center',
     includeFontPadding: false,
   },

@@ -40,51 +40,119 @@ const settingsSchema = z.object({
   tournamentTransitionMinutes: number,
   rankingTokensWeightPercent: number,
   rankingGamesWeightPercent: number,
+  tournamentMinimumPlayers: z.string().trim().regex(/^\d+$/, 'Nombre entier attendu.'),
+  tournamentMinimumDurationMinutes: z.string().trim().regex(/^\d+$/, 'Nombre entier attendu.'),
+  tournamentMaximumDurationMinutes: z.string().trim().regex(/^\d+$/, 'Nombre entier attendu.'),
+  tournamentMinimumEntryFee: z.string().trim().regex(/^\d+$/, 'Montant entier attendu (FCFA).'),
+  // Vide = aucun plafond (∞).
+  tournamentMaximumPlayers: z
+    .string()
+    .trim()
+    .regex(/^\d*$/, 'Nombre entier attendu, ou vide pour illimité.'),
 });
 type SettingsForm = z.infer<typeof settingsSchema>;
 
-const SETTING_FIELDS: { key: keyof SettingsForm; label: string; hint: string }[] = [
+type SettingField = {
+  key: keyof SettingsForm;
+  label: string;
+  hint: string;
+  placeholder?: string;
+};
+
+/** Champs regroupés par type, groupes et champs classés par priorité. */
+const SETTING_GROUPS: { title: string; fields: SettingField[] }[] = [
   {
-    key: 'platformFeePercent',
-    label: 'Commission de la plateforme (%)',
-    hint: 'Commission de la plateforme appliquée selon les règles financières du tournoi.',
+    title: 'Participants',
+    fields: [
+      {
+        key: 'tournamentMinimumPlayers',
+        label: 'Nombre minimum de joueurs',
+        hint: 'Plus petit minimum de participants accepté à la création d’un tournoi. Par défaut : 20.',
+      },
+      {
+        key: 'tournamentMaximumPlayers',
+        label: 'Nombre maximum de joueurs',
+        hint: 'Plus grand maximum de participants accepté à la création d’un tournoi. Laisser vide : illimité (∞, par défaut).',
+        placeholder: '∞',
+      },
+      {
+        key: 'maximumPendingTournamentsPerPlayer',
+        label: 'Propositions en attente par joueur',
+        hint: 'Limite des propositions de tournoi.',
+      },
+    ],
   },
   {
-    key: 'initialTokensCoefficient',
-    label: 'Coefficient de jetons de tournoi au départ',
-    hint: 'Multiplié par le prix d’entrée pour calculer les jetons de départ des prochains tournois publiés.',
+    title: 'Durée et calendrier',
+    fields: [
+      {
+        key: 'tournamentMinimumDurationMinutes',
+        label: 'Durée minimale d’un tournoi (minutes)',
+        hint: 'Plus courte durée acceptée à la création d’un tournoi. Par défaut : 45 minutes.',
+      },
+      {
+        key: 'tournamentMaximumDurationMinutes',
+        label: 'Durée maximale d’un tournoi (minutes)',
+        hint: 'Plus longue durée acceptée à la création d’un tournoi. Par défaut : 120 minutes.',
+      },
+      {
+        key: 'tournamentTransitionMinutes',
+        label: 'Transition entre tournois (min)',
+        hint: 'Délai bloqué après la fin d’un tournoi.',
+      },
+    ],
   },
   {
-    key: 'stakePerGameCoefficient',
-    label: 'Coefficient de mise par partie de tournoi',
-    hint: 'Multiplié par le prix d’entrée pour calculer la mise par partie des prochains tournois publiés.',
+    title: 'Finances',
+    fields: [
+      {
+        key: 'tournamentMinimumEntryFee',
+        label: 'Prix d’entrée minimal (FCFA)',
+        hint: 'Plus petit prix d’entrée accepté à la création d’un tournoi. Par défaut : 500 FCFA.',
+      },
+      {
+        key: 'platformFeePercent',
+        label: 'Commission de la plateforme (%)',
+        hint: 'Commission de la plateforme appliquée selon les règles financières du tournoi.',
+      },
+      {
+        key: 'initialTokensCoefficient',
+        label: 'Coefficient de jetons de tournoi au départ',
+        hint: 'Multiplié par le prix d’entrée pour calculer les jetons de départ des prochains tournois publiés.',
+      },
+      {
+        key: 'stakePerGameCoefficient',
+        label: 'Coefficient de mise par partie de tournoi',
+        hint: 'Multiplié par le prix d’entrée pour calculer la mise par partie des prochains tournois publiés.',
+      },
+    ],
   },
   {
-    key: 'maximumPendingTournamentsPerPlayer',
-    label: 'Propositions en attente par joueur',
-    hint: 'Limite des propositions de tournoi.',
-  },
-  {
-    key: 'tournamentTransitionMinutes',
-    label: 'Transition entre tournois (min)',
-    hint: 'Délai bloqué après la fin d’un tournoi.',
-  },
-  {
-    key: 'rankingTokensWeightPercent',
-    label: 'Poids des jetons restants (%)',
-    hint: 'Le total des deux poids doit être égal à 100 %.',
-  },
-  {
-    key: 'rankingGamesWeightPercent',
-    label: 'Poids des parties jouées (%)',
-    hint: 'Le total des deux poids doit être égal à 100 %.',
+    title: 'Classement',
+    fields: [
+      {
+        key: 'rankingTokensWeightPercent',
+        label: 'Poids des jetons restants (%)',
+        hint: 'Le total des deux poids doit être égal à 100 %.',
+      },
+      {
+        key: 'rankingGamesWeightPercent',
+        label: 'Poids des parties jouées (%)',
+        hint: 'Le total des deux poids doit être égal à 100 %.',
+      },
+    ],
   },
 ];
+
+const SETTING_FIELDS: SettingField[] = SETTING_GROUPS.flatMap((g) => g.fields);
+
+/** Valeur affichée d'un paramètre ; maximum de joueurs `null` = illimité. */
+const shown = (v: number | null) => (v === null ? '∞ (illimité)' : String(v));
 
 /** Décimales affichées avec la virgule (« 0,5 ») ; la saisie accepte la virgule ou le point. */
 function toForm(s: TournamentSettings): SettingsForm {
   return Object.fromEntries(
-    Object.entries(s).map(([k, v]) => [k, String(v).replace('.', ',')]),
+    Object.entries(s).map(([k, v]) => [k, v === null ? '' : String(v).replace('.', ',')]),
   ) as SettingsForm;
 }
 
@@ -135,33 +203,41 @@ function TournamentSettingsCard() {
             noValidate
             onSubmit={handleSubmit((values) => {
               const patch = Object.fromEntries(
-                Object.keys(dirtyFields).map((k) => [
-                  k,
-                  Number(values[k as keyof SettingsForm].replace(',', '.')),
-                ]),
+                Object.keys(dirtyFields).map((k) => {
+                  const raw = values[k as keyof SettingsForm];
+                  // Maximum de joueurs laissé vide : aucun plafond (∞).
+                  if (k === 'tournamentMaximumPlayers' && raw === '') return [k, null];
+                  return [k, Number(raw.replace(',', '.'))];
+                }),
               ) as Partial<TournamentSettings>;
               setPending(patch);
             })}
             className="space-y-4"
           >
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {SETTING_FIELDS.map((f) => (
-                <Field
-                  key={f.key}
-                  id={f.key}
-                  label={f.label}
-                  hint={f.hint}
-                  error={errors[f.key]?.message}
-                >
-                  <Input
-                    id={f.key}
-                    inputMode="decimal"
-                    aria-invalid={Boolean(errors[f.key])}
-                    {...register(f.key)}
-                  />
-                </Field>
-              ))}
-            </div>
+            {SETTING_GROUPS.map((g) => (
+              <fieldset key={g.title} className="space-y-3">
+                <legend className="text-ink text-sm font-semibold">{g.title}</legend>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {g.fields.map((f) => (
+                    <Field
+                      key={f.key}
+                      id={f.key}
+                      label={f.label}
+                      hint={f.hint}
+                      error={errors[f.key]?.message}
+                    >
+                      <Input
+                        id={f.key}
+                        inputMode="decimal"
+                        placeholder={f.placeholder}
+                        aria-invalid={Boolean(errors[f.key])}
+                        {...register(f.key)}
+                      />
+                    </Field>
+                  ))}
+                </div>
+              </fieldset>
+            ))}
             <div className="flex justify-end gap-2">
               <Button
                 variant="secondary"
@@ -192,7 +268,7 @@ function TournamentSettingsCard() {
                 <span className="text-ink-soft">
                   {SETTING_FIELDS.find((f) => f.key === k)?.label ?? k}
                 </span>
-                <span className="text-ink font-medium">{String(v)}</span>
+                <span className="text-ink font-medium">{shown(v)}</span>
               </li>
             ))}
           </ul>

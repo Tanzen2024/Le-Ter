@@ -8,6 +8,7 @@ import { newGameId, type GameId, type PlayerId } from '../domain/game/game-id';
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type DealDeadline,
   type StartDeadline,
   type TurnDeadline,
 } from './game.repository';
@@ -75,6 +76,13 @@ export class InMemoryGameRepository implements GameRepository {
         deadlineAt: g.turnDeadlineAt as Date,
         timedOut: Boolean(g.turnTimedOutAt),
       }))
+      .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
+  }
+
+  async findDealDeadlines(): Promise<DealDeadline[]> {
+    return [...this.games.values()]
+      .filter((g) => g.status === 'in_progress' && g.dealEndsAt)
+      .map((g) => ({ gameId: g.id, deadlineAt: g.dealEndsAt as Date }))
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
   }
 

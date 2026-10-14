@@ -137,7 +137,7 @@ describe('affectation automatique', () => {
 
 describe('délai de démarrage de 10 s', () => {
   it('arrivée du 2e joueur : échéance persistée à +10 s, visible de tous ; démarrage réservé au premier joueur', async () => {
-    expect(TOURNAMENT_TABLE_AUTO_START_MS).toBe(10_000); // D-092 (15 s auparavant)
+    expect(TOURNAMENT_TABLE_AUTO_START_MS).toBe(13_000); // D-098 (10 s affichées ; 10 s avant, 15 s encore avant)
     const a = await join(ANA);
     const joinedAt = stack.clock.now().getTime();
     await join(BEN);

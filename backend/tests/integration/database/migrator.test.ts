@@ -36,6 +36,7 @@ describe('runMigrations', () => {
       'admin_audit_log',
       'admin_sessions',
       'detection_alerts',
+      'detection_consents',
       'detection_positions',
       'detection_scores',
       'detection_signals',

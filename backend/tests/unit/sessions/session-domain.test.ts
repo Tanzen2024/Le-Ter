@@ -258,7 +258,7 @@ describe('Poursuivre / Quitter entre deux parties (D-034)', () => {
   const open = (s: Session = table()) => syncDecisionRound(s, finished(), NOW).session;
 
   it('la fin de partie ouvre une ronde de 10 s pour tous les présents', () => {
-    expect(SESSION_DECISION_WINDOW_MS).toBe(10_000);
+    expect(SESSION_DECISION_WINDOW_MS).toBe(13_000); // D-098 : 10 s affichées + 3 s de marge;
     const { session, events } = syncDecisionRound(table(), finished(), at(1));
     expect(session.round).toMatchObject({
       gameId: G1,

@@ -210,6 +210,17 @@ export class WinDeclarationNotAllowedError extends GameRuleViolationError {
   }
 }
 
+/**
+ * Distribution pas encore confirmée par le serveur (D-102) : aucune décision de joueur
+ * (carte, fuite, déclaration) n'est acceptée avant la transition COMPLETE_DEAL.
+ */
+export class DealInProgressError extends GameRuleViolationError {
+  constructor(gameId: GameId) {
+    super(gameId, `La distribution de la partie ${gameId} n'est pas terminée`);
+    this.name = 'DealInProgressError';
+  }
+}
+
 export class FleeNotAllowedError extends GameRuleViolationError {
   constructor(gameId: GameId, reason: string) {
     super(gameId, `Fuite impossible : ${reason}`);

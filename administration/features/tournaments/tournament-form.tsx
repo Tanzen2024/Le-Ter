@@ -1,11 +1,11 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Minus, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Controller, useFieldArray, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
@@ -26,6 +26,9 @@ import {
 } from '@/lib/validation/tournament';
 import type { TournamentSummary } from '@/types/admin';
 
+import { tournamentSettingsQuery } from './api';
+import { creationRulesText } from './creation-rules';
+
 /** Champs serveur → champs du formulaire, pour afficher les erreurs à leur place. */
 const SERVER_FIELDS: Record<string, keyof TournamentFormInput> = {
   startsAt: 'date',
@@ -45,6 +48,8 @@ export function TournamentForm() {
     control,
     handleSubmit,
     setError,
+    setValue,
+    getFieldState,
     formState: { errors },
   } = useForm<TournamentFormInput, unknown, TournamentFormValues>({
     resolver: zodResolver(tournamentFormSchema),
@@ -59,6 +64,22 @@ export function TournamentForm() {
     },
   });
   const rules = useFieldArray({ control, name: 'prizeRules' });
+  // Paramètres des tournois (D-103, D-104) : valeurs par défaut ajustées dès leur lecture,
+  // sans toucher un champ déjà modifié ; le serveur reste juge des bornes.
+  const settings = useQuery(tournamentSettingsQuery()).data?.settings;
+  useEffect(() => {
+    if (!settings) return;
+    if (!getFieldState('minimumPlayers').isDirty) {
+      setValue('minimumPlayers', String(settings.tournamentMinimumPlayers));
+    }
+    if (!getFieldState('durationMinutes').isDirty) {
+      const duration = Math.min(
+        settings.tournamentMaximumDurationMinutes,
+        Math.max(settings.tournamentMinimumDurationMinutes, 60),
+      );
+      setValue('durationMinutes', String(duration));
+    }
+  }, [settings, getFieldState, setValue]);
 
   async function create(values: TournamentFormValues) {
     setFormError(null);
@@ -100,9 +121,10 @@ export function TournamentForm() {
       />
       <form onSubmit={handleSubmit((v) => setConfirming(v))} noValidate className="space-y-6">
         <InfoNote>
-          Règles appliquées par le serveur : durée de 30 à 120 minutes, 20 à 1 000 participants,
-          aucun chevauchement avec un autre tournoi publié, commission et classement copiés depuis
-          les paramètres à la publication. Heures exprimées dans le fuseau Africa/Douala.
+          Règles appliquées par le serveur : {creationRulesText(settings)} (Paramètres des
+          tournois), aucun chevauchement avec un autre tournoi publié, commission et classement
+          copiés depuis les paramètres à la publication. Heures exprimées dans le fuseau
+          Africa/Douala.
         </InfoNote>
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <Card>

@@ -71,6 +71,7 @@ export function withSeededSessions(repository: GameRepository, sql: SqlExecutor)
     findActiveByPlayer: (id) => repository.findActiveByPlayer(id),
     findByCreationKey: (creatorId, key) => repository.findByCreationKey(creatorId, key),
     findTurnDeadlines: () => repository.findTurnDeadlines(),
+    findDealDeadlines: () => repository.findDealDeadlines(),
     findStartDeadlines: () => repository.findStartDeadlines(),
     insert: async (game) => {
       await seedSessionFor(sql, game);

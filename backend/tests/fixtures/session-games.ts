@@ -44,6 +44,8 @@ export function createSessionGameInstance(
   const games = new GameService({
     ...deps,
     random: deps.random ?? defaultTestRandom(),
+    // D-102 : distribution confirmée au démarrage par défaut (option `dealDurationMs`).
+    dealDurationMs: deps.dealDurationMs ?? (() => 0),
     repository,
     participationPolicy: (deps.participationPolicy ?? singleActiveGameParticipation)(repository),
     sessionSeats: sessionRepository,

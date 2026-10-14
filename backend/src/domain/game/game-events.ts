@@ -14,6 +14,12 @@ export type GameEventType =
   | 'game:player_left'
   | 'game:started'
   | 'game:hand_dealt'
+  /**
+   * Distribution confirmée par le serveur (D-102, COMPLETE_DEAL) : fin de la phase de
+   * distribution et début du premier tour. payload : nextPlayerId, trickNumber,
+   * turnStartedAt, turnDeadlineAt.
+   */
+  | 'game:deal_completed'
   | 'game:card_played'
   | 'game:trick_completed'
   | 'game:turn_changed'

@@ -101,6 +101,11 @@ describe('paramètres plateforme', () => {
       tournamentTransitionMinutes: 0,
       rankingTokensWeightPercent: 60,
       rankingGamesWeightPercent: 40,
+      tournamentMinimumPlayers: 20,
+      tournamentMaximumPlayers: null,
+      tournamentMinimumDurationMinutes: 45,
+      tournamentMaximumDurationMinutes: 120,
+      tournamentMinimumEntryFee: 500,
     });
   });
 
@@ -132,6 +137,11 @@ describe('paramètres plateforme', () => {
       tournamentTransitionMinutes: 15,
       rankingTokensWeightPercent: 50,
       rankingGamesWeightPercent: 50,
+      tournamentMinimumPlayers: 20,
+      tournamentMaximumPlayers: null,
+      tournamentMinimumDurationMinutes: 45,
+      tournamentMaximumDurationMinutes: 120,
+      tournamentMinimumEntryFee: 500,
     });
     await admin
       .patch('/api/admin/tournaments/settings', { stakePerGameCoefficient: 0.25 })

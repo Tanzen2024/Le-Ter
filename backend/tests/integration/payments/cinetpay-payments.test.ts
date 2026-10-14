@@ -973,6 +973,16 @@ describe('Authentification CinetPay refusée (IP non autorisée)', () => {
     const res = await A.deposit({ tokens: 2000 }, key);
     expect(res.status).toBe(503);
     expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
+    // Cause classée (D-100) : accès refusé au fournisseur, non réessayable par le joueur ;
+    // jamais l'IP, la clé ni le code brut dans le message.
+    expect(res.body.details).toEqual({
+      cause: 'PROVIDER_IP_NOT_ALLOWED',
+      retryable: false,
+      charged: false,
+    });
+    expect(res.body.message).toContain('suspendues');
+    expect(res.body.message).toContain('Aucun montant n’a été débité');
+    expect(res.body.message).not.toMatch(/IP|2011|NOT_ALLOWED|clé/);
     expect(cinetpay.created).toHaveLength(0);
 
     const { rows } = await database.sql.query<Record<string, unknown>>(
@@ -1008,13 +1018,17 @@ describe('Authentification CinetPay refusée (IP non autorisée)', () => {
   });
 
   it.each([
-    ['délai dépassé', new CinetPayError('timeout', 'CinetPay ne répond pas'), 'CinetPayError:timeout'],
-    ['erreur HTTP 500', new CinetPayError('http', 'CinetPay a répondu 500', { httpStatus: 500 }), 'CinetPayError:http:500'],
-  ])('%s à la création (page CinetPay) : 503, motif enregistré, aucun crédit', async (_label, error, reason) => {
+    ['délai dépassé', new CinetPayError('timeout', 'CinetPay ne répond pas'), 'CinetPayError:timeout', 'PROVIDER_TIMEOUT_AFTER_SEND'],
+    ['erreur HTTP 500', new CinetPayError('http', 'CinetPay a répondu 500', { httpStatus: 500 }), 'CinetPayError:http:500', 'PROVIDER_HTTP_ERROR'],
+  ])('%s à la création (page CinetPay) : 503, motif enregistré, aucun crédit', async (_label, error, reason, cause) => {
     const { app, cinetpay } = setup();
     cinetpay.refuseCreate = error;
     const A = await player(app);
-    expect((await A.deposit({ tokens: 500 })).status).toBe(503);
+    const res = await A.deposit({ tokens: 500 });
+    expect(res.status).toBe(503);
+    // Page jamais remise au joueur : rien n'a pu être payé ; un nouvel essai est sûr.
+    expect(res.body.details).toEqual({ cause, retryable: true, charged: false });
+    expect(res.body.message).toContain('incident');
     const { rows } = await database.sql.query<{ metadata: Record<string, unknown> }>(
       'SELECT metadata FROM payments',
     );
@@ -1326,6 +1340,62 @@ describe('Recharge automatique (opérateur déduit du numéro du compte)', () =>
     expect(cinetpay.created).toHaveLength(0);
     expect(await count('payments')).toBe(1);
     expect(await A.balance()).toBe(0);
+  });
+
+  /**
+   * Cas réels du 2026-10-14 (transactions de Hugo, MTN 682, et de LAMAT, Orange 690) : l'IP
+   * publique du serveur n'est plus autorisée (2011). MTN (direct) et Orange (page) échouent pour
+   * la MÊME raison ; aucun repli, puisque la page exige la même authentification.
+   */
+  it.each([
+    ['MTN (paiement direct)', false, 'MTN_CM'],
+    ['Orange (page CinetPay)', true, null],
+  ])('%s, IP non autorisée (2011) : 503 explicite, aucun repli, achat clos, rien crédité', async (_label, orange, method) => {
+    const { app, cinetpay, logLines } = setup({ directPayOperators: MTN });
+    cinetpay.refuseCreate = new CinetPayPaymentNotSentError(
+      new CinetPayError('authentication', 'Authentification CinetPay refusée', {
+        httpStatus: 422,
+        apiCode: 2011,
+        apiStatus: 'NOT_ALLOWED',
+      }),
+    ) as unknown as CinetPayError;
+    const A = orange ? await orangePlayer(app) : await player(app);
+
+    const res = await A.deposit({ tokens: 1200 });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('MOBILE_MONEY_UNAVAILABLE');
+    expect(res.body.details).toEqual({
+      cause: 'PROVIDER_IP_NOT_ALLOWED',
+      retryable: false,
+      charged: false,
+    });
+    expect(res.body.message).toContain('suspendues');
+    // Rien n'a quitté le serveur, aucun second paiement (page) n'a été tenté.
+    expect(cinetpay.created).toHaveLength(0);
+    const { rows } = await database.sql.query<Record<string, unknown>>(
+      `SELECT p.status, p.payment_method, p.provider_reference, t.status AS wallet_status,
+              t.failure_code
+       FROM payments p JOIN wallet_transactions t ON t.id = p.wallet_transaction_id`,
+    );
+    expect(rows).toEqual([
+      {
+        status: 'FAILED',
+        payment_method: method,
+        provider_reference: null,
+        wallet_status: 'failed',
+        failure_code: 'PROVIDER_UNAVAILABLE',
+      },
+    ]);
+    expect(await A.balance()).toBe(0);
+    const failed = logLines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((l) => l.message === 'cinetpay payment initialization failed');
+    expect(failed).toMatchObject({
+      category: 'PROVIDER_IP_NOT_ALLOWED',
+      retryable: false,
+      sent: false,
+      pageFallback: false,
+    });
   });
 
   it('confirmation seulement par le serveur : aucun crédit avant SUCCESS relu, puis exactement le montant', async () => {

@@ -8,11 +8,13 @@ const VALID_REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
 /**
  * Corrèle les logs d'une requête : reprend `X-Request-Id` s'il est valide, sinon en
  * génère un. Il est renvoyé dans la réponse et disponible dans `res.locals.requestId`.
+ * L'instant d'arrivée (`res.locals.receivedAt`) date les échecs (durée dans les logs).
  */
 export function requestId(req: Request, res: Response, next: NextFunction): void {
   const incoming = req.get('x-request-id');
   const id = incoming && VALID_REQUEST_ID.test(incoming) ? incoming : randomUUID();
   res.locals.requestId = id;
+  res.locals.receivedAt = Date.now();
   res.setHeader('X-Request-Id', id);
   next();
 }
@@ -20,4 +22,10 @@ export function requestId(req: Request, res: Response, next: NextFunction): void
 export function getRequestId(res: Response): string | undefined {
   const id: unknown = res.locals.requestId;
   return typeof id === 'string' ? id : undefined;
+}
+
+/** Durée écoulée depuis l'arrivée de la requête (ms), si `requestId` l'a datée. */
+export function getRequestDurationMs(res: Response): number | undefined {
+  const at: unknown = res.locals.receivedAt;
+  return typeof at === 'number' ? Date.now() - at : undefined;
 }

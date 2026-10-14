@@ -425,6 +425,87 @@ describe('Fuir (D-035)', () => {
     ]);
   });
 
+  /** Joue chaque coup attendu (première carte jouable) jusqu'à la fin de la partie. */
+  const playToEnd = (game: Game) => {
+    for (let i = 0; i < 25 && game.status === 'in_progress'; i++) {
+      const next = game.play!.nextPlayerId!;
+      playCard(game, next, playableCards(game, next, testRules)[0]!, ctx);
+    }
+  };
+
+  it('le contrôleur se couche APRÈS avoir mené le tour 1 : le tour continue, personne ne rejoue', () => {
+    const { game } = startedGame(FOUR);
+    play(game, 'p1', 'COEUR-3');
+    play(game, 'p2', 'PIQUE-3');
+    expect(game.play!.nextPlayerId).toBe('p3');
+    const deadline = game.turnDeadlineAt;
+
+    const events = flee(game, p('p1'), ctx);
+
+    // Le joueur attendu garde son tour et son échéance ; p2 ne rejoue pas.
+    expect(game.play!.nextPlayerId).toBe('p3');
+    expect(game.turnDeadlineAt).toEqual(deadline);
+    expect(game.play!.currentTrick.map((x) => x.playerId)).toEqual(['p1', 'p2']);
+    // Aucune carte ♥ restante : le contrôle va au suivant antihoraire (D-089).
+    expect(game.play!.control).toEqual({ playerId: 'p2' });
+    expect(events).toEqual([
+      { type: 'game:player_fled', payload: { playerId: 'p1' } },
+      { type: 'game:control_changed', payload: { controllerId: 'p2', trickNumber: 1 } },
+    ]);
+    expect(() => play(game, 'p2', 'PIQUE-4')).toThrow(NotYourTurnError);
+
+    play(game, 'p3', 'TREFLE-3');
+    play(game, 'p4', 'ETOILE-3');
+    expect(game.play!.completedTricks[0]).toMatchObject({
+      controllerId: 'p2',
+      plays: [
+        { playerId: 'p1', cardId: 'COEUR-3' },
+        { playerId: 'p2', cardId: 'PIQUE-3' },
+        { playerId: 'p3', cardId: 'TREFLE-3' },
+        { playerId: 'p4', cardId: 'ETOILE-3' },
+      ],
+    });
+    // Jusqu'au bout : 5e tour automatique sans invariant violé, chaque joueur actif a joué
+    // exactement 5 cartes, le fuyard n'en a joué qu'une.
+    playToEnd(game);
+    expect(game.status).toBe('finished');
+    expect(game.result).toMatchObject({ fledPlayerIds: ['p1'] });
+    expect(game.result!.winnerId).not.toBe('p1');
+    for (const id of ['p2', 'p3', 'p4']) {
+      expect(game.play!.hands[id]).toEqual([]);
+    }
+    expect(game.play!.hands.p1).toHaveLength(4);
+  });
+
+  it('le contrôleur courant (pas le meneur) se couche au tour 1 : la plus haute carte restante de la famille prend le contrôle', () => {
+    const HEARTS = {
+      p1: ['COEUR-5', 'PIQUE-3', 'PIQUE-4', 'PIQUE-5', 'PIQUE-6'] as CardId[],
+      p2: ['COEUR-9', 'TREFLE-3', 'TREFLE-4', 'TREFLE-5', 'TREFLE-6'] as CardId[],
+      p3: ['COEUR-7', 'ETOILE-3', 'ETOILE-4', 'ETOILE-5', 'ETOILE-6'] as CardId[],
+      p4: ['COEUR-3', 'ETOILE-7', 'ETOILE-8', 'ETOILE-9', 'ETOILE-10'] as CardId[],
+    };
+    const { game } = startedGame(HEARTS);
+    play(game, 'p1', 'COEUR-5');
+    play(game, 'p2', 'COEUR-9'); // p2 prend le contrôle
+    expect(game.play!.control).toEqual({ playerId: 'p2', cardId: 'COEUR-9' });
+
+    const events = flee(game, p('p2'), ctx);
+
+    expect(game.play!.control).toEqual({ playerId: 'p1', cardId: 'COEUR-5' });
+    expect(game.play!.nextPlayerId).toBe('p3');
+    expect(events).toContainEqual({
+      type: 'game:control_changed',
+      payload: { controllerId: 'p1', cardId: 'COEUR-5', trickNumber: 1 },
+    });
+    // La famille du meneur reste imposée ; une carte plus haute que la carte restante prend.
+    expect(playableCards(game, p('p3'), testRules)).toEqual(['COEUR-7']);
+    play(game, 'p3', 'COEUR-7');
+    play(game, 'p4', 'COEUR-3');
+    expect(game.play!.completedTricks[0]!.controllerId).toBe('p3');
+    playToEnd(game);
+    expect(game.status).toBe('finished');
+  });
+
   it('partie à 2 (R-30, D-086) : se coucher = défaite, l’autre gagne aussitôt (victoire simple)', () => {
     const { game } = startedGame(TWO_PLAYER_HANDS);
     expect(toPlayerView(game, p('p2')).myActions.canFlee).toBe(true);

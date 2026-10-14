@@ -6,6 +6,7 @@ import { tournamentsApi } from '../../services/tournaments-api';
 import { useAuthStore } from '../../stores/auth-store';
 import type {
   NextTournament,
+  TournamentCreationRules,
   TournamentList,
   TournamentProposalInput,
   TournamentView,
@@ -20,6 +21,7 @@ export const tournamentKeys = {
   list: ['tournaments', 'list'] as const,
   active: ['tournaments', 'active'] as const,
   next: ['tournaments', 'next'] as const,
+  rules: ['tournaments', 'rules'] as const,
   detail: (tournamentId: string) => ['tournaments', 'detail', tournamentId] as const,
   notifications: ['notifications'] as const,
 };
@@ -57,6 +59,20 @@ export function useNextRegisteredTournament() {
   }, [startsAt, refetch]);
 
   return query;
+}
+
+/**
+ * Règles de création réglées dans les Paramètres des tournois (D-103, D-104), lues sur le
+ * serveur : valeurs par défaut et retour immédiat des formulaires. Le serveur reste juge.
+ */
+export function useTournamentRules() {
+  const status = useAuthStore((s) => s.status);
+  return useQuery({
+    queryKey: tournamentKeys.rules,
+    queryFn: async (): Promise<TournamentCreationRules> =>
+      (await withAccessToken((t) => tournamentsApi.rules(t))).rules,
+    enabled: status === 'signedIn',
+  });
 }
 
 /**

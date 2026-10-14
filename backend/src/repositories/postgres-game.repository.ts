@@ -28,6 +28,7 @@ import {
 import {
   DuplicateCreationKeyError,
   type GameRepository,
+  type DealDeadline,
   type StartDeadline,
   type TurnDeadline,
 } from './game.repository';
@@ -72,6 +73,7 @@ interface GameRow {
   replay_of_game_id: string | null;
   auto_start_delay_ms: number | null;
   start_deadline_at: Date | null;
+  deal_ends_at: Date | null;
   creation_key: string | null;
   session_id: string | null;
   first_player_id: string;
@@ -195,6 +197,15 @@ export class PostgresGameRepository implements GameRepository {
     }));
   }
 
+  async findDealDeadlines(): Promise<DealDeadline[]> {
+    const { rows } = await this.db.query<{ id: GameId; deal_ends_at: Date }>(
+      `SELECT id, deal_ends_at FROM games
+       WHERE status = 'in_progress' AND deal_ends_at IS NOT NULL
+       ORDER BY deal_ends_at`,
+    );
+    return rows.map((r) => ({ gameId: r.id, deadlineAt: r.deal_ends_at }));
+  }
+
   async findStartDeadlines(): Promise<StartDeadline[]> {
     const { rows } = await this.db.query<{ id: GameId; start_deadline_at: Date }>(
       `SELECT id, start_deadline_at FROM games
@@ -220,9 +231,10 @@ export async function insertGameRows(
     `INSERT INTO games (id, version, status, creator_id, max_players, stake_amount, state,
        created_at, updated_at, started_at, finished_at, turn_deadline_at, creation_key,
        session_id, first_player_id, winner_id, turn_started_at, active_player_id,
-       turn_timed_out_at, end_reason, replay_of_game_id, auto_start_delay_ms, start_deadline_at)
+       turn_timed_out_at, end_reason, replay_of_game_id, auto_start_delay_ms, start_deadline_at,
+       deal_ends_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-       $19, $20, $21, $22, $23)`,
+       $19, $20, $21, $22, $23, $24)`,
     [
       game.id,
       game.version,
@@ -247,6 +259,7 @@ export async function insertGameRows(
       game.replayOfGameId ?? null,
       game.autoStartDelayMs ?? null,
       timestamp(game.startDeadlineAt),
+      timestamp(game.dealEndsAt),
     ],
   );
   await writePlayers(tx, game);
@@ -283,7 +296,7 @@ export async function updateGameRows(
          stake_amount = $7, state = $8, updated_at = $9, started_at = $10,
          finished_at = $11, turn_deadline_at = $12, first_player_id = $13, winner_id = $14,
          turn_started_at = $15, active_player_id = $16, turn_timed_out_at = $17,
-         end_reason = $18, start_deadline_at = $19
+         end_reason = $18, start_deadline_at = $19, deal_ends_at = $20
        WHERE id = $1 AND version = $2
          AND array_position(ARRAY['waiting', 'in_progress', 'finished'], status)
              <= array_position(ARRAY['waiting', 'in_progress', 'finished'], $4::text)`,
@@ -307,6 +320,7 @@ export async function updateGameRows(
       timestamp(game.turnTimedOutAt),
       game.endReason ?? null,
       timestamp(game.startDeadlineAt),
+      timestamp(game.dealEndsAt),
     ],
   );
   if (rowCount === 0) {
@@ -516,6 +530,7 @@ function toGame(row: GameRow): Game {
     ...(row.replay_of_game_id !== null && { replayOfGameId: row.replay_of_game_id as GameId }),
     ...(row.auto_start_delay_ms !== null && { autoStartDelayMs: row.auto_start_delay_ms }),
     ...(row.start_deadline_at && { startDeadlineAt: row.start_deadline_at }),
+    ...(row.deal_ends_at && { dealEndsAt: row.deal_ends_at }),
     recentCommandIds,
     ...(row.creation_key !== null && { creationKey: row.creation_key }),
   };

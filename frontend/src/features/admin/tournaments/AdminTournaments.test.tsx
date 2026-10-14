@@ -40,6 +40,22 @@ jest.mock("../../../services/admin-tournaments-api", () => ({
     updateSettings: jest.fn(),
   },
 }));
+// Règles réglées dans les Paramètres des tournois (D-103, D-104) : minimum 25 joueurs, ∞,
+// durée 45 à 120 min.
+jest.mock("../../../services/tournaments-api", () => ({
+  tournamentsApi: {
+    rules: jest.fn(async () => ({
+      rules: {
+        minimumPlayers: 25,
+        maximumPlayers: null,
+        minimumDurationMinutes: 45,
+        maximumDurationMinutes: 120,
+        minimumEntryFee: 500,
+        maximumEntryFee: 100_000,
+      },
+    })),
+  },
+}));
 jest.mock("../../../services/auth-api", () => ({ authApi: { me: jest.fn() } }));
 jest.mock("expo-secure-store", () => ({
   getItemAsync: jest.fn(async () => null),
@@ -216,29 +232,52 @@ describe("création", () => {
     );
   });
 
-  it.each(["29", "121"])(
+  /** Formulaire affiché, règles réglées lues (minimum de joueurs par défaut : 25). */
+  async function renderForm() {
+    await renderWith(<AdminTournamentFormScreen />);
+    await screen.findByLabelText("Date", {}, WAIT);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Joueurs minimum").props.value).toBe("25"),
+    );
+  }
+
+  it("valeurs par défaut prises dans les Paramètres des tournois", async () => {
+    api.create.mockResolvedValue({ tournament: tournament() });
+    await renderForm();
+    await fireEvent.press(screen.getByText("Publier le tournoi"));
+    await waitFor(() => expect(api.create).toHaveBeenCalled());
+    expect(api.create.mock.calls[0][1]).toMatchObject({ minimumPlayers: 25 });
+  });
+
+  it("joueurs sous le minimum réglé : message du serveur, aucun appel API", async () => {
+    await renderForm();
+    await fireEvent.changeText(screen.getByLabelText("Joueurs minimum"), "24");
+    await fireEvent.press(screen.getByText("Publier le tournoi"));
+    expect(screen.getByText("Au moins 25.")).toBeTruthy();
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["44", "121"])(
     "durée de %s minutes : message exact, aucun appel API",
     async (minutes) => {
-      await renderWith(<AdminTournamentFormScreen />);
-      await screen.findByLabelText("Date", {}, WAIT);
+      await renderForm();
       await fireEvent.changeText(
         screen.getByLabelText("Durée (minutes)"),
         minutes,
       );
       await fireEvent.press(screen.getByText("Publier le tournoi"));
       expect(
-        screen.getByText("Durée entre 30 minutes et 120 minutes."),
+        screen.getByText("Durée entre 45 minutes et 120 minutes."),
       ).toBeTruthy();
       expect(api.create).not.toHaveBeenCalled();
     },
   );
 
-  it.each(["30", "120"])(
+  it.each(["45", "120"])(
     "durée de %s minutes : tournoi publié",
     async (minutes) => {
       api.create.mockResolvedValue({ tournament: tournament() });
-      await renderWith(<AdminTournamentFormScreen />);
-      await screen.findByLabelText("Date", {}, WAIT);
+      await renderForm();
       await fireEvent.changeText(
         screen.getByLabelText("Durée (minutes)"),
         minutes,
@@ -405,7 +444,40 @@ describe("paramètres", () => {
     tournamentTransitionMinutes: 0,
     rankingTokensWeightPercent: 50,
     rankingGamesWeightPercent: 50,
+    tournamentMinimumEntryFee: 500,
   };
+
+  it("montant minimal pour créer un tournoi : 500 lu sur le serveur, modifiable", async () => {
+    api.settings.mockResolvedValue({ settings });
+    api.updateSettings.mockResolvedValue({
+      settings: { ...settings, tournamentMinimumEntryFee: 1000 },
+    });
+    await renderWith(<AdminTournamentSettingsScreen />);
+    const minimum = await screen.findByLabelText(
+      "Montant minimal pour créer un tournoi (FCFA)",
+      {},
+      WAIT,
+    );
+    expect(minimum.props.value).toBe("500");
+    await fireEvent.changeText(minimum, "1000");
+    await fireEvent.press(screen.getByText("Enregistrer"));
+    expect(api.updateSettings).toHaveBeenCalledWith("jeton", {
+      tournamentMinimumEntryFee: 1000,
+    });
+    expect(await screen.findByText("Paramètres enregistrés.")).toBeTruthy();
+  });
+
+  it("montant minimal : entier seulement, aucun envoi d’une valeur décimale", async () => {
+    api.settings.mockResolvedValue({ settings });
+    await renderWith(<AdminTournamentSettingsScreen />);
+    await fireEvent.changeText(
+      await screen.findByLabelText("Montant minimal pour créer un tournoi (FCFA)", {}, WAIT),
+      "750,5",
+    );
+    await fireEvent.press(screen.getByText("Enregistrer"));
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Nombre attendu.")).toBeTruthy();
+  });
 
   it("affiche les paramètres de l’API et n’envoie que les modifications", async () => {
     api.settings.mockResolvedValue({ settings });

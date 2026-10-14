@@ -42,6 +42,20 @@ export interface TournamentResultView {
  * Prochain tournoi à venir auquel le joueur est inscrit (D-059), choisi par le serveur sur son
  * horloge : seulement ce que l'accueil affiche. Instants ISO 8601 (UTC).
  */
+/**
+ * Règles de création d'un tournoi réglées dans les Paramètres des tournois (D-103, D-104),
+ * lues sur le serveur (GET /api/tournaments/rules). `maximumPlayers` `null` = aucun plafond.
+ */
+export interface TournamentCreationRules {
+  minimumPlayers: number;
+  maximumPlayers: number | null;
+  minimumDurationMinutes: number;
+  maximumDurationMinutes: number;
+  /** Prix d'entrée minimal réglé (FCFA, D-105, 500 par défaut) et maximal de la plateforme. */
+  minimumEntryFee: number;
+  maximumEntryFee: number;
+}
+
 export interface NextTournament {
   tournamentId: string;
   startsAt: string;
@@ -202,6 +216,8 @@ export interface TournamentSettings {
   /** Poids du classement (D-062), en % ; somme exactement 100 (vérifiée par le serveur). */
   rankingTokensWeightPercent: number;
   rankingGamesWeightPercent: number;
+  /** Prix d'entrée minimal pour créer un tournoi, en FCFA (D-105, 500 par défaut). */
+  tournamentMinimumEntryFee: number;
 }
 
 /** Inscription vue par l'administration. */

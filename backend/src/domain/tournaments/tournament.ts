@@ -23,9 +23,10 @@ export function newTournamentId(): TournamentId {
 export const TOURNAMENT_TABLE_SIZE = 4;
 /**
  * Démarrage d'une table de tournoi (D-065) : dès le 2e joueur assis, le premier joueur
- * affecté (créateur de la partie) a 10 s pour démarrer (D-092) ; ensuite le serveur démarre.
+ * affecté (créateur de la partie) a 13 s pour démarrer (D-098 : 10 s affichées, 3 s de marge
+ * invisible) ; ensuite le serveur démarre.
  */
-export const TOURNAMENT_TABLE_AUTO_START_MS = 10_000;
+export const TOURNAMENT_TABLE_AUTO_START_MS = 13_000;
 export const TOURNAMENT_CURRENCY = 'XAF';
 
 // --- États (D-054) -----------------------------------------------------------------------
@@ -245,6 +246,17 @@ export interface TournamentSettings {
   /** Poids du classement (D-062), en % ; leur somme vaut exactement 100. */
   rankingTokensWeightPercent: number;
   rankingGamesWeightPercent: number;
+  /**
+   * Bornes du nombre de joueurs à la création d'un tournoi : son minimum et son maximum de
+   * participants sont choisis entre ces deux valeurs. `null` = aucun plafond (∞) (D-103).
+   */
+  tournamentMinimumPlayers: number;
+  tournamentMaximumPlayers: number | null;
+  /** Durée d'un tournoi, en minutes, bornes incluses (D-104). */
+  tournamentMinimumDurationMinutes: number;
+  tournamentMaximumDurationMinutes: number;
+  /** Prix d'entrée minimal pour créer un tournoi, en FCFA (D-105, 500 par défaut). */
+  tournamentMinimumEntryFee: number;
 }
 
 /**
@@ -259,7 +271,15 @@ export const DEFAULT_TOURNAMENT_SETTINGS: TournamentSettings = {
   tournamentTransitionMinutes: 0,
   rankingTokensWeightPercent: 60,
   rankingGamesWeightPercent: 40,
+  tournamentMinimumPlayers: 20,
+  tournamentMaximumPlayers: null,
+  tournamentMinimumDurationMinutes: 45,
+  tournamentMaximumDurationMinutes: 120,
+  tournamentMinimumEntryFee: 500,
 };
+
+/** Plus grand entier d'une colonne `integer` PostgreSQL (nombre de joueurs d'un tournoi). */
+export const PG_INTEGER_MAX = 2_147_483_647;
 
 /** Bornes des paramètres modifiables par l'administrateur. */
 export const SETTINGS_LIMITS: Record<keyof TournamentSettings, { min: number; max: number }> = {
@@ -271,21 +291,45 @@ export const SETTINGS_LIMITS: Record<keyof TournamentSettings, { min: number; ma
   tournamentTransitionMinutes: { min: 0, max: 24 * 60 },
   rankingTokensWeightPercent: { min: 0, max: 100 },
   rankingGamesWeightPercent: { min: 0, max: 100 },
+  // Au moins 2 joueurs (contrainte `tournaments.minimum_players`) ; maximum : `null` aussi (∞).
+  tournamentMinimumPlayers: { min: 2, max: PG_INTEGER_MAX },
+  tournamentMaximumPlayers: { min: 2, max: PG_INTEGER_MAX },
+  // Durée en minutes : 1 min à 24 h (borne haute historique de D-054).
+  tournamentMinimumDurationMinutes: { min: 1, max: 24 * 60 },
+  tournamentMaximumDurationMinutes: { min: 1, max: 24 * 60 },
+  // Jamais gratuit (D-071) ; au plus le prix d'entrée maximal de la plateforme.
+  tournamentMinimumEntryFee: { min: 1, max: 100_000 },
 };
 
-/** Limites plateforme d'un tournoi (D-054 ; joueurs : D-057 ; durée : D-058). */
+type DurationLimits = Pick<
+  TournamentSettings,
+  'tournamentMinimumDurationMinutes' | 'tournamentMaximumDurationMinutes'
+>;
+
+/** Bornes de durée incohérentes (maximum sous le minimum) ; `undefined` si valides. */
+export function durationLimitsError(settings: DurationLimits): string | undefined {
+  return settings.tournamentMaximumDurationMinutes < settings.tournamentMinimumDurationMinutes
+    ? 'La durée maximale doit être au moins égale à la durée minimale.'
+    : undefined;
+}
+
+/** Bornes de joueurs incohérentes (maximum sous le minimum) ; `undefined` si valides. */
+export function playerLimitsError(
+  settings: Pick<TournamentSettings, 'tournamentMinimumPlayers' | 'tournamentMaximumPlayers'>,
+): string | undefined {
+  const { tournamentMinimumPlayers: min, tournamentMaximumPlayers: max } = settings;
+  return max !== null && max < min ? 'Le maximum doit être au moins égal au minimum.' : undefined;
+}
+
+/**
+ * Limites plateforme d'un tournoi (D-054). Joueurs, durée et prix d'entrée minimal :
+ * paramètres réglables (`TournamentSettings`, D-103, D-104, D-105).
+ */
 export const TOURNAMENT_LIMITS = {
-  /** Durée : 30 min à 120 min (bornes incluses, D-058). */
-  minDurationMs: 30 * 60 * 1000,
-  maxDurationMs: 120 * 60 * 1000,
   /** Un joueur propose un tournoi au moins 1 h à l'avance (temps d'approbation). */
   playerMinLeadMs: 60 * 60 * 1000,
-  /** Prix d'entrée : 500 à 100 000 FCFA (D-071 : plus de tournoi gratuit). */
-  minEntryFee: 500,
+  /** Prix d'entrée maximal (FCFA) ; le minimum est réglable (`tournamentMinimumEntryFee`). */
   maxEntryFee: 100_000,
-  /** Participants : 20 à 1 000, pour le minimum comme pour le maximum (D-057). */
-  minPlayers: 20,
-  maxPlayers: 1000,
   maxPrizeRanks: 10,
   maxInitialTokens: 1_000_000,
   /** Tournois aux inscriptions ouvertes ou à ouvrir (REGISTRATION_LIMIT_STATUSES), plateforme (D-072). */
@@ -293,10 +337,13 @@ export const TOURNAMENT_LIMITS = {
 } as const;
 
 /**
- * Message EXACT d'une durée hors limites (D-058) : texte imposé par le propriétaire du projet,
- * à ne pas reformuler (point final compris).
+ * Message d'une durée hors limites : forme imposée par D-058 (« Durée entre X minutes et Y
+ * minutes. », point final compris), avec les bornes réglées (D-104).
  */
-export const TOURNAMENT_DURATION_ERROR = 'Durée entre 30 minutes et 120 minutes.';
+export function tournamentDurationError(settings: DurationLimits): string {
+  const { tournamentMinimumDurationMinutes: min, tournamentMaximumDurationMinutes: max } = settings;
+  return `Durée entre ${min} minutes et ${max} minutes.`;
+}
 
 /**
  * Démarrage bloqué (D-056) : au-delà de `starts_at` + ce délai, un tournoi encore en STARTING
@@ -403,8 +450,12 @@ export function validateTournamentInput(
           ? 'Le tournoi doit commencer au moins 1 h plus tard.'
           : 'Le début doit être dans le futur.';
     }
-    if (duration < TOURNAMENT_LIMITS.minDurationMs || duration > TOURNAMENT_LIMITS.maxDurationMs) {
-      fields.endsAt = TOURNAMENT_DURATION_ERROR;
+    const {
+      tournamentMinimumDurationMinutes: minMinutes,
+      tournamentMaximumDurationMinutes: maxMinutes,
+    } = context.settings;
+    if (duration < minMinutes * 60_000 || duration > maxMinutes * 60_000) {
+      fields.endsAt = tournamentDurationError(context.settings);
     }
     if (registrationOpensAt !== undefined) {
       if (!validDate(registrationOpensAt) || registrationOpensAt.getTime() >= startsAt.getTime()) {
@@ -424,29 +475,33 @@ export function validateTournamentInput(
     }
   }
 
+  // Prix d'entrée : au moins le minimum réglé dans les paramètres (D-105, 500 par défaut).
+  const minEntryFee = context.settings.tournamentMinimumEntryFee;
   const entryFeeValid =
     isInt(input.entryFee) &&
-    input.entryFee >= TOURNAMENT_LIMITS.minEntryFee &&
+    input.entryFee >= minEntryFee &&
     input.entryFee <= TOURNAMENT_LIMITS.maxEntryFee;
   if (!entryFeeValid) {
-    fields.entryFee = `Montant entier entre ${TOURNAMENT_LIMITS.minEntryFee} et ${TOURNAMENT_LIMITS.maxEntryFee}.`;
+    fields.entryFee = `Montant entier entre ${minEntryFee} et ${TOURNAMENT_LIMITS.maxEntryFee}.`;
   }
+  // Participants : entre les bornes des paramètres (minimum 20, maximum ∞ par défaut).
   const { minimumPlayers, maximumPlayers } = input;
-  if (
-    !isInt(minimumPlayers) ||
-    minimumPlayers < TOURNAMENT_LIMITS.minPlayers ||
-    minimumPlayers > TOURNAMENT_LIMITS.maxPlayers
-  ) {
-    fields.minimumPlayers = `Entre ${TOURNAMENT_LIMITS.minPlayers} et ${TOURNAMENT_LIMITS.maxPlayers}.`;
+  const { tournamentMinimumPlayers: minLimit, tournamentMaximumPlayers: maxLimit } =
+    context.settings;
+  const playersCap = maxLimit ?? PG_INTEGER_MAX;
+  const withinLimits = (n: unknown): n is number => isInt(n) && n >= minLimit && n <= playersCap;
+  if (!withinLimits(minimumPlayers)) {
+    fields.minimumPlayers =
+      maxLimit === null ? `Au moins ${minLimit}.` : `Entre ${minLimit} et ${maxLimit}.`;
   }
   if (
     maximumPlayers !== undefined &&
-    (!isInt(maximumPlayers) ||
-      maximumPlayers < TOURNAMENT_LIMITS.minPlayers ||
-      maximumPlayers > TOURNAMENT_LIMITS.maxPlayers ||
-      (isInt(minimumPlayers) && maximumPlayers < minimumPlayers))
+    (!withinLimits(maximumPlayers) || (isInt(minimumPlayers) && maximumPlayers < minimumPlayers))
   ) {
-    fields.maximumPlayers = `Au moins le minimum (${TOURNAMENT_LIMITS.minPlayers} ou plus), au plus ${TOURNAMENT_LIMITS.maxPlayers}.`;
+    fields.maximumPlayers =
+      maxLimit === null
+        ? `Au moins le minimum (${minLimit} ou plus).`
+        : `Au moins le minimum (${minLimit} ou plus), au plus ${maxLimit}.`;
   }
 
   const tokens =

@@ -133,6 +133,14 @@ async function table(monitored: boolean) {
   const gameId = res.body.game.gameId as GameId;
   await expectStatus(guest.api.post(`/api/sessions/${sessionId}/join`), 200);
   await expectStatus(guest.api.post(`/api/games/${gameId}/join`), 200);
+  // Détection effective (table surveillée ET réglage global ON) : chaque joueur consent
+  // (« Continuer », D-095) avant le démarrage, comme dans l'application.
+  const status = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
+  if (status.body.detectionEnabled) {
+    for (const p of [owner, guest]) {
+      await expectStatus(p.api.post(`/api/games/${gameId}/geolocation/consent`, {}), 200);
+    }
+  }
   return { owner, guest, gameId };
 }
 

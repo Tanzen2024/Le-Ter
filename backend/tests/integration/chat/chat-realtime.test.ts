@@ -17,7 +17,7 @@ import {
   WS_CLOSE,
   type RealtimeGateway,
 } from '../../../src/websocket/realtime-gateway';
-import { registerAndLogin } from '../../fixtures/auth';
+import { login, registerAndLogin } from '../../fixtures/auth';
 import {
   as,
   createGameApiTestApp,
@@ -118,6 +118,17 @@ class TestClient {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
 let database: TestDatabase;
+/** Journaux de la passerelle (une entrée JSON par ligne). */
+let gatewayLogs: Record<string, unknown>[] = [];
+/** Fermetures journalisées, quand la passerelle a fini de les écrire. */
+async function closeLogs(count: number): Promise<Record<string, unknown>[]> {
+  for (let i = 0; i < 40; i += 1) {
+    const closes = gatewayLogs.filter((l) => l.message === 'realtime connection closed');
+    if (closes.length >= count) return closes;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return gatewayLogs.filter((l) => l.message === 'realtime connection closed');
+}
 let ctx: GameApiTestContext;
 let bus: InMemoryChatEventHub;
 let server: Server;
@@ -147,10 +158,12 @@ beforeEach(async () => {
   });
   server = ctx.app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
+  gatewayLogs = [];
   gateway = attachRealtimeGateway(server, {
     auth: ctx.auth,
     chat,
-    logger: createLogger({}, () => undefined),
+    games: ctx.games,
+    logger: createLogger({}, (line) => gatewayLogs.push(JSON.parse(line) as Record<string, unknown>)),
   });
   url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}${REALTIME_PATH}`;
 });
@@ -192,6 +205,120 @@ function post(p: Player, gameId: string, content: string, key = randomUUID()) {
     .send({ content });
 }
 
+/**
+ * Suivi de partie (D-101) : dès que le serveur ACCEPTE une carte, tous les joueurs abonnés
+ * reçoivent `game:changed` (nouvelle version), sans attendre l'échéance du tour (60 s ici) ni la
+ * relecture périodique. Seuls `gameId` et `version` sont transmis.
+ */
+describe('WebSocket : suivi de partie (carte acceptée → tour terminé partout)', () => {
+  async function started(owner: Player, guest: Player): Promise<{ gameId: GameId; version: number }> {
+    const gameId = await gameWith(owner, guest);
+    const res = await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 200);
+    return { gameId, version: res.body.game.version as number };
+  }
+
+  /** Carte du joueur attendu, choisie parmi celles que le SERVEUR autorise. */
+  async function playFirstCard(p: Player, gameId: GameId) {
+    const view = await expectStatus(p.api.get(`/api/games/${gameId}`), 200);
+    const cardId = (view.body.game.myActions.playableCardIds as string[])[0];
+    return p.api.post(`/api/games/${gameId}/actions`, {
+      commandId: randomUUID(),
+      type: 'PLAY_CARD',
+      payload: { cardId },
+    });
+  }
+
+  function subscribeGame(client: TestClient, gameId: string): Promise<Frame> {
+    client.send({ type: 'game:subscribe', gameId });
+    return client.next(
+      (f) => (f.type === 'game:subscribed' || f.type === 'error') && f.gameId === gameId,
+    );
+  }
+
+  it('carte acceptée : game:changed aussitôt chez l’adversaire, ancien tour remplacé par le serveur', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const { gameId } = await started(A, B);
+    const first = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
+    const leader = first.body.game.activePlayerId === A.id ? A : B;
+    const follower = leader === A ? B : A;
+    const watcher = await connect(follower);
+    expect((await subscribeGame(watcher, gameId)).type).toBe('game:subscribed');
+
+    const playedAt = Date.now();
+    const played = await expectStatus(playFirstCard(leader, gameId), 200);
+    const version = played.body.game.version as number;
+    // Échéance du tour : 60 s ; le signal arrive sans l'attendre.
+    const changed = await watcher.next((f) => f.type === 'game:changed', 2_000);
+    expect(Date.now() - playedAt).toBeLessThan(2_000);
+    expect(changed).toEqual({ type: 'game:changed', gameId, version });
+
+    // État officiel relu par le suiveur : le tour du meneur est terminé, le sien commence.
+    const view = await expectStatus(follower.api.get(`/api/games/${gameId}`), 200);
+    expect(view.body.game.version).toBe(version);
+    expect(view.body.game.activePlayerId).toBe(follower.id);
+    expect(Date.parse(view.body.game.turnStartedAt as string)).toBeGreaterThanOrEqual(
+      Date.parse(first.body.game.turnStartedAt as string),
+    );
+    expect(view.body.game.turnDeadlineAt).not.toBe(first.body.game.turnDeadlineAt);
+  });
+
+  it('carte refusée par le serveur : aucun signal, le tour reste celui du joueur attendu', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const { gameId, version } = await started(A, B);
+    const first = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
+    const leader = first.body.game.activePlayerId === A.id ? A : B;
+    const follower = leader === A ? B : A;
+    const watcher = await connect(leader);
+    await subscribeGame(watcher, gameId);
+
+    // Ce n'est pas son tour : refus, rien n'est diffusé.
+    const refused = await playFirstCard(follower, gameId);
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    await settle();
+    expect(watcher.frames.filter((f) => f.type === 'game:changed')).toEqual([]);
+    const view = await expectStatus(leader.api.get(`/api/games/${gameId}`), 200);
+    expect(view.body.game).toMatchObject({
+      version,
+      activePlayerId: leader.id,
+      turnDeadlineAt: first.body.game.turnDeadlineAt,
+    });
+  });
+
+  it('double abonnement : une seule trame par version ; jamais de contenu d’événement', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const { gameId } = await started(A, B);
+    const first = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
+    const leader = first.body.game.activePlayerId === A.id ? A : B;
+    const follower = leader === A ? B : A;
+    const watcher = await connect(follower);
+    await subscribeGame(watcher, gameId);
+    await subscribeGame(watcher, gameId);
+
+    await expectStatus(playFirstCard(leader, gameId), 200);
+    await watcher.next((f) => f.type === 'game:changed');
+    await settle();
+    const changes = watcher.frames.filter((f) => f.type === 'game:changed');
+    expect(changes).toEqual([]);
+    expect(JSON.stringify(watcher.frames)).not.toMatch(/cardId|myHand|payload/);
+  });
+
+  it('non membre : refusé ; deux parties ne partagent jamais leurs signaux', async () => {
+    const [A, B, C, D] = [await newPlayer(), await newPlayer(), await newPlayer(), await newPlayer()];
+    const one = await started(A, B);
+    const two = await started(C, D);
+    const intruder = await connect(C);
+    const refused = await subscribeGame(intruder, one.gameId);
+    expect(refused).toMatchObject({ type: 'error', gameId: one.gameId, channel: 'game' });
+    expect(await subscribeGame(intruder, two.gameId)).toMatchObject({ type: 'game:subscribed' });
+
+    const view = await expectStatus(A.api.get(`/api/games/${one.gameId}`), 200);
+    const leader = view.body.game.activePlayerId === A.id ? A : B;
+    await expectStatus(playFirstCard(leader, one.gameId), 200);
+    await settle();
+    expect(intruder.frames.filter((f) => f.type === 'game:changed')).toEqual([]);
+  });
+});
+
 describe('WebSocket : authentification', () => {
   it('ferme (4401) une connexion qui agit sans s’authentifier', async () => {
     const client = await TestClient.open(url);
@@ -209,12 +336,86 @@ describe('WebSocket : authentification', () => {
     expect((await client.closed).code).toBe(WS_CLOSE.unauthenticated);
   });
 
+  it('ferme (4401) la connexion d’une session révoquée ; le jeton renouvelé se reconnecte', async () => {
+    const A = await newPlayer();
+    // R-32 : une connexion ailleurs révoque la session de l'ancien jeton.
+    const other = await login(ctx.app, A.email, A.password);
+    const stale = await TestClient.open(url);
+    clients.push(stale);
+    stale.send({ type: 'auth', token: A.accessToken });
+    expect((await stale.next((f) => f.type === 'error')).code).toBe('UNAUTHENTICATED');
+    expect((await stale.closed).code).toBe(WS_CLOSE.unauthenticated);
+
+    const renewed = await request(ctx.app)
+      .post('/api/auth/refresh')
+      .send({ refreshToken: other.refreshToken })
+      .expect(200);
+    await connect({ ...A, accessToken: renewed.body.accessToken as string });
+  });
+
+  it('base indisponible pendant l’authentification : 1013 (réessayer), pas 4401', async () => {
+    const A = await newPlayer();
+    const spy = jest
+      .spyOn(ctx.auth, 'authenticate')
+      .mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+    const client = await TestClient.open(url);
+    clients.push(client);
+    client.send({ type: 'auth', token: A.accessToken });
+    const error = await client.next((f) => f.type === 'error');
+    expect(error.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
+    expect((await client.closed).code).toBe(WS_CLOSE.tryAgainLater);
+    spy.mockRestore();
+    // Le même jeton, toujours valide, est accepté dès que la base répond.
+    await connect(A);
+  });
+
   it('refuse un chemin autre que /ws et une trame trop volumineuse', async () => {
     await expect(TestClient.open(url.replace(REALTIME_PATH, '/autre'))).rejects.toThrow();
     const A = await newPlayer();
     const client = await connect(A);
     client.send({ type: 'ping', padding: 'x'.repeat(16 * 1024) });
     expect((await client.closed).code).toBe(1009);
+  });
+});
+
+describe('WebSocket : fermetures et journaux', () => {
+  it('arrêt du serveur : fermeture annoncée 1001 (pas une coupure 1006)', async () => {
+    const A = await newPlayer();
+    const client = await connect(A);
+    await gateway.close();
+    expect((await client.closed).code).toBe(WS_CLOSE.goingAway);
+    const [log] = await closeLogs(1);
+    expect(log).toMatchObject({
+      level: 'info',
+      code: WS_CLOSE.goingAway,
+      category: 'server_shutdown',
+      authenticated: true,
+      playerId: A.id,
+    });
+  });
+
+  it('chaque fermeture est classée ; jamais de jeton dans les journaux', async () => {
+    const A = await newPlayer();
+    const refused = await TestClient.open(url);
+    clients.push(refused);
+    refused.send({ type: 'auth', token: 'a.b.c' });
+    await refused.closed;
+    const normal = await connect(A);
+    normal.ws.close(1000);
+    await normal.closed;
+    const lost = await connect(A);
+    lost.ws.terminate(); // Perte du transport : aucune trame de fermeture.
+    await lost.closed;
+
+    const closes = await closeLogs(3);
+    expect(closes.map((l) => [l.code, l.category])).toEqual([
+      [WS_CLOSE.unauthenticated, 'auth_rejected'],
+      [1000, 'normal'],
+      [1006, 'transport_lost'],
+    ]);
+    const text = JSON.stringify(gatewayLogs);
+    expect(text).not.toContain(A.accessToken);
+    expect(text).not.toContain('a.b.c');
   });
 });
 

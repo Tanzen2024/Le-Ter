@@ -203,6 +203,35 @@ export class PostgresPaymentRepository implements PaymentRepository {
     return rows.map(toPayment);
   }
 
+  async summarizePending(stuckBefore: Date): Promise<{
+    pending: number;
+    uncertain: number;
+    stuck: number;
+    oldestPendingAt?: Date;
+  }> {
+    const { rows } = await this.db.query<{
+      pending: string;
+      uncertain: string;
+      stuck: string;
+      oldest: Date | string | null;
+    }>(
+      `SELECT count(*) AS pending,
+              count(*) FILTER (WHERE metadata->>'initialization' = 'UNCERTAIN') AS uncertain,
+              count(*) FILTER (WHERE created_at <= $1) AS stuck,
+              min(created_at) AS oldest
+         FROM payments
+        WHERE status = 'PENDING'`,
+      [stuckBefore.toISOString()],
+    );
+    const row = rows[0];
+    return {
+      pending: Number(row?.pending ?? 0),
+      uncertain: Number(row?.uncertain ?? 0),
+      stuck: Number(row?.stuck ?? 0),
+      ...(row?.oldest && { oldestPendingAt: new Date(row.oldest) }),
+    };
+  }
+
   async recordProviderStatus(paymentId: string, providerStatus: string, now: Date): Promise<void> {
     await this.db.query(
       `UPDATE payments SET provider_status = $2, updated_at = $3

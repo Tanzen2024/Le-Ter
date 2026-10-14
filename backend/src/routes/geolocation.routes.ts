@@ -13,7 +13,8 @@ import { parseGameIdParam } from '../validators/game.validators';
  * Géolocalisation de la détection (R-36, étape 2, D-046), montée sous /api/games. Routes
  * authentifiées, réservées aux joueurs de la partie (contrôle dans GeolocationService) :
  *
- *   GET  /:gameId/geolocation   activation, cadence de collecte, distances du joueur
+ *   GET  /:gameId/geolocation   activation, consentement, cadence, distances du joueur
+ *   POST /:gameId/geolocation/consent  consentement explicite du joueur (D-095, idempotent)
  *   POST /:gameId/position      { latitude, longitude, accuracy, capturedAt } → distances
  *
  * Comme le chat, l'authentification est posée route par route : ce routeur partage le
@@ -44,6 +45,7 @@ export function createGeolocationRouter(
   };
 
   router.get('/:gameId/geolocation', requireAuth, gameId, controller.status);
+  router.post('/:gameId/geolocation/consent', requireAuth, gameId, controller.consent);
   router.post('/:gameId/position', requireAuth, gameId, positions, controller.record);
   return router;
 }

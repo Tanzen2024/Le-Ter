@@ -9,6 +9,19 @@ export interface GeolocationAccess {
   enabled: boolean;
   isPlayer: boolean;
   playerIds: PlayerId[];
+  /**
+   * Le joueur a consenti à la géolocalisation pour sa participation ACTUELLE à la table
+   * (D-095) : même session, même arrivée. Faux s'il n'est plus assis à la table.
+   */
+  consented: boolean;
+}
+
+/** Joueurs d'une table surveillée dont le consentement manque (D-095). */
+export interface ConsentGate {
+  /** `suspicionDetectionEnabled` de la table (D-043). */
+  enabled: boolean;
+  /** Parmi les joueurs demandés : ceux sans consentement pour leur participation actuelle. */
+  missing: PlayerId[];
 }
 
 /**
@@ -19,6 +32,15 @@ export interface GeolocationAccess {
 export interface GeolocationRepository {
   /** `null` si la partie n'existe pas. */
   findAccess(gameId: GameId, playerId: PlayerId): Promise<GeolocationAccess | null>;
+
+  /**
+   * Enregistre le consentement du joueur pour sa participation actuelle à la table de la
+   * partie (idempotent). Renvoie faux si le joueur n'est pas assis à cette table.
+   */
+  recordConsent(gameId: GameId, playerId: PlayerId, at: Date): Promise<boolean>;
+
+  /** Consentements manquants parmi `playerIds` pour la table `sessionId`. */
+  consentGate(sessionId: string, playerIds: readonly PlayerId[]): Promise<ConsentGate>;
 
   /** Lève GeolocationDisabledError si la détection est désactivée pour la partie. */
   insertPosition(sample: PositionSample & { id: string; receivedAt: Date }): Promise<void>;

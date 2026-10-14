@@ -85,6 +85,8 @@ export function createTournamentTestStack(
     logger,
     random: options.random ?? defaultTestRandom(),
     turnDurationMs: 60 * MINUTE,
+    // D-102 : distribution confirmée au démarrage (la phase se teste dans deal-phase.test.ts).
+    dealDurationMs: () => 0,
     ...(options.gameClock && { clock: clock.now }),
   });
   const sessionTimers = new SessionTimerRegistry();

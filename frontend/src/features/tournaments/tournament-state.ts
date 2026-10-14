@@ -146,7 +146,7 @@ export function formatTournamentSchedule(tournament: Pick<TournamentView, 'start
 
 /**
  * Durée RÉELLE du tournoi (fin − début, fixée à la création, D-058) : « 45 min », « 1 h »,
- * « 1 h 30 ». Affichage seulement : les bornes 30 à 120 min restent celles du serveur.
+ * « 1 h 30 ». Affichage seulement : les bornes de durée restent celles du serveur (D-104).
  */
 export function formatTournamentDuration(
   tournament: Pick<TournamentView, 'startsAt' | 'endsAt'>,

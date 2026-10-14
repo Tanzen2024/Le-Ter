@@ -121,7 +121,7 @@ export function createSessionController(sessions: SessionService) {
  * décision. `serverNow` permet au client d'afficher un compte à rebours fidèle à l'heure du
  * serveur ; il ne décide jamais d'une expiration.
  */
-export function toSessionView({ session, lastGame }: SessionSnapshot) {
+export function toSessionView({ session, lastGame, viewerCanContinue }: SessionSnapshot) {
   const round = session.round;
   return {
     sessionId: session.id,
@@ -159,6 +159,8 @@ export function toSessionView({ session, lastGame }: SessionSnapshot) {
             decidedAt: d.decidedAt,
           })),
           pendingPlayerIds: pendingDecisions(session),
+          // Pour le joueur qui lit la vue : « Poursuivre » permis (D-073) ; absent = inconnu.
+          ...(viewerCanContinue !== undefined && { canContinue: viewerCanContinue }),
         }
       : null,
     createdAt: session.createdAt,

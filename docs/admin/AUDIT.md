@@ -168,9 +168,10 @@ rangées, analysées par le serveur) ; minuteur 20 s puis carte automatique dét
 Continuer/Quitter 20 s (D-064). Toute mutation passe par `GameService` (sérialisée par `gameId`,
 versionnée). **L'administration ne fait que lire.**
 
-**Tournois** (D-054 → D-058) : création admin (publiée) ou proposition joueur (brouillon →
-approbation) ; aucun chevauchement (contrainte d'exclusion GiST) ; durée **30 à 120 min** ;
-participants **20 à 1 000** (maximum ≥ minimum) ; inscription = réservation du prix d'entrée,
+**Tournois** (D-054 → D-058, D-103) : création admin (publiée) ou proposition joueur (brouillon →
+approbation) ; aucun chevauchement (contrainte d'exclusion GiST) ; durée entre les bornes des
+paramètres, **45 à 120 min** par défaut (D-104) ;
+participants entre les bornes des paramètres, **20 à ∞** par défaut (maximum ≥ minimum) ; inscription = réservation du prix d'entrée,
 capturée au démarrage, libérée si annulation ; **annulation uniquement avant capture**
 (« les paiements sont définitifs ») ; commission copiée à la publication puis immuable ;
 jetons de tournoi ; jusqu'à 10 rangs payés (somme = 100 %) ; classement déterministe sans ex

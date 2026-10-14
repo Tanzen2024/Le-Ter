@@ -499,6 +499,142 @@ describe('Événements et observabilité', () => {
   });
 });
 
+describe('Se coucher et main spéciale : de la requête à la vue de chaque joueur', () => {
+  type Player = Awaited<ReturnType<typeof player>>;
+  type View = {
+    version: number;
+    status: string;
+    activePlayerId?: string;
+    turnDeadlineAt?: string;
+    result?: { winnerId: string; fledPlayerIds: string[] };
+    play: { currentTrick: { playerId: string }[]; myHand: string[] };
+    myActions: { canPlayCard: boolean; playableCardIds: string[]; canFlee: boolean };
+  };
+
+  /** Partie à 3 démarrée : alice (créatrice, J1), bob, carol (sièges dans cet ordre). */
+  async function threePlayerGame() {
+    ctx = createGameApiTestApp(database.sql, { rules: testRules, random: identityRandom });
+    const alice = await player();
+    const bob = await player();
+    const carol = await player();
+    const game = await createGame(alice, { maxPlayers: 3 });
+    await expectStatus(enterGame(bob.api, database.sql, game.gameId), 200);
+    await expectStatus(enterGame(carol.api, database.sql, game.gameId), 200);
+    await alice.api.post(`/api/games/${game.gameId}/start`).expect(200);
+    return { alice, bob, carol, gameId: game.gameId };
+  }
+
+  const viewOf = async (p: Player, gameId: string): Promise<View> =>
+    (await p.api.get(`/api/games/${gameId}`).expect(200)).body.game;
+
+  /** Le joueur attendu joue sa première carte autorisée (choix du serveur). */
+  async function playExpected(players: Player[], gameId: string) {
+    for (const p of players) {
+      const view = await viewOf(p, gameId);
+      if (view.myActions.canPlayCard) {
+        const cardId = view.myActions.playableCardIds[0];
+        await p.api.post(`/api/games/${gameId}/actions`, action('PLAY_CARD', { cardId })).expect(200);
+        return;
+      }
+    }
+    throw new Error('aucun joueur attendu');
+  }
+
+  it('le contrôleur se couche après avoir mené le tour 1 : la partie continue jusqu’au bout, sans rejouer', async () => {
+    const { alice, bob, carol, gameId } = await threePlayerGame();
+    await playExpected([alice], gameId);
+    await playExpected([bob], gameId);
+    const before = await viewOf(carol, gameId);
+    expect(before.activePlayerId).toBe(carol.userId);
+
+    const fled = await alice.api.post(`/api/games/${gameId}/actions`, action('FLEE')).expect(200);
+    expect(fled.body.game.players.find((p: { playerId: string }) => p.playerId === alice.userId))
+      .toHaveProperty('fledAt');
+
+    // Les autres voient le même état officiel : carol garde son tour et son échéance, bob ne
+    // rejoue pas, plus personne ne peut se coucher, le timer de LA partie reste armé.
+    const carolView = await viewOf(carol, gameId);
+    const bobView = await viewOf(bob, gameId);
+    expect(carolView.version).toBe(before.version + 1);
+    expect(carolView.activePlayerId).toBe(carol.userId);
+    expect(carolView.turnDeadlineAt).toBe(before.turnDeadlineAt);
+    expect(carolView.myActions.canPlayCard).toBe(true);
+    expect(bobView.myActions.canPlayCard).toBe(false);
+    expect(bobView.play.currentTrick).toHaveLength(2);
+    expect([carolView, bobView].map((v) => v.myActions.canFlee)).toEqual([false, false]);
+    expect(ctx.timers.has(gameId)).toBe(true);
+    // Le fuyard ne peut plus agir.
+    const again = await alice.api.post(`/api/games/${gameId}/actions`, action('FLEE'));
+    expect(again.status).toBe(422);
+
+    // Tours 1 à 4 joués par bob et carol, 5e automatique : aucune erreur serveur.
+    for (let i = 0; i < 7; i++) {
+      await playExpected([bob, carol], gameId);
+    }
+    const final = await Promise.all([alice, bob, carol].map((p) => viewOf(p, gameId)));
+    for (const v of final) {
+      expect(v.status).toBe('finished');
+      expect(v.result).toEqual(final[0]!.result);
+    }
+    expect(final[0]!.result!.fledPlayerIds).toEqual([alice.userId]);
+    expect([bob.userId, carol.userId]).toContain(final[0]!.result!.winnerId);
+    expect(ctx.timers.has(gameId)).toBe(false);
+  });
+
+  it('double appui (même commandId) : une seule fuite ; deux fuites simultanées : une seule acceptée', async () => {
+    const { alice, bob, gameId } = await threePlayerGame();
+    const body = action('FLEE');
+    const first = await bob.api.post(`/api/games/${gameId}/actions`, body).expect(200);
+    const retry = await bob.api.post(`/api/games/${gameId}/actions`, body).expect(200);
+    expect(retry.body.game.version).toBe(first.body.game.version);
+
+    const { alice: a2, bob: b2, gameId: g2 } = await threePlayerGame();
+    const both = await Promise.all([
+      a2.api.post(`/api/games/${g2}/actions`, action('FLEE')),
+      b2.api.post(`/api/games/${g2}/actions`, action('FLEE')),
+    ]);
+    expect(both.map((r) => r.status).sort()).toEqual([200, 422]);
+    expect(both.find((r) => r.status === 422)!.body.code).toBe('FLEE_NOT_ALLOWED');
+    void alice;
+  });
+
+  it('se coucher au mauvais moment : 422 FLEE_NOT_ALLOWED, état inchangé', async () => {
+    const { alice, bob, carol, gameId } = await threePlayerGame();
+    // Tour 1 complet, puis le meneur du tour 2 pose sa 2e carte.
+    const all = [alice, bob, carol];
+    for (let i = 0; i < 3; i++) {
+      await playExpected(all, gameId);
+    }
+    const leaderId = (await viewOf(alice, gameId)).activePlayerId;
+    const leader = all.find((p) => p.userId === leaderId)!;
+    await playExpected([leader], gameId);
+    const seen = await viewOf(leader, gameId);
+    expect(seen.myActions.canFlee).toBe(false);
+    const refused = await leader.api
+      .post(`/api/games/${gameId}/actions`, action('FLEE'))
+      .expect(422);
+    expect(refused.body.code).toBe('FLEE_NOT_ALLOWED');
+    expect((await viewOf(leader, gameId)).version).toBe(seen.version);
+  });
+
+  it('partie à 2 : la fuite et la victoire déclarée arrêtent le timer de la partie', async () => {
+    ctx = createGameApiTestApp(database.sql, { rules: testRules, random: identityRandom });
+    const alice = await player();
+    const bob = await player();
+    const game = await createGame(alice);
+    await expectStatus(enterGame(bob.api, database.sql, game.gameId), 200);
+    await alice.api.post(`/api/games/${game.gameId}/start`).expect(200);
+    expect(ctx.timers.has(game.gameId)).toBe(true);
+    await bob.api.post(`/api/games/${game.gameId}/actions`, action('FLEE')).expect(200);
+    expect(ctx.timers.has(game.gameId)).toBe(false);
+    const views = await Promise.all([alice, bob].map((p) => viewOf(p, game.gameId)));
+    for (const v of views) {
+      expect(v).toMatchObject({ status: 'finished', result: { winnerId: alice.userId } });
+      expect(v.turnDeadlineAt).toBeUndefined();
+    }
+  });
+});
+
 describe('Architecture', () => {
   it('contrôleurs et routes n’accèdent jamais aux dépôts ni à la base (GameService seul)', () => {
     const offenders: string[] = [];

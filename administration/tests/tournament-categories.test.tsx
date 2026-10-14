@@ -186,7 +186,9 @@ describe('liste des tournois : filtres Catégorie et Statut', () => {
   const navigate = () => rerender(ui());
   const category = () => screen.getByLabelText('Catégorie') as HTMLSelectElement;
   const status = () => screen.getByLabelText('Statut') as HTMLSelectElement;
-  const lastQuery = () => get.mock.calls.at(-1)?.[1] as { status?: string } | undefined;
+  // Lectures de la liste seulement (la page lit aussi les Paramètres des tournois).
+  const listCalls = () => get.mock.calls.filter((c) => c[0] === 'tournaments');
+  const lastQuery = () => listCalls().at(-1)?.[1] as { status?: string } | undefined;
   async function rowStatuses() {
     const table = await screen.findByRole('table');
     await waitFor(() => expect(within(table).getAllByRole('row').length).toBeGreaterThan(1));
@@ -274,7 +276,7 @@ describe('liste des tournois : filtres Catégorie et Statut', () => {
     expect(category().value).toBe('');
     expect(status().value).toBe('');
     expect(status().options[0]!.text).toBe('Tous les statuts');
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith('tournaments', undefined));
+    await waitFor(() => expect(listCalls().at(-1)).toEqual(['tournaments', undefined]));
   });
 
   it('sans catégorie : le filtre Statut filtre comme avant, sur ce seul statut', async () => {
@@ -426,7 +428,7 @@ describe('liste des tournois : filtres Catégorie et Statut', () => {
       mount();
       expect(category().value).toBe('');
       expect(status().options).toHaveLength(13);
-      await waitFor(() => expect(get).toHaveBeenLastCalledWith('tournaments', undefined));
+      await waitFor(() => expect(listCalls().at(-1)).toEqual(['tournaments', undefined]));
       expect(replace).not.toHaveBeenCalled();
       cleanup();
     }

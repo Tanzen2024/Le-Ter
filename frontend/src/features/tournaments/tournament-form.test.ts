@@ -4,7 +4,9 @@ import {
   fieldErrorsFromApi,
   sharesTotal,
   toTournamentPayload,
-  TOURNAMENT_DURATION_ERROR,
+  entryFeeError,
+  tournamentDurationError,
+  withRuleDefaults,
   type TournamentFormValues,
 } from './tournament-form';
 
@@ -87,31 +89,100 @@ describe('toTournamentPayload (format seulement)', () => {
     expect(!result.ok && Object.keys(result.errors)).toContain(field);
   });
 
+  /** Règles réglées dans les Paramètres des tournois (valeurs initiales du serveur). */
+  const RULES = {
+    minimumPlayers: 20,
+    maximumPlayers: null,
+    minimumDurationMinutes: 45,
+    maximumDurationMinutes: 120,
+    minimumEntryFee: 500,
+    maximumEntryFee: 100_000,
+  };
+
   it.each([
-    ['29', false],
-    ['30', true],
+    ['44', false],
     ['45', true],
     ['120', true],
     ['121', false],
-  ] as const)('durée de %s minutes : acceptée = %s (D-058)', (durationMinutes, accepted) => {
-    const result = toTournamentPayload(values({ durationMinutes }), 'Africa/Douala');
-    if (accepted) {
-      expect(result.ok).toBe(true);
-      const start = new Date(2026, 9, 9, 18, 0);
-      expect(result.ok && result.payload).toMatchObject({
-        startsAt: start.toISOString(),
-        endsAt: new Date(start.getTime() + Number(durationMinutes) * 60_000).toISOString(),
-      });
-    } else {
-      expect(result).toEqual({
-        ok: false,
-        errors: { durationMinutes: 'Durée entre 30 minutes et 120 minutes.' },
-      });
-    }
+  ] as const)(
+    'durée de %s minutes : acceptée = %s (règles réglées, D-104)',
+    (durationMinutes, accepted) => {
+      const result = toTournamentPayload(values({ durationMinutes }), 'Africa/Douala', RULES);
+      if (accepted) {
+        expect(result.ok).toBe(true);
+        const start = new Date(2026, 9, 9, 18, 0);
+        expect(result.ok && result.payload).toMatchObject({
+          startsAt: start.toISOString(),
+          endsAt: new Date(start.getTime() + Number(durationMinutes) * 60_000).toISOString(),
+        });
+      } else {
+        expect(result).toEqual({
+          ok: false,
+          errors: { durationMinutes: 'Durée entre 45 minutes et 120 minutes.' },
+        });
+      }
+    },
+  );
+
+  it('message de durée exact (forme de D-058), bornes réglées', () => {
+    expect(tournamentDurationError(RULES)).toBe('Durée entre 45 minutes et 120 minutes.');
+    expect(
+      tournamentDurationError({
+        ...RULES,
+        minimumDurationMinutes: 30,
+        maximumDurationMinutes: 180,
+      }),
+    ).toBe('Durée entre 30 minutes et 180 minutes.');
   });
 
-  it('message de durée exact, sans texte ajouté', () => {
-    expect(TOURNAMENT_DURATION_ERROR).toBe('Durée entre 30 minutes et 120 minutes.');
+  it('joueurs dans les bornes réglées, mêmes messages que le serveur (D-103)', () => {
+    const rules = { ...RULES, minimumPlayers: 30, maximumPlayers: 100 };
+    const errorsOf = (overrides: Partial<TournamentFormValues>) => {
+      const result = toTournamentPayload(values(overrides), 'Africa/Douala', rules);
+      return result.ok ? {} : result.errors;
+    };
+    expect(errorsOf({ minimumPlayers: '29' })).toEqual({ minimumPlayers: 'Entre 30 et 100.' });
+    expect(errorsOf({ minimumPlayers: '30', maximumPlayers: '101' })).toEqual({
+      maximumPlayers: 'Au moins le minimum (30 ou plus), au plus 100.',
+    });
+    expect(errorsOf({ minimumPlayers: '30', maximumPlayers: '100' })).toEqual({});
+    // Maximum ∞ : aucun plafond.
+    expect(
+      toTournamentPayload(values({ minimumPlayers: '20', maximumPlayers: '5000' }), 'UTC', RULES)
+        .ok,
+    ).toBe(true);
+  });
+
+  it('prix d’entrée minimal réglé (D-105), même message que le serveur', () => {
+    const errorsOf = (entryFee: string, rules = RULES) => {
+      const result = toTournamentPayload(values({ entryFee }), 'Africa/Douala', rules);
+      return result.ok ? {} : result.errors;
+    };
+    // 500 par défaut.
+    expect(errorsOf('499')).toEqual({ entryFee: 'Montant entier entre 500 et 100000.' });
+    expect(errorsOf('500')).toEqual({});
+    // Réglé à 2 000 par l'administration.
+    const raised = { ...RULES, minimumEntryFee: 2000 };
+    expect(errorsOf('1999', raised)).toEqual({ entryFee: 'Montant entier entre 2000 et 100000.' });
+    expect(errorsOf('2000', raised)).toEqual({});
+    expect(entryFeeError(raised)).toBe('Montant entier entre 2000 et 100000.');
+  });
+
+  it('prix proposé par défaut relevé au minimum réglé ; montant saisi jamais touché', () => {
+    const raised = { ...RULES, minimumEntryFee: 2000 };
+    expect(withRuleDefaults(values({ entryFee: '1000' }), raised).entryFee).toBe('2000');
+    expect(withRuleDefaults(values({ entryFee: '1000' }), RULES).entryFee).toBe('1000');
+    expect(withRuleDefaults(values({ entryFee: '1500' }), raised).entryFee).toBe('1500');
+  });
+  it('valeurs par défaut ajustées aux règles réglées, saisie du joueur jamais touchée', () => {
+    const rules = { ...RULES, minimumPlayers: 30, minimumDurationMinutes: 90 };
+    expect(withRuleDefaults(values(), rules)).toMatchObject({
+      minimumPlayers: '30',
+      durationMinutes: '90',
+    });
+    expect(
+      withRuleDefaults(values({ minimumPlayers: '40', durationMinutes: '100' }), rules),
+    ).toMatchObject({ minimumPlayers: '40', durationMinutes: '100' });
   });
 
   it.each([' 30 ', '030', '0120'])('durée « %s » : convertie en minutes entières', (raw) => {

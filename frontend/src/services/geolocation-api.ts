@@ -11,6 +11,14 @@ export const geolocationApi = {
       accessToken,
     }),
 
+  /** Consentement explicite (« Continuer », D-095) ; renvoie l'état relu par le serveur. */
+  consent: (accessToken: string, gameId: string) =>
+    apiRequest<GeolocationStatus>(`/api/games/${gameId}/geolocation/consent`, {
+      method: 'POST',
+      body: {},
+      accessToken,
+    }),
+
   sendPosition: (accessToken: string, gameId: string, position: PositionReport) =>
     apiRequest<{ distances: PlayerDistance[] }>(`/api/games/${gameId}/position`, {
       method: 'POST',

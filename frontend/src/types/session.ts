@@ -30,6 +30,11 @@ export interface SessionDecision {
   resolvedAt?: string;
   decisions: { playerId: string; choice: DecisionChoice; decidedAt: string }[];
   pendingPlayerIds: string[];
+  /**
+   * Pour le joueur qui lit la vue, réponse attendue : « Poursuivre » permis par le serveur
+   * (solde disponible ≥ 2 × mise, D-073). Absent : non vérifié ; « Poursuivre » n'est pas proposé.
+   */
+  canContinue?: boolean;
 }
 
 export interface SessionView {

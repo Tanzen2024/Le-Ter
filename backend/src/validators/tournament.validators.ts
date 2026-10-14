@@ -99,6 +99,11 @@ const SETTINGS_KEYS: (keyof TournamentSettings)[] = [
   'tournamentTransitionMinutes',
   'rankingTokensWeightPercent',
   'rankingGamesWeightPercent',
+  'tournamentMinimumPlayers',
+  'tournamentMaximumPlayers',
+  'tournamentMinimumDurationMinutes',
+  'tournamentMaximumDurationMinutes',
+  'tournamentMinimumEntryFee',
 ];
 
 export function parseTournamentSettingsInput(body: unknown): Partial<TournamentSettings> {
@@ -108,10 +113,13 @@ export function parseTournamentSettingsInput(body: unknown): Partial<TournamentS
   for (const [key, value] of Object.entries(b)) {
     if (!SETTINGS_KEYS.includes(key as keyof TournamentSettings)) {
       fields[key] = 'Paramètre inconnu.';
+    } else if (key === 'tournamentMaximumPlayers' && value === null) {
+      // Aucun plafond de joueurs (∞).
+      out.tournamentMaximumPlayers = null;
     } else if (typeof value !== 'number' || !Number.isFinite(value)) {
       fields[key] = 'Nombre attendu.';
     } else {
-      out[key as keyof TournamentSettings] = value;
+      out[key as Exclude<keyof TournamentSettings, 'tournamentMaximumPlayers'>] = value;
     }
   }
   if (Object.keys(fields).length > 0) throw new ValidationError(fields);

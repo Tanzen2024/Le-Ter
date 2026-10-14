@@ -47,6 +47,10 @@ export const SETTING_FIELDS: {
     key: "rankingGamesWeightPercent",
     label: "Classement : poids des parties jouées (%)",
   },
+  {
+    key: "tournamentMinimumEntryFee",
+    label: "Montant minimal pour créer un tournoi (FCFA)",
+  },
 ];
 
 /** Paramètres des tournois (route /admin/tournaments/settings). */

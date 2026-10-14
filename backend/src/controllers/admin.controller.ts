@@ -34,6 +34,8 @@ export interface AdminSystemInfo {
   cinetpay: 'sandbox' | 'production' | null;
   /** État des nouveaux retraits (D-077) : mode, motif, avertissements ; jamais de secret ni d'URL. */
   withdrawals?: WithdrawalAvailability;
+  /** Santé des paiements (D-100) : fournisseur, réconciliateur, paiements en attente. */
+  payments?: () => Promise<unknown>;
 }
 
 /**
@@ -169,6 +171,9 @@ export function createAdminController(deps: {
           database: await getDatabaseStatus(),
           redis: getRedisStatus(),
           cinetpay: { configured: system.cinetpay !== null, mode: system.cinetpay },
+          payments: system.payments
+            ? await system.payments().catch(() => ({ status: 'UNAVAILABLE' }))
+            : { status: 'NOT_CONFIGURED' },
           withdrawals: system.withdrawals ?? {
             mode: 'unavailable',
             reason: 'PROVIDER_NOT_CONFIGURED',

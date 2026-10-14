@@ -110,6 +110,11 @@ export function walletStakeContinuation(deps: StakePolicyDependencies): SessionC
       }
       return barred;
     },
+    /** Même contrôle, dès le choix « Poursuivre » : solde relu, refus explicite. */
+    async assertCanContinue(sessionId, playerId, previous) {
+      if (await isTournamentTable(deps, sessionId)) return;
+      await assertStakeCovered(deps.wallets, playerId, previous.stakeAmount);
+    },
   };
 }
 
@@ -148,6 +153,11 @@ export function allSessionContinuations(
         ids.forEach((id) => barred.add(id));
       }
       return playerIds.filter((id) => barred.has(id));
+    },
+    async assertCanContinue(sessionId, playerId, previous) {
+      for (const policy of policies) {
+        await policy.assertCanContinue?.(sessionId, playerId, previous);
+      }
     },
   };
 }

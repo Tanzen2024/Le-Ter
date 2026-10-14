@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Game } from '../../domain/game/game';
 import { ParticipationRefusedError } from '../../domain/game/game-errors';
 import type { PlayerId } from '../../domain/game/game-id';
+import { InsufficientBalanceForStakeError, InvalidGameStakeError } from '../../domain/rules/stake';
 import {
   FirstPlayerUndeterminedError,
   NotASessionMemberError,
@@ -23,6 +24,7 @@ import {
   lastTrickPresentationMs,
   leaveSession,
   newSession,
+  pendingDecisions,
   seatMap,
   syncDecisionRound,
   type LastGameInfo,
@@ -101,7 +103,7 @@ export interface SessionServiceDependencies {
   clock?: () => Date;
   /** Timers de décision (un par session). */
   timers?: SessionTimerRegistry;
-  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (10 s, D-034, D-092). */
+  /** Délai Poursuivre/Quitter. Par défaut SESSION_DECISION_WINDOW_MS (13 s dont 10 s affichées, D-098). */
   decisionWindowMs?: number;
   /** Mots de passe de partie (D-039). Par défaut bcrypt au coût des comptes. */
   passwords?: TablePasswordHasher;
@@ -146,6 +148,12 @@ export interface SessionContinuationPolicy {
     playerIds: PlayerId[],
     previous: Game,
   ): Promise<PlayerId[]>;
+  /**
+   * « Poursuivre » pendant la ronde (D-073) : lève l'erreur de refus si le joueur ne pourra
+   * pas jouer la partie suivante (`previous` : partie terminée dont la mise est reprise).
+   * Absente : aucun contrôle avant la clôture de la ronde.
+   */
+  assertCanContinue?(sessionId: SessionId, playerId: PlayerId, previous: Game): Promise<void>;
 }
 
 interface CallMeta {
@@ -156,6 +164,11 @@ interface CallMeta {
 export interface SessionSnapshot {
   session: Session;
   lastGame: LastGameInfo | null;
+  /**
+   * Ronde ouverte et réponse du joueur attendue : peut-il choisir « Poursuivre » (solde
+   * disponible relu dans PostgreSQL, D-073) ? `undefined` : sans objet, ou non vérifiable.
+   */
+  viewerCanContinue?: boolean;
 }
 
 /**
@@ -515,16 +528,67 @@ export class SessionService {
     }
   }
 
-  /** Poursuivre ou Quitter pendant la ronde de décision (D-034). */
-  decide(
+  /**
+   * Poursuivre ou Quitter pendant la ronde de décision (D-034). « Poursuivre » est refusé si
+   * le joueur ne pourra pas jouer la partie suivante (solde disponible < 2 × mise, D-073) ;
+   * la clôture de la ronde et le séquestre au démarrage (D-074) le revérifient sous verrou.
+   */
+  async decide(
     sessionId: SessionId,
     playerId: PlayerId,
     choice: 'continue' | 'leave',
     meta: CallMeta = {},
   ): Promise<Session> {
+    if (choice === 'continue') {
+      const previous = await this.roundGame(await this.load(sessionId), playerId);
+      if (previous) {
+        try {
+          await this.deps.continuation?.assertCanContinue?.(sessionId, playerId, previous);
+        } catch (err) {
+          this.logRejection(this.log(playerId, 'SESSION_DECISION', meta), err);
+          throw err;
+        }
+      }
+    }
     return this.mutate(sessionId, 'SESSION_DECISION', playerId, meta, ({ session }, now) =>
       decide(session, playerId, choice, now),
     );
+  }
+
+  /** Partie terminée de la ronde ouverte où la réponse du joueur est attendue, sinon null. */
+  private async roundGame(session: Session, playerId: PlayerId): Promise<Game | null> {
+    const round = session.round;
+    if (!round || round.resolvedAt || !pendingDecisions(session).includes(playerId)) return null;
+    return this.deps.games.findGame(round.gameId);
+  }
+
+  /**
+   * Éligibilité à « Poursuivre » pour la vue du joueur : `false` sur un refus de la politique
+   * (solde insuffisant, mise invalide), `undefined` si le contrôle n'a pas pu se faire (le
+   * client ne propose alors pas « Poursuivre », sans conclure à un solde insuffisant).
+   */
+  private async viewerCanContinue(
+    session: Session,
+    playerId: PlayerId,
+  ): Promise<boolean | undefined> {
+    const policy = this.deps.continuation;
+    try {
+      const previous = await this.roundGame(session, playerId);
+      if (!previous) return undefined;
+      if (!policy?.assertCanContinue) return true;
+      await policy.assertCanContinue(session.id, playerId, previous);
+      return true;
+    } catch (err) {
+      if (err instanceof InsufficientBalanceForStakeError || err instanceof InvalidGameStakeError) {
+        return false;
+      }
+      this.deps.logger.error('continue eligibility check failed', {
+        sessionId: session.id,
+        playerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -686,7 +750,11 @@ export class SessionService {
     if (!session.players.some((p) => p.playerId === viewerId)) {
       throw new NotASessionMemberError(sessionId, viewerId);
     }
-    return { session, lastGame: await this.deps.sessions.findLastGame(sessionId) };
+    const [lastGame, viewerCanContinue] = await Promise.all([
+      this.deps.sessions.findLastGame(sessionId),
+      this.viewerCanContinue(session, viewerId),
+    ]);
+    return { session, lastGame, ...(viewerCanContinue !== undefined && { viewerCanContinue }) };
   }
 
   /** Historique des parties de la session (résumés publics, aucune carte). */

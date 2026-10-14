@@ -1,11 +1,12 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useEffectEvent, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useEffectEvent, useRef, useSyncExternalStore } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 
 import { sessionsApi } from '../../services/sessions-api';
 import type { GameView } from '../../types/game';
 import { withAccessToken } from '../auth/session';
+import { restoreLastRoute, useRememberRoute } from '../navigation/last-route';
 import { fetchActiveGames, gameKeys } from './hooks';
 import { isConnectivityError } from './use-game-reconnection';
 
@@ -133,13 +134,39 @@ const readPhase = () => restorePhase;
 export function useActiveGameRestorer(enabled: boolean, pathname: string) {
   const queryClient = useQueryClient();
   const phase = useSyncExternalStore(subscribePhase, readPhase, readPhase);
+  // Écran affiché, lu au moment de rouvrir le dernier écran (après la recherche serveur).
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
+  useRememberRoute(enabled, pathname);
 
-  const check = () => {
-    if (!enabled || NOT_RESTORED.some((r) => r.test(pathname))) return;
-    setRestorePhase('restoring');
+  /**
+   * `silent` (retour au premier plan) : l'écran consulté reste affiché tel quel pendant la
+   * vérification, sans panneau « Reconnexion » ; seule une partie réellement active (lue sur
+   * le serveur) y renvoie, et une erreur réseau laisse le joueur où il était.
+   */
+  const check = (silent = false) => {
+    if (!enabled) return;
+    // Processus relancé (Android l'avait détruit) : sans partie active à reprendre, le
+    // dernier écran consulté est rouvert. Une seule fois par processus (`restoreLastRoute`).
+    const reopenLastScreen = (gameOpened: boolean) => {
+      if (!silent) void restoreLastRoute(() => (gameOpened ? '' : pathnameRef.current));
+    };
+    if (NOT_RESTORED.some((r) => r.test(pathname))) {
+      reopenLastScreen(true);
+      return;
+    }
+    if (!silent) setRestorePhase('restoring');
     restoreActiveGame(queryClient)
-      .then(() => setRestorePhase('idle'))
-      .catch((err: unknown) => setRestorePhase(isConnectivityError(err) ? 'failed' : 'idle'));
+      .then((result) => {
+        if (!silent) setRestorePhase('idle');
+        reopenLastScreen(result === 'opened');
+      })
+      .catch((err: unknown) => {
+        if (!silent) setRestorePhase(isConnectivityError(err) ? 'failed' : 'idle');
+        reopenLastScreen(false);
+      });
   };
   const onCheck = useEffectEvent(check);
 
@@ -148,11 +175,11 @@ export function useActiveGameRestorer(enabled: boolean, pathname: string) {
     if (enabled) onCheck();
   }, [enabled]);
 
-  // Retour au premier plan (`inactive` seul n'est pas une absence).
+  // Retour au premier plan (`inactive` seul n'est pas une absence) : vérification silencieuse.
   useEffect(() => {
     let previous: AppStateStatus = AppState.currentState;
     const subscription = AppState.addEventListener('change', (next) => {
-      if (previous === 'background' && next === 'active') onCheck();
+      if (previous === 'background' && next === 'active') onCheck(true);
       previous = next;
     });
     return () => subscription.remove();
@@ -160,5 +187,6 @@ export function useActiveGameRestorer(enabled: boolean, pathname: string) {
 
   const dismiss = useCallback(() => setRestorePhase('idle'), []);
   // Déconnecté (session expirée) : aucun panneau ; la reprise repart après la connexion.
-  return { phase: enabled ? phase : 'idle', retry: check, dismiss };
+  // « Réessayer » relance une vérification visible (l'événement du bouton n'est pas passé).
+  return { phase: enabled ? phase : 'idle', retry: () => check(), dismiss };
 }

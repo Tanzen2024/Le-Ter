@@ -24,10 +24,12 @@ jest.mock('../../services/tournaments-api', () => ({
 jest.mock('expo-router', () => {
   const { useEffect } = jest.requireActual('react');
   return {
-    router: { push: jest.fn(), replace: jest.fn() },
+    router: { push: jest.fn(), replace: jest.fn(), setParams: jest.fn() },
+    useLocalSearchParams: () => mockSearchParams,
     useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
   };
 });
+let mockSearchParams: { panel?: string } = {};
 // La coquille (HUD, portefeuille, profil) n'est pas l'objet de ces tests.
 const mockOpenPanel = jest.fn();
 jest.mock('./LobbyShell', () => ({
@@ -70,11 +72,28 @@ async function renderHome() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSearchParams = {};
   useAuthStore.getState().signIn('jeton');
 });
 afterEach(async () => {
   await cleanup();
   clients.splice(0).forEach((client) => client.clear());
+});
+
+describe('accueil : ouverture demandée de la création de partie', () => {
+  it('paramètre panel=private (« Non merci » à la géolocalisation) : panneau Partie privée ouvert, paramètre effacé', async () => {
+    serve([]);
+    mockSearchParams = { panel: 'private' };
+    await renderHome();
+    expect(mockOpenPanel).toHaveBeenCalledWith('private');
+    expect(router.setParams).toHaveBeenCalledWith({ panel: undefined });
+  });
+
+  it('sans paramètre : aucun panneau ouvert automatiquement', async () => {
+    serve([]);
+    await renderHome();
+    expect(mockOpenPanel).not.toHaveBeenCalled();
+  });
 });
 
 describe('accueil : panneau Tournois (D-059, D-065)', () => {
