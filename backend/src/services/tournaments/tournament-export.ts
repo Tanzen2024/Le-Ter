@@ -22,6 +22,14 @@ export const RESULTS_EXPORT_COLUMNS = [
   'Games Won',
   'Score',
   'Prize Amount',
+  // Audit du classement (D-106), ajouté en fin pour ne pas déplacer les colonnes existantes.
+  'Ranking Method',
+  'Tokens Ratio',
+  'Games Ratio',
+  'Tokens Weight %',
+  'Games Weight %',
+  'Games Reference',
+  'Tie Break',
 ] as const;
 
 /** Cellule CSV (RFC 4180) ; neutralise les formules (=, +, -, @) à l'ouverture dans Excel. */
@@ -50,6 +58,13 @@ export const CSV_EXPORT: ResultsExportFormat = {
           // Score figé (D-062) ; vide pour un classement antérieur au score pondéré.
           r.score ?? '',
           r.prizeAmount,
+          r.rankingMethod ?? '',
+          r.tokensRatio ?? '',
+          r.gamesRatio ?? '',
+          r.tokensWeightBps !== undefined ? r.tokensWeightBps / 100 : '',
+          r.gamesWeightBps !== undefined ? r.gamesWeightBps / 100 : '',
+          r.gamesReference ?? '',
+          r.tieBreak ?? '',
         ]
           .map(csvCell)
           .join(','),

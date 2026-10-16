@@ -50,6 +50,7 @@ function writesLimiter(limit: typeof DEFAULT_TOURNAMENT_WRITE_LIMIT): RequestHan
  *   GET   /mine                      mes propositions
  *   GET   /next                      mon prochain tournoi inscrit à venir (ou null)
  *   GET   /rules                     règles de création réglées (joueurs, durée), D-103, D-104
+ *   GET   /results                   mes tournois terminés aux résultats publiés (D-106)
  *   POST  /                          proposer un tournoi (brouillon)
  *   GET   /:tournamentId             détail : inscription, réservation, compte, podium
  *   PATCH /:tournamentId             modifier ma proposition (brouillon / en attente)
@@ -59,7 +60,8 @@ function writesLimiter(limit: typeof DEFAULT_TOURNAMENT_WRITE_LIMIT): RequestHan
  *   POST  /:tournamentId/unregister  désinscription (réservation libérée)
  *   POST  /:tournamentId/join        table attribuée (tournoi en cours, participant)
  *   GET   /:tournamentId/standings   classement en direct ou final
- *   GET   /:tournamentId/results     résultats officiels + résumé partageable
+ *   GET   /:tournamentId/results     classement général officiel, mon détail, résumé
+ *   GET   /:tournamentId/me          mon contexte (jetons de CE tournoi, rang provisoire)
  */
 export function createTournamentRouter(
   tournaments: TournamentService,
@@ -78,6 +80,7 @@ export function createTournamentRouter(
   router.get('/mine', controller.mine);
   router.get('/next', controller.next);
   router.get('/rules', controller.rules);
+  router.get('/results', controller.resultsHistory);
   router.post('/', writes, controller.create);
   router.get('/:tournamentId', controller.get);
   router.patch('/:tournamentId', writes, controller.update);
@@ -88,6 +91,7 @@ export function createTournamentRouter(
   router.post('/:tournamentId/join', writes, controller.join);
   router.get('/:tournamentId/standings', controller.standings);
   router.get('/:tournamentId/results', controller.results);
+  router.get('/:tournamentId/me', controller.me);
   return router;
 }
 
@@ -107,6 +111,7 @@ export function createTournamentRouter(
  *   GET   /:tournamentId/registrations inscriptions et réservations
  *   GET   /:tournamentId/results       résultats
  *   GET   /:tournamentId/results.csv   export du classement
+ *   GET   /:tournamentId/payouts       rapport financier et plan de versement (D-112)
  */
 export function createTournamentAdminRouter(
   tournaments: TournamentService,
@@ -130,5 +135,6 @@ export function createTournamentAdminRouter(
   router.get('/:tournamentId/registrations', controller.registrations);
   router.get('/:tournamentId/results', controller.results);
   router.get('/:tournamentId/results.csv', controller.exportResults);
+  router.get('/:tournamentId/payouts', controller.payouts);
   return router;
 }

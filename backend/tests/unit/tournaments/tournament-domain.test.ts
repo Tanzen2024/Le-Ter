@@ -10,6 +10,7 @@ import {
   InvalidTournamentError,
   percentToBps,
   prizeRulesError,
+  registrationWindowOpen,
   settleGameTokens,
   tokenCoefficientsError,
   tournamentDurationError,
@@ -263,6 +264,16 @@ describe('validation', () => {
     });
     expect(fieldsOf(() => validate(soon, 'PLAYER'))).toContain('startsAt');
     expect(() => validate(soon, 'ADMIN')).not.toThrow();
+  });
+
+  it('D-108 : à l’approbation, le début doit seulement être à venir', () => {
+    const approve = (startsAt: string) => () =>
+      validateTournamentInput(
+        input({ startsAt: at(startsAt), endsAt: at('2026-10-12T12:00:00Z') }),
+        { now: NOW, creatorType: 'PLAYER', settings: DEFAULT_TOURNAMENT_SETTINGS, approval: true },
+      );
+    expect(approve('2026-10-12T10:05:00Z')).not.toThrow();
+    expect(fieldsOf(approve('2026-10-12T10:00:00Z'))).toEqual(['startsAt']);
   });
 
   it.each([
@@ -530,5 +541,41 @@ describe('coefficients des jetons de départ et de la mise (D-071)', () => {
     expect(
       tokenCoefficientsError({ initialTokensCoefficient: 0.001, stakePerGameCoefficient: 0.5 }),
     ).toBeDefined();
+  });
+});
+
+describe('fenêtre d’inscription (D-054, D-108)', () => {
+  const startsAt = at('2026-10-12T18:00:00Z');
+  const open = (status: (typeof TOURNAMENT_STATUSES)[number], now: string, extra = {}) =>
+    registrationWindowOpen({ status, startsAt, ...extra }, at(now));
+
+  it('proposition en attente : préinscription ouverte jusqu’au début', () => {
+    expect(open('PENDING_APPROVAL', '2026-10-12T10:00:00Z')).toBe(true);
+    expect(open('PENDING_APPROVAL', '2026-10-12T17:59:59Z')).toBe(true);
+    expect(open('PENDING_APPROVAL', '2026-10-12T18:00:00Z')).toBe(false);
+  });
+
+  it('proposition en attente : respecte l’ouverture et la clôture choisies', () => {
+    const window = {
+      registrationOpensAt: at('2026-10-12T12:00:00Z'),
+      registrationClosesAt: at('2026-10-12T17:00:00Z'),
+    };
+    expect(open('PENDING_APPROVAL', '2026-10-12T11:00:00Z', window)).toBe(false);
+    expect(open('PENDING_APPROVAL', '2026-10-12T13:00:00Z', window)).toBe(true);
+    expect(open('PENDING_APPROVAL', '2026-10-12T17:00:00Z', window)).toBe(false);
+  });
+
+  it('brouillon, publié pas encore ouvert, clôturé, démarré, annulé : fermé', () => {
+    for (const status of [
+      'DRAFT',
+      'SCHEDULED',
+      'REGISTRATION_CLOSED',
+      'STARTING',
+      'IN_PROGRESS',
+      'CANCELLED',
+    ] as const) {
+      expect(open(status, '2026-10-12T10:00:00Z')).toBe(false);
+    }
+    expect(open('REGISTRATION_OPEN', '2026-10-12T10:00:00Z')).toBe(true);
   });
 });

@@ -1572,8 +1572,13 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   (`409 TOURNAMENT_OUT_OF_TOKENS`) et garde ses jetons et son classement. Les parties d'une
   table de tournoi n'ont aucune mise réelle : le compte de jeu n'est jamais touché pendant
   une partie.
+  **Révisé par D-111** pour les tournois démarrés après la migration 0044 : règles de
+  règlement des parties ordinaires (Kora 2M, fuyards à 3-4 non réglés) sur le compte fictif,
+  sans commission ; comptes dissous à `COMPLETED`.
 - **Fin** (à `ends_at`) : plus aucune table attribuée ; `CALCULATING_RESULTS` attend la fin
   des parties commencées avant `ends_at`, au plus 10 min (au-delà, elles sont `VOID`).
+  **Remplacé par D-106** : la clôture attend TOUTES les parties commencées, sans jamais les
+  annuler (alerte au-delà de 10 min).
 - **Classement** (déterministe, sans ex æquo) : jetons restants DESC, parties jouées DESC,
   parties gagnées DESC, date d'inscription ASC.
   **Remplacé par D-062** (score pondéré) pour les tournois classés après la migration 0025.
@@ -1661,7 +1666,8 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
 - **Brouillons** : un tournoi jamais publié (`published_at` absent : brouillon, en attente,
   refusé, retiré) n'est lisible (`GET /api/tournaments/:id`, `…/standings`) que par son
   créateur et le rôle `admin` ; pour les autres : `404 TOURNAMENT_NOT_FOUND` (l'existence
-  n'est pas révélée).
+  n'est pas révélée). **Modifié par D-108** : une proposition SOUMISE est visible de tous ;
+  refusée ou retirée, elle reste aussi visible de ses anciens préinscrits.
 - **Fin des tables** : `SessionService` accepte une politique FACULTATIVE de continuation
   (sans effet par défaut). Tables de tournoi : aucune nouvelle partie (suivante automatique
   D-042, reprise après égalité, partie demandée → `409 SESSION_CLOSED`) une fois le tournoi
@@ -1671,7 +1677,8 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   (ajout de ce type de notification uniquement).
 - **Délai d'une heure** : revérifié à la soumission ET à l'approbation d'une proposition de
   joueur (le début doit rester au moins 1 h plus tard) ; un tournoi de l'administration doit
-  seulement commencer dans le futur.
+  seulement commencer dans le futur. **Modifié par D-108** : plus à l'approbation (début
+  seulement à venir).
 - **Solde affiché** : le HUD (accueil et table de jeu) affiche le DISPONIBLE ; les fonds
   réservés sont indiqués à part (« 🔒 1000 ») et dans le libellé d'accessibilité.
 - **PostgreSQL réel** : tests de concurrence à plusieurs connexions et deux instances
@@ -1847,6 +1854,9 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   somme 10 000 garantie par une contrainte CHECK), comme la commission, puis immuables : les
   joueurs s'inscrivent en connaissant la règle, et un changement ultérieur des paramètres
   ne touche ni un tournoi en cours ni un classement publié.
+- **Remplacé par D-106** pour les tournois démarrés après la migration 0043 (jetons / capital,
+  parties plafonnées à la référence) ; la méthode ci-dessous reste celle des tournois déjà
+  démarrés.
 - **Normalisation** (`domain/tournaments/tournament.ts`) : chaque critère est ramené dans
   [0, 1[ par `ratio = x / (x + référence)` : 0 sans rien, 0,5 à la référence, strictement
   croissant, jamais plafonné (deux joueurs différents restent départagés).
@@ -2001,7 +2011,9 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   ou annulé, le plus récent d'abord (au plus 10) ; chacun avec MON inscription, ma
   réservation, mon compte de tournoi, le nombre d'inscrits et `canRegister` / `canJoin`.
   Chaque tournoi non terminé est d'abord avancé (transitions dues) : jamais un tournoi
-  commencé présenté « à venir ». Brouillons et propositions non publiées exclus.
+  commencé présenté « à venir ». Brouillons et propositions non publiées exclus (**modifié
+  par D-108** : les propositions en attente d'approbation y figurent, ouvertes aux
+  préinscriptions).
 - **Interface** : Accueil → Tournois → Rejoindre = liste (carte : date, horaires, statut,
   participation, inscrits / min / max, rangs récompensés, jetons de départ (retirés de la
   carte par D-066), mon inscription, flèche à droite) → fiche `/tournament/[tournamentId]` (actions autorisées par le serveur ;
@@ -3247,3 +3259,660 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
 - **Tests** : backend `tournament-domain.test.ts`, `tournament-api.test.ts`,
   `tournament-token-setup.test.ts` ; mobile `tournament-form.test.ts`,
   `AdminTournaments.test.tsx` ; administration `token-setup.test.tsx`.
+
+## D-106 — Tournois : clôture sans annulation forcée, classement D-106 figé au démarrage, résultats globaux consultables
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet (exécution
+  autonome, choix techniques délégués) · **Remplace** : la règle « Fin » de D-054 (annulation
+  `VOID` des parties encore en cours 10 min après la fin) ; la normalisation de D-062 pour les
+  tournois qui DÉMARRENT après la migration 0043 · **Complète** : D-054, D-056, D-062, D-063,
+  D-065, D-072 · **Ne modifie pas** : inscriptions, réservations, capture, commission,
+  cagnotte, répartition et versement des gains, règlement d'une partie (mise effective, tapis,
+  seuil 2 × mise), parties ordinaires (D-073, D-074).
+- **Capital de tournoi** (inchangé, vérifié) : `tournament_player_accounts` = capital alloué au
+  démarrage (`initial_tokens`, désormais IMMUABLE en base), jetons restants, parties jouées et
+  gagnées, statut, `created_at` (début de participation) et `finished_at` (nouveau : classement
+  officiel calculé, compte figé ensuite par un trigger). L'allocation est dans la transaction du
+  démarrage (capture, commission, cagnotte, comptes, `IN_PROGRESS`), idempotente (contrainte
+  d'unicité, statut verrouillé) ; le compte de jeu n'est jamais crédité de jetons de tournoi.
+- **Rattachement explicite des parties** : `games.tournament_id` (migration 0043) est écrit À LA
+  CRÉATION de chaque partie d'une table de tournoi (première partie : `SessionService` →
+  `prepareNewGame({ tournamentId })` ; parties suivantes et rejouées : copiées de la
+  précédente), puis immuable. Le lien de la table (`tournament_sessions`) est inséré AVANT la
+  première partie, dans la même transaction. Garde-fous PostgreSQL (`games_tournament_guard`) :
+  le tournoi d'une partie est celui de sa table (jamais une partie ordinaire rattachée, jamais
+  l'inverse), immuable ; `tournament_games_link_guard` : un règlement ne vise qu'une partie de
+  SON tournoi. Les parties existantes sont rattachées par la migration. Le règlement lit
+  `game.tournamentId` (repli sur la table pour une partie lue sans la colonne).
+- **Fin du tournoi = fin des DÉMARRAGES** (pas des parties) :
+  - `GameStartWindow` (nouvelle dépendance de `GameService`, `tournamentGameStartWindow`) :
+    une partie de tournoi ne démarre, manuellement (`409 TOURNAMENT_COMPLETED`) ou à son
+    échéance automatique (échéance retirée, aucun démarrage), que si le tournoi est
+    `IN_PROGRESS` et `ends_at` non atteint ;
+  - garde-fou en base : une partie de tournoi ne passe `in_progress` que si son tournoi est
+    `IN_PROGRESS`, lu `FOR SHARE` (la transition de clôture, `FOR UPDATE`, et un démarrage ne
+    peuvent pas se croiser) ;
+  - attribution de table et accès direct : inchangés (déjà refusés après `ends_at`).
+  Une partie commencée avant la fin se termine normalement, même longtemps après.
+- **Clôture** (`CALCULATING_RESULTS`, à chaque tick et chaque commande, idempotente) :
+  1. règlement des parties terminées non réglées ;
+  2. tables du tournoi SANS partie en cours (partie en attente, ou partie finie en ronde
+     Poursuivre/Quitter) : leurs joueurs les quittent par le départ de session existant
+     (R-19, D-037) et sont notifiés (`TOURNAMENT_TABLE_CLOSED`, une fois par table) : ils
+     retrouvent aussitôt les parties ordinaires et le tournoi suivant ;
+  3. le classement attend qu'il ne reste AUCUNE partie `in_progress` rattachée au tournoi ET
+     aucune partie terminée non réglée. Jamais de résultat forcé ni d'annulation. Au-delà de
+     10 min après la fin, alerte `TOURNAMENT_CLOSING_DELAYED` (`alert: true`, au plus toutes
+     les 5 min) ; une partie bloquée se résout par les mécanismes existants (timers
+     reconstruits par `DeadlineSupervisor`, `npm run game:finish` : partie alors `VOID` sans
+     gagnant, traçable).
+  Tout est relu dans PostgreSQL : un redémarrage reprend la clôture où elle en était.
+- **Classement D-106** (méthode `D106_CAPITAL_RATIO`, figée au DÉMARRAGE avec
+  `tournaments.ranking_method` et `ranking_games_reference` ; les poids restent copiés à la
+  publication, D-062, donc eux aussi figés avant le démarrage) :
+  - `ratio_jetons = jetons restants / capital initial` (1 = capital conservé ; peut dépasser 1
+    puisque les jetons gagnés viennent des adversaires) ;
+  - `ratio_parties = min(parties jouées, R) / R`, `R = max(1, floor(durée / 170 s))` (même
+    durée de référence d'une partie que D-062 : 10 parties pour 30 min, 42 pour 2 h). Le
+    plafond à 1 évite de favoriser ceux qui ont eu accès à davantage de parties : au-delà de la
+    référence, jouer plus ne rapporte plus rien ; `R` ne dépend que des paramètres figés du
+    tournoi, jamais des autres participants ;
+  - `score = 100 × (poids_jetons × ratio_jetons + poids_parties × ratio_parties)`, poids en
+    fractions (paramètres `rankingTokensWeightPercent` / `rankingGamesWeightPercent`, 0 à 100,
+    somme exactement 100, validés par le serveur et l'administration) ;
+  - seules comptent les parties RÉGLÉES du tournoi (une partie `VOID` n'incrémente rien) ;
+    aucune donnée d'une partie ordinaire ou d'un autre tournoi ;
+  - comparaison en fractions EXACTES ; départage inchangé (D-062) : parties gagnées DESC,
+    date d'inscription ASC, identifiant ; le critère appliqué est ENREGISTRÉ (`tie_break` :
+    `GAMES_WON`, `REGISTRATION_ORDER`, `PLAYER_ID`). Éliminés, soldes nuls et joueurs sans
+    partie sont classés ;
+  - les tournois démarrés avant 0043 gardent D-062 (`D062_SATURATING`) ; le score n'est plus
+    borné à 100 (colonne élargie à `numeric(12, 4)`).
+- **Audit et immuabilité** : chaque ligne de `tournament_results` fige rang, score, capital,
+  jetons restants, parties, ratios, poids, référence, méthode, départage et date
+  d'inscription. Trigger `tournament_results_guard` : aucune suppression, aucune modification
+  sauf l'inscription UNIQUE du versement d'un gain. `tournaments_frozen_rules_guard` : après le
+  démarrage, ni méthode, ni référence, ni poids, ni capital, ni mise ne changent. Aucune
+  procédure de correction administrative n'existe : aucune n'est inventée.
+- **Publication** : classement, comptes clos, `RESULTS_VALIDATED` et une notification
+  `TOURNAMENT_RESULTS_AVAILABLE` par participant (clé `results:<tournoi>`) sont écrits dans UNE
+  transaction (boîte d'envoi durable : jamais de classement sans annonce, ni l'inverse ; la même
+  clé à `COMPLETED` est dédoublonnée). Après le COMMIT, signal temps réel `notification`
+  (WebSocket, salle `user:{userId}`, Redis Pub/Sub `le-ter:user:{userId}:events`), sans
+  contenu et sans garantie : un échec n'a aucun effet sur le classement. Message traduit
+  (FR/EN) : « Le tournoi est terminé ! Le classement officiel est disponible. Consultez vos
+  résultats et votre position finale. ».
+- **API** (authentifiées, identité du JWT) :
+  - `GET /api/tournaments/:id/results` : classement général OFFICIEL (rang, pseudo, score,
+    jetons restants, parties, gain, départage, `isViewer`), règles figées, et `me` = détail de
+    MON score (ratios, points par critère, capital) — jamais celui d'un autre. Aucun
+    identifiant interne, téléphone, e-mail ni solde. Lisible par tout joueur connecté pour un
+    tournoi publié (règle D-054 inchangée) ; `me` vaut `null` pour un non-participant ; tournoi
+    non publié : 404 (D-056) ; clôture en cours : `409 TOURNAMENT_RESULTS_UNAVAILABLE`.
+  - `GET /api/tournaments/results?before=<ISO>` : mes tournois aux résultats publiés, sans
+    limite de date (la liste principale garde 7 jours, D-072), 20 par page.
+  - `GET /api/tournaments/:id/me` : MON contexte (jetons de CE tournoi, parties, rang
+    provisoire, échéance, statut de participation), réservé aux participants.
+  - CSV admin : colonnes d'audit ajoutées EN FIN (`Ranking Method`, `Tokens Ratio`,
+    `Games Ratio`, `Tokens Weight %`, `Games Weight %`, `Games Reference`, `Tie Break`).
+- **Application mobile** : Tournois → « 🏆 Résultats des tournois » (`/tournament/results`) :
+  mes tournois terminés (date, statut, participants, publication, ma position) →
+  `/tournament/results/[tournamentId]` : classement général complet (podium distingué, ma
+  ligne surlignée, départage signalé), carte « Votre résultat » (rang, score, capital, jetons,
+  parties, pondérations, détail par critère), états chargement / publication en cours (relu
+  toutes les 15 s) / erreur. Fiche d'un tournoi terminé : « Voir le classement complet » ; la
+  notification de fin y mène. Table de tournoi : le HUD affiche les jetons de CE tournoi,
+  les parties jouées, le rang provisoire et le temps restant (`game.tournamentId`, décidé par
+  le serveur) au lieu du compte de jeu. Le signal temps réel n'ouvre aucune connexion : il est
+  reçu pendant une partie ; sinon les relectures habituelles suffisent.
+- **Administration Next.js** : contrôle immédiat « somme des poids = 100 % » dans les
+  paramètres ; colonne « Départage » dans les résultats d'un tournoi.
+- **Technique** : migration **0043** (`0043_tournament_closure_results.sql`, ajouts et
+  triggers ; données existantes rattachées, tournois démarrés marqués D-062). Tests : backend
+  `tests/integration/tournaments/tournament-closure-results.test.ts`,
+  `tests/unit/tournaments/tournament-ranking-d106.test.ts`,
+  `tests/unit/websocket/user-event-bus.test.ts`,
+  `tests/integration/database/tournament-closure-migration.test.ts`, signal WebSocket dans
+  `tests/integration/chat/chat-realtime.test.ts` ; mobile
+  `src/features/tournaments/TournamentResults.test.tsx`, `src/lib/realtime-client.test.ts`.
+
+## D-107 — Tournois : parties comptées à l'échelle du tournoi, registre des règlements source officielle
+
+- **Règle** : la colonne « Parties » du classement et le critère « Parties jouées » de la
+  formule (D-062 / D-106) sont le total des parties ADMISSIBLES jouées par le joueur dans
+  TOUT le tournoi, toutes tables (sessions) confondues. Le tournoi est l'unité de référence,
+  jamais la session : quitter une table, en rejoindre une autre, se déconnecter ou un
+  redémarrage du backend ne réinitialise rien.
+- **Partie admissible** : partie TERMINÉE, rattachée au tournoi (`games.tournament_id`,
+  D-106) et réglée `SETTLED` dans `tournament_games`. Exclues : parties ordinaires, parties
+  d'un autre tournoi, parties annulées ou réglées `VOID` (sans vainqueur, démarrées après la
+  fin, tournoi non en cours). Une partie compte une fois par joueur (`tournament_games.game_id`
+  unique ; participants = clés de `transfers`, écrites une seule fois au règlement).
+- **Source officielle** : le registre `tournament_games`. Les compteurs de
+  `tournament_player_accounts` (`games_played`, `games_won`, `current_tokens`) restent
+  incrémentés à chaque règlement mais ne sont qu'un cache : le classement provisoire
+  (`standings`, contexte/HUD) et la clôture recalculent les comptes depuis le registre
+  (`TournamentRepository.tallySettledGames`, `reconcileAccountsWithLedger`). En cas d'écart, le
+  registre fait foi, l'écart est journalisé (`TOURNAMENT_ACCOUNTS_RECONCILED`) et la clôture
+  écrit les valeurs du registre dans les comptes clos et dans `tournament_results`.
+- **Clôture** : inchangée sur l'ordre (D-106) : aucune partie en cours, toutes les parties
+  terminées réglées, PUIS recalcul global, classement, figement et publication.
+- **Affichage** : administration Next.js, colonne « Parties » = `parties jouées / parties de
+  référence figées` (`rules.gamesReference`, désormais aussi renvoyé par
+  `GET /api/admin/tournaments/:id/results`), victoires dans une colonne « Gagnées » distincte
+  (l'ancienne cellule `gagnées / jouées` se lisait comme « jouées / référence »). Application
+  mobile, administration et export CSV lisent les mêmes lignes figées de `tournament_results`.
+- **Tests** : backend `tests/integration/tournaments/tournament-games-across-tables.test.ts`,
+  `tests/unit/tournaments/tournament-ledger-reconciliation.test.ts` ; administration
+  `tests/tournament-results-columns.test.tsx`.
+
+## D-108 — Tournois proposés par les joueurs : préinscriptions dès la soumission, approbation sans délai d'1 h
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet (choix
+  techniques délégués) · **Modifie** : D-054 (cycle d'une proposition), D-056 (« Délai d'une
+  heure » à l'approbation, confidentialité des propositions soumises), D-065 (liste) ·
+  **Ne modifie pas** : statuts et transitions, modèle financier (réservation, capture au
+  démarrage, libération), commission et poids copiés à la publication, D-106 (méthode figée
+  au démarrage), durée, prix d'entrée, bornes de joueurs, chevauchement, limite de tournois en
+  attente, limite de propositions par joueur, délai d'1 h à la création et à la soumission.
+- **Préinscriptions** : une proposition SOUMISE (`PENDING_APPROVAL`) est visible de tous les
+  joueurs (liste `GET /api/tournaments` et fiche) et ouverte aux inscriptions avant
+  l'approbation. Aucun nouveau statut : la fenêtre d'inscription (`registrationWindowOpen`,
+  domaine, seule règle partagée par le service et la vue joueur) accepte `REGISTRATION_OPEN`
+  (D-054, inchangé) et `PENDING_APPROVAL` (`PRE_REGISTRATION_STATUSES`), de l'ouverture
+  choisie (sinon dès la soumission) jusqu'à la clôture, au plus tard au début. Le brouillon
+  (`DRAFT`) reste privé et fermé. Une préinscription est une inscription ordinaire : même
+  transaction (verrou du tournoi, capacité, unicité (tournoi, joueur), disponible ≥ prix),
+  même RÉSERVATION du prix d'entrée (aucun débit, aucun jeton de tournoi, aucun compte de
+  tournoi), même notification `TOURNAMENT_REGISTRATION_CONFIRMED`, désinscription possible.
+  La proposition n'est pas publiée pour autant : pas de créneau réservé, pas de commission ni
+  de poids figés, jamais de démarrage.
+- **Approbation** : le délai d'1 h entre l'approbation et le début est SUPPRIMÉ ; le début
+  doit seulement être encore à venir (`validateTournamentInput`, option `approval`). Toutes
+  les autres règles sont revérifiées comme avant (durée, prix, joueurs, répartition,
+  chevauchement, limite de tournois en attente). Les préinscriptions sont conservées telles
+  quelles (mêmes lignes, mêmes réservations : rien n'est dupliqué, personne ne se réinscrit) ;
+  le tournoi suit ensuite le cycle normal (`SCHEDULED` → `REGISTRATION_OPEN` → … → démarrage
+  à `starts_at` avec capture, ou annulation `INSUFFICIENT_PLAYERS`). Le créateur ET les
+  préinscrits reçoivent `TOURNAMENT_APPROVED`. Une approbation refusée (chevauchement,
+  limite…) laisse la proposition en attente et ses préinscriptions intactes.
+- **Refus** (`POST /api/admin/tournaments/:id/reject`) : `CANCELLED` / `APPROVAL_REJECTED` ;
+  dans la même transaction, toutes les réservations actives sont libérées et le créateur et
+  les préinscrits reçoivent `TOURNAMENT_CANCELLED`. Plus aucune inscription n'est acceptée.
+  **Idempotent** : un refus répété d'une proposition déjà refusée renvoie le tournoi sans
+  rien libérer, notifier ni auditer de nouveau. La fiche reste consultable par le créateur,
+  l'administration et les anciens préinscrits ; pour les autres : `404` (D-056).
+- **Retrait, annulation, expiration** : inchangés et appliqués aux préinscriptions (libération
+  de toutes les réservations, notification des inscrits). Une proposition jamais approuvée
+  avant son début est annulée par le planificateur (`APPROVAL_REJECTED`, comportement
+  existant) : rien n'est capturé, aucune table n'est ouverte.
+- **Modification de date** : inchangée (D-054) : dès la première préinscription, ni le
+  créateur ni l'administration ne peuvent plus modifier la proposition (`409
+  TOURNAMENT_LOCKED`) ; les préinscrits ne gardent jamais des informations périmées.
+- **Temps réel** : approbation, refus, retrait et annulation envoient un signal personnel
+  (D-106) à chaque destinataire APRÈS le COMMIT ; le mobile relit alors la liste et la fiche
+  par l'API. Le signal n'est jamais la source : au retour dans l'application, tout est relu.
+- **Affichage** : mobile, statut « Préinscriptions ouvertes » / « Pre-registration open »
+  (groupe « Inscriptions ouvertes » de la liste s'il reste une place ; jamais « Démarrage »)
+  et explication « Proposition en attente d'approbation… » sur la fiche ; « Mes
+  propositions » indique que les préinscriptions sont ouvertes. Administration : badge
+  « Préinscriptions ouvertes » à côté de « À approuver », carte « Préinscriptions et
+  réservations », conséquences rappelées dans les confirmations Approuver et Refuser.
+- **Points laissés à décider par le propriétaire** (non tranchés ici) :
+  - les préinscriptions d'une proposition ne sont pas comptées dans la limite de 5 tournois
+    aux inscriptions ouvertes (D-072, comptée sur les tournois publiés et garantie à
+    l'approbation) : plusieurs propositions peuvent donc être ouvertes aux préinscriptions en
+    même temps que 5 tournois publiés ;
+  - le chevauchement n'est contrôlé qu'à l'approbation (D-059) : une proposition qui en
+    chevauche une publiée peut recevoir des préinscriptions puis ne pas pouvoir être
+    approuvée (elle est alors refusée et les réservations libérées) ;
+  - les jetons de départ et la mise d'une proposition suivent les coefficients en vigueur
+    jusqu'à l'approbation (D-071) : un changement de coefficients entre une préinscription et
+    l'approbation change ces valeurs (le prix d'entrée réservé, lui, est figé) ;
+  - aucune notification n'est envoyée aux autres joueurs à la soumission (la proposition
+    apparaît dans leur liste à la prochaine lecture).
+- **Compléments (audit, même jour)** :
+  - la notification `TOURNAMENT_APPROVED` d'un préinscrit porte `preRegistered: true` (absent
+    pour le créateur). Le mobile masquait toute notification d'approbation (réservée au
+    créateur, qui voit « ✓ Proposition approuvée » sur sa carte) : un préinscrit n'était donc
+    jamais informé visiblement, et le texte « votre proposition est approuvée » ne le
+    concernait pas. Il voit désormais « tournoi approuvé, votre préinscription est
+    conservée » ; le créateur, inchangé ;
+  - le libellé mobile du départage `PLAYER_ID` suit D-109 (« départagé à l'identifiant du
+    joueur », au lieu de « critère technique déterministe ») ; D-109 n'est pas modifiée ;
+  - concurrence vérifiée sur PostgreSQL RÉEL (base de test dédiée `le_ter_test`, schéma
+    temporaire supprimé, deux instances) : `tests/integration/tournaments/
+    postgres-tournament-pre-registration.test.ts` (8 cas : préinscriptions simultanées et
+    capacité, double préinscription, double approbation, refus répétés simultanés,
+    approbation contre refus, préinscriptions pendant un refus, retrait et annulation
+    simultanés, expiration avancée par deux instances) : une seule réservation, une seule
+    libération, une notification et un audit par événement ;
+  - **approbation après la clôture choisie des inscriptions** : une proposition dont
+    `registrationClosesAt` (fixée par le joueur) est passée pendant les préinscriptions, mais
+    dont le début est encore à venir, était refusée à l'approbation (`registrationClosesAt`
+    comparée à l'heure courante, vestige du délai d'1 h). À l'approbation, seul l'ordre des
+    dates choisies est revérifié (clôture après l'ouverture choisie, au plus au début ; la
+    clôture a déjà été vérifiée contre l'horloge à la soumission). Le tournoi est publié
+    puis passe aussitôt en `REGISTRATION_CLOSED` : préinscrits conservés, plus aucune
+    inscription, démarrage normal à `starts_at`. Test : « approuvée après la clôture choisie
+    des inscriptions » (`tournament-pre-registration.test.ts`).
+- **Données** : aucune migration (aucune contrainte n'interdisait une inscription sur une
+  proposition ; les types de notification utilisés existent déjà).
+- **Tests** : backend `tests/integration/tournaments/tournament-pre-registration.test.ts`
+  (21 cas), `tests/unit/tournaments/tournament-domain.test.ts` (fenêtre, approbation),
+  `tournament-service.test.ts` et `tournament-api.test.ts` adaptés ; administration
+  `tests/tournament-pre-registration.test.tsx` ; mobile `tournament-state.test.ts`,
+  `tournament-groups.test.ts`, `TournamentDetailPanel.test.tsx`.
+
+## D-109 — Tournois : colonne « Parties » sans dénominateur, départage audité et libellé « Identifiant »
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  D-062, D-106, D-107 · **Ne modifie pas** : formule du score, pondérations, ordre du
+  départage, règlement des parties, résultats déjà publiés.
+- **« Parties »** (administration, classement mobile, export CSV) : un NOMBRE seul, le total des
+  parties admissibles jouées dans tout le tournoi, toutes tables confondues, calculé par le
+  serveur depuis le registre des parties réglées (D-107 : `tournament_games` `SETTLED`, une
+  ligne par partie, parties ordinaires, autres tournois et parties `VOID` exclus). L'affichage
+  « jouées / référence » de l'administration (« 5 / 1 » : la référence `R` de D-106 vaut 1
+  pour un tournoi court) est supprimé. La référence `R` reste une donnée interne de
+  normalisation du score (colonne d'audit `Games Reference` du CSV, règles du classement).
+- **Départage réellement appliqué** (vérifié dans `rankTournamentAccounts` et `rankAccounts`,
+  `domain/tournaments/tournament.ts`, inchangé) : 1) score EXACT (fractions entières, jamais
+  le score arrondi) décroissant ; à égalité exacte 2) parties gagnées décroissant ;
+  3) date d'inscription croissante ; 4) identifiant du joueur croissant (`localeCompare`,
+  ordre total). Les jetons restants ne départagent jamais : ils sont dans le score.
+- **Critère affiché** : celui enregistré avec le résultat officiel (`tournament_results.tie_break`,
+  `tieBreakBetween`) : pour une ligne à score égal à celle du dessus, le premier critère qui
+  les sépare ; pour la première ligne d'un groupe à égalité, le critère qui la sépare de la
+  suivante ; « — » sans égalité. Libellés : `GAMES_WON` « Parties gagnées »,
+  `REGISTRATION_ORDER` « Ordre d'inscription », `PLAYER_ID` « Identifiant » (auparavant
+  « Critère technique » dans l'administration).
+- **Tests** : administration `tests/tournament-results-columns.test.tsx` (total seul, libellés,
+  « — ») ; backend `tests/unit/tournaments/tournament-ranking-d106.test.ts` (ordre et critère
+  enregistré), `tests/integration/tournaments/tournament-games-across-tables.test.ts`
+  (cumul toutes tables, exclusions, cohérence application / administration / CSV, redémarrage).
+
+## D-110 — Mobile : retour au premier plan sans rechargement, cycle de vie centralisé
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet.
+- **Constat (audit)** : aucun rechargement du bundle (`reloadAsync` absent), aucune
+  réinitialisation de store ni redirection au simple retour. Les causes du « redémarrage »
+  perçu étaient :
+  1. la racine React REMONTÉE quand Android recrée l'activité (le moteur JavaScript survit) :
+     le cache TanStack Query vivait dans un `useState` de `app/_layout.tsx` (perdu), la pile de
+     navigation repartait de l'accueil, et la réouverture du dernier écran n'était décidée
+     qu'une fois par PROCESSUS (donc jamais après un remontage) ;
+  2. l'activité recréée sur des changements de configuration non déclarés (taille du texte,
+     taille d'affichage, langue modifiées dans Réglages pendant l'absence) ;
+  3. le processus détruit par Android : seuls tournois, administration et documents légaux
+     étaient rouverts ; le panneau ouvert (portefeuille, profil…) et le classement d'un tournoi
+     étaient perdus ;
+  4. cinq écouteurs `AppState` indépendants aux règles différentes ; certains relisaient sur
+     `inactive → active` (centre de notifications, dialogue système), et la fraîcheur nulle par
+     défaut relisait TOUTES les requêtes de tous les écrans montés à chaque retour ; l'écran de
+     partie envoyait deux requêtes par retour (la relecture explicite annulait celle du focus).
+- **Décision** :
+  - `src/lib/app-lifecycle.ts` : UNE souscription native partagée ; « retour au premier plan »
+    = `background` puis `active` (jamais `inactive` seul), un événement par retour, avec la
+    durée d'absence ; abonnements nettoyés, aucune navigation ni remontage. Abonnés : focus
+    TanStack Query (`app-focus`), reprise de session (`session.ts`), reprise de la partie
+    active (`useActiveGameRestorer`), écran de partie (`useGameReconnection`), WebSocket
+    (`useRealtimeWake`), géolocalisation (`useScreenActive`).
+  - `src/lib/query-client.ts` : cache unique au niveau du module (survit à un remontage),
+    fraîcheur par défaut 30 s ; données vivantes à fraîcheur nulle (partie, parties actives,
+    solde, sessions/tables, contexte de tournoi) relues à chaque retour ; une requête par
+    donnée et par retour (dédoublonnage TanStack, `cancelRefetch: false` sur l'écran de
+    partie).
+  - `last-route.ts` : décision de réouverture reprise à chaque nouvelle racine
+    (`beginNavigationRoot`) ; rouvrables en plus : `/tournament/results/:id` et le NOM du
+    panneau ouvert de la coquille (`profile`, `settings`, `private`, `shop`) sur `/` et
+    `/tournament`, jamais une saisie ni une donnée de jeu (30 min max, inchangé).
+  - Android : `plugins/withAndroidSensorLandscape.js` ajoute
+    `density|fontScale|locale|layoutDirection` à `android:configChanges` (nouveau build natif
+    requis, CNG ; aucune modification manuelle de `android/`). Complément du 2026-10-16
+    (interruption par un appel téléphonique) : `mcc|mnc` (SIM, réseau mobile, double SIM) et
+    `navigation|touchscreen` (matériel de saisie) ; test `src/test/android-config-changes.test.ts`.
+  - Relancement après destruction du processus : rideau `LaunchCurtain` jusqu'à la réouverture
+    du dernier écran (8 s au plus) ; l'ancienneté de 30 min se compte depuis le passage en
+    arrière-plan (écran réenregistré à ce moment).
+- **Validation sur téléphone** : uniquement avec un APK (profil EAS `preview`, D-093). Expo Go
+  connecté à Metro ne la permet pas : le manifeste d'Expo Go ignore ce plugin, Expo Go recharge
+  le bundle depuis Metro quand Android détruit son processus, et une modification de fichier
+  pendant l'absence (Fast Refresh) peut provoquer un rechargement complet au retour.
+- **Inchangé** : règles du jeu, minuteurs de tour (20 s) et échéances de tournoi ; le serveur
+  reste l'autorité (états relus, jamais reconstruits) ; commandes idempotentes (pas de double
+  carte ni de double règlement) ; une session expirée suit le parcours normal (refus définitif
+  → déconnexion, connexion, puis reprise) ; aucune vérification de sécurité désactivée.
+- **Limite** : un processus détruit ne peut pas être « conservé » : la session (jeton dans le
+  stockage sécurisé), la partie active (serveur), le dernier écran et son panneau sont
+  restaurés ; les saisies non envoyées et la position de défilement ne le sont pas.
+- **Tests** : `src/lib/app-lifecycle.test.ts`, `src/lib/app-focus.test.tsx`,
+  `src/features/lobby/LobbyShell.test.tsx`, `src/features/navigation/last-route.test.ts`,
+  `src/features/auth/session.test.ts`.
+
+## D-111 — Tournois : parties réglées comme les parties ordinaires, sur un compte fictif ; dissolution des comptes
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet · **Révise** : la
+  formule de règlement des jetons de D-054 (« tapis ») pour les tournois démarrés après la
+  migration 0044 · **Ne modifie pas** : moteur de jeu, résultats, messages, minuteurs, seuil de
+  participation (D-063), classement (D-106, D-107), cagnotte et gains (D-054, D-112).
+- **Audit (avant)** : même moteur, même fin de partie et mêmes événements pour les deux modes ;
+  différences : (1) règlement de tournoi propre (`settleGameTokens` : mise plafonnée aux jetons
+  du gagnant, fuyard compris, pas de Kora) ; (2) écran de fin sans montant pour une partie de
+  tournoi (`mySettlement` lu seulement dans le compte de jeu réel).
+- **Deux comptes, jamais mélangés** :
+  - partie ORDINAIRE : compte de jeu réel (`wallets`), engagement 2M au démarrage, règlement
+    D-074/D-080/D-086 avec commission (`game_settlements`, `wallet_transactions`,
+    `platform_ledger`) ; ne lit ni n'écrit jamais `tournament_player_accounts` ;
+  - partie de TOURNOI : compte FICTIF `tournament_player_accounts` (clé tournoi + joueur, créé
+    au démarrage du tournoi avec les jetons initiaux, D-054), indépendant du portefeuille et des
+    autres tournois ; aucun engagement, aucune transaction, aucune commission sur le compte
+    réel (`game-stake-ledger` ignore toute partie qui porte un `tournamentId` et toute table de
+    `tournament_sessions`).
+  - Le contexte est décidé par le SERVEUR : `games.tournament_id` écrit à la création et
+    immuable (D-106, garde-fous en base), jamais par le client.
+- **Règle `D111_ORDINARY_RULES`** (`planTournamentGame`, réutilise `victoryTypeOf`,
+  `settledParticipants`, `planGameSettlement`) : mêmes participants réglés qu'une partie
+  ordinaire (fuyards exclus, sauf adversaire couché à 2 qui paie, D-086 ; le coût de la fuite à 3
+  ou 4 reste À CLARIFIER, R-05 : rien n'est inventé, comme pour les parties ordinaires) ; perte
+  de chaque perdant M, ou 2M en Kora (D-080) ; commission 0 (la plateforme est rémunérée sur le
+  prix d'entrée, D-054) ; le gagnant reçoit le total. Garde-fou : un perdant ne paie jamais plus
+  que ses jetons (le seuil de 2 × la mise, D-063, couvre déjà la Kora). Parties jouées +1 et
+  gagnées +1 pour les seuls comptes réglés (donc le total global de D-107 suit la même règle).
+- **Règle figée au démarrage** : `tournaments.settlement_rule` écrit à `IN_PROGRESS`, immuable
+  (trigger `tournaments_frozen_rules_guard`) ; les tournois déjà démarrés gardent `D054_TAPIS`
+  (`settleGameTokens` inchangé) : aucune règle ne change en cours de tournoi.
+- **Vérifications et anomalies** : sous verrou du tournoi et des comptes : tournoi réglable
+  (`IN_PROGRESS` ou `CALCULATING_RESULTS`), partie démarrée avant la fin, gagnant parmi les
+  participants réglés, un compte de CE tournoi pour chaque participant réglé. Sinon :
+  règlement `VOID` (motif `WINNER_NOT_PARTICIPANT`, `PARTICIPANT_WITHOUT_ACCOUNT`,
+  `INVALID_SETTLEMENT`, journalisé `TOURNAMENT_GAME_SETTLEMENT_REFUSED`), aucun mouvement.
+  Partie rattachée à un tournoi introuvable : aucun règlement (ni fictif, ni réel : le compte
+  réel ignore toute partie de tournoi), anomalie journalisée
+  `TOURNAMENT_GAME_SETTLEMENT_REFUSED` motif `TOURNAMENT_NOT_FOUND` (complément du 2026-10-15).
+- **Idempotence** : une ligne `tournament_games` par partie (clé `game_id`), insérée dans la
+  même transaction que les comptes (tout ou rien) ; deuxième règlement (reprise, concurrence)
+  = aucun mouvement. Le règlement est IMMUABLE (trigger `tournament_games_immutable_guard` :
+  ni modification ni suppression) et porte `settlement_rule` et `victory_type`.
+- **Expérience de fin de partie** : mêmes titre, message, pile de jetons et montant signé ;
+  `mySettlement = { delta, account }` (`WALLET` ou `TOURNAMENT`, lu côté serveur) ; pour un
+  tournoi, la mention « Jetons du tournoi — solde fictif, votre solde réel est inchangé » est
+  ajoutée sous le montant, et le contexte du tournoi (jetons, rang) est relu.
+- **Bilan affiché au même moment** (complément du 2026-10-15) : le règlement ordinaire est
+  écrit avec la fin de partie, celui d'un tournoi juste après (écouteur de fin de partie). Après
+  son COMMIT, le serveur envoie aux seuls joueurs réglés le signal personnel
+  `TOURNAMENT_GAME_SETTLED` (salle `user:{id}`, aucune notification enregistrée, une seule fois :
+  un règlement rejoué n'écrit rien et ne signale rien) ; la table relit aussitôt la partie
+  (`useTournamentSettlementUpdates`) et le contexte du tournoi (`useTournamentSignals`). Signal
+  sans garantie : la relecture périodique de la partie (3 s) reste le filet de sécurité.
+- **Solde de tournoi identifié** : sur la table d'un tournoi, la pastille du solde porte
+  l'étiquette visible « Tournoi » et l'accessibilité annonce « jetons de tournoi restants
+  (solde fictif) » : jamais confondue avec le compte de jeu réel.
+- **Dissolution** : dans la transaction qui passe le tournoi à `COMPLETED` (classement publié,
+  gains versés), `dissolveAccounts` : comptes clos (`finished_at`) → `DISSOLVED` +
+  `dissolved_at`, idempotent, définitif (trigger), aucune suppression (soldes finaux, parties,
+  rang, gain et règlements conservés pour l'audit et les contestations), aucun crédit, débit ou
+  remboursement du compte réel. Plus aucune partie ne démarre dans un tournoi terminé (D-106).
+- **Migration** : `0044_tournament_ordinary_settlement.sql` (ajouts seulement).
+- **Tests** : backend `tests/unit/tournaments/tournament-game-plan.test.ts`,
+  `tests/integration/tournaments/tournament-ordinary-settlement.test.ts` (référence ordinaire :
+  `tests/integration/games/game-settlement.test.ts`, assertions `account: 'WALLET'` ajoutées),
+  `tests/integration/tournaments/tournament-closure-results.test.ts` (décompte des signaux) ;
+  mobile `src/features/games/table/game-over-panel.test.tsx`,
+  `src/features/games/game-updates.test.tsx`, `src/features/tournaments/TournamentResults.test.tsx`.
+
+## D-112 — Tournois : récompenses réelles, plan de versement validé, crédit unique et reprise
+
+- **Date** : 2026-10-15 · **Statut** : demandé par le propriétaire du projet (exécution
+  autonome, choix techniques délégués) · **Complète** : D-054 (cagnotte, gains), D-062 / D-106
+  (classement), D-107 (registre), D-111 (règlement fictif, dissolution) · **Ne modifie pas** :
+  inscription, réservation, capture, taux de commission (figé à la publication), formule de
+  classement, départage, répartition des gains (`computePrizes` : parts à l'entier inférieur,
+  reste au 1er rang), règlement des parties.
+- **Deux soldes indépendants** (rappel vérifié dans le code) : le compte de jeu RÉEL
+  (`wallets`, `wallet_transactions`) ne bouge qu'à la capture du prix d'entrée
+  (`tournament_entry`) et au versement d'une récompense (`tournament_prize`) ; les jetons du
+  tournoi (`tournament_player_accounts`, un compte par joueur et par tournoi) ne servent qu'au
+  classement, ne sont jamais convertis, et sont dissous après la finalisation (D-111) sans
+  aucun mouvement réel.
+- **Cagnotte** : brute = fonds réellement capturés (prix × participants), commission =
+  `floor(brute × taux figé)`, distribuable = brute − commission (D-054, inchangé).
+- **Plan de versement** (`tournament_payouts`, migration 0045) : écrit dans la transaction du
+  classement officiel, une ligne par rang récompensé : bénéficiaire, montant entier (FCFA),
+  référence UNIQUE `tournament-prize:<tournoi>:<rang>` (celle de D-054 : un gain versé avant
+  D-112 n'est jamais reversé), statut `PENDING` → `CREDITED` (définitif) ou `FAILED` (motif,
+  tentatives, date). Bénéficiaire, montant et référence sont immuables ; aucune suppression
+  (trigger). Un bénéficiaire par tournoi (UNIQUE). Ex æquo : le classement est un ordre total
+  (départage jusqu'à l'identifiant), un rang n'a donc jamais deux bénéficiaires ni de partage.
+- **Validation avant tout crédit** (`RESULTS_VALIDATED` → `DISTRIBUTING_PRIZES`) : (1) les
+  contrôles du compte financier de la plateforme, ceux de la réconciliation de l'administration
+  (`tournamentAnomalies`, faits lus par `queryTournamentLedgerFacts` pour CE tournoi) :
+  commission écrite et conforme, cagnotte brute = entrées réellement capturées, brute =
+  commission + distribuable, gains + non attribué = distribuable ; (2) le plan
+  (`payoutPlanAnomalies`) : classement contigu, gains = répartition officielle recalculée, plan
+  = gains du classement (montant, bénéficiaire, aucune ligne en trop ou manquante, aucun
+  doublon), total ≤ distribuable et total + non attribué = distribuable. Une anomalie BLOQUE
+  tout versement : motifs enregistrés (`tournaments.payout_blocked_at`,
+  `payout_block_reasons`), alerte `TOURNAMENT_PAYOUTS_BLOCKED`, affichage dans
+  l'administration. Les contrôles sont rejoués à chaque tick ; le blocage se lève seul quand
+  les données sont cohérentes (`payout_plan_validated_at`). Aucune procédure de correction
+  manuelle n'est créée.
+- **Crédit** (une récompense par transaction) : `creditTournamentPrize` (compte verrouillé,
+  écriture interne `tournament_prize`, jamais CinetPay), versement `CREDITED` avec la
+  référence de la transaction, résultat marqué versé et notification
+  `TOURNAMENT_PRIZE_CREDITED` — dans la même transaction : la notification n'existe que si le
+  crédit est validé ; le signal temps réel suit le COMMIT, sans garantie. Garanties en base :
+  `UNIQUE (user_id, idempotency_key)` sur `wallet_transactions`, référence UNIQUE du plan,
+  `wallet_transaction_id` UNIQUE, trigger `tournament_payouts_credit_guard` (la transaction
+  référencée est bien un `tournament_prize` réussi du même joueur, du même montant, de la même
+  référence), statut `CREDITED` définitif. Deux instances, deux ticks ou une reprise après
+  panne ne créditent jamais deux fois : verrou de la ligne du tournoi, puis de la ligne du plan,
+  et la clé déjà utilisée renvoie la transaction existante.
+- **Échec et reprise** : une erreur annule la transaction du crédit (rien n'est écrit), puis
+  le versement passe `FAILED` (motif, tentatives) dans une transaction séparée, alerte
+  `TOURNAMENT_PRIZE_PAYOUT_FAILED` ; les autres bénéficiaires sont payés ; le versement en échec
+  est retenté automatiquement après 60 s (`PAYOUT_RETRY_DELAY_MS`), indéfiniment, sans action
+  manuelle. Tout est relu dans PostgreSQL : un redémarrage reprend exactement là.
+- **Finalisation financière** : `COMPLETED` seulement quand TOUT le plan est `CREDITED`,
+  garanti par le service et par le trigger `tournaments_completion_guard` ; dans la même
+  transaction, comptes fictifs dissous (D-111) et résultats annoncés. État dérivé
+  (`tournamentFinancialState`) : `PLAN_PENDING_VALIDATION`, `BLOCKED`, `PAYING`,
+  `PAYMENT_FAILED`, `FINALIZED`…
+- **API** : `GET /api/admin/tournaments/:id/payouts` (rôle admin, lecture seule) : fonds
+  capturés, commission, distribuable, répartition, plan (bénéficiaire, montant, statut,
+  référence, transaction, tentatives, dernier échec), blocage, crédité / dû, état. Joueur :
+  `GET /api/tournaments/:id/results` → `me.payout` (`amount`, `CREDITED` ou `PENDING` — un
+  échec en cours de reprise est présenté « en cours », jamais « crédité »).
+- **Interfaces** : administration web, carte « Récompenses réelles » du détail d'un tournoi ;
+  application mobile, « Votre résultat » distingue la récompense réelle (« créditée sur votre
+  compte de jeu » ou « versement en cours ») des jetons de tournoi (« sans valeur monétaire »).
+- **Validation finale (2026-10-16)** — compléments :
+  - **Jetons → FCFA impossible en base** (migration 0045) : une partie de tournoi (rattachée,
+    ou à une table de tournoi, `is_tournament_game`) ne peut recevoir ni séquestre
+    (`game_settlements`), ni réservation, ni mise ou gain (`wallet_transactions.game_id`) :
+    trigger `tournament_game_real_money_guard`. Un `tournament_prize` n'existe que s'il est la
+    preuve de crédit d'une ligne CREDITED du plan (même joueur, montant, référence), vérifié en
+    fin de transaction (trigger de contrainte différé `wallet_transactions_tournament_prize_guard`).
+    Seule conversion possible : classement officiel → plan validé → crédit d'une ligne du plan.
+    La dissolution des comptes fictifs (D-111) n'écrit rien dans le compte de jeu.
+  - **Contrôles rejoués avant CHAQUE crédit et avant la clôture**, pas seulement à la
+    validation : une incohérence apparue pendant la distribution bloque les versements
+    restants et la finalisation (état `BLOCKED`), puis se lève d'elle-même.
+  - **Atomicité vérifiée** : une panne entre le crédit du compte de jeu et le passage CREDITED
+    annule les deux (même transaction) ; « compte crédité + versement non crédité » et
+    « versement crédité + compte non crédité » sont impossibles (le second est aussi refusé par
+    `tournament_payouts_credit_guard`).
+  - **Audit des échecs** : tentatives et dernier motif d'échec conservés après un crédit réussi.
+  - **Reprise** : une tentative par versement en échec toutes les 60 s au plus, une seule à la
+    fois (verrous de la ligne du tournoi et du plan) ; une erreur permanente laisse l'état
+    « Versement en échec » persistant, visible, journalisé, sans clôture possible. Aucune
+    correction administrative (montant, bénéficiaire, abandon) n'existe ni n'est créée.
+  - **Limite connue** : un tournoi DÉJÀ en `DISTRIBUTING_PRIZES` au moment de la migration reçoit
+    un plan « validé » sans rejouer la validation initiale ; les contrôles s'appliquent quand
+    même avant chacun de ses crédits restants et avant sa clôture.
+- **Migration 0045** (`0045_tournament_payouts.sql`) : table, triggers, colonnes de validation ;
+  plans créés pour les classements déjà publiés avec l'état RÉEL de chaque gain (versé →
+  `CREDITED` avec sa transaction ; sinon `PENDING`), aucune écriture du compte de jeu.
+- **Tests** : backend `tests/unit/tournaments/tournament-payouts.test.ts`,
+  `tests/integration/tournaments/tournament-payouts.test.ts`,
+  `tests/integration/database/tournament-payouts-migration.test.ts` ; administration
+  `tests/tournament-payouts.test.tsx` ; mobile `TournamentResults.test.tsx`.
+
+## D-113 — Préinscriptions : limite des 5 tournois, chevauchement à la soumission, jetons figés
+
+- **Date** : 2026-10-15 · **Statut** : décidé par le propriétaire du projet (choix techniques
+  délégués) · **Complète** : D-108 (tranche trois de ses « points laissés à décider ») ·
+  **Modifie** : D-072 (comptage de la limite), D-071 (jetons de départ et mise d'une
+  proposition préinscrite) · **Ne modifie pas** : D-108 (préinscriptions, approbation sans
+  délai d'1 h, refus, retrait, expiration), D-109, statuts et transitions, modèle financier
+  (réservation, capture au démarrage, libération), commission et poids figés à la
+  publication, prix d'entrée réservé, `TOURNAMENT_LOCKED` dès la première préinscription.
+- **Limite des 5 tournois** (`TOURNAMENT_LIMITS.maxWaitingTournaments`) : compte désormais,
+  en plus des tournois publiés aux inscriptions ouvertes ou à ouvrir (`SCHEDULED`,
+  `REGISTRATION_OPEN`, D-072 inchangé), les propositions `PENDING_APPROVAL` dont la fenêtre
+  de préinscription n'est pas close (`registration_closes_at`, sinon début, encore à venir).
+  Comme un tournoi `SCHEDULED`, une proposition dont l'ouverture choisie est à venir compte
+  déjà (elle s'ouvrira sans nouveau contrôle). Jamais comptés : brouillons, annulés (refus,
+  retrait, annulation, expiration), inscriptions closes. Règle unique du domaine
+  `countsTowardRegistrationLimit`, reproduite en SQL par `countWaitingTournaments`.
+  Contrôlée sous le verrou de planification (`pg_advisory_xact_lock`) à la création admin, à
+  la SOUMISSION (qui prend désormais ce verrou, avant la ligne du tournoi, même ordre que
+  l'approbation : pas d'interblocage) et à l'approbation, où la proposition déjà comptée
+  est exclue (`excludeId`) ; à la modification d'une proposition si elle rouvre une fenêtre
+  close. Soumissions simultanées : sérialisées, une seule passe pour la dernière place. La
+  création d'un brouillon garde un contrôle d'information non bloquant. Propositions déjà
+  en attente au déploiement : rien n'est annulé ; si elles dépassent la limite, elles
+  bloquent seulement les nouvelles ouvertures, et l'approbation de chacune reste soumise à
+  la limite.
+- **Chevauchement** : contrôlé dès la SOUMISSION (et à la modification des dates d'une
+  proposition en attente) contre les tournois PUBLIÉS non terminés (`BLOCKING_STATUSES`),
+  avec la définition de la contrainte `tournaments_no_overlap` : créneaux [début,
+  `blocked_until`[ persistés des tournois publiés ; pour la proposition, le créneau que la
+  publication lui fixera (fin + période de transition en vigueur). Deux créneaux qui se
+  suivent ne se chevauchent pas. Refus : `409 TOURNAMENT_OVERLAP` (« Un autre tournoi est
+  déjà programmé sur ce créneau. »), la proposition reste un brouillon privé, rien n'est
+  inscrit ni réservé. Contrôle préalable seulement : l'approbation garde la contrainte
+  PostgreSQL (un tournoi publié APRÈS la soumission fait toujours échouer l'approbation,
+  préinscriptions intactes, D-108). Deux PROPOSITIONS sur un même créneau restent
+  possibles (aucune n'occupe de créneau avant la publication) : l'approbation tranche.
+- **Jetons de départ et mise figés à la première préinscription** : jusqu'ici ils suivaient
+  les coefficients jusqu'à l'approbation (D-071). Désormais, dans la transaction de la
+  PREMIÈRE préinscription (verrou de la ligne du tournoi), les valeurs affichées à cet
+  instant (prix d'entrée × coefficients en vigueur) sont écrites avec la marque
+  `token_setup_frozen_at` ; lecture (joueurs, administration) et approbation les reprennent
+  telles quelles (`frozenTokens`, bornes toujours vérifiées). Les préinscriptions suivantes
+  et les désinscriptions ne refigent rien. Seule exception : un nouveau prix d'entrée, permis
+  uniquement sans aucun inscrit actif, retire la marque (nouvelle offre, valeurs de nouveau
+  calculées). Avant toute préinscription : D-071 inchangé. Commission et poids : toujours
+  figés à la publication. Administration : « Figé à la première préinscription. » (sans
+  coefficient) au lieu de « Figé à la publication. ».
+- **Notifications** : aucune notification générale à la soumission (bruit) ; la proposition
+  apparaît dans la liste à la prochaine lecture de l'API (D-108 inchangé). **GET /next** :
+  inchangé, prochain tournoi OFFICIEL (publié, `WAITING_STATUSES`) auquel le joueur est
+  inscrit ; une proposition préinscrite n'y figure qu'après son approbation.
+- **Données** : migration `0046_tournament_token_setup_freeze.sql` (colonne nullable
+  `tournaments.token_setup_frozen_at`, ajout seul, aucune ligne réécrite). Pas de
+  rattrapage : D-108 n'a jamais été déployée, aucune préinscription n'existe en production.
+  Non appliquée à la base réelle.
+- **Tests** : backend `tests/integration/tournaments/tournament-pre-registration-rules.test.ts`
+  (24 cas : limite, chevauchement, figement, `/next`, notifications, concurrence sur PGlite),
+  `tests/integration/database/tournament-token-freeze-migration.test.ts`,
+  `postgres-tournament-pre-registration.test.ts` (+2 cas de concurrence, PostgreSQL réel,
+  exécutés seulement avec `TEST_DATABASE_URL`) ; `tournament-pre-registration.test.ts` : le
+  cas « chevauchement refusé à l'approbation » publie désormais le tournoi concurrent APRÈS
+  la soumission ; administration `tests/token-setup.test.tsx`.
+
+## D-114 — Réclamations des joueurs et assistant automatisé local (Ollama), sans pouvoir sur l'argent
+
+- **Date** : 2026-10-16 · **Statut** : demandé par le propriétaire du projet (exécution
+  autonome, choix techniques délégués) · **Détails** : [complaints.md](complaints.md) ·
+  **S'appuie sur** : D-029 (identité du JWT), D-054 (notifications), D-061 (session et audit
+  d'administration), D-079 (modèle d'actions administratives auditées).
+- **Réclamations** (migration 0047, ajouts seuls) : dossier persistant à référence lisible
+  `RCL-AAAAMMJJ-XXXXXX`, dix catégories (partie/résultat, solde, recharge, retrait, tournoi,
+  récompense de tournoi, technique, fraude, compte/sécurité, autre), priorité calculée par le
+  serveur, liens vers partie, tournoi, transaction, paiement, retrait par clé étrangère
+  (vérifiés comme appartenant au joueur ; aucun montant recopié), échanges, notes internes,
+  pièces justificatives (stockées dans PostgreSQL, type vérifié sur la signature, 3 Mo, 5 par
+  dossier), vérifications tracées, historique en ajout seul. Isolation : un dossier d'un autre
+  joueur répond 404.
+- **Workflow** : `OPEN → AI_ANALYSIS → IN_REVIEW ⇄ WAITING_FOR_PLAYER → RESOLVED | REJECTED →
+  CLOSED`, transitions autorisées PAR ACTEUR (table `COMPLAINT_TRANSITIONS`). Une décision
+  (`RESOLVED`/`REJECTED`) est toujours humaine et motivée ; le système ne résout, ne rejette ni
+  ne clôture jamais, même un dossier non financier. Le joueur répond, retire son dossier, accepte
+  ou conteste une décision (≤ 2 fois, ≤ 30 jours). `expectedStatus` contre les traitements
+  concurrents. Chaque action administrative est auditée dans la transaction du changement.
+- **Assistant** : modèle open-weight exécuté par **Ollama sur nos machines** (aucune API externe,
+  aucune clé), joint uniquement par le backend (`OLLAMA_BASE_URL` interne, jamais renvoyée ni
+  journalisée). Le modèle classe, extrait et rédige ; ses sorties sont des données non fiables :
+  schéma JSON imposé puis validation stricte, identifiants inventés refusés, outils en liste
+  blanche et en LECTURE SEULE exécutés avec l'identité du jeton, réponse refusée si elle cite un
+  montant/identifiant absent des faits, prétend avoir agi, promet un délai ou se dit humaine.
+  Les faits vérifiés sont affichés séparément du texte généré. La création d'une réclamation
+  depuis la conversation est confirmée par le joueur (catégorie modifiable).
+- **Limites financières** : aucun chemin ne permet à l'IA (ni au traitement d'une réclamation)
+  de créditer, débiter, créer ou supprimer une transaction, modifier un résultat, un classement
+  ou une récompense, suspendre un compte ou rembourser. Une correction passe par le service
+  métier existant (paiements, retraits, tournois), avec ses propres garanties ; la décision du
+  dossier la consigne.
+- **Coûts et disponibilité** : concurrence 1 et file bornée (au-delà : « occupé »), disjoncteur
+  (3 échecs → 60 s sans appel), délai maximal, contexte et réponses bornés, ≤ 8 messages
+  transmis, quotas par joueur, conversation bornée. **Mode dégradé** sans fournisseur ou en
+  panne : classement par mots-clés, mêmes outils, réponses fixes FR/EN ; dépôt et suivi
+  inchangés. Modèle par défaut `qwen2.5:1.5b` choisi pour la machine auditée (7,7 Go de RAM,
+  CPU seul) ; `qwen2.5:3b` recommandé sur un serveur ≥ 16 Go.
+- **Notifications** : `COMPLAINT_UPDATE` (référence et nature de l'événement, jamais de
+  montant), dédupliquée par événement ; bandeau d'accueil mobile.
+- **Non tranché ici** : durées légales de conservation des dossiers et conversations (T-09) —
+  rien n'est supprimé automatiquement en attendant.
+- **Tests** : backend `tests/unit/complaints/*` (domaine, garde, fournisseur simulé,
+  configuration), `tests/integration/complaints/*` (PGlite : dépôt sans IA, isolation, workflow
+  audité, notifications idempotentes, pièces, reprise après redémarrage, faux modèle : données
+  inventées refusées, injection, panne, rejeu) ; mobile `src/features/complaints/complaints.test.tsx` ;
+  administration `tests/complaints.test.tsx`.
+
+## D-115 — Réclamations : finalisation (bail d'analyse, garde renforcée, raccourcis, rétention T-09 en attente)
+
+- **Date** : 2026-10-16 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  D-114 · **Détails** : [complaints.md](complaints.md).
+- **Séparation des rôles** : `modèle → proposition` (classement, extraction, texte) ;
+  `serveur → validation` (schéma, identifiants cités par le joueur seulement, outils en lecture
+  seule exécutés avec l'identité du jeton, garde de la réponse) ; `humain → décision` (statut
+  `RESOLVED`/`REJECTED`, motivée, auditée). Jamais `modèle → décision`.
+- **Garde renforcée** (`guardReply`) : en plus de D-114, refus d'une réponse qui prétend
+  connaître une décision humaine, affirme un remboursement ou une correction, affirme un crédit
+  sans constat de crédit réel (`PAYMENT_CREDITED`, `GAME_WON_CREDITED`, `TOURNAMENT_PRIZE_PAID`,
+  `WITHDRAWAL_SUCCEEDED`), contredit un constat du serveur (paiement en attente dit
+  « confirmé », partie perdue dite « gagnée »…) ou annonce une date. Refusée : réponse
+  déterministe fondée sur les constats. Le résumé destiné au support peut rapporter les
+  DÉCLARATIONS du joueur (mode `declarations`), jamais une action, un délai ni une identité.
+- **Minimisation** : un outil demandé par le modèle n'est exécuté que s'il sert la catégorie
+  (`RELEVANT_TOOLS` : ex. jamais le solde pour une question de recharge ou de tournoi).
+- **Analyse sûre en multi-instance** : bail `complaints.analysis_claimed_at` (UPDATE
+  conditionnel atomique, 5 min, supérieur au délai maximal d'un appel) ; le balayage (démarrage
+  et chaque minute, sur toutes les instances) ne reprend qu'un bail libre ou expiré. Vérifié sur
+  PostgreSQL réel : trois instances concurrentes → un seul appel au modèle.
+- **Mode dégradé** : sans fournisseur, fournisseur arrêté, délai dépassé, sortie mal formée ou
+  invalide : réponse fixe indiquant que l'assistance automatique n'est pas disponible (sans
+  détail technique), analyse `UNAVAILABLE`, dossier en examen humain ; jamais d'`AI_ANALYSIS`
+  bloqué (bail expiré → reprise).
+- **Fournisseur interchangeable** : seul `services/ai/create-language-model.ts` connaît Ollama ;
+  le domaine et les services des réclamations ne reçoivent qu'un `LanguageModel`.
+- **Corrections financières** : aucune voie propre aux réclamations ni à l'IA. L'administration
+  corrige dans le module existant (paiements, retraits, tournois, joueur), liens fournis depuis le
+  dossier, puis référence la correction dans la décision motivée.
+- **Raccourcis** « Signaler un problème » : fin de partie (`gameId`), fiche et classement officiel
+  d'un tournoi (`tournamentId`). Le mobile ne transmet que le contexte affiché ; le serveur
+  vérifie l'accès (422 sinon) et le joueur peut retirer l'élément lié.
+- **Rétention (T-09, NON TRANCHÉE)** : aucune suppression automatique n'est activée. Données
+  concernées, conservées en attendant la règle : réclamations, messages (y compris notes
+  internes), pièces justificatives, vérifications (faits constatés), historique
+  (`complaint_events`, ajout seul), journal d'audit (`admin_audit_log`, ajout seul),
+  notifications `COMPLAINT_UPDATE`, conversations et messages de l'assistant (dont l'analyse
+  automatisée et ses métadonnées), résumé automatisé du dossier. Une future politique devra
+  distinguer données personnelles et traces d'audit, et passer par une migration et un service
+  dédiés (jamais par une purge ad hoc).
+- **Pièces dans PostgreSQL** (choix maintenu) : ≤ 3 Mo × 5 par dossier, `bytea` stocké hors ligne
+  par PostgreSQL (TOAST), lu seulement à la demande (jamais dans les listes), transactions et
+  sauvegardes communes avec le dossier, accès contrôlé par le serveur. Évolution possible, non
+  réalisée : stockage objet privé (URL signées courtes) si le volume le justifie.

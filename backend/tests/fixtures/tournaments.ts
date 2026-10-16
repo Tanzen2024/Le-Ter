@@ -9,6 +9,7 @@ import type { UserId } from '../../src/domain/users/user';
 import { PostgresGameStakeLedger } from '../../src/repositories/game-stake-ledger';
 import { PostgresGameRepository } from '../../src/repositories/postgres-game.repository';
 import { PostgresSessionRepository } from '../../src/repositories/postgres-session.repository';
+import { PostgresGameSettlementReader } from '../../src/repositories/postgres-game-settlement.repository';
 import { PostgresTournamentRepository } from '../../src/repositories/postgres-tournament.repository';
 import { readWalletBalances } from '../../src/repositories/wallet-reservations';
 import { PasswordService } from '../../src/services/auth/password.service';
@@ -23,6 +24,7 @@ import { singleActiveGameParticipation } from '../../src/services/game/participa
 import { NotificationService } from '../../src/services/notifications/notification.service';
 import { SessionService } from '../../src/services/sessions/session.service';
 import {
+  tournamentGameStartWindow,
   tournamentSessionAdmission,
   tournamentTableContinuation,
 } from '../../src/services/tournaments/tournament-admission';
@@ -31,6 +33,7 @@ import { TournamentService } from '../../src/services/tournaments/tournament.ser
 import { createLogger } from '../../src/utils/logger';
 import { InMemoryGameEventHub } from '../../src/websocket/in-memory-game-event-hub';
 import { InMemorySessionEventHub } from '../../src/websocket/session-event-publisher';
+import type { UserEventPublisher } from '../../src/websocket/user-event-bus';
 import { NO_RATE_LIMITS, TEST_JWT_SECRET } from './auth';
 import type { RandomSource } from '../../src/domain/cards/random-source';
 import { defaultTestRandom } from './random';
@@ -64,9 +67,13 @@ export function createTournamentTestStack(
     random?: RandomSource;
     /** Les parties suivent aussi l'horloge de test (échéances de démarrage, D-065). */
     gameClock?: boolean;
+    /** Signaux temps réel des résultats (D-106). */
+    userEvents?: UserEventPublisher;
+    /** Journal observé par le test (anomalies) ; muet par défaut. */
+    logSink?: (line: string) => void;
   } = {},
 ) {
-  const logger = createLogger({}, () => undefined);
+  const logger = createLogger({}, options.logSink ?? (() => undefined));
   const bus = new InMemoryGameEventHub();
   // Séquestre des mises câblé comme en production (D-074) : les tables de tournoi en sont
   // exclues (jetons de tournoi) ; aucun test de tournoi ne doit réserver de jetons.
@@ -87,6 +94,9 @@ export function createTournamentTestStack(
     turnDurationMs: 60 * MINUTE,
     // D-102 : distribution confirmée au démarrage (la phase se teste dans deal-phase.test.ts).
     dealDurationMs: () => 0,
+    startWindow: tournamentGameStartWindow(repository, clock.now),
+    // Bilan du joueur en fin de partie, comme en production (compte réel ou fictif, D-111).
+    settlements: new PostgresGameSettlementReader(sql),
     ...(options.gameClock && { clock: clock.now }),
   });
   const sessionTimers = new SessionTimerRegistry();
@@ -111,6 +121,7 @@ export function createTournamentTestStack(
     games,
     logger,
     clock: clock.now,
+    ...(options.userEvents && { userEvents: options.userEvents }),
   });
   games.onGameFinished((game) => tournaments.observeFinishedGame(game));
   const scheduler = new TournamentScheduler({ tournaments, repository, logger, clock: clock.now });

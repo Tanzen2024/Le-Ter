@@ -73,6 +73,28 @@ describe('composants partagés', () => {
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
+  it('confirmation refusée par la validation : le détail du serveur est affiché', async () => {
+    const onConfirm = vi.fn().mockRejectedValue(
+      new ApiError(400, 'VALIDATION_ERROR', 'Certaines informations sont invalides.', {
+        startsAt: 'Le tournoi doit commencer au moins 1 h plus tard.',
+      }),
+    );
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={vi.fn()}
+        title="Approuver ?"
+        description="Publication."
+        confirmLabel="Approuver"
+        onConfirm={onConfirm}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Approuver' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Certaines informations sont invalides.');
+    expect(alert).toHaveTextContent('Le tournoi doit commencer au moins 1 h plus tard.');
+  });
+
   it('opérations financières non prises en charge : affichées sans aucun bouton d’action', () => {
     render(
       <UnsupportedOperations

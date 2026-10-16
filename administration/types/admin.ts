@@ -523,6 +523,15 @@ export interface TournamentRegistration {
   reservation?: { amount: number; status: 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED' };
 }
 
+/** Règles de classement figées du tournoi, renvoyées avec le classement officiel (D-106). */
+export interface TournamentRankingRules {
+  method: 'D062_SATURATING' | 'D106_CAPITAL_RATIO';
+  tokensWeightPercent: number;
+  gamesWeightPercent: number;
+  /** Nombre de parties de référence figé au démarrage du tournoi. */
+  gamesReference: number;
+}
+
 export interface TournamentResult {
   rank: number;
   username: string;
@@ -531,6 +540,8 @@ export interface TournamentResult {
   gamesPlayed: number;
   gamesWon: number;
   score?: number;
+  /** Critère qui a départagé un score exactement égal (D-106). */
+  tieBreak?: 'GAMES_WON' | 'REGISTRATION_ORDER' | 'PLAYER_ID';
   prizePercent: number;
   prizeAmount: number;
   paid: boolean;
@@ -853,4 +864,51 @@ export interface PlatformPayoutDetail extends PlatformPayoutRow {
     details: Record<string, unknown>;
     createdAt: string;
   }[];
+}
+
+// --- Versements des récompenses réelles des tournois (D-112) ---------------------------------
+
+export type TournamentFinancialState =
+  | 'NOT_STARTED'
+  | 'CANCELLED'
+  | 'IN_PROGRESS'
+  | 'PLAN_PENDING_VALIDATION'
+  | 'BLOCKED'
+  | 'PAYING'
+  | 'PAYMENT_FAILED'
+  | 'FINALIZED';
+
+/** Une ligne du plan de versement (GET /api/admin/tournaments/:id/payouts). */
+export interface TournamentPayout {
+  rank: number;
+  username: string;
+  amount: number;
+  status: 'PENDING' | 'CREDITED' | 'FAILED';
+  /** Référence unique du crédit (clé d’idempotence de la transaction du compte de jeu). */
+  reference: string;
+  walletTransactionId: string | null;
+  attempts: number;
+  lastError: string | null;
+  lastAttemptAt: string | null;
+  creditedAt: string | null;
+}
+
+export interface TournamentPayoutReport {
+  tournamentId: string;
+  status: TournamentSummary['status'];
+  financialState: TournamentFinancialState;
+  pool: {
+    participants: number;
+    grossPool: number;
+    platformFee: number;
+    platformFeePercent: number;
+    prizePool: number;
+    unallocatedPrize: number;
+  };
+  prizeRules: { rank: number; percent: number }[];
+  planValidatedAt: string | null;
+  blocked: { at: string; reasons: string[] } | null;
+  dueTotal: number;
+  creditedTotal: number;
+  payouts: TournamentPayout[];
 }

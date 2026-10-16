@@ -27,7 +27,20 @@ export class PostgresGameSettlementReader implements GameSettlementReader {
       [gameId, playerId],
     );
     const row = rows[0];
-    if (!row || row.status === 'RESERVED') return null;
-    return { delta: Number(row.delta) };
+    if (row) {
+      return row.status === 'RESERVED' ? null : { delta: Number(row.delta), account: 'WALLET' };
+    }
+    // Partie de tournoi : règlement des comptes FICTIFS (D-111), une ligne par partie. Un
+    // joueur non réglé (fuyard d'une partie à 3 ou 4, règlement VOID) : variation 0.
+    const tournament = await this.sql.query<{ delta: string | number | null }>(
+      `SELECT (tg.transfers ->> $2::text) AS delta
+         FROM tournament_games tg
+         JOIN games g ON g.id = tg.game_id AND g.tournament_id = tg.tournament_id
+        WHERE tg.game_id = $1`,
+      [gameId, playerId],
+    );
+    const settled = tournament.rows[0];
+    if (!settled) return null;
+    return { delta: Number(settled.delta ?? 0), account: 'TOURNAMENT' };
   }
 }

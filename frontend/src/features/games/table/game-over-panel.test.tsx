@@ -50,7 +50,7 @@ function finishedGame(overrides: Partial<GameView> = {}): GameView {
       remainingOpponentIds: [ME],
       fledPlayerIds: [],
     },
-    mySettlement: { delta: -84 },
+    mySettlement: { delta: -84, account: "WALLET" },
     myActions: {
       canPlayCard: false,
       playableCardIds: [],
@@ -131,7 +131,7 @@ describe("panneau de fin de partie : contenu", () => {
         remainingOpponentIds: [OTHER],
         fledPlayerIds: [],
       },
-      mySettlement: { delta: 98 },
+      mySettlement: { delta: 98, account: "WALLET" },
     });
     await render(<GameOverPanel {...panel({ game }).props} />);
 
@@ -143,7 +143,7 @@ describe("panneau de fin de partie : contenu", () => {
     expect(screen.getByText("+98")).toBeTruthy();
   });
 
-  it("sans règlement (table de tournoi) : aucun montant inventé", async () => {
+  it("pas encore réglée (ou sans mise) : aucun montant inventé", async () => {
     const game = finishedGame({ mySettlement: undefined });
     await render(<GameOverPanel {...panel({ game }).props} />);
 
@@ -151,10 +151,57 @@ describe("panneau de fin de partie : contenu", () => {
     expect(screen.queryByTestId("game-over-amount")).toBeNull();
   });
 
+  it("victoire en tournoi : même titre, même message, même montant ; compte fictif signalé", async () => {
+    const won = {
+      winnerId: ME,
+      method: "CONTROL_AFTER_LAST_TRICK" as const,
+      remainingOpponentIds: [OTHER],
+      fledPlayerIds: [],
+    };
+    const ordinary = finishedGame({ result: won, mySettlement: { delta: 100, account: "WALLET" } });
+    const tournament = finishedGame({
+      result: won,
+      tournamentId: "t-1",
+      mySettlement: { delta: 100, account: "TOURNAMENT" },
+    });
+
+    await render(<GameOverPanel {...panel({ game: ordinary }).props} />);
+    const ordinaryTitle = screen.getByTestId("game-over-title").props.children;
+    expect(screen.getByText("+100")).toBeTruthy();
+    expect(screen.getByText("Vous gagnez")).toBeTruthy();
+    expect(screen.queryByTestId("game-over-tournament-note")).toBeNull();
+    expect(screen.getByTestId("game-over-amount").props.accessibilityLabel).toBe("+100 jetons");
+    await cleanup();
+
+    await render(<GameOverPanel {...panel({ game: tournament }).props} />);
+    expect(screen.getByTestId("game-over-title").props.children).toBe(ordinaryTitle);
+    expect(screen.getByTestId("game-over-chips")).toBeTruthy();
+    expect(screen.getByText("Vous gagnez")).toBeTruthy();
+    expect(screen.getByText("+100")).toBeTruthy();
+    expect(screen.getByTestId("game-over-tournament-note")).toHaveTextContent(
+      "Jetons du tournoi — solde fictif, votre solde réel est inchangé",
+    );
+    expect(screen.getByTestId("game-over-amount").props.accessibilityLabel).toBe(
+      "+100 jetons du tournoi (solde fictif)",
+    );
+  });
+
+  it("défaite en tournoi : message habituel, perte sur le compte fictif", async () => {
+    const game = finishedGame({
+      tournamentId: "t-1",
+      mySettlement: { delta: -200, account: "TOURNAMENT" },
+    });
+    await render(<GameOverPanel {...panel({ game }).props} />);
+
+    expect(screen.getByText("Vous perdez")).toBeTruthy();
+    expect(screen.getByText("-200")).toBeTruthy();
+    expect(screen.getByTestId("game-over-tournament-note")).toBeTruthy();
+  });
+
   it("partie arrêtée sans gagnant : pas de badge, aucun gain ni perte", async () => {
     const game = finishedGame({
       result: undefined,
-      mySettlement: { delta: 0 },
+      mySettlement: { delta: 0, account: "WALLET" },
     });
     await render(<GameOverPanel {...panel({ game }).props} />);
 
@@ -283,7 +330,7 @@ describe("panneau de fin de partie : message selon le résultat officiel", () =>
       remainingOpponentIds: [],
       fledPlayerIds: [OTHER],
     };
-    const winner = finishedGame({ result, mySettlement: { delta: 99 } });
+    const winner = finishedGame({ result, mySettlement: { delta: 99, account: "WALLET" } });
     let { props } = panel({ game: winner });
     await render(<GameOverPanel {...props} />);
     expect(screen.getByTestId("game-over-title")).toHaveTextContent("Vous avez gagné !");
@@ -295,7 +342,7 @@ describe("panneau de fin de partie : message selon le résultat officiel", () =>
       viewerId: OTHER,
       players: winner.players.map((p) => (p.playerId === OTHER ? { ...p, fledAt: NOW } : p)),
       result,
-      mySettlement: { delta: -100 },
+      mySettlement: { delta: -100, account: "WALLET" },
     });
     ({ props } = panel({ game: fled }));
     await render(<GameOverPanel {...props} />);

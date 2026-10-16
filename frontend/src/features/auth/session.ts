@@ -1,6 +1,5 @@
-import { AppState } from 'react-native';
-
 import { ApiError, logNetworkIssue } from '../../lib/api-client';
+import { onAppForeground } from '../../lib/app-lifecycle';
 import { authApi } from '../../services/auth-api';
 import { tokenStorage } from '../../services/token-storage';
 import { useAuthStore } from '../../stores/auth-store';
@@ -71,22 +70,22 @@ export const SESSION_RESTORE_RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60
 let restorePending = false;
 let restoreAttempt = 0;
 let restoreTimer: ReturnType<typeof setTimeout> | null = null;
-let foregroundSubscription: { remove(): void } | null = null;
+let stopForegroundRetry: (() => void) | null = null;
 
 function cancelSessionRestore(): void {
   restorePending = false;
   restoreAttempt = 0;
   if (restoreTimer) clearTimeout(restoreTimer);
   restoreTimer = null;
-  foregroundSubscription?.remove();
-  foregroundSubscription = null;
+  stopForegroundRetry?.();
+  stopForegroundRetry = null;
 }
 
 function scheduleRestoreRetry(cause: unknown): void {
   restorePending = true;
-  foregroundSubscription ??= AppState.addEventListener('change', (state) => {
+  stopForegroundRetry ??= onAppForeground(() => {
     // Retour au premier plan (souvent : réseau rétabli) : tentative immédiate, budget neuf.
-    if (state !== 'active' || !restorePending) return;
+    if (!restorePending) return;
     restoreAttempt = 0;
     void attemptRestore();
   });

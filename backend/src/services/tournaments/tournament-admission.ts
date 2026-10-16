@@ -1,3 +1,4 @@
+import type { Game } from '../../domain/game/game';
 import type { PlayerId } from '../../domain/game/game-id';
 import type { SessionId } from '../../domain/sessions/session';
 import {
@@ -7,10 +8,30 @@ import {
 } from '../../domain/tournaments/tournament';
 import type { UserId } from '../../domain/users/user';
 import type { TournamentRepository } from '../../repositories/tournament.repository';
+import type { GameStartWindow } from '../game/game.service';
 import type {
   SessionAdmissionPolicy,
   SessionContinuationPolicy,
 } from '../sessions/session.service';
+
+/**
+ * Fin du tournoi = fin des démarrages (D-106) : une partie rattachée à un tournoi ne démarre,
+ * manuellement ou à son échéance, que si le tournoi est IN_PROGRESS et que `ends_at` n'est
+ * pas atteint. Les parties déjà commencées ne sont jamais interrompues. Partie ordinaire :
+ * toujours ouverte.
+ */
+export function tournamentGameStartWindow(
+  tournaments: Pick<TournamentRepository, 'findById'>,
+  clock: () => Date = () => new Date(),
+): GameStartWindow {
+  return {
+    async isOpen(game: Game): Promise<boolean> {
+      if (!game.tournamentId) return true;
+      const t = await tournaments.findById(game.tournamentId as TournamentId);
+      return t !== null && t.status === 'IN_PROGRESS' && clock().getTime() < t.endsAt.getTime();
+    },
+  };
+}
 
 /**
  * Règlement des parties terminées d'un tournoi encore non réglées (TournamentService,

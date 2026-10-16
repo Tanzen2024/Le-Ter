@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
+import type { Game } from '../game/game';
+import type { PlayerId } from '../game/game-id';
+import {
+  planGameSettlement,
+  settledParticipants,
+  victoryTypeOf,
+  type GameVictoryType,
+} from '../rules/game-settlement';
 import type { UserId } from '../users/user';
 
 /**
@@ -115,6 +123,58 @@ export const REGISTRATION_LIMIT_STATUSES: readonly TournamentStatus[] = [
   'REGISTRATION_OPEN',
 ];
 
+/**
+ * Proposition de joueur ouverte aux PRÉINSCRIPTIONS (D-108) : visible de tous les joueurs et
+ * ouverte aux inscriptions avant l'approbation. Elle n'est pas publiée pour autant : pas de
+ * créneau réservé, pas de commission ni de poids figés, jamais de démarrage.
+ */
+export const PRE_REGISTRATION_STATUSES: readonly TournamentStatus[] = ['PENDING_APPROVAL'];
+
+/**
+ * Compté dans la limite plateforme `TOURNAMENT_LIMITS.maxWaitingTournaments` (D-072, D-113) :
+ * - tournoi publié aux inscriptions ouvertes ou à ouvrir (`REGISTRATION_LIMIT_STATUSES`) ;
+ * - proposition ouverte aux préinscriptions (`PRE_REGISTRATION_STATUSES`) tant que sa fenêtre
+ *   n'est pas close (même borne que `registrationWindowOpen`) ; comme un tournoi `SCHEDULED`,
+ *   elle compte aussi avant l'ouverture choisie, qui se fera sans nouveau contrôle.
+ * Jamais : brouillon, annulé, inscriptions closes. Règle reproduite en SQL par
+ * `countWaitingTournaments` (dépôt), sous le verrou de planification.
+ */
+export function countsTowardRegistrationLimit(
+  t: Pick<Tournament, 'status' | 'registrationClosesAt' | 'startsAt'>,
+  now: Date,
+): boolean {
+  if (REGISTRATION_LIMIT_STATUSES.includes(t.status)) return true;
+  return (
+    PRE_REGISTRATION_STATUSES.includes(t.status) &&
+    now.getTime() < (t.registrationClosesAt ?? t.startsAt).getTime()
+  );
+}
+
+/**
+ * Fenêtre d'inscription, statut ET horloge (le planificateur peut avoir un tick de retard) :
+ * - tournoi publié `REGISTRATION_OPEN`, de l'ouverture à la clôture (D-054) ;
+ * - proposition en attente d'approbation (préinscription, D-108), de l'ouverture choisie
+ *   (sinon dès la soumission) à la clôture, au plus tard au début.
+ * SEULE règle d'ouverture des inscriptions : le service l'applique, la vue joueur l'affiche.
+ */
+export function registrationWindowOpen(
+  t: Pick<
+    Tournament,
+    'status' | 'registrationOpensAt' | 'registrationClosesAt' | 'publishedAt' | 'startsAt'
+  >,
+  now: Date,
+): boolean {
+  const at = now.getTime();
+  const closes = (t.registrationClosesAt ?? t.startsAt).getTime();
+  if (t.status === 'REGISTRATION_OPEN') {
+    return at >= (t.registrationOpensAt ?? t.publishedAt ?? now).getTime() && at < closes;
+  }
+  if (PRE_REGISTRATION_STATUSES.includes(t.status)) {
+    return at >= (t.registrationOpensAt ?? now).getTime() && at < closes;
+  }
+  return false;
+}
+
 /** Avant la capture : une annulation libère les réservations (jamais de remboursement). */
 export const PRE_CAPTURE_STATUSES: readonly TournamentStatus[] = [
   'DRAFT',
@@ -167,9 +227,20 @@ export interface Tournament {
    */
   initialTournamentTokens: number;
   stakePerGame: number;
+  /**
+   * Jetons de départ et mise figés dès la première préinscription d'une proposition (D-113) :
+   * ce sont alors les valeurs promises, reprises telles quelles à la lecture et à l'approbation.
+   */
+  tokenSetupFrozenAt?: Date;
   prizeRules: PrizeRule[];
   /** Poids du classement (D-062), copiés des paramètres à la publication, puis immuables. */
   rankingWeights?: RankingWeights;
+  /** Méthode de classement figée au DÉMARRAGE (D-106) ; absente avant le démarrage. */
+  rankingMethod?: RankingMethod;
+  /** Parties de référence (D-106), figées au démarrage. */
+  rankingGamesReference?: number;
+  /** Règle de règlement des parties figée au DÉMARRAGE (D-111) ; absente avant. */
+  settlementRule?: TournamentSettlementRule;
   cancellationReason?: CancellationReason;
   cancelledAt?: Date;
   publishedAt?: Date;
@@ -198,7 +269,11 @@ export interface TournamentRegistration {
   cancelledAt?: Date;
 }
 
-export type TournamentAccountStatus = 'ACTIVE' | 'OUT_OF_TOKENS';
+/**
+ * `DISSOLVED` (D-111) : tournoi terminé, classement publié et gains versés ; le compte fictif
+ * n'est plus utilisable mais reste conservé (soldes finaux, parties, rang, audit).
+ */
+export type TournamentAccountStatus = 'ACTIVE' | 'OUT_OF_TOKENS' | 'DISSOLVED';
 
 /** Compte temporaire du joueur dans le tournoi : jetons de tournoi, jamais d'argent. */
 export interface TournamentPlayerAccount {
@@ -214,10 +289,30 @@ export interface TournamentPlayerAccount {
   rank?: number;
   prizeAmount: number;
   status: TournamentAccountStatus;
+  /** Fin de la participation : classement officiel calculé (D-106), compte figé ensuite. */
+  finishedAt?: Date;
+}
+
+/** Critère qui a départagé deux scores EXACTEMENT égaux (D-062, D-106). */
+export type RankingTieBreak = 'GAMES_WON' | 'REGISTRATION_ORDER' | 'PLAYER_ID';
+
+/**
+ * Détail d'audit d'un rang (D-106), figé avec le résultat : de quoi recalculer et vérifier le
+ * score sans relire les paramètres. Absent des résultats classés avant D-106.
+ */
+export interface RankingAudit {
+  rankingMethod: RankingMethod;
+  /** Ratios arrondis à 6 décimales (le classement, lui, compare des fractions exactes). */
+  tokensRatio: number;
+  gamesRatio: number;
+  tokensWeightBps: number;
+  gamesWeightBps: number;
+  gamesReference: number;
+  tieBreak?: RankingTieBreak;
 }
 
 /** Ligne de résultat figée (rang, statistiques, gain), avec le pseudo pour l'affichage. */
-export interface TournamentResultRow {
+export interface TournamentResultRow extends Partial<RankingAudit> {
   tournamentId: TournamentId;
   rank: number;
   playerId: UserId;
@@ -232,6 +327,9 @@ export interface TournamentResultRow {
   prizeAmount: number;
   prizeTransactionId?: string;
   paidAt?: Date;
+  /** Publication du classement (écriture des résultats). */
+  createdAt?: Date;
+  registeredAt?: Date;
 }
 
 /** Paramètres plateforme (system_settings, D-054). */
@@ -326,7 +424,11 @@ export function playerLimitsError(
  * paramètres réglables (`TournamentSettings`, D-103, D-104, D-105).
  */
 export const TOURNAMENT_LIMITS = {
-  /** Un joueur propose un tournoi au moins 1 h à l'avance (temps d'approbation). */
+  /**
+   * Un joueur propose un tournoi au moins 1 h à l'avance : vérifié à la création et à la
+   * soumission de la proposition, mais plus à l'approbation (D-108 : elle exige seulement
+   * un début encore à venir).
+   */
   playerMinLeadMs: 60 * 60 * 1000,
   /** Prix d'entrée maximal (FCFA) ; le minimum est réglable (`tournamentMinimumEntryFee`). */
   maxEntryFee: 100_000,
@@ -353,8 +455,15 @@ export const START_RECOVERY_MS = 15 * 60 * 1000;
 /** Échecs de démarrage consécutifs (dans une instance) à partir desquels on alerte. */
 export const START_FAILURE_ALERT_THRESHOLD = 3;
 
-/** Délai maximal d'attente des parties encore en cours après la fin (D-054). */
+/**
+ * Clôture (D-106) : après la fin, le classement attend TOUTES les parties commencées et leur
+ * règlement, sans jamais les annuler (D-054 les annulait après 10 min). Au-delà de ce délai,
+ * l'attente est signalée par une alerte (journal `error`, `alert: true`), répétée au plus
+ * toutes les CLOSING_ALERT_INTERVAL_MS : une partie bloquée se résout par les mécanismes
+ * existants (timers de tour reconstruits, `npm run game:finish`).
+ */
 export const RESULTS_GRACE_MS = 10 * 60 * 1000;
+export const CLOSING_ALERT_INTERVAL_MS = 5 * 60 * 1000;
 
 // --- Validation -----------------------------------------------------------------------------
 
@@ -428,6 +537,11 @@ export function validateTournamentInput(
     creatorType: CreatorType;
     settings: TournamentSettings;
     frozenTokens?: TournamentTokenSetup;
+    /**
+     * Approbation d'une proposition (D-108) : le début doit seulement être à venir, sans le
+     * délai d'1 h des propositions. Toutes les autres règles restent vérifiées.
+     */
+    approval?: boolean;
   },
 ): ValidTournamentInput {
   const fields: Record<string, string> = {};
@@ -441,14 +555,12 @@ export function validateTournamentInput(
   if (!validDate(endsAt)) fields.endsAt = 'Date de fin invalide.';
   if (validDate(startsAt) && validDate(endsAt)) {
     const duration = endsAt.getTime() - startsAt.getTime();
-    const minStart =
-      context.now.getTime() +
-      (context.creatorType === 'PLAYER' ? TOURNAMENT_LIMITS.playerMinLeadMs : 0);
+    const playerLead = context.creatorType === 'PLAYER' && !context.approval;
+    const minStart = context.now.getTime() + (playerLead ? TOURNAMENT_LIMITS.playerMinLeadMs : 0);
     if (startsAt.getTime() <= minStart) {
-      fields.startsAt =
-        context.creatorType === 'PLAYER'
-          ? 'Le tournoi doit commencer au moins 1 h plus tard.'
-          : 'Le début doit être dans le futur.';
+      fields.startsAt = playerLead
+        ? 'Le tournoi doit commencer au moins 1 h plus tard.'
+        : 'Le début doit être dans le futur.';
     }
     const {
       tournamentMinimumDurationMinutes: minMinutes,
@@ -463,7 +575,11 @@ export function validateTournamentInput(
       }
     }
     if (registrationClosesAt !== undefined) {
-      const opens = registrationOpensAt?.getTime() ?? context.now.getTime();
+      // À l'approbation, la clôture a pu passer pendant les préinscriptions (D-108) : seul
+      // l'ordre des dates choisies compte (déjà vérifié contre l'horloge à la soumission).
+      const opens =
+        registrationOpensAt?.getTime() ??
+        (context.approval ? Number.NEGATIVE_INFINITY : context.now.getTime());
       if (
         !validDate(registrationClosesAt) ||
         registrationClosesAt.getTime() > startsAt.getTime() ||
@@ -829,6 +945,209 @@ export function tournamentRankingWeights(t: Pick<Tournament, 'rankingWeights'>):
   return t.rankingWeights ?? DEFAULT_RANKING_WEIGHTS;
 }
 
+// --- Classement D-106 : capital conservé et parties jouées -----------------------------------
+
+/**
+ * Méthodes de classement. `D062_SATURATING` : ratios `x / (x + référence)` (D-062), gardée pour
+ * les tournois démarrés avant D-106. `D106_CAPITAL_RATIO` : méthode courante (D-106).
+ */
+export type RankingMethod = 'D062_SATURATING' | 'D106_CAPITAL_RATIO';
+
+/** Méthode figée sur tout tournoi qui DÉMARRE désormais. */
+export const CURRENT_RANKING_METHOD: RankingMethod = 'D106_CAPITAL_RATIO';
+
+/**
+ * Parties de référence D-106 : `max(1, floor(durée / RANKING_REFERENCE_GAME_MS))`, figées au
+ * démarrage. Même durée de référence d'une partie que D-062 (170 s) : 10 parties pour 30 min,
+ * 42 pour 2 h. Jamais 0 (pas de division par zéro).
+ */
+export function capitalRatioGamesReference(t: Pick<Tournament, 'startsAt' | 'endsAt'>): number {
+  return Math.max(1, rankingReferences({ initialTournamentTokens: 1, ...t }).games);
+}
+
+/** Règles officielles de classement d'un tournoi (méthode, poids, références). */
+export interface RankingRules {
+  method: RankingMethod;
+  weights: RankingWeights;
+  /** D-062 seulement : référence des jetons (capital initial du tournoi). */
+  tokensReference: number;
+  gamesReference: number;
+}
+
+/**
+ * Règles du tournoi : celles FIGÉES au démarrage. Un tournoi démarré sans méthode enregistrée
+ * (antérieur à D-106) garde D-062 ; un tournoi pas encore démarré n'a pas de classement.
+ */
+export function tournamentRankingRules(
+  t: Pick<
+    Tournament,
+    | 'rankingMethod'
+    | 'rankingGamesReference'
+    | 'rankingWeights'
+    | 'startedAt'
+    | 'startsAt'
+    | 'endsAt'
+    | 'initialTournamentTokens'
+  >,
+): RankingRules {
+  const method = t.rankingMethod ?? (t.startedAt ? 'D062_SATURATING' : CURRENT_RANKING_METHOD);
+  const legacy = rankingReferences(t);
+  return {
+    method,
+    weights: tournamentRankingWeights(t),
+    tokensReference: legacy.tokens,
+    gamesReference:
+      method === 'D106_CAPITAL_RATIO'
+        ? (t.rankingGamesReference ?? capitalRatioGamesReference(t))
+        : legacy.games,
+  };
+}
+
+/** Une fraction exacte `num / den` (den > 0). */
+interface Fraction {
+  num: bigint;
+  den: bigint;
+}
+
+/**
+ * Ratios EXACTS d'un compte (D-106) :
+ * - jetons : `jetons restants / capital initial` (1 = capital conservé, peut dépasser 1) ;
+ * - parties : `min(parties jouées, référence) / référence` (plafonné à 1 : au-delà de la
+ *   référence, jouer davantage ne rapporte plus rien, pour ne pas favoriser ceux qui ont eu
+ *   accès à plus de parties).
+ * D-062 : `x / (x + référence)`.
+ */
+function exactRatios(
+  stats: { tokens: number; initialTokens: number; gamesPlayed: number },
+  rules: RankingRules,
+): { tokens: Fraction; games: Fraction } {
+  const t = BigInt(count(stats.tokens));
+  const g = BigInt(count(stats.gamesPlayed));
+  if (rules.method === 'D062_SATURATING') {
+    return {
+      tokens: { num: t, den: t === 0n ? 1n : t + BigInt(count(rules.tokensReference)) },
+      games: { num: g, den: g === 0n ? 1n : g + BigInt(count(rules.gamesReference)) },
+    };
+  }
+  const capital = BigInt(Math.max(1, count(stats.initialTokens)));
+  const reference = BigInt(Math.max(1, count(rules.gamesReference)));
+  return {
+    tokens: { num: t, den: capital },
+    games: { num: g < reference ? g : reference, den: reference },
+  };
+}
+
+/** `100 × (poids_jetons × ratio_jetons + poids_parties × ratio_parties)`, poids en bps. */
+function exactScoreOf(ratios: { tokens: Fraction; games: Fraction }, w: RankingWeights) {
+  const { tokens: rt, games: rg } = ratios;
+  return {
+    num: BigInt(count(w.tokensBps)) * rt.num * rg.den + BigInt(count(w.gamesBps)) * rg.num * rt.den,
+    den: 100n * rt.den * rg.den,
+  };
+}
+
+/** Points apportés par un critère : `100 × poids × ratio` (poids en points de base). */
+function pointsOf(weightBps: number, ratio: Fraction): Fraction {
+  return { num: BigInt(count(weightBps)) * ratio.num, den: 100n * ratio.den };
+}
+
+/** Arrondi au plus proche à `decimals` décimales d'une fraction positive. */
+function roundFraction({ num, den }: Fraction, decimals: number): number {
+  const scale = 10n ** BigInt(decimals);
+  return Number((num * scale * 2n + den) / (2n * den)) / Number(scale);
+}
+
+/** Détail du score d'un compte classé (affichage et audit). */
+export interface RankingBreakdown {
+  score: number;
+  tokensRatio: number;
+  gamesRatio: number;
+  /** Points apportés par chaque critère (somme = score, à l'arrondi près), 4 décimales. */
+  tokensPoints: number;
+  gamesPoints: number;
+  tieBreak?: RankingTieBreak;
+}
+
+/**
+ * Détail du score d'UN joueur selon les règles du tournoi (affichage de son résultat) : mêmes
+ * fractions exactes que le classement, donc le même score que celui figé avec son rang.
+ */
+export function scoreBreakdown(
+  stats: { tokens: number; initialTokens: number; gamesPlayed: number },
+  rules: RankingRules,
+): Omit<RankingBreakdown, 'tieBreak'> {
+  const ratios = exactRatios(stats, rules);
+  return {
+    score: roundedRankingScore(exactScoreOf(ratios, rules.weights)),
+    tokensRatio: roundFraction(ratios.tokens, 6),
+    gamesRatio: roundFraction(ratios.games, 6),
+    tokensPoints: roundFraction(pointsOf(rules.weights.tokensBps, ratios.tokens), 4),
+    gamesPoints: roundFraction(pointsOf(rules.weights.gamesBps, ratios.games), 4),
+  };
+}
+
+type RankableAccount = Pick<
+  TournamentPlayerAccount,
+  'currentTokens' | 'initialTokens' | 'gamesPlayed' | 'gamesWon' | 'registeredAt' | 'playerId'
+>;
+
+/** Premier critère de départage qui sépare deux comptes à score égal (`a` avant `b`). */
+function tieBreakBetween(a: RankableAccount, b: RankableAccount): RankingTieBreak {
+  if (a.gamesWon !== b.gamesWon) return 'GAMES_WON';
+  if (a.registeredAt.getTime() !== b.registeredAt.getTime()) return 'REGISTRATION_ORDER';
+  return 'PLAYER_ID';
+}
+
+/**
+ * Classement officiel DÉTERMINISTE, sans ex æquo, selon les règles figées du tournoi :
+ * score EXACT DESC ; à égalité exacte (D-062, inchangé), parties gagnées DESC, date
+ * d'inscription ASC, puis identifiant. Tous les comptes sont classés, y compris ceux sous le
+ * seuil de jetons ou sans partie. Chaque ligne porte son détail et, si elle a été départagée,
+ * le critère appliqué.
+ */
+export function rankTournamentAccounts<T extends RankableAccount>(
+  accounts: readonly T[],
+  rules: RankingRules,
+): (T & RankingBreakdown)[] {
+  const scored = accounts.map((account) => {
+    const ratios = exactRatios(
+      {
+        tokens: account.currentTokens,
+        initialTokens: account.initialTokens,
+        gamesPlayed: account.gamesPlayed,
+      },
+      rules,
+    );
+    return { account, ratios, exact: exactScoreOf(ratios, rules.weights) };
+  });
+  scored.sort(
+    (a, b) =>
+      compareRankingScores(b.exact, a.exact) ||
+      b.account.gamesWon - a.account.gamesWon ||
+      a.account.registeredAt.getTime() - b.account.registeredAt.getTime() ||
+      a.account.playerId.localeCompare(b.account.playerId),
+  );
+  return scored.map(({ account, ratios, exact }, index) => {
+    const previous = scored[index - 1];
+    const next = scored[index + 1];
+    const tieBreak =
+      previous && compareRankingScores(previous.exact, exact) === 0
+        ? tieBreakBetween(previous.account, account)
+        : next && compareRankingScores(next.exact, exact) === 0
+          ? tieBreakBetween(account, next.account)
+          : undefined;
+    return {
+      ...account,
+      score: roundedRankingScore(exact),
+      tokensRatio: roundFraction(ratios.tokens, 6),
+      gamesRatio: roundFraction(ratios.games, 6),
+      tokensPoints: roundFraction(pointsOf(rules.weights.tokensBps, ratios.tokens), 4),
+      gamesPoints: roundFraction(pointsOf(rules.weights.gamesBps, ratios.games), 4),
+      ...(tieBreak && { tieBreak }),
+    };
+  });
+}
+
 // --- Règlement d'une partie -----------------------------------------------------------------
 
 /**
@@ -856,6 +1175,119 @@ export function settleGameTokens(
   return { transfers, pot: won + effective };
 }
 
+/**
+ * Règle de règlement des parties d'un tournoi, figée au démarrage (D-111) :
+ * - `D054_TAPIS` : règle d'origine (`settleGameTokens`), gardée par les tournois démarrés avant ;
+ * - `D111_ORDINARY_RULES` : MÊMES règles qu'une partie ordinaire (D-074, D-080, D-086), appliquées
+ *   au compte FICTIF du tournoi, sans commission (la plateforme est rémunérée sur le prix
+ *   d'entrée, D-054).
+ */
+export type TournamentSettlementRule = 'D054_TAPIS' | 'D111_ORDINARY_RULES';
+export const CURRENT_SETTLEMENT_RULE: TournamentSettlementRule = 'D111_ORDINARY_RULES';
+
+/** Règle d'un tournoi : celle figée au démarrage ; un tournoi démarré sans elle : D-054. */
+export function tournamentSettlementRule(
+  t: Pick<Tournament, 'settlementRule' | 'startedAt'>,
+): TournamentSettlementRule {
+  return t.settlementRule ?? (t.startedAt ? 'D054_TAPIS' : CURRENT_SETTLEMENT_RULE);
+}
+
+/** Motifs d'un règlement sans mouvement (le résultat de jeu, lui, est inchangé). */
+export type TournamentVoidReason =
+  | 'NO_WINNER'
+  | 'TOURNAMENT_NOT_IN_PROGRESS'
+  | 'STARTED_AFTER_END'
+  | 'WINNER_NOT_PARTICIPANT'
+  | 'PARTICIPANT_WITHOUT_ACCOUNT'
+  | 'INVALID_SETTLEMENT'
+  | (string & {});
+
+export type TournamentGamePlan =
+  | {
+      status: 'SETTLED';
+      winnerId: string;
+      /** Absent pour la règle D-054 (pas de Kora). */
+      victoryType?: GameVictoryType;
+      /** Variation de CHAQUE compte réglé (clés = participants réglés, une fois chacun). */
+      transfers: Record<string, number>;
+      /** Total en jeu (audit) : pertes payées + mise équivalente du gagnant. */
+      pot: number;
+    }
+  | { status: 'VOID'; voidReason: TournamentVoidReason };
+
+/**
+ * Plan de règlement d'une partie TERMINÉE d'un tournoi, sur les comptes FICTIFS (fonction
+ * pure). Le résultat de jeu (gagnant, perdants, Kora, fuite) vient du moteur commun ; seul le
+ * compte change. Toute incohérence donne VOID (aucun mouvement, jamais partiel) :
+ * - D111_ORDINARY_RULES : participants réglés = ceux d'une partie ordinaire
+ *   (`settledParticipants` : fuyards exclus, sauf adversaire couché à 2, D-086) ; perte de
+ *   chaque perdant = celle d'une partie ordinaire (`planGameSettlement`, M ou 2M en Kora,
+ *   D-080), commission 0 ; le gagnant reçoit le total. Garde-fou « jamais de solde négatif » :
+ *   un perdant ne paie jamais plus que ses jetons (le seuil de 2 × la mise de D-063 couvre
+ *   déjà la Kora : il ne joue normalement pas).
+ * - D054_TAPIS : `settleGameTokens` sur tous les joueurs assis (règle d'origine inchangée).
+ */
+export function planTournamentGame(input: {
+  game: Game;
+  stake: number;
+  rule: TournamentSettlementRule;
+  /** Jetons des comptes du tournoi, par joueur (comptes verrouillés). */
+  tokensByPlayer: ReadonlyMap<string, number>;
+}): TournamentGamePlan {
+  const { game, stake, rule, tokensByPlayer } = input;
+  const winnerId = game.result?.winnerId as string | undefined;
+  if (game.status !== 'finished' || !winnerId) {
+    return { status: 'VOID', voidReason: game.endReason ?? 'NO_WINNER' };
+  }
+  if (rule === 'D054_TAPIS') {
+    if (!tokensByPlayer.has(winnerId)) return { status: 'VOID', voidReason: 'WINNER_NOT_PARTICIPANT' };
+    const seated = new Map(
+      game.players
+        .map((p) => p.playerId as string)
+        .filter((id) => tokensByPlayer.has(id))
+        .map((id) => [id, tokensByPlayer.get(id)!] as const),
+    );
+    return { status: 'SETTLED', winnerId, ...settleGameTokens(stake, winnerId, seated) };
+  }
+  const participants = settledParticipants(game) as string[];
+  if (!participants.includes(winnerId)) return { status: 'VOID', voidReason: 'WINNER_NOT_PARTICIPANT' };
+  if (participants.some((id) => !tokensByPlayer.has(id))) {
+    return { status: 'VOID', voidReason: 'PARTICIPANT_WITHOUT_ACCOUNT' };
+  }
+  const victoryType = victoryTypeOf(game);
+  let plan;
+  try {
+    if (!victoryType) throw new RangeError('Type de victoire absent');
+    plan = planGameSettlement({
+      stake,
+      commissionBps: 0,
+      winnerId: winnerId as PlayerId,
+      participants: participants as PlayerId[],
+      victoryType,
+    });
+  } catch {
+    return { status: 'VOID', voidReason: 'INVALID_SETTLEMENT' };
+  }
+  const transfers: Record<string, number> = {};
+  let won = 0;
+  for (const loserId of plan.loserIds) {
+    const paid = Math.min(plan.unitAmount, Math.max(0, tokensByPlayer.get(loserId) ?? 0));
+    transfers[loserId] = -paid;
+    won += paid;
+  }
+  transfers[winnerId] = won;
+  // Pot = tout ce qui était en jeu (même sens que D-054) : pertes payées + mise équivalente du
+  // gagnant (M, ou 2M en Kora, bornée à ses jetons). Donnée d'audit : aucun mouvement de plus.
+  const winnerStake = Math.min(plan.unitAmount, Math.max(0, tokensByPlayer.get(winnerId) ?? 0));
+  return {
+    status: 'SETTLED',
+    winnerId,
+    victoryType: plan.victoryType,
+    transfers,
+    pot: won + winnerStake,
+  };
+}
+
 /** Seuil de participation (D-063) : il faut au moins deux mises pour jouer une partie. */
 export const TOURNAMENT_MIN_STAKES_TO_PLAY = 2;
 
@@ -874,6 +1306,59 @@ export function canPlayTournamentGame(tokens: number, stake: number): boolean {
 /** Un compte sous le seuil ne peut plus s'asseoir à une table du tournoi. */
 export function accountStatusFor(tokens: number, stake: number): TournamentAccountStatus {
   return canPlayTournamentGame(tokens, stake) ? 'ACTIVE' : 'OUT_OF_TOKENS';
+}
+
+/**
+ * Bilan d'un joueur sur TOUTES les parties réglées (SETTLED) de son tournoi, quelles que
+ * soient les tables (sessions) où il les a jouées : une partie comptée une fois par joueur.
+ */
+export interface TournamentGameTally {
+  gamesPlayed: number;
+  gamesWon: number;
+  /** Somme des variations de jetons des règlements. */
+  tokenDelta: number;
+}
+
+type LedgerAccount = Pick<
+  TournamentPlayerAccount,
+  'playerId' | 'initialTokens' | 'currentTokens' | 'gamesPlayed' | 'gamesWon' | 'status'
+>;
+
+/**
+ * Recalcule les compteurs des comptes depuis le registre des règlements (`tournament_games`),
+ * seule source officielle des parties d'un tournoi : parties jouées et gagnées cumulées sur
+ * toutes les tables, jetons = capital initial + variations réglées. Les compteurs incrémentés
+ * à chaque règlement ne sont qu'un cache : en cas d'écart, le registre fait foi et le compte
+ * figure dans `drifted` (valeurs d'origine) pour être journalisé.
+ */
+export function reconcileAccountsWithLedger<T extends LedgerAccount>(
+  accounts: readonly T[],
+  ledger: ReadonlyMap<string, TournamentGameTally>,
+  stake: number,
+): { accounts: T[]; drifted: T[] } {
+  const drifted: T[] = [];
+  const reconciled = accounts.map((account) => {
+    const tally = ledger.get(account.playerId);
+    const gamesPlayed = tally?.gamesPlayed ?? 0;
+    const gamesWon = tally?.gamesWon ?? 0;
+    const currentTokens = account.initialTokens + (tally?.tokenDelta ?? 0);
+    if (
+      gamesPlayed === account.gamesPlayed &&
+      gamesWon === account.gamesWon &&
+      currentTokens === account.currentTokens
+    ) {
+      return account;
+    }
+    drifted.push(account);
+    return {
+      ...account,
+      gamesPlayed,
+      gamesWon,
+      currentTokens,
+      status: accountStatusFor(currentTokens, stake),
+    };
+  });
+  return { accounts: reconciled, drifted };
 }
 
 // --- Erreurs --------------------------------------------------------------------------------

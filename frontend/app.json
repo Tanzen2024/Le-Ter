@@ -52,6 +52,12 @@
         }
       ],
       "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Le Ter vous permet de joindre une capture d'écran à une réclamation. Seule l'image que vous choisissez est envoyée."
+        }
+      ],
       "expo-asset"
     ],
     "extra": {

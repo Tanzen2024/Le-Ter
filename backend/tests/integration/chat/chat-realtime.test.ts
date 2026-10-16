@@ -25,6 +25,8 @@ import {
   expectStatus,
   type GameApiTestContext,
 } from '../../fixtures/game-api';
+import { InMemoryUserEventHub } from '../../../src/websocket/user-event-bus';
+import type { UserId } from '../../../src/domain/users/user';
 import { flushPubSub, InMemoryPubSubBroker } from '../../fixtures/in-memory-pubsub';
 import {
   createMigratedDatabase,
@@ -131,6 +133,7 @@ async function closeLogs(count: number): Promise<Record<string, unknown>[]> {
 }
 let ctx: GameApiTestContext;
 let bus: InMemoryChatEventHub;
+let userEvents: InMemoryUserEventHub;
 let server: Server;
 let gateway: RealtimeGateway;
 let url: string;
@@ -159,10 +162,12 @@ beforeEach(async () => {
   server = ctx.app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   gatewayLogs = [];
+  userEvents = new InMemoryUserEventHub();
   gateway = attachRealtimeGateway(server, {
     auth: ctx.auth,
     chat,
     games: ctx.games,
+    userEvents,
     logger: createLogger({}, (line) => gatewayLogs.push(JSON.parse(line) as Record<string, unknown>)),
   });
   url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}${REALTIME_PATH}`;
@@ -204,6 +209,36 @@ function post(p: Player, gameId: string, content: string, key = randomUUID()) {
     .set('Idempotency-Key', key)
     .send({ content });
 }
+
+/**
+ * Signal personnel de fin de tournoi (D-106) : chaque connexion n'est abonnée qu'à l'identité
+ * de SON jeton ; le signal ne contient que le type et le tournoi.
+ */
+describe('WebSocket : signaux personnels (D-106)', () => {
+  it('seul le destinataire reçoit ; désabonné à la fermeture', async () => {
+    const ana = await newPlayer();
+    const ben = await newPlayer();
+    const anaClient = await connect(ana);
+    const benClient = await connect(ben);
+    userEvents.publish({
+      type: 'notification',
+      userId: ana.id as string as UserId,
+      notificationType: 'TOURNAMENT_RESULTS_AVAILABLE',
+      tournamentId: 't-1',
+    });
+    expect(await anaClient.next((f) => f.type === 'notification')).toEqual({
+      type: 'notification',
+      notificationType: 'TOURNAMENT_RESULTS_AVAILABLE',
+      tournamentId: 't-1',
+    });
+    await settle();
+    expect(benClient.frames.filter((f) => f.type === 'notification')).toEqual([]);
+    anaClient.close();
+    await anaClient.closed;
+    await settle();
+    expect(userEvents.subscriberCount(ana.id as string as UserId)).toBe(0);
+  });
+});
 
 /**
  * Suivi de partie (D-101) : dès que le serveur ACCEPTE une carte, tous les joueurs abonnés

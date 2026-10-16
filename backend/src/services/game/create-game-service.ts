@@ -26,6 +26,11 @@ import { InMemoryGameEventHub } from '../../websocket/in-memory-game-event-hub';
 import { PubSubGameEventBus } from '../../websocket/pubsub-game-event-bus';
 import { RedisPubSubTransport } from '../../websocket/pubsub-transport';
 import {
+  InMemoryUserEventHub,
+  PubSubUserEventBus,
+  type UserEventBus,
+} from '../../websocket/user-event-bus';
+import {
   InMemorySessionEventHub,
   PubSubSessionEventPublisher,
   type SessionEventPublisher,
@@ -33,6 +38,7 @@ import {
 import { NotificationService } from '../notifications/notification.service';
 import { SessionService } from '../sessions/session.service';
 import {
+  tournamentGameStartWindow,
   tournamentSessionAdmission,
   tournamentTableContinuation,
 } from '../tournaments/tournament-admission';
@@ -81,6 +87,8 @@ export function createGameService(options: {
   tournaments: TournamentService;
   tournamentScheduler: TournamentScheduler;
   notifications: NotificationService;
+  /** Signaux personnels temps réel (D-106), branchés sur la passerelle WebSocket. */
+  userEvents: UserEventBus;
 } {
   // Séquestre et règlement des mises (D-074), dans la transaction de chaque écriture de
   // partie : démarrage = mises réservées, fin = partie réglée (ou tout ou rien).
@@ -129,6 +137,8 @@ export function createGameService(options: {
     stakePolicy: walletGameStakePolicy(stakeDeps),
     // Table surveillée : aucun démarrage sans le consentement de chaque joueur (D-095).
     startPolicy: detectionConsentStartPolicy(geolocation),
+    // Plus aucun démarrage de partie de tournoi après la fin du tournoi (D-106).
+    startWindow: tournamentGameStartWindow(tournamentRepository),
     sessionSeats: sessionRepository,
     settlements: new PostgresGameSettlementReader(options.sql),
     logger: options.logger,
@@ -188,11 +198,15 @@ export function createGameService(options: {
   games.onGameFinished((game) => detection.observeFinishedGame(game));
   // Tournois (D-054) : jetons de tournoi réglés à la fin de chaque partie d'une table de
   // tournoi ; échéances (début, fin, résultats, gains) appliquées par le planificateur.
+  const userEvents: UserEventBus = transport
+    ? new PubSubUserEventBus(transport, options.logger)
+    : new InMemoryUserEventHub();
   const tournaments = new TournamentService({
     tournaments: tournamentRepository,
     sessions,
     games,
     logger: options.logger,
+    userEvents,
   });
   games.onGameFinished((game) => tournaments.observeFinishedGame(game));
   const tournamentScheduler = new TournamentScheduler({
@@ -205,6 +219,7 @@ export function createGameService(options: {
     tournaments,
     tournamentScheduler,
     notifications,
+    userEvents,
     games,
     sessions,
     timers,

@@ -99,6 +99,8 @@ export interface PlayerGameView {
    */
   autoStart?: boolean;
   startDeadlineAt?: Date;
+  /** Tournoi de la table (D-106) ; absent pour une partie ordinaire. */
+  tournamentId?: string;
   /** Raison de la fin de partie (victoire, égalité de priorité, arrêt administratif). */
   endReason?: GameEndReason;
   /** Égalité de priorité des mains instantanées : la partie est rejouée (D-035). */
@@ -110,10 +112,12 @@ export interface PlayerGameView {
   myActions: PlayerActions;
   viewerId: PlayerId;
   /**
-   * SON bilan financier, une fois la partie terminée et réglée (D-074) : variation nette
-   * enregistrée par le règlement. Absent pour une table de tournoi ou une partie sans mise.
+   * SON bilan, une fois la partie terminée et réglée : variation nette enregistrée par le
+   * règlement, et le compte réglé (D-111) : `WALLET` = compte de jeu réel (partie ordinaire,
+   * D-074), `TOURNAMENT` = compte FICTIF du tournoi (jamais d'argent réel). Absent pour une
+   * partie sans mise ou pas encore réglée.
    */
-  mySettlement?: { delta: number };
+  mySettlement?: { delta: number; account: 'WALLET' | 'TOURNAMENT' };
 }
 
 export function toPlayerView(
@@ -151,6 +155,9 @@ export function toPlayerView(
     turnTimedOutAt: game.turnTimedOutAt,
     ...(isDealing(game) && { dealEndsAt: game.dealEndsAt }),
     ...(game.autoStartDelayMs !== undefined && { autoStart: true }),
+    // Contexte financier EXPLICITE de la table (D-106) : jetons de CE tournoi, jamais le
+    // compte de jeu. Absent : partie ordinaire.
+    ...(game.tournamentId && { tournamentId: game.tournamentId }),
     ...(game.status === 'waiting' &&
       game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt }),
     ...(game.endReason && { endReason: game.endReason }),

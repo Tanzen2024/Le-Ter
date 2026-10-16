@@ -49,6 +49,29 @@ const settingsSchema = z.object({
     .string()
     .trim()
     .regex(/^\d*$/, 'Nombre entier attendu, ou vide pour illimité.'),
+}).superRefine((values, ctx) => {
+  // Poids du classement (D-062, D-106) : chacun de 0 à 100 et somme EXACTEMENT 100 %. Le
+  // serveur reste juge ; ce contrôle évite seulement un aller-retour.
+  const tokens = Number(values.rankingTokensWeightPercent.replace(',', '.'));
+  const games = Number(values.rankingGamesWeightPercent.replace(',', '.'));
+  if (!Number.isFinite(tokens) || !Number.isFinite(games)) return;
+  for (const [key, value] of [
+    ['rankingTokensWeightPercent', tokens],
+    ['rankingGamesWeightPercent', games],
+  ] as const) {
+    if (value < 0 || value > 100) {
+      ctx.addIssue({ code: 'custom', path: [key], message: 'Entre 0 et 100 %.' });
+    }
+  }
+  if (tokens + games !== 100) {
+    for (const key of ['rankingTokensWeightPercent', 'rankingGamesWeightPercent'] as const) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: 'La somme des poids doit être exactement 100 %.',
+      });
+    }
+  }
 });
 type SettingsForm = z.infer<typeof settingsSchema>;
 

@@ -32,8 +32,10 @@ import {
   useGameAction,
   useStartGame,
 } from '../hooks';
-import { useGameUpdates } from '../game-updates';
+import { useGameUpdates, useTournamentSettlementUpdates } from '../game-updates';
 import { TournamentTableWaiting } from './TournamentTableWaiting';
+import { TournamentTableHud } from './TournamentTableHud';
+import { tournamentKeys, useTournamentSignals } from '../../tournaments/hooks';
 import { CARD_RATIO, HiddenHand } from './Cards';
 import { GameChat, useGameChatWithUnread } from '../../chat/GameChat';
 import { GameGeolocation } from '../../geolocation/GameGeolocation';
@@ -105,6 +107,8 @@ export function GameTableScreen() {
   const game = useGame(valid ? gameId : '');
   // Carte acceptée par le serveur : nouvel état relu aussitôt chez tous les joueurs (D-101).
   useGameUpdates(valid ? gameId : '');
+  // Partie de tournoi : bilan fictif relu dès que son règlement est écrit (D-111).
+  useTournamentSettlementUpdates(valid ? gameId : '', game.data?.tournamentId);
   // Reprise après une absence : l'état est relu sur le serveur, jamais reconstruit localement.
   const reconnection = useGameReconnection(game, { resume: reprise === '1' });
 
@@ -217,8 +221,14 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
   // Fin (règlement, D-074) : le solde est relu au moment où le résultat est ANNONCÉ, pas
   // quand le serveur termine la partie (le dernier tour est encore présenté, D-041, D-080).
   useEffect(() => {
-    if (resultAnnounced) void queryClient.invalidateQueries({ queryKey: walletKey });
-  }, [queryClient, resultAnnounced]);
+    if (!resultAnnounced) return;
+    // Table de tournoi : seuls les jetons de CE tournoi changent (D-106) ; sinon le compte de jeu.
+    void queryClient.invalidateQueries({
+      queryKey: game.tournamentId ? tournamentKeys.context(game.tournamentId) : walletKey,
+    });
+  }, [queryClient, resultAnnounced, game.tournamentId]);
+  // Fin du tournoi annoncée en temps réel pendant la partie : notifications et classement relus.
+  useTournamentSignals();
 
   // « Quitter la partie » : départ DIRECT, sans boîte de confirmation. Le serveur décide si
   // le départ est possible (D-037) ; son refus s'affiche brièvement sous le bouton.
@@ -305,26 +315,30 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
           { top: controlsTop, right: m.safe.right, gap: layout.gap },
         ]}
       >
-        <BalancePill height={layout.control}>
-          <Text
-            accessibilityLabel={balance.label}
-            style={[styles.balanceText, fontOf(fonts.button), { fontSize: m.bodySize * 1.15 }]}
-          >
-            {balance.text}
-          </Text>
-          <Coin size={Math.round(layout.control * 0.62)} fontFamily={fonts.title} />
-          {balance.reserved ? (
-            // Inscriptions à des tournois : réservées, PAS débitées (une partie en cours
-            // ne réserve plus rien d'affiché, D-080).
+        {game.tournamentId ? (
+          <TournamentTableHud tournamentId={game.tournamentId} height={layout.control} />
+        ) : (
+          <BalancePill height={layout.control}>
             <Text
-              testID="table-reserved"
-              importantForAccessibility="no"
-              style={[styles.reservedText, { fontSize: m.smallSize }]}
+              accessibilityLabel={balance.label}
+              style={[styles.balanceText, fontOf(fonts.button), { fontSize: m.bodySize * 1.15 }]}
             >
-              {balance.reserved}
+              {balance.text}
             </Text>
-          ) : null}
-        </BalancePill>
+            <Coin size={Math.round(layout.control * 0.62)} fontFamily={fonts.title} />
+            {balance.reserved ? (
+              // Inscriptions à des tournois : réservées, PAS débitées (une partie en cours
+              // ne réserve plus rien d'affiché, D-080).
+              <Text
+                testID="table-reserved"
+                importantForAccessibility="no"
+                style={[styles.reservedText, { fontSize: m.smallSize }]}
+              >
+                {balance.reserved}
+              </Text>
+            ) : null}
+          </BalancePill>
+        )}
         <View>
           <SoftIconButton
             label={

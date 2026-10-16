@@ -103,6 +103,9 @@ export const fr = {
     } as Record<string, string>,
     noChange: 'Aucun gain ni perte',
     amountA11y: (signed: string) => `${signed} jetons`,
+    /** Partie de tournoi (D-111) : le montant vient du compte FICTIF, jamais du solde réel. */
+    tournamentAmountA11y: (signed: string) => `${signed} jetons du tournoi (solde fictif)`,
+    tournamentAmountNote: 'Jetons du tournoi — solde fictif, votre solde réel est inchangé',
     quit: 'Quitter',
     replay: 'Rejouer',
     cannotContinue: 'Solde insuffisant pour poursuivre : il faut au moins le double de la mise.',

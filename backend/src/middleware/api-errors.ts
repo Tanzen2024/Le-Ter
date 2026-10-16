@@ -56,6 +56,7 @@ import {
   FirstPlayerNotInGameError,
   GameAlreadyStartedError,
   GameFinishedError,
+  GameStartClosedError,
   GameFullError,
   GameNotFoundError,
   GameNotEnoughPlayersError,
@@ -565,6 +566,13 @@ export function toApiError(err: unknown): ApiError | undefined {
   }
   if (err instanceof GameAlreadyStartedError) {
     return apiError(409, 'GAME_ALREADY_STARTED', 'La partie a déjà commencé.');
+  }
+  if (err instanceof GameStartClosedError) {
+    return apiError(
+      409,
+      'TOURNAMENT_COMPLETED',
+      'Le tournoi est terminé : aucune nouvelle partie ne peut commencer.',
+    );
   }
   if (err instanceof IdempotencyKeyReuseError) {
     return apiError(

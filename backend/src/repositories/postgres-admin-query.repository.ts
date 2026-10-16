@@ -1,4 +1,4 @@
-import type { SqlClient } from '../database/sql-client';
+import type { SqlClient, SqlExecutor } from '../database/sql-client';
 import { ADMIN_THRESHOLDS } from '../domain/admin/admin';
 import type { PaymentStatus } from '../domain/payments/payment';
 import { STARTED_STATUSES, type TournamentStatus } from '../domain/tournaments/tournament';
@@ -274,6 +274,85 @@ function paymentOf(row: PaymentRow): AdminPaymentRow {
 }
 
 /** Lectures de l'administration sur PostgreSQL. Aucune écriture. */
+/**
+ * Faits comptables des tournois (contrôles du compte de la plateforme, audit §8.5). Exportée :
+ * la validation du plan de versement (D-112) l'exécute pour UN tournoi, dans sa transaction,
+ * avec exactement les mêmes contrôles que la réconciliation de l'administration.
+ */
+export async function queryTournamentLedgerFacts(
+  db: SqlExecutor,
+  tournamentId?: string,
+): Promise<TournamentLedgerFacts[]> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT t.id, ${TOURNAMENT_LABEL} AS name, t.status, t.started_at, t.entry_fee, t.participants,
+       t.platform_fee_bps, t.gross_pool, t.platform_fee, t.prize_pool, t.unallocated_prize,
+       (SELECT count(*) FROM wallet_reservations r
+         WHERE r.tournament_id = t.id AND r.status = 'CAPTURED')::int AS captured_reservations,
+       (SELECT COALESCE(sum(wt.tokens), 0) FROM wallet_reservations r
+          JOIN wallet_transactions wt ON wt.id = r.capture_transaction_id
+         WHERE r.tournament_id = t.id AND r.status = 'CAPTURED'
+           AND wt.kind = 'tournament_entry' AND wt.status = 'succeeded')
+         AS captured_entry_tokens,
+       (SELECT count(*) FROM wallet_reservations r
+          JOIN wallet_transactions wt ON wt.id = r.capture_transaction_id
+         WHERE r.tournament_id = t.id AND r.status = 'CAPTURED'
+           AND wt.kind = 'tournament_entry' AND wt.status = 'succeeded')::int
+         AS captured_entry_transactions,
+       (SELECT l.amount FROM platform_ledger l
+         WHERE l.tournament_id = t.id AND l.kind = 'TOURNAMENT_PLATFORM_FEE') AS fee_entry,
+       (SELECT l.amount FROM platform_ledger l
+         WHERE l.tournament_id = t.id AND l.kind = 'UNALLOCATED_PRIZE') AS unallocated_entry,
+       (SELECT count(*) FROM tournament_results tr WHERE tr.tournament_id = t.id)::int
+         AS results_count,
+       (SELECT COALESCE(sum(tr.prize_amount), 0) FROM tournament_results tr
+         WHERE tr.tournament_id = t.id) AS results_prize_total,
+       (SELECT count(*) FROM tournament_results tr
+          LEFT JOIN wallet_transactions wt ON wt.id = tr.prize_transaction_id
+         WHERE tr.tournament_id = t.id AND tr.prize_amount > 0
+           AND (wt.id IS NULL OR wt.kind <> 'tournament_prize' OR wt.status <> 'succeeded'
+                OR wt.tokens <> tr.prize_amount))::int AS unpaid_prizes,
+       (SELECT COALESCE(json_agg(json_build_object('rank', pr.rank, 'shareBps', pr.share_bps)
+                 ORDER BY pr.rank), '[]'::json)
+          FROM tournament_prize_rules pr WHERE pr.tournament_id = t.id) AS prize_rules
+     FROM tournaments t
+     WHERE (t.started_at IS NOT NULL OR t.status = ANY($1::text[])
+        OR EXISTS (SELECT 1 FROM platform_ledger l WHERE l.tournament_id = t.id))
+       AND ($2::uuid IS NULL OR t.id = $2)
+     ORDER BY t.starts_at DESC`,
+    [[...STARTED_STATUSES], tournamentId ?? null],
+  );
+  return rows.map((row) => {
+    const rules = (
+      typeof row.prize_rules === 'string' ? JSON.parse(row.prize_rules) : row.prize_rules
+    ) as { rank: number; shareBps: number }[] | null;
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      status: row.status as TournamentStatus,
+      startedAt: dOrNull(row.started_at),
+      entryFee: n(row.entry_fee),
+      participants: nOrNull(row.participants),
+      platformFeeBps: nOrNull(row.platform_fee_bps),
+      grossPool: nOrNull(row.gross_pool),
+      platformFee: nOrNull(row.platform_fee),
+      prizePool: nOrNull(row.prize_pool),
+      unallocatedPrize: nOrNull(row.unallocated_prize),
+      capturedReservations: n(row.captured_reservations),
+      capturedEntryTokens: n(row.captured_entry_tokens),
+      capturedEntryTransactions: n(row.captured_entry_transactions),
+      feeEntryAmount: nOrNull(row.fee_entry),
+      unallocatedEntryAmount: nOrNull(row.unallocated_entry),
+      resultsCount: n(row.results_count),
+      resultsPrizeTotal: n(row.results_prize_total),
+      unpaidPrizes: n(row.unpaid_prizes),
+      prizeRules: (rules ?? []).map((r) => ({
+        rank: Number(r.rank),
+        shareBps: Number(r.shareBps),
+      })),
+    };
+  });
+}
+
 export class PostgresAdminQueryRepository implements AdminQueryRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -853,74 +932,8 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
     }));
   }
 
-  async tournamentLedgerFacts(): Promise<TournamentLedgerFacts[]> {
-    const { rows } = await this.db.query<Record<string, unknown>>(
-      `SELECT t.id, ${TOURNAMENT_LABEL} AS name, t.status, t.started_at, t.entry_fee, t.participants,
-         t.platform_fee_bps, t.gross_pool, t.platform_fee, t.prize_pool, t.unallocated_prize,
-         (SELECT count(*) FROM wallet_reservations r
-           WHERE r.tournament_id = t.id AND r.status = 'CAPTURED')::int AS captured_reservations,
-         (SELECT COALESCE(sum(wt.tokens), 0) FROM wallet_reservations r
-            JOIN wallet_transactions wt ON wt.id = r.capture_transaction_id
-           WHERE r.tournament_id = t.id AND r.status = 'CAPTURED'
-             AND wt.kind = 'tournament_entry' AND wt.status = 'succeeded')
-           AS captured_entry_tokens,
-         (SELECT count(*) FROM wallet_reservations r
-            JOIN wallet_transactions wt ON wt.id = r.capture_transaction_id
-           WHERE r.tournament_id = t.id AND r.status = 'CAPTURED'
-             AND wt.kind = 'tournament_entry' AND wt.status = 'succeeded')::int
-           AS captured_entry_transactions,
-         (SELECT l.amount FROM platform_ledger l
-           WHERE l.tournament_id = t.id AND l.kind = 'TOURNAMENT_PLATFORM_FEE') AS fee_entry,
-         (SELECT l.amount FROM platform_ledger l
-           WHERE l.tournament_id = t.id AND l.kind = 'UNALLOCATED_PRIZE') AS unallocated_entry,
-         (SELECT count(*) FROM tournament_results tr WHERE tr.tournament_id = t.id)::int
-           AS results_count,
-         (SELECT COALESCE(sum(tr.prize_amount), 0) FROM tournament_results tr
-           WHERE tr.tournament_id = t.id) AS results_prize_total,
-         (SELECT count(*) FROM tournament_results tr
-            LEFT JOIN wallet_transactions wt ON wt.id = tr.prize_transaction_id
-           WHERE tr.tournament_id = t.id AND tr.prize_amount > 0
-             AND (wt.id IS NULL OR wt.kind <> 'tournament_prize' OR wt.status <> 'succeeded'
-                  OR wt.tokens <> tr.prize_amount))::int AS unpaid_prizes,
-         (SELECT COALESCE(json_agg(json_build_object('rank', pr.rank, 'shareBps', pr.share_bps)
-                   ORDER BY pr.rank), '[]'::json)
-            FROM tournament_prize_rules pr WHERE pr.tournament_id = t.id) AS prize_rules
-       FROM tournaments t
-       WHERE t.started_at IS NOT NULL OR t.status = ANY($1::text[])
-          OR EXISTS (SELECT 1 FROM platform_ledger l WHERE l.tournament_id = t.id)
-       ORDER BY t.starts_at DESC`,
-      [[...STARTED_STATUSES]],
-    );
-    return rows.map((row) => {
-      const rules = (
-        typeof row.prize_rules === 'string' ? JSON.parse(row.prize_rules) : row.prize_rules
-      ) as { rank: number; shareBps: number }[] | null;
-      return {
-        id: row.id as string,
-        name: row.name as string,
-        status: row.status as TournamentStatus,
-        startedAt: dOrNull(row.started_at),
-        entryFee: n(row.entry_fee),
-        participants: nOrNull(row.participants),
-        platformFeeBps: nOrNull(row.platform_fee_bps),
-        grossPool: nOrNull(row.gross_pool),
-        platformFee: nOrNull(row.platform_fee),
-        prizePool: nOrNull(row.prize_pool),
-        unallocatedPrize: nOrNull(row.unallocated_prize),
-        capturedReservations: n(row.captured_reservations),
-        capturedEntryTokens: n(row.captured_entry_tokens),
-        capturedEntryTransactions: n(row.captured_entry_transactions),
-        feeEntryAmount: nOrNull(row.fee_entry),
-        unallocatedEntryAmount: nOrNull(row.unallocated_entry),
-        resultsCount: n(row.results_count),
-        resultsPrizeTotal: n(row.results_prize_total),
-        unpaidPrizes: n(row.unpaid_prizes),
-        prizeRules: (rules ?? []).map((r) => ({
-          rank: Number(r.rank),
-          shareBps: Number(r.shareBps),
-        })),
-      };
-    });
+  tournamentLedgerFacts(): Promise<TournamentLedgerFacts[]> {
+    return queryTournamentLedgerFacts(this.db);
   }
 
   // --- Tableau de bord et rapports ------------------------------------------------------------

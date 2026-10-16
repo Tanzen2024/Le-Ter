@@ -37,6 +37,7 @@ jest.mock('../../chat/realtime', () => ({
     onStatus: () => () => undefined,
     getStatus: () => 'connected',
     wake: () => undefined,
+    onNotification: () => () => undefined,
   },
   useRealtimeStatus: () => 'connected',
   useRealtimeWake: () => undefined,
@@ -126,7 +127,7 @@ function afterMyFlee(): GameView {
       remainingOpponentIds: [],
       fledPlayerIds: [ME],
     },
-    mySettlement: { delta: -100 },
+    mySettlement: { delta: -100, account: 'WALLET' },
     myActions: NO_ACTIONS,
   };
 }

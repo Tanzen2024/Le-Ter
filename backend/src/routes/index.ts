@@ -17,6 +17,12 @@ import type { WithdrawalService } from '../services/withdrawals/withdrawal.servi
 import type { Logger } from '../utils/logger';
 import { createAuthRouter, createUnavailableRouter, type AuthRateLimits } from './auth.routes';
 import { createChatRouter } from './chat.routes';
+import {
+  createComplaintAdminRouter,
+  createComplaintRouter,
+  createSupportRouter,
+  type ComplaintRouterDependencies,
+} from './complaint.routes';
 import { createGameRouter, type GameRateLimits } from './game.routes';
 import { createAdminRouter, type AdminRouterDependencies } from './admin.routes';
 import { createAdminSettingsRouter } from './admin-settings.routes';
@@ -77,6 +83,8 @@ export interface ApiRouterDependencies {
   tournaments?: TournamentService;
   /** Notifications dans l'application (D-054) ; absentes, /notifications répond 503. */
   notifications?: NotificationService;
+  /** Réclamations et assistant automatisé (D-114) ; absents, 503. */
+  complaints?: ComplaintRouterDependencies;
 }
 
 export function createApiRouter({
@@ -101,6 +109,7 @@ export function createApiRouter({
   gameCommissionSettings,
   tournaments,
   notifications,
+  complaints,
 }: ApiRouterDependencies): Router {
   const router = Router();
   router.use('/health', healthRouter);
@@ -248,6 +257,26 @@ export function createApiRouter({
     auth && notifications
       ? createNotificationRouter(notifications, auth, logger)
       : tournamentsUnavailable(),
+  );
+  // Réclamations (D-114) : utilisables même sans fournisseur d'IA (mode dégradé).
+  const complaintsUnavailable = () =>
+    createUnavailableRouter(
+      'COMPLAINTS_UNAVAILABLE',
+      'Les réclamations ne sont pas disponibles : base ou authentification non configurée.',
+    );
+  router.use(
+    '/complaints',
+    auth && complaints ? createComplaintRouter(complaints, auth, logger) : complaintsUnavailable(),
+  );
+  router.use(
+    '/support',
+    auth && complaints ? createSupportRouter(complaints, auth, logger) : complaintsUnavailable(),
+  );
+  router.use(
+    '/admin/complaints',
+    auth && complaints
+      ? createComplaintAdminRouter(complaints.complaints, auth, logger)
+      : complaintsUnavailable(),
   );
   return router;
 }

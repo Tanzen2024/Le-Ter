@@ -159,15 +159,25 @@ describe('création, approbation, chevauchement', () => {
     expect(await notificationTypes(p(ANA))).toEqual(['TOURNAMENT_CANCELLED']);
   });
 
-  it('chevauchement refusé par PostgreSQL (création et approbation)', async () => {
+  it('chevauchement refusé (création, soumission D-113, approbation par PostgreSQL)', async () => {
     await published();
     await expect(published()).rejects.toBeInstanceOf(TournamentOverlapError);
     const proposal = await stack.tournaments.createAsPlayer(
       p(BEN),
       tournamentInput(stack.clock, 2 * HOUR),
     );
-    await stack.tournaments.submit(proposal.id, p(BEN));
-    await expect(stack.tournaments.approve(proposal.id, admin)).rejects.toBeInstanceOf(
+    // D-113 : refusé dès la soumission (avant toute préinscription).
+    await expect(stack.tournaments.submit(proposal.id, p(BEN))).rejects.toBeInstanceOf(
+      TournamentOverlapError,
+    );
+    // Tournoi publié APRÈS la soumission : l'approbation reste refusée par PostgreSQL.
+    const later = await stack.tournaments.createAsPlayer(
+      p(CID),
+      tournamentInput(stack.clock, 10 * HOUR),
+    );
+    await stack.tournaments.submit(later.id, p(CID));
+    await stack.tournaments.createAsAdmin(admin, tournamentInput(stack.clock, 10 * HOUR));
+    await expect(stack.tournaments.approve(later.id, admin)).rejects.toBeInstanceOf(
       TournamentOverlapError,
     );
   });
@@ -524,7 +534,7 @@ describe('jetons de tournoi, classement, gains', () => {
     expect(await notificationTypes(p(BEN))).not.toContain('TOURNAMENT_PRIZE_CREDITED');
   });
 
-  it('score pondéré figé (D-062) : poids copiés à la publication, classement publié jamais recalculé', async () => {
+  it('score pondéré figé (D-062, D-106) : poids copiés à la publication, méthode figée au démarrage, classement publié jamais recalculé', async () => {
     const t = await published();
     expect(t.rankingWeights).toEqual({ tokensBps: 5000, gamesBps: 5000 });
     await registerWith(t, ANA, BEN, CID, DAN);
@@ -544,25 +554,28 @@ describe('jetons de tournoi, classement, gains', () => {
     stack.clock.set(t.endsAt);
     expect((await stack.tournaments.advance(t.id)).status).toBe('COMPLETED');
 
-    // 2 h → 42 parties de référence ; 1 000 jetons de référence. À 50 / 50 :
-    // cid 1200 j. / 1 partie = 28,4355 ; dan 1000 j. / 0 partie = 25 ; ana 900 j. / 1 = 24,847.
-    // (À 10 / 90, ana passerait devant dan : 6,8301 contre 5.)
+    // Méthode D-106 (figée au démarrage) : jetons restants / 1 000 de capital, parties
+    // jouées / 42 parties de référence (2 h), plafonné à 1. À 50 / 50 :
+    // cid 1200 j. / 1 partie = 60 + 1,1905 = 61,1905 ; dan 1000 j. / 0 partie = 50 ;
+    // ana 900 j. / 1 = 45 + 1,1905 = 46,1905. (À 10 / 90, ana passerait devant dan :
+    // 11,1429 contre 10.)
+    expect((await stack.repository.findById(t.id))?.rankingMethod).toBe('D106_CAPITAL_RATIO');
     const snapshot = async () =>
       (await stack.tournaments.results(t.id)).rows.map((r) => [r.rank, r.playerId, r.score]);
     const before = await snapshot();
     expect(before.slice(0, 2)).toEqual([
-      [1, p(CID), 28.4355],
-      [2, p(DAN), 25],
+      [1, p(CID), 61.1905],
+      [2, p(DAN), 50],
     ]);
     expect(before.slice(18)).toEqual([
-      [19, p(ANA), 24.847],
-      [20, p(BEN), 24.847],
+      [19, p(ANA), 46.1905],
+      [20, p(BEN), 46.1905],
     ]);
     const stored = await database.sql.query<{ score: string }>(
       'SELECT score::text AS score FROM tournament_results WHERE tournament_id = $1 AND rank = 1',
       [t.id],
     );
-    expect(stored.rows).toEqual([{ score: '28.4355' }]);
+    expect(stored.rows).toEqual([{ score: '61.1905' }]);
 
     // Nouveau changement APRÈS publication des résultats, puis reprise : rien ne bouge.
     await stack.tournaments.updateSettings(admin, {
@@ -639,7 +652,7 @@ describe('jetons de tournoi, classement, gains', () => {
   });
 });
 
-describe('délai minimal d’une proposition (D-056)', () => {
+describe('délai minimal d’une proposition (D-056, D-108)', () => {
   it('soumission refusée à moins d’1 h du début', async () => {
     const draft = await stack.tournaments.createAsPlayer(
       p(ANA),
@@ -653,17 +666,14 @@ describe('délai minimal d’une proposition (D-056)', () => {
     expect((await stack.repository.findById(draft.id))?.status).toBe('DRAFT');
   });
 
-  it('approbation refusée à moins d’1 h du début (la proposition reste en attente)', async () => {
+  it('D-108 : approbation acceptée à moins d’1 h du début (seul un début passé est refusé)', async () => {
     const draft = await stack.tournaments.createAsPlayer(
       p(ANA),
       tournamentInput(stack.clock, 2 * HOUR),
     );
     await stack.tournaments.submit(draft.id, p(ANA));
     stack.clock.advance(70 * MINUTE);
-    await expect(stack.tournaments.approve(draft.id, admin)).rejects.toMatchObject({
-      name: 'InvalidTournamentError',
-    });
-    expect((await stack.repository.findById(draft.id))?.status).toBe('PENDING_APPROVAL');
+    expect((await stack.tournaments.approve(draft.id, admin)).status).toBe('REGISTRATION_OPEN');
   });
 });
 
@@ -797,9 +807,15 @@ describe('limite de 5 tournois aux inscriptions ouvertes ou à ouvrir (D-059, D-
   });
 
   it('limite globale : approbation et proposition d’un joueur refusées aussi', async () => {
-    const draft = await stack.tournaments.createAsPlayer(p(ANA), slot(5));
+    // Proposition dont la fenêtre de préinscription se ferme : elle ne compte plus (D-113)…
+    const draft = await stack.tournaments.createAsPlayer(
+      p(ANA),
+      slot(5, { registrationClosesAt: new Date(stack.clock.now().getTime() + 30 * MINUTE) }),
+    );
     await stack.tournaments.submit(draft.id, p(ANA));
+    stack.clock.advance(31 * MINUTE);
     for (let i = 0; i < 5; i += 1) await stack.tournaments.createAsAdmin(admin, slot(i));
+    // … et sa publication dépasserait la limite : refusée.
     await expect(stack.tournaments.approve(draft.id, admin)).rejects.toBeInstanceOf(
       TooManyWaitingTournamentsError,
     );
@@ -809,13 +825,17 @@ describe('limite de 5 tournois aux inscriptions ouvertes ou à ouvrir (D-059, D-
     );
   });
 
-  it('brouillons et propositions en attente d’approbation ne comptent pas', async () => {
+  it('brouillons : ne comptent pas ; propositions ouvertes aux préinscriptions : comptent (D-113)', async () => {
     for (const [i, who] of [ANA, BEN, CID].entries()) {
       const draft = await stack.tournaments.createAsPlayer(p(who), slot(10 + i));
       if (i > 0) await stack.tournaments.submit(draft.id, p(who));
     }
-    for (let i = 0; i < 5; i += 1) await stack.tournaments.createAsAdmin(admin, slot(i));
-    expect(await waiting()).toBe(5);
+    // 1 brouillon (non compté) + 2 propositions en attente (comptées) : 3 places publiées.
+    for (let i = 0; i < 3; i += 1) await stack.tournaments.createAsAdmin(admin, slot(i));
+    await expect(stack.tournaments.createAsAdmin(admin, slot(3))).rejects.toBeInstanceOf(
+      TooManyWaitingTournamentsError,
+    );
+    expect(await waiting()).toBe(3);
   });
 
   it('place libérée (annulation, démarrage) : nouvelle création possible', async () => {

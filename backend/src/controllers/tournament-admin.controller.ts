@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 
-import type { TournamentInput } from '../domain/tournaments/tournament';
+import { tournamentRankingRules, type TournamentInput } from '../domain/tournaments/tournament';
 import { getAuth } from '../middleware/require-auth';
 import { CSV_EXPORT } from '../services/tournaments/tournament-export';
 import type { TournamentService } from '../services/tournaments/tournament.service';
@@ -9,7 +9,12 @@ import {
   parseTournamentInput,
   parseTournamentSettingsInput,
 } from '../validators/tournament.validators';
-import { toResultView, toTournamentSummary, tournamentIdOf } from './tournament.controller';
+import {
+  toResultView,
+  toRulesView,
+  toTournamentSummary,
+  tournamentIdOf,
+} from './tournament.controller';
 
 /**
  * Administration des tournois (D-054), derrière `requireRole('admin')`. L'administrateur est
@@ -93,7 +98,52 @@ export function createTournamentAdminController(tournaments: TournamentService) 
 
     async results(_req: Request, res: Response): Promise<void> {
       const { tournament, rows } = await tournaments.results(tournamentIdOf(res));
-      res.json({ tournament: toTournamentSummary(tournament), results: rows.map(toResultView) });
+      // Mêmes lignes figées et mêmes règles que le classement de l'application (D-106) ; la
+      // colonne « Parties » affiche le total seul (D-109).
+      res.json({
+        tournament: toTournamentSummary(tournament),
+        rules: toRulesView(tournamentRankingRules(tournament)),
+        results: rows.map(toResultView),
+      });
+    },
+
+    /**
+     * Rapport financier (D-112) : fonds capturés, commission, cagnotte distribuable, plan de
+     * versement (bénéficiaires, montants, références, statuts, échecs) et finalisation.
+     */
+    async payouts(_req: Request, res: Response): Promise<void> {
+      const report = await tournaments.payoutReport(tournamentIdOf(res));
+      const t = report.tournament;
+      res.json({
+        tournamentId: t.id,
+        status: t.status,
+        financialState: report.financialState,
+        pool: {
+          participants: t.participants ?? 0,
+          grossPool: t.grossPool ?? 0,
+          platformFee: t.platformFee ?? 0,
+          platformFeePercent: (t.platformFeeBps ?? 0) / 100,
+          prizePool: t.prizePool ?? 0,
+          unallocatedPrize: t.unallocatedPrize ?? 0,
+        },
+        prizeRules: t.prizeRules.map((r) => ({ rank: r.rank, percent: r.shareBps / 100 })),
+        planValidatedAt: report.planValidatedAt ?? null,
+        blocked: report.blockedAt ? { at: report.blockedAt, reasons: report.blockReasons } : null,
+        dueTotal: report.dueTotal,
+        creditedTotal: report.creditedTotal,
+        payouts: report.payouts.map((p) => ({
+          rank: p.rank,
+          username: p.username,
+          amount: p.amount,
+          status: p.status,
+          reference: p.idempotencyKey,
+          walletTransactionId: p.walletTransactionId ?? null,
+          attempts: p.attempts,
+          lastError: p.lastError ?? null,
+          lastAttemptAt: p.lastAttemptAt ?? null,
+          creditedAt: p.creditedAt ?? null,
+        })),
+      });
     },
 
     /** Classement final en CSV (format isolé : XLSX ajoutable). */

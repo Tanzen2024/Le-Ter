@@ -109,6 +109,9 @@ export class PostgresGameStakeLedger implements GameStakeLedger {
   /** Engagement au démarrage : une seule fois par partie (clé primaire `game_id`). */
   private async open(tx: SqlExecutor, game: Game, now: Date): Promise<void> {
     const stake = game.stakeAmount;
+    // Partie de tournoi (rattachement explicite, D-106) : comptes FICTIFS seulement (D-111),
+    // jamais d'engagement ni de règlement sur le compte de jeu réel.
+    if (game.tournamentId !== undefined) return;
     if (!game.sessionId || !isValidGameStake(stake)) return;
     const tournament = await tx.query('SELECT 1 FROM tournament_sessions WHERE session_id = $1', [
       game.sessionId,

@@ -1,24 +1,34 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 
 import { bootstrapSession } from '../src/features/auth/session';
 import { ActiveGameRestorer } from '../src/features/games/ActiveGameRestorer';
+import { LaunchCurtain } from '../src/features/navigation/LaunchCurtain';
+import { beginNavigationRoot } from '../src/features/navigation/last-route';
 import { installAppFocusManager } from '../src/lib/app-focus';
+import { queryClient } from '../src/lib/query-client';
 import { installSoundPlayer } from '../src/services/expo-sound-player';
 import { useAuthStore } from '../src/stores/auth-store';
 
+/**
+ * Racine de l'application. Le retour au premier plan ne la touche pas : aucun rechargement,
+ * aucun remontage, aucune redirection ; seules les données périmées de l'écran affiché sont
+ * relues (`app-focus`, `app-lifecycle`). Le cache (`queryClient`), la session et les stores
+ * vivent au niveau du module : si Android recrée l'activité (racine React remontée, moteur
+ * JavaScript vivant), ils sont conservés et le dernier écran est rouvert.
+ */
 export default function RootLayout() {
-  const [queryClient] = useState(
-    () => new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
-  );
+  // Nouvelle arborescence de navigation : décidé AVANT les effets des enfants (reprise).
+  useState(beginNavigationRoot);
   const status = useAuthStore((s) => s.status);
 
   useEffect(() => {
     installSoundPlayer();
-    // Retour au premier plan : l'état affiché (la partie notamment) est relu aussitôt.
+    // Retour au premier plan : seules les requêtes affichées et périmées sont relues.
     installAppFocusManager();
+    // Sans effet si la session est déjà ouverte (racine remontée) : jamais réinitialisée.
     void bootstrapSession();
   }, []);
 
@@ -46,6 +56,12 @@ export default function RootLayout() {
           <Stack.Screen name="tournament/propose" />
           {/* Fiche d'un tournoi depuis la liste (D-065). */}
           <Stack.Screen name="tournament/[tournamentId]" />
+          {/* Résultats des tournois et classement général officiel (D-106). */}
+          <Stack.Screen name="tournament/results/index" />
+          <Stack.Screen name="tournament/results/[tournamentId]" />
+          {/* Aide et réclamations (D-114) : assistant automatisé et dossiers du joueur. */}
+          <Stack.Screen name="support/index" />
+          <Stack.Screen name="support/[complaintId]" />
           {/* Administration (D-053) : aucun lien joueur ; rôle admin vérifié par le serveur. */}
           <Stack.Screen name="admin/index" />
           {/* Administration des tournois (D-054). */}
@@ -57,6 +73,9 @@ export default function RootLayout() {
       </Stack>
       {/* Reprise de la partie active au lancement et au retour au premier plan. */}
       <ActiveGameRestorer />
+      {/* Relancement après destruction par Android : couvre la reconstruction de la pile
+          jusqu'à la réouverture du dernier écran (jamais affiché au simple retour). */}
+      <LaunchCurtain />
     </QueryClientProvider>
   );
 }

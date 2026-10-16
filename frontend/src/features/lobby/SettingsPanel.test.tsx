@@ -112,14 +112,12 @@ describe('SettingsPanel', () => {
     expect(router.push).toHaveBeenCalledWith('/legal/privacy');
   });
 
-  it("Assistance sans URL configurée : message, aucune ouverture d'adresse", async () => {
+  it("Assistance ouvre l'aide et les réclamations dans l'application (D-114)", async () => {
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     await render(<SettingsPanel onClose={jest.fn()} />);
     await fireEvent.press(screen.getByLabelText("Ouvrir l'assistance"));
-    expect(alert).toHaveBeenCalledWith(
-      'Assistance',
-      "Le service d'assistance sera bientôt disponible.",
-    );
+    expect(router.push).toHaveBeenCalledWith('/support');
+    expect(alert).not.toHaveBeenCalled();
     alert.mockRestore();
   });
 

@@ -218,6 +218,12 @@ export interface Game {
    */
   autoStartDelayMs?: number;
   /**
+   * Tournoi de la partie (D-106) : écrit À LA CRÉATION pour toute partie d'une table de
+   * tournoi (première et suivantes), puis immuable (garde-fou en base). Absent : partie
+   * ordinaire, qui ne touche jamais aux jetons d'un tournoi.
+   */
+  tournamentId?: string;
+  /**
    * Échéance PERSISTÉE du démarrage automatique (D-065) : posée quand la partie en attente
    * atteint 2 joueurs, jamais repoussée par les arrivées suivantes, retirée sous 2 joueurs et
    * au démarrage. Voir `syncStartDeadline`.

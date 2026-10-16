@@ -177,6 +177,14 @@ export const AUDIT_ACTION: Record<string, string> = {
   USER_CHAT_RESTRICTION_LIFTED: 'Restriction du chat levée',
   USER_NOTE_ADDED: 'Note interne ajoutée',
   USER_NOTE_DELETED: 'Note interne supprimée',
+  COMPLAINT_VIEWED: 'Réclamation consultée',
+  COMPLAINT_ATTACHMENT_VIEWED: 'Pièce justificative consultée',
+  COMPLAINT_REPLIED: 'Réponse au joueur (réclamation)',
+  COMPLAINT_NOTE_ADDED: 'Note interne (réclamation)',
+  COMPLAINT_INFO_REQUESTED: 'Informations demandées (réclamation)',
+  COMPLAINT_ASSIGNED: 'Réclamation assignée',
+  COMPLAINT_STATUS_CHANGED: 'Statut de réclamation modifié',
+  COMPLAINT_PRIORITY_CHANGED: 'Priorité de réclamation modifiée',
 };
 
 /** Mesures de modération d'un joueur (D-079). */
@@ -206,6 +214,7 @@ export const AUDIT_TARGET: Record<string, string> = {
   PLATFORM_PAYOUT: 'Retrait de la plateforme',
   PAYOUT_BENEFICIARY: 'Bénéficiaire',
   TREASURY: 'Trésorerie',
+  COMPLAINT: 'Réclamation',
 };
 
 /** État des nouveaux retraits (D-077), décidé au démarrage du serveur. */

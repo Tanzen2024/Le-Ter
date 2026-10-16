@@ -1,0 +1,13 @@
+-- Jetons de départ et mise figés dès la PREMIÈRE préinscription d'une proposition (D-113).
+--
+-- Jusqu'ici (D-071), les jetons de départ et la mise d'une proposition non publiée suivaient
+-- les coefficients en vigueur jusqu'à l'approbation. Une préinscription (D-108) est prise aux
+-- valeurs affichées à cet instant : `token_setup_frozen_at` marque le moment où
+-- `initial_tournament_tokens` et `stake_per_game` deviennent les valeurs PROMISES ; la lecture
+-- et l'approbation les reprennent ensuite telles quelles.
+--
+-- Colonne nullable ajoutée, sans valeur par défaut ni réécriture : aucun tournoi existant
+-- n'est modifié. Pas de rattrapage : les préinscriptions (D-108) n'ont encore jamais été
+-- ouvertes en production ; une proposition sans marque reste au comportement D-071 jusqu'à
+-- sa première préinscription. Les tournois publiés restent figés par leur publication.
+ALTER TABLE tournaments ADD COLUMN token_setup_frozen_at timestamptz;

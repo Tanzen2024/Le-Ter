@@ -277,7 +277,7 @@ describe('mes propositions', () => {
       'Annulé',
     ]);
     expect(
-      screen.getByText('Votre proposition attend la validation de l’administration.'),
+      screen.getByText(/Votre proposition attend la validation de l’administration\. Les préinscriptions sont déjà ouvertes/),
     ).toBeTruthy();
   });
 

@@ -125,11 +125,32 @@ it('retour au premier plan : tentative immédiate sans attendre la minuterie', a
   refresh.mockRejectedValueOnce(timeoutError()).mockResolvedValueOnce(tokens(3));
   await bootstrapSession();
 
+  // Retour RÉEL : l'application était passée en arrière-plan (`inactive` seul ne compte pas).
+  foreground?.('inactive');
+  foreground?.('active');
+  await jest.advanceTimersByTimeAsync(0);
+  expect(refresh).toHaveBeenCalledTimes(1);
+
+  foreground?.('background');
   foreground?.('active');
   await jest.advanceTimersByTimeAsync(0);
 
   expect(refresh).toHaveBeenCalledTimes(2);
   expect(useAuthStore.getState().status).toBe('signedIn');
+});
+
+it('session valide au retour : aucune réinitialisation, aucune requête', async () => {
+  refresh.mockResolvedValueOnce(tokens(4));
+  await bootstrapSession();
+  expect(useAuthStore.getState()).toMatchObject({ status: 'signedIn', accessToken: 'access-4' });
+
+  // Racine remontée (activité recréée) puis plusieurs retours : la session reste ouverte.
+  await bootstrapSession();
+  foreground?.('background');
+  foreground?.('active');
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(useAuthStore.getState()).toMatchObject({ status: 'signedIn', accessToken: 'access-4' });
 });
 
 it('nouvelles tentatives BORNÉES : délais croissants puis arrêt (aucune boucle infinie)', async () => {

@@ -6,7 +6,9 @@ import type {
   TournamentProposalInput,
   TournamentSummary,
   TournamentList,
-  TournamentResults,
+  OfficialTournamentResults,
+  TournamentContext,
+  TournamentResultsHistoryPage,
   TournamentSeat,
   TournamentView,
 } from '../types/tournament';
@@ -51,8 +53,24 @@ export const tournamentsApi = {
   join: (accessToken: string, tournamentId: string) =>
     apiRequest<TournamentSeat>(path(tournamentId, '/join'), { method: 'POST', accessToken }),
 
+  /** Classement général OFFICIEL (tous les participants) et le détail de MON score. */
   results: (accessToken: string, tournamentId: string) =>
-    apiRequest<TournamentResults>(path(tournamentId, '/results'), { accessToken }),
+    apiRequest<OfficialTournamentResults>(path(tournamentId, '/results'), {
+      accessToken,
+    }),
+
+  /** Mes tournois terminés aux résultats publiés (sans limite de date), page par page. */
+  resultsHistory: (accessToken: string, before?: string) =>
+    apiRequest<TournamentResultsHistoryPage>(
+      `/api/tournaments/results${before ? `?before=${encodeURIComponent(before)}` : ''}`,
+      { accessToken },
+    ),
+
+  /** MON contexte dans le tournoi (jetons de CE tournoi, parties, rang provisoire). */
+  myContext: (accessToken: string, tournamentId: string) =>
+    apiRequest<{ context: TournamentContext }>(path(tournamentId, '/me'), {
+      accessToken,
+    }),
 
   /** Proposition d'un joueur : enregistrée en BROUILLON (rien n'est publié ni réservé). */
   propose: (accessToken: string, input: TournamentProposalInput) =>

@@ -123,6 +123,28 @@ describe('RealtimeClient', () => {
     expect(onSubscribed).toHaveBeenCalledTimes(1);
   });
 
+  it('signal personnel (D-106) : remis aux écouteurs, sans ouvrir de connexion', async () => {
+    const { client, sockets, last } = setup();
+    const listener = jest.fn();
+    const stop = client.onNotification(listener);
+    await flush();
+    expect(sockets).toHaveLength(0); // écouter n'ouvre aucune connexion
+    client.subscribeGame(GAME, { onChanged: jest.fn() });
+    await connectReady(last);
+    last().receive({
+      type: 'notification',
+      notificationType: 'TOURNAMENT_RESULTS_AVAILABLE',
+      tournamentId: OTHER,
+    });
+    expect(listener).toHaveBeenCalledWith({
+      notificationType: 'TOURNAMENT_RESULTS_AVAILABLE',
+      tournamentId: OTHER,
+    });
+    stop();
+    last().receive({ type: 'notification', notificationType: 'TOURNAMENT_STARTED' });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it('ne remet un message qu’aux abonnés de SA partie', async () => {
     const { client, last } = setup();
     const mine = jest.fn();

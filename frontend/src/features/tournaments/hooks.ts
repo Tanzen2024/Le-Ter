@@ -1,17 +1,22 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect } from 'react';
 
+import { ApiError } from '../../lib/api-client';
 import { tournamentsApi } from '../../services/tournaments-api';
 import { useAuthStore } from '../../stores/auth-store';
 import type {
   NextTournament,
+  OfficialTournamentResults,
+  TournamentContext,
+  TournamentResultsHistoryPage,
   TournamentCreationRules,
   TournamentList,
   TournamentProposalInput,
   TournamentView,
 } from '../../types/tournament';
 import { withAccessToken } from '../auth/session';
+import { realtime } from '../chat/realtime';
 import { gameKeys } from '../games/hooks';
 import { sessionKeys } from '../sessions/hooks';
 import { walletKey } from '../wallet/hooks';
@@ -23,8 +28,112 @@ export const tournamentKeys = {
   next: ['tournaments', 'next'] as const,
   rules: ['tournaments', 'rules'] as const,
   detail: (tournamentId: string) => ['tournaments', 'detail', tournamentId] as const,
+  results: (tournamentId: string) => ['tournaments', 'results', tournamentId] as const,
+  resultsHistory: ['tournaments', 'results-history'] as const,
+  context: (tournamentId: string) => ['tournaments', 'context', tournamentId] as const,
   notifications: ['notifications'] as const,
 };
+
+/** Code de l'API tant que le classement officiel n'est pas publié (clôture en cours). */
+export const RESULTS_PENDING = 'TOURNAMENT_RESULTS_UNAVAILABLE';
+/** Relecture pendant la publication (le serveur attend la fin des parties commencées). */
+const RESULTS_PENDING_REFRESH_MS = 15_000;
+/** Relecture du HUD du tournoi pendant une partie (en plus des fins de partie). */
+const CONTEXT_REFRESH_MS = 30_000;
+
+export const isResultsPending = (error: unknown) =>
+  error instanceof ApiError && error.code === RESULTS_PENDING;
+
+/**
+ * Classement général OFFICIEL d'un tournoi (D-106), lu sur le serveur (PostgreSQL) : jamais
+ * reconstruit depuis une notification ni depuis le téléphone. Pendant la publication (409
+ * TOURNAMENT_RESULTS_UNAVAILABLE), relu toutes les 15 s jusqu'à ce qu'il soit prêt.
+ */
+export function useTournamentResults(tournamentId: string | undefined) {
+  const status = useAuthStore((s) => s.status);
+  const enabled = status === 'signedIn' && tournamentId !== undefined;
+  const query = useQuery({
+    queryKey: tournamentKeys.results(tournamentId ?? ''),
+    queryFn: (): Promise<OfficialTournamentResults> =>
+      withAccessToken((t) => tournamentsApi.results(t, tournamentId as string)),
+    enabled,
+    retry: (count, error) => !isResultsPending(error) && !(error instanceof ApiError) && count < 2,
+    refetchInterval: (q) => (isResultsPending(q.state.error) ? RESULTS_PENDING_REFRESH_MS : false),
+  });
+  const { refetch } = query;
+  useFocusEffect(
+    useCallback(() => {
+      if (enabled) void refetch();
+    }, [refetch, enabled]),
+  );
+  return query;
+}
+
+/**
+ * Rubrique « Résultats des tournois » : mes tournois terminés aux résultats publiés, sans la
+ * limite de 7 jours de la liste principale, page par page (le plus récent d'abord).
+ */
+export function useTournamentResultsHistory() {
+  const status = useAuthStore((s) => s.status);
+  const query = useInfiniteQuery({
+    queryKey: tournamentKeys.resultsHistory,
+    queryFn: ({ pageParam }): Promise<TournamentResultsHistoryPage> =>
+      withAccessToken((t) => tournamentsApi.resultsHistory(t, pageParam)),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) =>
+      last.tournaments.length > 0 && last.nextBefore ? last.nextBefore : undefined,
+    enabled: status === 'signedIn',
+  });
+  const { refetch } = query;
+  useFocusEffect(
+    useCallback(() => {
+      if (status === 'signedIn') void refetch();
+    }, [refetch, status]),
+  );
+  return query;
+}
+
+/**
+ * MON contexte dans le tournoi de la table (D-106) : jetons de CE tournoi, parties jouées,
+ * rang provisoire, échéance. Jamais le compte de jeu. Relu à la fin de chaque partie
+ * (invalidation) et toutes les 30 s.
+ */
+export function useTournamentContext(tournamentId: string | undefined) {
+  const status = useAuthStore((s) => s.status);
+  return useQuery({
+    queryKey: tournamentKeys.context(tournamentId ?? ''),
+    queryFn: async (): Promise<TournamentContext> =>
+      (await withAccessToken((t) => tournamentsApi.myContext(t, tournamentId as string))).context,
+    enabled: status === 'signedIn' && tournamentId !== undefined,
+    // Jetons et rang de CE tournoi : relus à chaque retour au premier plan.
+    staleTime: 0,
+    refetchInterval: CONTEXT_REFRESH_MS,
+  });
+}
+
+/**
+ * Signaux temps réel personnels (D-106) : « une notification t'attend ». Ils ne portent aucun
+ * contenu : notifications, tournois et classements sont relus par l'API. Sans connexion temps
+ * réel, les relectures habituelles (retour sur l'écran) suffisent.
+ */
+export function useTournamentSignals() {
+  const queryClient = useQueryClient();
+  useEffect(
+    () =>
+      realtime.onNotification((signal) => {
+        void queryClient.invalidateQueries({
+          queryKey: tournamentKeys.notifications,
+        });
+        void queryClient.invalidateQueries({ queryKey: ['tournaments'] });
+        if (signal.tournamentId) {
+          void queryClient.invalidateQueries({
+            queryKey: tournamentKeys.results(signal.tournamentId),
+          });
+        }
+      }),
+    [queryClient],
+  );
+}
 
 /** Relecture au plus tard toutes les 24 h (limite de setTimeout et dérive d'horloge). */
 const MAX_NEXT_REFRESH_MS = 24 * 60 * 60 * 1000;

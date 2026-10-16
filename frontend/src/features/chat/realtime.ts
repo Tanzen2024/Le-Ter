@@ -1,7 +1,7 @@
-import { useEffect, useSyncExternalStore } from 'react';
-import { AppState } from 'react-native';
+import { useSyncExternalStore } from 'react';
 
 import { API_URL } from '../../lib/api-client';
+import { useAppForeground } from '../../lib/app-lifecycle';
 import {
   RealtimeClient,
   realtimeUrl,
@@ -29,10 +29,5 @@ export function useRealtimeStatus(client: RealtimeClient = realtime): RealtimeSt
 
 /** Au retour au premier plan, la connexion coupée par le système est rétablie aussitôt. */
 export function useRealtimeWake(): void {
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') realtime.wake();
-    });
-    return () => subscription.remove();
-  }, []);
+  useAppForeground(() => realtime.wake());
 }

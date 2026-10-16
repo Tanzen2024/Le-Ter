@@ -119,7 +119,8 @@ export class PostgresSessionRepository implements SessionRepository {
           ],
         );
         await writePlayers(tx, session);
-        await insertGameRows(tx, game, this.options.stakeLedger);
+        // Rattachement de la table AVANT sa première partie : la partie est insérée déjà
+        // rattachée à son tournoi (garde-fou en base, D-106).
         if (tournament) {
           await tx.query(
             `INSERT INTO tournament_sessions (id, tournament_id, session_id, created_at)
@@ -132,6 +133,7 @@ export class PostgresSessionRepository implements SessionRepository {
             ],
           );
         }
+        await insertGameRows(tx, game, this.options.stakeLedger);
       });
     } catch (err) {
       throw translateSessionError(err, translateGameInsertError(err, game));

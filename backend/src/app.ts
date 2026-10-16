@@ -7,6 +7,7 @@ import { createApiRouter } from './routes';
 import type { AuthRateLimits } from './routes/auth.routes';
 import type { GameRateLimits } from './routes/game.routes';
 import type { AdminRouterDependencies } from './routes/admin.routes';
+import type { ComplaintRouterDependencies } from './routes/complaint.routes';
 import type { PaymentRouterOptions } from './routes/payment.routes';
 import type { AuthService } from './services/auth/auth.service';
 import type { ChatService } from './services/chat/chat.service';
@@ -63,6 +64,8 @@ export interface AppDependencies {
   notifications?: NotificationService;
   /** Plateforme d'administration (D-061) ; absente, toutes les routes /api/admin/* : 503. */
   admin?: Omit<AdminRouterDependencies, 'auth' | 'logger'>;
+  /** Réclamations et assistant (D-114) ; absents, /api/complaints et /api/support : 503. */
+  complaints?: ComplaintRouterDependencies;
   /**
    * Proxys de confiance (`TRUST_PROXY`) : absent = aucun (req.ip = pair TCP). Ne jamais
    * l'activer sans connaître l'infrastructure réelle (X-Forwarded-For falsifiable).
@@ -95,6 +98,7 @@ export function createApp({
   tournaments,
   notifications,
   admin,
+  complaints,
   trustProxy,
 }: AppDependencies = {}): Express {
   const app = express();
@@ -131,6 +135,7 @@ export function createApp({
       tournaments,
       notifications,
       admin,
+      complaints,
     }),
   );
 

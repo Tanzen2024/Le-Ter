@@ -3,6 +3,7 @@ import { queryOptions } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
 import type {
   TournamentRegistration,
+  TournamentRankingRules,
   TournamentResult,
   TournamentSettings,
   TournamentSummary,
@@ -44,9 +45,11 @@ export function resultsQuery(id: string, enabled = true) {
     enabled,
     queryKey: ['admin', 'tournament', id, 'results'],
     queryFn: () =>
-      api.get<{ tournament: TournamentSummary; results: TournamentResult[] }>(
-        `tournaments/${id}/results`,
-      ),
+      api.get<{
+        tournament: TournamentSummary;
+        rules: TournamentRankingRules;
+        results: TournamentResult[];
+      }>(`tournaments/${id}/results`),
   });
 }
 

@@ -25,7 +25,8 @@ export function proposalStatus(t: Pick<TournamentSummary, 'status' | 'cancellati
     case 'PENDING_APPROVAL':
       return {
         label: 'En attente d’approbation',
-        explanation: 'Votre proposition attend la validation de l’administration.',
+        explanation:
+          'Votre proposition attend la validation de l’administration. Les préinscriptions sont déjà ouvertes aux autres joueurs ; dès la première, la date et les conditions ne peuvent plus être modifiées.',
         tone: 'pending',
         canSubmit: false,
         canWithdraw: true,

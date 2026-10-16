@@ -15,6 +15,7 @@ import {
   nextRefreshDelayMs,
   remainingBeforeStartMs,
   rewardedRanks,
+  rewardMedal,
   selectHomeTournament,
   tournamentStatusKey,
   tournamentWidgetState,
@@ -158,6 +159,7 @@ describe('formatTournamentSchedule (accueil, D-059)', () => {
 describe('tournamentStatusKey : libellés fidèles à la machine à états du serveur (D-065)', () => {
   // serverNow (fixture) : 16:00 UTC ; début : 17:00 UTC.
   it.each([
+    ['PENDING_APPROVAL', 'PRE_REGISTRATION'],
     ['SCHEDULED', 'UPCOMING'],
     ['REGISTRATION_OPEN', 'OPEN'],
     ['REGISTRATION_CLOSED', 'CLOSED'],
@@ -176,6 +178,13 @@ describe('tournamentStatusKey : libellés fidèles à la machine à états du se
     const started = { startsAt: '2026-10-12T16:00:00.000Z', serverNow: '2026-10-12T16:00:00.000Z' };
     expect(tournamentStatusKey(view({ status: 'SCHEDULED', ...started }))).toBe('STARTING');
     expect(tournamentStatusKey(view({ status: 'REGISTRATION_OPEN', ...started }))).toBe('STARTING');
+  });
+
+  it('D-108 : une proposition non approuvée n’est jamais présentée « Démarrage »', () => {
+    const started = { startsAt: '2026-10-12T16:00:00.000Z', serverNow: '2026-10-12T16:00:00.000Z' };
+    expect(tournamentStatusKey(view({ status: 'PENDING_APPROVAL', ...started }))).toBe(
+      'PRE_REGISTRATION',
+    );
   });
 });
 
@@ -209,5 +218,18 @@ describe('selectHomeTournament : prochain tournoi pertinent de l’accueil (D-06
   it('en dernier recours : un tournoi en cours (information)', () => {
     const live = view({ tournamentId: 'live', status: 'IN_PROGRESS', canRegister: false });
     expect(selectHomeTournament([live])?.tournamentId).toBe('live');
+  });
+});
+
+describe('rewardMedal', () => {
+  it('une médaille seulement pour une récompense attribuée', () => {
+    expect(rewardMedal({ rank: 1, prizeAmount: 500 })).toBe('🥇');
+    expect(rewardMedal({ rank: 2, prizeAmount: 300 })).toBe('🥈');
+    expect(rewardMedal({ rank: 3, prizeAmount: 200 })).toBe('🥉');
+    expect(rewardMedal({ rank: 7, prizeAmount: 50 })).toBe('🏅');
+    // Un rang, même sur le podium, ne vaut jamais médaille sans prix.
+    expect(rewardMedal({ rank: 1, prizeAmount: 0 })).toBeUndefined();
+    expect(rewardMedal({ rank: 2, prizeAmount: 0 })).toBeUndefined();
+    expect(rewardMedal({ rank: 9, prizeAmount: 0 })).toBeUndefined();
   });
 });

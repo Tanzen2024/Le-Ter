@@ -2,6 +2,8 @@ import type { Request, Response } from 'express';
 
 import {
   canPlayTournamentGame,
+  registrationWindowOpen,
+  type RankingRules,
   type Tournament,
   type TournamentId,
   type TournamentInput,
@@ -11,10 +13,14 @@ import { getAuth } from '../middleware/require-auth';
 import { getRequestId } from '../middleware/request-id';
 import { shareSummary } from '../services/tournaments/tournament-export';
 import type {
+  OfficialResults,
+  ResultsHistoryItem,
+  TournamentContext,
   TournamentService,
   TournamentSnapshot,
 } from '../services/tournaments/tournament.service';
 import { parseTournamentInput } from '../validators/tournament.validators';
+import { ValidationError } from '../validators/validation-error';
 
 /**
  * Contrôleurs minces des tournois côté joueur (D-054) : identité issue du JWT, forme de la
@@ -147,14 +153,136 @@ export function createTournamentController(tournaments: TournamentService) {
       res.json({ tournamentId: tournament.id, live, standings: rows.map(toResultView) });
     },
 
+    /**
+     * Classement général OFFICIEL (D-106) : tous les participants classés (données publiques
+     * de classement seulement), ma ligne signalée par `isViewer`, et le détail de MON score
+     * (`me`). Lu dans PostgreSQL : disponible après déconnexion ou redémarrage. Clôture en
+     * cours : 409 TOURNAMENT_RESULTS_UNAVAILABLE (jamais un classement provisoire).
+     */
     async results(_req: Request, res: Response): Promise<void> {
-      const { tournament, rows } = await tournaments.results(tournamentIdOf(res));
+      const { userId, role } = getAuth(res);
+      const official = await tournaments.officialResults(tournamentIdOf(res), userId, {
+        isAdmin: role === 'admin',
+      });
+      res.json(toOfficialResultsView(official));
+    },
+
+    /**
+     * Rubrique « Résultats des tournois » (D-106) : mes tournois terminés aux résultats
+     * publiés, sans limite de date ; `?before=<ISO>` pour la page suivante.
+     */
+    async resultsHistory(req: Request, res: Response): Promise<void> {
+      const before = parseBefore(req.query.before);
+      const items = await tournaments.resultsHistory(getAuth(res).userId, {
+        ...(before && { before }),
+      });
       res.json({
-        tournament: toTournamentSummary(tournament),
-        results: rows.map(toResultView),
-        share: shareSummary(tournament, rows),
+        tournaments: items.map(toHistoryItemView),
+        nextBefore: items.length > 0 ? items[items.length - 1]!.tournament.endsAt : null,
       });
     },
+
+    /** MON contexte dans le tournoi (HUD de la table) : jetons de CE tournoi uniquement. */
+    async me(_req: Request, res: Response): Promise<void> {
+      const context = await tournaments.myContext(tournamentIdOf(res), getAuth(res).userId);
+      res.json({ context: toContextView(context) });
+    },
+  };
+}
+
+function parseBefore(value: unknown): Date | undefined {
+  if (value === undefined) return undefined;
+  const date = typeof value === 'string' ? new Date(value) : new Date(NaN);
+  if (Number.isNaN(date.getTime())) {
+    throw new ValidationError({ before: 'Date ISO 8601 attendue.' });
+  }
+  return date;
+}
+
+/** Poids et références figés, exprimés pour l'affichage. */
+export function toRulesView(rules: RankingRules) {
+  return {
+    method: rules.method,
+    tokensWeightPercent: rules.weights.tokensBps / 100,
+    gamesWeightPercent: rules.weights.gamesBps / 100,
+    gamesReference: rules.gamesReference,
+  };
+}
+
+export function toOfficialResultsView(o: OfficialResults) {
+  return {
+    tournament: toTournamentSummary(o.tournament),
+    publishedAt: o.tournament.resultsAt ?? null,
+    participants: o.rows.length,
+    rules: toRulesView(o.rules),
+    results: o.rows.map((r) => ({
+      ...toResultView(r),
+      isViewer: r.playerId === o.viewerId,
+    })),
+    me: o.me
+      ? {
+          rank: o.me.rank,
+          score: o.me.score,
+          initialTokens: o.me.initialTokens,
+          remainingTokens: o.me.remainingTokens,
+          gamesPlayed: o.me.gamesPlayed,
+          gamesWon: o.me.gamesWon,
+          tokensRatio: o.me.tokensRatio,
+          gamesRatio: o.me.gamesRatio,
+          tokensPoints: o.me.tokensPoints,
+          gamesPoints: o.me.gamesPoints,
+          prizeAmount: o.me.prizeAmount,
+          paid: o.me.paidAt !== undefined,
+          // Récompense RÉELLE (compte de jeu, FCFA) et état de son versement (D-112) : un
+          // gain n'est annoncé « crédité » qu'après l'écriture réussie.
+          payout: o.myPayout
+            ? {
+                amount: o.myPayout.amount,
+                status: o.myPayout.status === 'CREDITED' ? 'CREDITED' : 'PENDING',
+                ...(o.myPayout.creditedAt && { creditedAt: o.myPayout.creditedAt }),
+              }
+            : null,
+          ...(o.me.tieBreak && { tieBreak: o.me.tieBreak }),
+        }
+      : null,
+    share: shareSummary(o.tournament, o.rows),
+  };
+}
+
+function toHistoryItemView(item: ResultsHistoryItem) {
+  const t = item.tournament;
+  return {
+    tournamentId: t.id,
+    status: t.status,
+    timezone: t.timezone,
+    startsAt: t.startsAt,
+    endsAt: t.endsAt,
+    participants: t.participants ?? 0,
+    resultsPublishedAt: t.resultsAt ?? item.resultsPublishedAt,
+    myRank: item.myRank,
+    ...(item.myScore !== undefined && { myScore: item.myScore }),
+  };
+}
+
+function toContextView(c: TournamentContext) {
+  const t = c.tournament;
+  return {
+    tournamentId: t.id,
+    status: t.status,
+    startsAt: t.startsAt,
+    endsAt: t.endsAt,
+    serverNow: c.now,
+    participation: c.account.finishedAt ? 'FINISHED' : c.account.status,
+    tokensAllocatedAtStart: c.account.initialTokens,
+    tokensRemaining: c.account.currentTokens,
+    gamesPlayed: c.account.gamesPlayed,
+    gamesWon: c.account.gamesWon,
+    stakePerGame: t.stakePerGame,
+    rank: c.rank,
+    rankIsOfficial: c.account.finishedAt !== undefined,
+    participants: c.participants,
+    score: c.breakdown.score,
+    rules: toRulesView(c.rules),
   };
 }
 
@@ -205,8 +333,8 @@ export function toTournamentView(s: TournamentSnapshot) {
   const registered = s.registration?.status === 'REGISTERED';
   const now = s.now.getTime();
   const full = t.maximumPlayers !== undefined && s.registeredCount >= t.maximumPlayers;
-  const windowOpen =
-    t.status === 'REGISTRATION_OPEN' && now < (t.registrationClosesAt ?? t.startsAt).getTime();
+  // Même règle que l'inscription elle-même (préinscription comprise, D-108).
+  const windowOpen = registrationWindowOpen(t, s.now);
   return {
     ...toTournamentSummary(t),
     registeredCount: s.registeredCount,
@@ -255,6 +383,7 @@ export function toResultView(r: TournamentResultRow) {
     gamesPlayed: r.gamesPlayed,
     gamesWon: r.gamesWon,
     ...(r.score !== undefined && { score: r.score }),
+    ...(r.tieBreak && { tieBreak: r.tieBreak }),
     prizePercent: r.prizeShareBps / 100,
     prizeAmount: r.prizeAmount,
     paid: r.paidAt !== undefined,

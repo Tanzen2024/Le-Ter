@@ -21,6 +21,8 @@ export function useWallet() {
     queryKey: walletKey,
     queryFn: async () => (await withAccessToken((t) => walletApi.get(t))).wallet,
     enabled: status === 'signedIn',
+    // Retour d'une application de paiement : le solde est relu aussitôt.
+    staleTime: 0,
     refetchInterval: WALLET_REFRESH_MS,
   });
 }

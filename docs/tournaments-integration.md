@@ -27,6 +27,7 @@ continuité des numéros.
 | 0022_tournament_table_closed_notification | **non** | **Tournois** (D-056) | 0021 |
 | 0025_tournament_weighted_ranking | **non** | **Tournois** : classement pondéré (D-062) | 0021, 0024 |
 | 0026_tournament_table_auto_start | **non** | **Tournois** : démarrage des tables à 20 s (D-065) ; ajout de 2 colonnes à `games`, aucune donnée modifiée | 0001 |
+| 0043_tournament_closure_results | oui (cette session) | **Tournois** : rattachement explicite `games.tournament_id`, méthode de classement figée au démarrage, audit et immuabilité du classement, clôture sans annulation forcée (D-106) ; ajouts et triggers, parties existantes rattachées | 0021, 0025, 0026 |
 
 Constats :
 
@@ -126,3 +127,14 @@ entre deux instances lors de l'entrée dans la partie d'une table (corrigé, voi
 
 Pour l'exécuter : créer une base vide dédiée (ex. `le_ter_test`) sur un serveur PostgreSQL de
 test, puis `TEST_DATABASE_URL=postgres://…/le_ter_test npm test -- tests/integration/tournaments/postgres-tournament-concurrency.test.ts`.
+
+## 6. Clôture et résultats globaux (D-106, 2026-10-15)
+
+- Migration **0043** à appliquer après 0042 (`npm run db:migrate`, après sauvegarde). Elle
+  rattache les parties existantes des tables de tournoi (`games.tournament_id`), marque les
+  tournois déjà démarrés `D062_SATURATING` et pose les triggers d'immuabilité. Aucune donnée
+  n'est supprimée.
+- Après 0043, le serveur doit être redémarré avec le nouveau code : l'ancien code démarrerait un
+  tournoi sans méthode de classement, ce que la contrainte `tournaments_ranking_method_when_started`
+  refuse (démarrage retenté, puis annulé `SYSTEM_ERROR` après 15 min, réservations libérées).
+- Règles, API et écrans : voir D-106 dans `docs/decisions.md`.

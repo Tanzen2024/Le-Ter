@@ -112,6 +112,11 @@ export interface GameView {
    */
   autoStart?: boolean;
   startDeadlineAt?: string;
+  /**
+   * Tournoi de la table (D-106), décidé par le serveur à la création de la partie : la table
+   * se joue en jetons de CE tournoi, jamais avec le compte de jeu. Absent : partie ordinaire.
+   */
+  tournamentId?: string;
   endReason?: GameEndReason;
   /** Égalité de priorité des mains instantanées : la partie est rejouée aussitôt. */
   instantWinTie?: { rank: number; playerIds: string[] };
@@ -134,7 +139,11 @@ export interface GameView {
    * MON bilan financier une fois la partie terminée et réglée (D-074) : variation nette
    * enregistrée par le serveur. Absent pour une table de tournoi ou une partie sans mise.
    */
-  mySettlement?: { delta: number };
+  /**
+   * Bilan réglé par le serveur ; `account` dit QUEL compte a bougé (D-111) : `WALLET` = compte
+   * de jeu réel, `TOURNAMENT` = compte fictif du tournoi (jamais d'argent réel).
+   */
+  mySettlement?: { delta: number; account: 'WALLET' | 'TOURNAMENT' };
   /** Heure du serveur à la réponse : aligne le compte à rebours sur son horloge. */
   serverNow?: string;
 }

@@ -11,6 +11,7 @@ import type { GameView } from "../../../types/game";
 import { useLobbyMetrics } from "../../lobby/lobby-metrics";
 import { Coin, PanelButton } from "../../lobby/LobbyUi";
 import { ChipStack } from "../../wallet/ShopIllustrations";
+import { ReportProblemLink } from "../../complaints/ReportProblemLink";
 import { playerLabel } from "../format";
 
 /**
@@ -135,6 +136,8 @@ export function GameOverPanel({
     (p) => p.playerId === game.viewerId && p.fledAt,
   );
   const delta = game.mySettlement?.delta;
+  // Partie de tournoi : même bilan, mais sur le compte FICTIF (D-111), jamais l'argent réel.
+  const fictitious = game.mySettlement?.account === "TOURNAMENT";
   const headline = !result
     ? t.stopped
     : iWon
@@ -251,7 +254,11 @@ export function GameOverPanel({
         <View
           testID="game-over-amount"
           accessible
-          accessibilityLabel={t.amountA11y(signedAmount(delta))}
+          accessibilityLabel={
+            fictitious
+              ? t.tournamentAmountA11y(signedAmount(delta))
+              : t.amountA11y(signedAmount(delta))
+          }
           style={[styles.amountRow, { gap: m.gap * 0.4 }]}
         >
           <Text
@@ -271,6 +278,14 @@ export function GameOverPanel({
           </View>
         </View>
       ) : null}
+      {delta !== undefined && fictitious ? (
+        <Text
+          testID="game-over-tournament-note"
+          style={[styles.white, { fontSize: m.smallSize, textAlign: "center" }]}
+        >
+          {t.tournamentAmountNote}
+        </Text>
+      ) : null}
       {error ? (
         <Text
           accessibilityRole="alert"
@@ -279,6 +294,8 @@ export function GameOverPanel({
           {error}
         </Text>
       ) : null}
+      {/* Réclamation sur cette partie (D-114) : le serveur vérifie la participation. */}
+      <ReportProblemLink gameId={game.gameId} category="GAME_RESULT" />
       {footer ?? (
         <>
           <View

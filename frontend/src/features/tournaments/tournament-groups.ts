@@ -25,7 +25,8 @@ const STARTED: readonly TournamentStatus[] = [
 const FINISHED: readonly TournamentStatus[] = ['COMPLETED', 'CANCELLED'];
 
 /**
- * - `open` : inscriptions ouvertes et au moins une place libre ;
+ * - `open` : inscriptions (ou préinscriptions d'une proposition, D-108) ouvertes et au moins
+ *   une place libre ;
  * - `closed` : pas encore démarré, mais plus (ou pas encore) d'inscription possible :
  *   inscriptions pas encore ouvertes (`SCHEDULED`), clôturées, tournoi complet, ou
  *   démarrage en cours (`STARTING` : rien n'est encore capturé, il peut encore être annulé) ;
@@ -36,7 +37,10 @@ const FINISHED: readonly TournamentStatus[] = ['COMPLETED', 'CANCELLED'];
 export function groupOf(t: TournamentView): TournamentGroupKey {
   if (FINISHED.includes(t.status)) return 'history';
   if (STARTED.includes(t.status)) return 'inProgress';
-  if (t.status === 'REGISTRATION_OPEN' && !isFull(t)) return 'open';
+  // Préinscriptions d'une proposition en attente d'approbation (D-108) : inscription possible.
+  if ((t.status === 'REGISTRATION_OPEN' || t.status === 'PENDING_APPROVAL') && !isFull(t)) {
+    return 'open';
+  }
   return 'closed';
 }
 

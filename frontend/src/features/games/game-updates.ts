@@ -36,3 +36,30 @@ export function useGameUpdates(
     });
   }, [client, gameId, queryClient]);
 }
+
+/** Signal du serveur : le règlement d'une partie de tournoi est écrit (D-111). */
+export const TOURNAMENT_GAME_SETTLED = 'TOURNAMENT_GAME_SETTLED';
+
+/**
+ * Partie de TOURNOI : son règlement (compte fictif) est écrit juste APRÈS la fin de partie,
+ * alors que celui d'une partie ordinaire l'est avec elle. Dès que le serveur signale ce
+ * règlement pour le tournoi de la partie, la vue est relue : l'écran de fin affiche le gain ou
+ * la perte en même temps qu'une partie ordinaire, sans attendre la relecture périodique (qui
+ * reste le filet de sécurité). Le contexte du tournoi (jetons, rang) est relu par
+ * `useTournamentSignals`. Le tournoi est celui de la partie, décidé par le serveur.
+ */
+export function useTournamentSettlementUpdates(
+  gameId: string,
+  tournamentId: string | undefined,
+  client: Pick<RealtimeClient, 'onNotification'> = realtime,
+): void {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!isGameId(gameId) || !tournamentId) return;
+    return client.onNotification((signal) => {
+      if (signal.notificationType !== TOURNAMENT_GAME_SETTLED) return;
+      if (signal.tournamentId !== tournamentId) return;
+      void queryClient.invalidateQueries({ queryKey: gameKeys.detail(gameId), exact: true });
+    });
+  }, [client, gameId, queryClient, tournamentId]);
+}

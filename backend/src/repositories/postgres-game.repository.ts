@@ -72,6 +72,7 @@ interface GameRow {
   end_reason: GameEndReason | null;
   replay_of_game_id: string | null;
   auto_start_delay_ms: number | null;
+  tournament_id: string | null;
   start_deadline_at: Date | null;
   deal_ends_at: Date | null;
   creation_key: string | null;
@@ -232,9 +233,9 @@ export async function insertGameRows(
        created_at, updated_at, started_at, finished_at, turn_deadline_at, creation_key,
        session_id, first_player_id, winner_id, turn_started_at, active_player_id,
        turn_timed_out_at, end_reason, replay_of_game_id, auto_start_delay_ms, start_deadline_at,
-       deal_ends_at)
+       deal_ends_at, tournament_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-       $19, $20, $21, $22, $23, $24)`,
+       $19, $20, $21, $22, $23, $24, $25)`,
     [
       game.id,
       game.version,
@@ -260,6 +261,7 @@ export async function insertGameRows(
       game.autoStartDelayMs ?? null,
       timestamp(game.startDeadlineAt),
       timestamp(game.dealEndsAt),
+      game.tournamentId ?? null,
     ],
   );
   await writePlayers(tx, game);
@@ -529,6 +531,7 @@ function toGame(row: GameRow): Game {
     ...(row.end_reason !== null && { endReason: row.end_reason }),
     ...(row.replay_of_game_id !== null && { replayOfGameId: row.replay_of_game_id as GameId }),
     ...(row.auto_start_delay_ms !== null && { autoStartDelayMs: row.auto_start_delay_ms }),
+    ...(row.tournament_id && { tournamentId: row.tournament_id }),
     ...(row.start_deadline_at && { startDeadlineAt: row.start_deadline_at }),
     ...(row.deal_ends_at && { dealEndsAt: row.deal_ends_at }),
     recentCommandIds,

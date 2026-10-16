@@ -35,6 +35,91 @@ export interface TournamentResultView {
   /** En jetons du compte de jeu (1 jeton = 1 FCFA). */
   prizeAmount: number;
   paid: boolean;
+  /** Critère qui a départagé un score exactement égal (D-106). */
+  tieBreak?: RankingTieBreak;
+  /** Ma ligne (classement officiel, D-106). */
+  isViewer?: boolean;
+}
+
+export type RankingTieBreak = 'GAMES_WON' | 'REGISTRATION_ORDER' | 'PLAYER_ID';
+
+/** Règles de classement FIGÉES du tournoi (D-062, D-106). */
+export interface RankingRulesView {
+  method: 'D062_SATURATING' | 'D106_CAPITAL_RATIO';
+  tokensWeightPercent: number;
+  gamesWeightPercent: number;
+  gamesReference: number;
+}
+
+/** Détail de MON score (classement officiel), jamais celui d'un autre joueur. */
+export interface MyTournamentResult {
+  rank: number;
+  score?: number;
+  initialTokens: number;
+  remainingTokens: number;
+  gamesPlayed: number;
+  gamesWon: number;
+  tokensRatio: number;
+  gamesRatio: number;
+  tokensPoints: number;
+  gamesPoints: number;
+  prizeAmount: number;
+  paid: boolean;
+  tieBreak?: RankingTieBreak;
+  /**
+   * Récompense RÉELLE (compte de jeu, FCFA) et état de son versement (D-112) ; null sans gain.
+   * « CREDITED » seulement après l'écriture réussie ; sinon « PENDING » (en cours ou repris).
+   */
+  payout?: { amount: number; status: 'PENDING' | 'CREDITED'; creditedAt?: string } | null;
+}
+
+/** Classement général officiel d'un tournoi (GET /api/tournaments/:id/results, D-106). */
+export interface OfficialTournamentResults {
+  tournament: TournamentSummary;
+  publishedAt: string | null;
+  participants: number;
+  rules: RankingRulesView;
+  results: TournamentResultView[];
+  me: MyTournamentResult | null;
+  share: string;
+}
+
+/** Un tournoi terminé de mon historique de résultats (GET /api/tournaments/results). */
+export interface TournamentResultsHistoryItem {
+  tournamentId: string;
+  status: TournamentStatus;
+  timezone: string;
+  startsAt: string;
+  endsAt: string;
+  participants: number;
+  resultsPublishedAt: string;
+  myRank: number;
+  myScore?: number;
+}
+
+export interface TournamentResultsHistoryPage {
+  tournaments: TournamentResultsHistoryItem[];
+  nextBefore: string | null;
+}
+
+/** MON contexte dans un tournoi (HUD de la table) : jetons de CE tournoi seulement. */
+export interface TournamentContext {
+  tournamentId: string;
+  status: TournamentStatus;
+  startsAt: string;
+  endsAt: string;
+  serverNow: string;
+  participation: 'ACTIVE' | 'OUT_OF_TOKENS' | 'FINISHED';
+  tokensAllocatedAtStart: number;
+  tokensRemaining: number;
+  gamesPlayed: number;
+  gamesWon: number;
+  stakePerGame: number;
+  rank: number;
+  rankIsOfficial: boolean;
+  participants: number;
+  score: number;
+  rules: RankingRulesView;
 }
 
 /** Vue d'un tournoi pour le joueur connecté (GET /api/tournaments/…). */
@@ -167,8 +252,11 @@ export interface AppNotification {
     rank?: number;
     reservedAmount?: number;
     prizeAmount?: number;
+    score?: number;
     /** Avertissement (D-079) : message rédigé par l'administration, en texte brut. */
     message?: string;
+    /** Approbation reçue par un préinscrit, pas par le créateur (D-108). */
+    preRegistered?: boolean;
   };
   createdAt: string;
   readAt?: string;

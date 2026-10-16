@@ -153,12 +153,30 @@ it('juste en dessous (100 < 200) : OUT_OF_TOKENS, écarté de la partie suivante
   expect(standing.map((r) => r.playerId)).toContain(players[ANA]);
 });
 
+/**
+ * Simulation de test : la partie terminée n'a pas encore de ligne de règlement. Un règlement
+ * est immuable en production (D-111, trigger `tournament_games_immutable_guard`) : le garde-fou
+ * n'est levé que le temps de cette suppression, sur la base de test.
+ */
+async function forgetSettlement(gameId: string): Promise<void> {
+  await database.sql.query(
+    'ALTER TABLE tournament_games DISABLE TRIGGER tournament_games_immutable_guard',
+  );
+  try {
+    await database.sql.query('DELETE FROM tournament_games WHERE game_id = $1', [gameId]);
+  } finally {
+    await database.sql.query(
+      'ALTER TABLE tournament_games ENABLE TRIGGER tournament_games_immutable_guard',
+    );
+  }
+}
+
 it('course : table quittée AVANT le règlement de la partie → le solde est réglé avant la décision, accès refusé', async () => {
   const t = await startedTournament(200);
   const { sessionId, gameId } = await anaLosesAGame(t);
   // Simule un règlement pas encore effectué (arrière-plan en retard ou en échec) : la partie
   // terminée n'a pas de ligne de règlement et les jetons sont ceux d'avant la partie.
-  await database.sql.query('DELETE FROM tournament_games WHERE game_id = $1', [gameId]);
+  await forgetSettlement(gameId);
   await database.sql.query(
     `UPDATE tournament_player_accounts
         SET current_tokens = initial_tokens, games_played = 0, games_won = 0, status = 'ACTIVE'
@@ -184,7 +202,7 @@ it('course : table quittée AVANT le règlement de la partie → le solde est r�
 it('course : « Poursuivre » avant le règlement → la partie est réglée avant de composer la suivante', async () => {
   const t = await startedTournament(200);
   const { sessionId, gameId } = await anaLosesAGame(t);
-  await database.sql.query('DELETE FROM tournament_games WHERE game_id = $1', [gameId]);
+  await forgetSettlement(gameId);
   await database.sql.query(
     `UPDATE tournament_player_accounts
         SET current_tokens = initial_tokens, games_played = 0, games_won = 0, status = 'ACTIVE'

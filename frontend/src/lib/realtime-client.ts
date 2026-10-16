@@ -101,9 +101,17 @@ export function realtimeCloseCategory(code: number): string {
   }
 }
 
+/** Signal personnel du serveur (D-106) : une notification attend, à relire par l'API. */
+export interface RealtimeNotification {
+  notificationType: string;
+  tournamentId?: string;
+}
+
 type Frame = {
   type?: unknown;
   gameId?: unknown;
+  notificationType?: unknown;
+  tournamentId?: unknown;
   code?: unknown;
   message?: unknown;
   version?: unknown;
@@ -118,6 +126,12 @@ export class RealtimeClient {
   private readonly chats = new Map<string, Set<ChatSubscriptionHandlers>>();
   /** Suivi des parties (D-101), sur la même connexion que le chat. */
   private readonly games = new Map<string, Set<GameSubscriptionHandlers>>();
+  /**
+   * Signaux personnels (D-106). Écouter n'ouvre PAS de connexion : ils arrivent quand une
+   * connexion existe déjà (pendant une partie). Hors connexion, l'application relit ses
+   * notifications par l'API au retour sur l'écran : rien n'est perdu.
+   */
+  private readonly notificationListeners = new Set<(n: RealtimeNotification) => void>();
   private attempt = 0;
   private retryTimer: unknown;
   private pingTimer: unknown;
@@ -200,6 +214,11 @@ export class RealtimeClient {
       }
       if (!this.hasSubscribers()) this.disconnect();
     };
+  }
+
+  onNotification(listener: (n: RealtimeNotification) => void): () => void {
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
   }
 
   private hasSubscribers(): boolean {
@@ -303,6 +322,17 @@ export class RealtimeClient {
         if (typeof frame.gameId === 'string' && typeof frame.version === 'number') {
           const version = frame.version;
           for (const h of [...(this.games.get(frame.gameId) ?? [])]) h.onChanged(version);
+        }
+        return;
+      case 'notification':
+        if (typeof frame.notificationType === 'string') {
+          const notification: RealtimeNotification = {
+            notificationType: frame.notificationType,
+            ...(typeof frame.tournamentId === 'string' && {
+              tournamentId: frame.tournamentId,
+            }),
+          };
+          for (const listener of [...this.notificationListeners]) listener(notification);
         }
         return;
       case 'chat:subscribed':

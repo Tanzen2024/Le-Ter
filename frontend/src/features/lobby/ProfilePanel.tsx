@@ -1,9 +1,11 @@
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
 import { countryOfPhone, toNationalPhone } from '../../lib/country';
 import { useCurrentUser, useLogout } from '../auth/hooks';
+import { useComplaintMessages } from '../complaints/complaint-messages';
 import { useLobbyMetrics } from './lobby-metrics';
 import { InnerFrame, LobbyPanel, PanelButton } from './LobbyUi';
 import { PasswordChangeForm } from './PasswordChangeForm';
@@ -14,6 +16,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
   const fonts = useTableFonts();
   const { data: user, isPending } = useCurrentUser();
   const logout = useLogout();
+  const complaintText = useComplaintMessages();
   // Formulaire du mot de passe ouvert ; confirmation affichée après un succès du serveur.
   const [editingPassword, setEditingPassword] = useState(false);
   const [passwordChanged, setPasswordChanged] = useState(false);
@@ -86,7 +89,9 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
             Mot de passe modifié.
           </Text>
         ) : null}
-        <View style={[styles.row, styles.end, { marginTop: m.gap }]}>
+        <View style={[styles.row, styles.end, { marginTop: m.gap, gap: m.gap * 0.5 }]}>
+          {/* Aide et réclamations (D-114) : assistant automatisé et suivi des dossiers. */}
+          <PanelButton title={complaintText.title} onPress={() => router.push('/support')} />
           <PanelButton
             title="Déconnexion"
             tone="danger"

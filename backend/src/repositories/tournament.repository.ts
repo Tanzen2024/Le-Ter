@@ -1,18 +1,27 @@
 import type { GameId, PlayerId } from '../domain/game/game-id';
+import type { GameVictoryType } from '../domain/rules/game-settlement';
 import type { SessionId } from '../domain/sessions/session';
 import type {
   CancellationReason,
   PrizeAllocation,
+  RankingAudit,
   Tournament,
+  TournamentGameTally,
   TournamentId,
   TournamentPlayerAccount,
   TournamentRegistration,
   TournamentResultRow,
   TournamentSettings,
+  TournamentSettlementRule,
   TournamentStatus,
 } from '../domain/tournaments/tournament';
 import type { UserId } from '../domain/users/user';
 import type { WalletReservation } from './wallet-reservations';
+import type { TournamentLedgerFacts } from './admin-query.repository';
+import type {
+  TournamentPayout,
+  TournamentPayoutDraft,
+} from '../domain/tournaments/tournament-payouts';
 
 /** Ligne de la liste d'administration. */
 export interface AdminTournamentListItem {
@@ -74,6 +83,10 @@ export interface TournamentGameSettlement {
   transfers: Record<string, number>;
   voidReason?: string;
   settledAt: Date;
+  /** Règle appliquée (D-111), celle figée au démarrage du tournoi. */
+  settlementRule: TournamentSettlementRule;
+  /** Type de victoire du moteur commun (règle D111_ORDINARY_RULES seulement). */
+  victoryType?: GameVictoryType;
 }
 
 /**
@@ -92,11 +105,37 @@ export interface TournamentUnitOfWork {
   /**
    * Verrou transactionnel de la PLANIFICATION (D-059) : sérialise, sur toutes les instances,
    * les transactions qui ajoutent un tournoi en attente de démarrage (création admin,
-   * approbation). Libéré au COMMIT / ROLLBACK.
+   * soumission d'une proposition, approbation, modification). Libéré au COMMIT / ROLLBACK.
    */
   lockSchedule(): Promise<void>;
-  /** Tournois aux inscriptions ouvertes ou à ouvrir (REGISTRATION_LIMIT_STATUSES), plateforme. */
-  countWaitingTournaments(): Promise<number>;
+  /**
+   * Tournois comptés dans la limite plateforme à `now` (`countsTowardRegistrationLimit` :
+   * publiés aux inscriptions ouvertes ou à ouvrir, propositions ouvertes aux préinscriptions),
+   * `excludeId` excepté (approbation : la proposition déjà comptée ne se compte pas deux fois).
+   */
+  countWaitingTournaments(now: Date, excludeId?: TournamentId): Promise<number>;
+  /**
+   * Un tournoi PUBLIÉ non terminé (`BLOCKING_STATUSES`) dont le créneau persisté
+   * [début, `blocked_until`[ chevauche [startsAt, blockedUntil[ (définition de
+   * `tournaments_no_overlap` : deux créneaux qui se suivent ne se chevauchent pas), `excludeId`
+   * excepté ; null sinon. Contrôle préalable seulement : la garantie reste la contrainte
+   * `tournaments_no_overlap` à la publication.
+   */
+  findOverlappingPublished(
+    slot: { startsAt: Date; blockedUntil: Date },
+    excludeId?: TournamentId,
+  ): Promise<TournamentId | null>;
+  /**
+   * Fige les jetons de départ et la mise d'une proposition à sa première préinscription
+   * (D-113) : valeurs écrites avec la marque `token_setup_frozen_at`. Version + 1.
+   */
+  freezeTokenSetup(
+    id: TournamentId,
+    tokens: { initialTournamentTokens: number; stakePerGame: number },
+    at: Date,
+  ): Promise<void>;
+  /** Retire la marque (nouveau prix d'entrée sans aucun inscrit actif, D-113). */
+  unfreezeTokenSetup(id: TournamentId): Promise<void>;
   findRegistration(id: TournamentId, userId: UserId): Promise<TournamentRegistration | null>;
   /** Nouvelle inscription, ou réactivation de la ligne existante (désinscrit). */
   upsertRegistration(registration: TournamentRegistration): Promise<TournamentRegistration>;
@@ -136,13 +175,56 @@ export interface TournamentUnitOfWork {
 
   /** false : cette partie a déjà été réglée (idempotence). */
   insertGameSettlement(settlement: TournamentGameSettlement): Promise<boolean>;
-  /** Parties en cours d'une table du tournoi, commencées avant `before`. */
-  countActiveGames(id: TournamentId, before: Date): Promise<number>;
+  /**
+   * Dissout les comptes fictifs CLOS du tournoi (D-111) : statut DISSOLVED, rien n'est
+   * supprimé, aucun mouvement du compte de jeu. Idempotent : renvoie le nombre de comptes
+   * dissous par CET appel.
+   */
+  dissolveAccounts(id: TournamentId, now: Date): Promise<number>;
+  /** Parties EN COURS rattachées au tournoi (`games.tournament_id`). */
+  countActiveGames(id: TournamentId): Promise<number>;
+  /** Parties terminées du tournoi dont les jetons ne sont pas encore réglés. */
+  countUnsettledFinishedGames(id: TournamentId): Promise<number>;
+  /**
+   * Bilan par joueur des parties RÉGLÉES du tournoi, toutes tables (sessions) confondues
+   * (registre `tournament_games`) : source officielle des compteurs du classement.
+   */
+  tallySettledGames(id: TournamentId): Promise<Map<string, TournamentGameTally>>;
 
   insertResults(id: TournamentId, rows: ResultDraft[], now: Date): Promise<void>;
   /** Résultats avec un gain encore non versé (verrou des lignes). */
   lockUnpaidResults(id: TournamentId): Promise<ResultDraft[]>;
   markResultPaid(id: TournamentId, rank: number, transactionId: string, now: Date): Promise<void>;
+
+  // --- Plan de versement des récompenses réelles (D-112) ---------------------------------
+  /** Plan écrit avec le classement officiel (idempotent : une ligne par rang). */
+  /** Gains du classement officiel (rang, bénéficiaire, montant), dans la transaction. */
+  listResultPrizes(
+    id: TournamentId,
+  ): Promise<{ rank: number; playerId: string; prizeAmount: number }[]>;
+  insertPayouts(id: TournamentId, drafts: TournamentPayoutDraft[], now: Date): Promise<void>;
+  /** Plan du tournoi, lignes verrouillées (`FOR UPDATE`), par rang. */
+  lockPayouts(id: TournamentId): Promise<TournamentPayout[]>;
+  /**
+   * Prochain versement à tenter, verrouillé : PENDING, ou FAILED dont la dernière tentative
+   * précède `retryBefore` ; le plus petit rang d'abord. Null s'il n'y en a pas.
+   */
+  lockNextPayout(id: TournamentId, retryBefore: Date): Promise<TournamentPayout | null>;
+  /** Versement crédité : définitif (référence de la transaction du compte de jeu). */
+  markPayoutCredited(
+    id: TournamentId,
+    rank: number,
+    transactionId: string,
+    now: Date,
+  ): Promise<void>;
+  /** Échec d'une tentative : FAILED, compteur, motif (le crédit n'a pas eu lieu). */
+  recordPayoutFailure(id: TournamentId, rank: number, error: string, now: Date): Promise<void>;
+  /** Faits comptables du tournoi (mêmes contrôles que la réconciliation). */
+  ledgerFacts(id: TournamentId): Promise<TournamentLedgerFacts | null>;
+  /** Plan validé : versements autorisés ; tout blocage antérieur est levé. */
+  markPayoutPlanValidated(id: TournamentId, now: Date): Promise<void>;
+  /** Versements bloqués (incohérence) ; motifs mis à jour, date du premier blocage gardée. */
+  blockPayouts(id: TournamentId, reasons: string[], now: Date): Promise<void>;
 
   notify(notifications: NotificationDraft[], now: Date): Promise<void>;
 
@@ -163,6 +245,14 @@ export interface TournamentUnitOfWork {
   }): Promise<void>;
 }
 
+/** Plan de versement d'un tournoi et son état de validation (D-112). */
+export interface TournamentPayoutState {
+  payouts: (TournamentPayout & { username: string })[];
+  planValidatedAt?: Date;
+  blockedAt?: Date;
+  blockReasons: string[];
+}
+
 /** Résultat à écrire (calculé par le domaine). */
 export interface ResultDraft extends PrizeAllocation {
   playerId: UserId;
@@ -172,6 +262,17 @@ export interface ResultDraft extends PrizeAllocation {
   gamesWon: number;
   /** Score pondéré figé (D-062) ; absent des résultats classés avant D-062. */
   score?: number;
+  /** Détail d'audit figé avec le rang (D-106). */
+  audit?: RankingAudit;
+  registeredAt?: Date;
+}
+
+/** Un tournoi terminé dans l'historique de résultats d'un joueur (D-106). */
+export interface ResultsHistoryItem {
+  tournament: Tournament;
+  myRank: number;
+  myScore?: number;
+  resultsPublishedAt: Date;
 }
 
 /**
@@ -180,6 +281,9 @@ export interface ResultDraft extends PrizeAllocation {
  */
 export interface TournamentRepository {
   transaction<T>(work: (uow: TournamentUnitOfWork) => Promise<T>): Promise<T>;
+
+  /** Plan de versement et état de validation (lecture, administration et joueur, D-112). */
+  findPayoutState(id: TournamentId): Promise<TournamentPayoutState>;
 
   findById(id: TournamentId): Promise<Tournament | null>;
   /**
@@ -193,9 +297,10 @@ export interface TournamentRepository {
     limit: number;
   }): Promise<Tournament[]>;
   /**
-   * Tournois PUBLIÉS pour la liste des joueurs (D-065) : `current` → pas encore terminés
-   * (à venir, en cours, en clôture), début le plus proche d'abord ; `history` → terminés ou
-   * annulés, le plus récent d'abord. Jamais un brouillon ni une proposition non publiée.
+   * Tournois de la liste des joueurs (D-065) : `current` → publiés pas encore terminés (à
+   * venir, en cours, en clôture) ET propositions en attente d'approbation, ouvertes aux
+   * préinscriptions (D-108), début le plus proche d'abord ; `history` → publiés terminés ou
+   * annulés, le plus récent d'abord. Jamais un brouillon ni une proposition refusée ou retirée.
    * `visibleSince` (historique seulement) : terminé dont la fin PRÉVUE (`ends_at`), ou annulé
    * dont l'annulation RÉELLE (`cancelled_at`), est postérieure à cet instant. Affichage
    * seulement : aucune ligne n'est modifiée ni supprimée.
@@ -233,7 +338,22 @@ export interface TournamentRepository {
   listAccountsWithNames(
     id: TournamentId,
   ): Promise<(TournamentPlayerAccount & { username: string })[]>;
+  /** Comme `TournamentUnitOfWork.tallySettledGames`, hors transaction (lecture). */
+  tallySettledGames(id: TournamentId): Promise<Map<string, TournamentGameTally>>;
   listResults(id: TournamentId): Promise<TournamentResultRow[]>;
+  /**
+   * Tournois aux résultats publiés où le joueur est classé, fin la plus récente d'abord, sans
+   * limite de date (D-106) ; `before` : pagination sur `ends_at`.
+   */
+  listResultsHistory(
+    userId: UserId,
+    page: { limit: number; before?: Date },
+  ): Promise<ResultsHistoryItem[]>;
+  /**
+   * Tables encore ouvertes du tournoi SANS partie en cours (partie en attente, ou partie
+   * terminée et ronde Poursuivre/Quitter) : fermées à la clôture.
+   */
+  listIdleTables(id: TournamentId): Promise<{ sessionId: SessionId; playerIds: PlayerId[] }[]>;
 
   findJoinableSessions(id: TournamentId, limit: number): Promise<SessionId[]>;
   findTournamentOfSession(sessionId: SessionId): Promise<TournamentId | null>;

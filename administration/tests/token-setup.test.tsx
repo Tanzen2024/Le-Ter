@@ -81,10 +81,10 @@ describe('page d’approbation', () => {
     expect(await screen.findByText('10 000')).toBeInTheDocument();
     expect(screen.getByText('500')).toBeInTheDocument();
     expect(
-      screen.getByText('Prix d’entrée × 10 (Paramètres) · figé à l’approbation.'),
+      screen.getByText('Prix d’entrée × 10 (Paramètres) · figé à la première préinscription ou à l’approbation.'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Prix d’entrée × 0,5 (Paramètres) · figé à l’approbation.'),
+      screen.getByText('Prix d’entrée × 0,5 (Paramètres) · figé à la première préinscription ou à l’approbation.'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByLabelText('Jetons de tournoi au départ')).toBeNull();
@@ -109,6 +109,17 @@ describe('page d’approbation', () => {
     wrap(<TournamentDetailView id="t-1" />);
     expect(await screen.findByText('8 000')).toBeInTheDocument();
     expect(screen.getAllByText('Figé à la publication.')).toHaveLength(2);
+  });
+
+  it('proposition préinscrite : valeurs figées à la première préinscription (D-113)', async () => {
+    serve({
+      'tournaments/t-1': { tournament: { ...proposal, tokenCoefficients: undefined } },
+      'tournaments/t-1/registrations': { registrations: [] },
+    });
+    wrap(<TournamentDetailView id="t-1" />);
+    expect(await screen.findByText('10 000')).toBeInTheDocument();
+    expect(screen.getAllByText('Figé à la première préinscription.')).toHaveLength(2);
+    expect(screen.queryByText('Figé à la publication.')).toBeNull();
   });
 
   it('plus aucune règle de calcul locale (10 × le prix, moitié du prix) ni formulaire', () => {

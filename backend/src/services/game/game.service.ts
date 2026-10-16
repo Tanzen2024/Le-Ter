@@ -20,6 +20,7 @@ import {
   InvalidPlayerCountError,
   FirstPlayerNotInGameError,
   GameRuleViolationError,
+  GameStartClosedError,
   GameStartForbiddenError,
   IdempotencyKeyReuseError,
   ParticipationRefusedError,
@@ -88,6 +89,15 @@ export interface GameStartPolicy {
   assertCanStart(game: Game): Promise<void>;
 }
 
+/**
+ * Fenêtre de démarrage (D-106) : une partie de tournoi ne démarre (manuellement ou à son
+ * échéance) que pendant le tournoi. Consultée pour toute partie en attente ; `true` pour une
+ * partie ordinaire. Un garde-fou en base (trigger `games_tournament_guard`) la double.
+ */
+export interface GameStartWindow {
+  isOpen(game: Game): Promise<boolean>;
+}
+
 /** Paramètres de création (R-23 : maxPlayers ∈ {2, 3, 4}). */
 export interface CreateGameOptions {
   maxPlayers: number;
@@ -110,6 +120,8 @@ export interface CreateGameOptions {
    * mise du compte de jeu (D-073) ne s'applique pas. Jamais lu dans une requête client.
    */
   tournamentTable?: boolean;
+  /** Tournoi de la table (D-106) : rattachement explicite de la partie dès sa création. */
+  tournamentId?: string;
 }
 
 /**
@@ -164,6 +176,8 @@ export interface GameServiceDependencies {
   stakePolicy?: GameStakePolicy;
   /** Démarrage manuel : consentements d'une table surveillée (D-095). */
   startPolicy?: GameStartPolicy;
+  /** Démarrages manuel ET automatique : fin d'un tournoi (D-106). */
+  startWindow?: GameStartWindow;
   logger: Logger;
   clock?: () => Date;
   /** Règles coup par coup. Par défaut : OFFICIAL_TER_RULES (D-035, socle de vérité). */
@@ -334,6 +348,7 @@ export class GameService {
       creatorTablePosition,
       autoStartDelayMs,
       tournamentTable,
+      tournamentId,
     } = options;
     if (!(ALLOWED_MAX_PLAYERS as readonly number[]).includes(maxPlayers)) {
       throw new InvalidPlayerCountError(maxPlayers);
@@ -373,11 +388,12 @@ export class GameService {
       recentCommandIds: [],
       ...(creationKey && { creationKey }),
       ...(autoStartDelayMs !== undefined && { autoStartDelayMs }),
+      ...(tournamentId !== undefined && { tournamentId }),
     };
     if (!(await this.deps.participationPolicy.canJoin(creatorId, structuredClone(game)))) {
       throw new ParticipationRefusedError(game.id, creatorId);
     }
-    if (!tournamentTable) {
+    if (!tournamentTable && tournamentId === undefined) {
       await this.deps.stakePolicy?.assertCanStake(creatorId, structuredClone(game));
     }
     return game;
@@ -518,6 +534,9 @@ export class GameService {
         // Vérifié sur l'état lu : l'enregistrement est conditionné à cette version, une
         // arrivée concurrente fait donc échouer le démarrage (conflit de version).
         if (game.status === 'waiting') {
+          if (this.deps.startWindow && !(await this.deps.startWindow.isOpen(structuredClone(game)))) {
+            throw new GameStartClosedError(gameId);
+          }
           await this.deps.startPolicy?.assertCanStart(structuredClone(game));
         }
         // Distribution, J1, contrôle et ordre du tour dans la même transition (D-032,
@@ -648,7 +667,8 @@ export class GameService {
 
   private async applyStartDeadline(gameId: GameId): Promise<Game> {
     let started = false;
-    const game = await this.mutate(gameId, 'AUTO_START_GAME', undefined, {}, (g, { now }) => {
+    let closed = false;
+    const game = await this.mutate(gameId, 'AUTO_START_GAME', undefined, {}, async (g, { now }) => {
       if (g.status !== 'waiting' || !g.startDeadlineAt) {
         return null; // déjà démarrée (manuellement ou ailleurs), ou plus d'échéance
       }
@@ -657,6 +677,13 @@ export class GameService {
       }
       if (g.players.length < MIN_PLAYERS_TO_START) {
         return null; // impossible : l'échéance est retirée sous 2 joueurs
+      }
+      // Tournoi terminé (D-106) : la partie ne démarre plus ; son échéance est retirée (plus de
+      // déclenchement), la table sera fermée par la clôture du tournoi.
+      if (this.deps.startWindow && !(await this.deps.startWindow.isOpen(structuredClone(g)))) {
+        g.startDeadlineAt = undefined;
+        closed = true;
+        return [];
       }
       started = true;
       return engine.startGame(g, {
@@ -668,6 +695,9 @@ export class GameService {
       });
     });
     this.syncStartTimer(game);
+    if (closed) {
+      this.deps.logger.info('GAME_AUTO_START_CLOSED', { gameId, sessionId: game.sessionId });
+    }
     if (started) {
       this.deps.logger.info('GAME_AUTO_STARTED', {
         gameId,
@@ -1013,6 +1043,7 @@ export class GameService {
       ...(previous.autoStartDelayMs !== undefined && {
         autoStartDelayMs: previous.autoStartDelayMs,
       }),
+      ...(previous.tournamentId !== undefined && { tournamentId: previous.tournamentId }),
     };
     const events = engine.startGame(game, {
       rules: this.rules,
@@ -1072,6 +1103,7 @@ export class GameService {
       ...(previous.autoStartDelayMs !== undefined && {
         autoStartDelayMs: previous.autoStartDelayMs,
       }),
+      ...(previous.tournamentId !== undefined && { tournamentId: previous.tournamentId }),
     };
     const created: GameEventDraft = {
       type: 'game:created',
@@ -1315,6 +1347,7 @@ const EXPECTED_REJECTIONS: readonly (abstract new (...args: never[]) => Error)[]
   GameNotJoinableError,
   GameFinishedError,
   ParticipationRefusedError,
+  GameStartClosedError,
   GameStartForbiddenError,
   IdempotencyKeyReuseError,
   InvalidPlayerCountError,

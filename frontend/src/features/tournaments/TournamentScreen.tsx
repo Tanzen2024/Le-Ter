@@ -44,7 +44,15 @@ import {
 export function TournamentScreen() {
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
   return (
-    <TournamentFrame onBack={back} action={<ProposeLink />}>
+    <TournamentFrame
+      onBack={back}
+      action={
+        <View style={styles.actions}>
+          <ResultsLink />
+          <ProposeLink />
+        </View>
+      }
+    >
       {(area) => <TournamentList area={area} />}
     </TournamentFrame>
   );
@@ -184,6 +192,29 @@ function ProposeLink() {
     >
       <Text style={[styles.proposeText, fontOf(fonts.button), { fontSize: m.smallSize + 1 }]}>
         ＋ Proposer un tournoi
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * « Résultats des tournois » (D-106) : mes tournois terminés et leur classement officiel,
+ * consultables sans limite de date (la liste ci-dessous ne garde l'historique que 7 jours).
+ */
+function ResultsLink() {
+  const m = useLobbyMetrics();
+  const t = useTournamentMessages();
+  const fonts = useTableFonts();
+  return (
+    <Pressable
+      testID="tournament-results-link"
+      accessibilityRole="link"
+      onPress={() => router.push('/tournament/results')}
+      hitSlop={8}
+      style={({ pressed }) => [styles.proposeLink, pressed && styles.pressed]}
+    >
+      <Text style={[styles.proposeText, fontOf(fonts.button), { fontSize: m.smallSize + 1 }]}>
+        {t.results.entry}
       </Text>
     </Pressable>
   );
@@ -502,6 +533,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#06170D',
   },
   proposeText: { color: tablePalette.gold },
+  actions: { flexDirection: 'row', gap: 10, alignItems: 'center' },
   pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
   section: {
     color: tablePalette.gold,

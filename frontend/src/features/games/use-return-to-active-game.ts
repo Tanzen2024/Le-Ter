@@ -1,8 +1,8 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useEffectEvent, useRef, useSyncExternalStore } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
 
+import { useAppForeground } from '../../lib/app-lifecycle';
 import { sessionsApi } from '../../services/sessions-api';
 import type { GameView } from '../../types/game';
 import { withAccessToken } from '../auth/session';
@@ -175,15 +175,10 @@ export function useActiveGameRestorer(enabled: boolean, pathname: string) {
     if (enabled) onCheck();
   }, [enabled]);
 
-  // Retour au premier plan (`inactive` seul n'est pas une absence) : vérification silencieuse.
-  useEffect(() => {
-    let previous: AppStateStatus = AppState.currentState;
-    const subscription = AppState.addEventListener('change', (next) => {
-      if (previous === 'background' && next === 'active') onCheck(true);
-      previous = next;
-    });
-    return () => subscription.remove();
-  }, []);
+  // Retour RÉEL au premier plan (`inactive` seul n'est pas une absence) : vérification
+  // silencieuse, l'écran consulté reste affiché.
+  // `useAppForeground` appelle toujours le dernier `check` rendu (événement d'effet).
+  useAppForeground(() => check(true));
 
   const dismiss = useCallback(() => setRestorePhase('idle'), []);
   // Déconnecté (session expirée) : aucun panneau ; la reprise repart après la connexion.

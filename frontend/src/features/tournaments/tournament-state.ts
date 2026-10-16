@@ -18,6 +18,8 @@ export type TournamentWidgetState =
   'NO_TOURNAMENT' | 'UPCOMING' | 'REGISTERED' | 'WAITING' | 'IN_PROGRESS' | 'COMPLETED';
 
 const BEFORE_START: readonly TournamentStatus[] = [
+  // Proposition soumise, ouverte aux préinscriptions avant l'approbation (D-108).
+  'PENDING_APPROVAL',
   'SCHEDULED',
   'REGISTRATION_OPEN',
   'REGISTRATION_CLOSED',
@@ -60,6 +62,21 @@ export function isFull(tournament: TournamentView): boolean {
 
 /** Nombre de rangs récompensés. */
 export const rewardedRanks = (tournament: TournamentView) => tournament.prizeRules.length;
+
+const REWARD_MEDALS = ['🥇', '🥈', '🥉'];
+/** Médaille des rangs récompensés au-delà du podium. */
+const REWARD_MEDAL_OTHER = '🏅';
+
+/**
+ * Médaille d'un résultat officiel, ou `undefined` sans récompense. Seule la récompense
+ * EFFECTIVEMENT attribuée fait foi (`prizeAmount`, figé par le serveur à la validation du
+ * classement) : un rang, même sur le podium, ne vaut jamais médaille à lui seul. Le prix du
+ * rang N étant la Nᵉ part, la médaille suit ce rang : or, argent, bronze, puis 🏅.
+ */
+export function rewardMedal(result: { rank: number; prizeAmount: number }): string | undefined {
+  if (!(result.prizeAmount > 0)) return undefined;
+  return REWARD_MEDALS[result.rank - 1] ?? REWARD_MEDAL_OTHER;
+}
 
 /** Plafond d'attente entre deux relectures programmées (aucun polling agressif). */
 export const MAX_REFRESH_DELAY_MS = 60 * 60 * 1000;
@@ -183,11 +200,13 @@ export function remainingBeforeStartMs(
  * Badge de statut (D-065), fidèle à la machine à états du SERVEUR (D-054) :
  * SCHEDULED → À venir ; REGISTRATION_OPEN → Inscriptions ouvertes ; REGISTRATION_CLOSED →
  * Inscriptions clôturées ; STARTING → Démarrage ; IN_PROGRESS → En cours ; calcul, validation
- * et versement → Résultats ; COMPLETED → Terminé ; CANCELLED → Annulé. Un tournoi encore
+ * et versement → Résultats ; COMPLETED → Terminé ; CANCELLED → Annulé ; PENDING_APPROVAL →
+ * Préinscriptions ouvertes (proposition pas encore approuvée, D-108). Un tournoi encore
  * « avant le début » dont l'heure est passée sur l'horloge du serveur est affiché
  * « Démarrage », jamais « À venir » (le serveur bascule son statut au tick suivant).
  */
 export type TournamentStatusKey =
+  | 'PRE_REGISTRATION'
   | 'UPCOMING'
   | 'OPEN'
   | 'CLOSED'
@@ -201,6 +220,8 @@ export function tournamentStatusKey(
   tournament: Pick<TournamentView, 'status' | 'startsAt' | 'serverNow'>,
 ): TournamentStatusKey {
   const { status } = tournament;
+  // Jamais « Démarrage » : une proposition non approuvée ne démarre pas (le serveur l'annule).
+  if (status === 'PENDING_APPROVAL') return 'PRE_REGISTRATION';
   if (BEFORE_START.includes(status)) {
     const started = Date.parse(tournament.startsAt) <= Date.parse(tournament.serverNow);
     if (status === 'STARTING' || started) return 'STARTING';

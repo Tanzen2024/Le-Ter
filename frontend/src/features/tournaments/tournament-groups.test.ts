@@ -8,6 +8,7 @@ const t = (id: string, startsAt: string, overrides: Partial<TournamentView> = {}
 
 describe('groupe d’un tournoi (statut du serveur et capacité)', () => {
   it.each<[TournamentStatus, ReturnType<typeof groupOf>]>([
+    ['PENDING_APPROVAL', 'open'],
     ['REGISTRATION_OPEN', 'open'],
     ['SCHEDULED', 'closed'],
     ['REGISTRATION_CLOSED', 'closed'],
@@ -28,6 +29,12 @@ describe('groupe d’un tournoi (statut du serveur et capacité)', () => {
     expect(groupOf(full)).toBe('closed');
     expect(groupOf({ ...full, registeredCount: 99 })).toBe('open');
     expect(groupOf({ ...full, maximumPlayers: undefined, registeredCount: 5000 })).toBe('open');
+  });
+
+  it('D-108 : préinscriptions complètes → « clôturées ou complets »', () => {
+    expect(
+      groupOf(tournamentView({ status: 'PENDING_APPROVAL', registeredCount: 100 })),
+    ).toBe('closed');
   });
 
   it('un tournoi complet ET démarré est « en cours » (le statut prime sur la capacité)', () => {

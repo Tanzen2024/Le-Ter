@@ -12,6 +12,7 @@ import {
   useTableFonts,
 } from '../../components/table/TableDecor';
 import { useMessages } from '../../lib/i18n';
+import { ComplaintNotice } from '../complaints/ComplaintNotice';
 import { playSound } from '../../services/audio-service';
 import { HomeTournamentSummary } from '../tournaments/HomeTournamentSummary';
 import { useLobbyMetrics, type LobbyMetrics } from './lobby-metrics';
@@ -31,6 +32,7 @@ export function HomeScreen() {
   return (
     <LobbyShell decor={<HomeDecor />}>
       <ModeSelect />
+      <ComplaintNotice />
       <ModerationNotice />
     </LobbyShell>
   );

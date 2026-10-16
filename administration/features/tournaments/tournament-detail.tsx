@@ -30,6 +30,7 @@ import {
   tournamentQuery,
   type TournamentAction,
 } from './api';
+import { PayoutsCard } from './payouts-card';
 import { TokenSetupValue } from './token-setup-value';
 
 const ACTIONS: Record<
@@ -46,7 +47,7 @@ const ACTIONS: Record<
     label: 'Approuver',
     title: 'Approuver cette proposition ?',
     description:
-      'Le tournoi sera publié : les inscriptions ouvriront selon son calendrier. La commission et les poids du classement en vigueur y seront copiés.',
+      'Le tournoi sera publié : les préinscriptions déjà enregistrées sont conservées, sans nouvelle réservation, et les inscriptions restent ouvertes selon son calendrier. La commission et les poids du classement en vigueur y seront copiés.',
     tone: 'primary',
     icon: Check,
   },
@@ -54,7 +55,7 @@ const ACTIONS: Record<
     label: 'Refuser',
     title: 'Refuser cette proposition ?',
     description:
-      'La proposition sera refusée et son créateur en sera informé. Cette décision est définitive.',
+      'La proposition sera refusée : les préinscriptions sont annulées et leurs réservations libérées. Le créateur et les préinscrits en sont informés. Cette décision est définitive.',
     tone: 'danger',
     icon: X,
   },
@@ -95,49 +96,81 @@ const registrationColumns: Column<TournamentRegistration>[] = [
   { key: 'date', header: 'Date', hideOnMobile: true, cell: (r) => formatDateTime(r.registeredAt) },
 ];
 
-const resultColumns: Column<TournamentResult>[] = [
-  {
-    key: 'rank',
-    header: 'Rang',
-    cell: (r) => <span className="text-ink font-semibold">{r.rank}</span>,
-  },
-  { key: 'user', header: 'Joueur', cell: (r) => r.username },
-  {
-    key: 'tokens',
-    header: 'Jetons restants',
-    align: 'right',
-    cell: (r) => formatNumber(r.remainingTokens),
-  },
-  {
-    key: 'games',
-    header: 'Parties',
-    align: 'right',
-    hideOnMobile: true,
-    cell: (r) => `${r.gamesWon} / ${r.gamesPlayed}`,
-  },
-  {
-    key: 'score',
-    header: 'Score',
-    align: 'right',
-    hideOnMobile: true,
-    cell: (r) => (r.score === undefined ? '—' : r.score.toFixed(2)),
-  },
-  { key: 'prize', header: 'Gain', align: 'right', cell: (r) => formatXaf(r.prizeAmount) },
-  {
-    key: 'paid',
-    header: 'Versé',
-    cell: (r) =>
-      r.prizeAmount > 0 ? (
-        r.paid ? (
-          <Badge tone="success">Oui</Badge>
+/**
+ * Départage d'un score EXACTEMENT égal (D-062, D-106), enregistré par le serveur avec le
+ * classement officiel : critères appliqués dans cet ordre, le premier qui sépare les deux
+ * joueurs est affiché. Les jetons restants ne départagent jamais (ils entrent dans le score).
+ */
+export const TIE_BREAK_LABELS: Record<NonNullable<TournamentResult['tieBreak']>, string> = {
+  GAMES_WON: 'Parties gagnées',
+  REGISTRATION_ORDER: 'Ordre d’inscription',
+  PLAYER_ID: 'Identifiant',
+};
+
+/**
+ * Colonnes du classement officiel. « Parties » = nombre TOTAL de parties admissibles jouées
+ * dans tout le tournoi (toutes tables confondues, parties réglées seulement, calculé par le
+ * serveur) : un nombre seul, sans dénominateur. Les parties de référence ne servent qu'à la
+ * normalisation interne du score ; les victoires ont leur propre colonne.
+ */
+export function resultColumns(): Column<TournamentResult>[] {
+  return [
+    {
+      key: 'rank',
+      header: 'Rang',
+      cell: (r) => <span className="text-ink font-semibold">{r.rank}</span>,
+    },
+    { key: 'user', header: 'Joueur', cell: (r) => r.username },
+    {
+      key: 'tokens',
+      header: 'Jetons restants',
+      align: 'right',
+      cell: (r) => formatNumber(r.remainingTokens),
+    },
+    {
+      key: 'games',
+      header: 'Parties',
+      align: 'right',
+      hideOnMobile: true,
+      cell: (r) => String(r.gamesPlayed),
+    },
+    {
+      key: 'won',
+      header: 'Gagnées',
+      align: 'right',
+      hideOnMobile: true,
+      cell: (r) => r.gamesWon,
+    },
+    {
+      key: 'score',
+      header: 'Score',
+      align: 'right',
+      hideOnMobile: true,
+      cell: (r) => (r.score === undefined ? '—' : r.score.toFixed(2)),
+    },
+    {
+      key: 'tieBreak',
+      header: 'Départage',
+      hideOnMobile: true,
+      cell: (r) => (r.tieBreak ? TIE_BREAK_LABELS[r.tieBreak] : '—'),
+    },
+    { key: 'prize', header: 'Gain', align: 'right', cell: (r) => formatXaf(r.prizeAmount) },
+    {
+      key: 'paid',
+      header: 'Versé',
+      cell: (r) =>
+        r.prizeAmount > 0 ? (
+          r.paid ? (
+            <Badge tone="success">Oui</Badge>
+          ) : (
+            <Badge tone="warning">En attente</Badge>
+          )
         ) : (
-          <Badge tone="warning">En attente</Badge>
-        )
-      ) : (
-        '—'
-      ),
-  },
-];
+          '—'
+        ),
+    },
+  ];
+}
 
 export function TournamentDetailView({ id }: { id: string }) {
   const client = useQueryClient();
@@ -194,6 +227,8 @@ export function TournamentDetailView({ id }: { id: string }) {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge map={TOURNAMENT_STATUS} value={t.status} />
+          {/* D-108 : une proposition soumise est déjà ouverte aux préinscriptions. */}
+          {t.status === 'PENDING_APPROVAL' && <Badge tone="info">Préinscriptions ouvertes</Badge>}
           {t.cancellationReason && (
             <Badge tone="danger">{label(CANCELLATION_REASON, t.cancellationReason)}</Badge>
           )}
@@ -247,6 +282,7 @@ export function TournamentDetailView({ id }: { id: string }) {
                       key="tokens"
                       value={t.initialTournamentTokens}
                       coefficient={t.tokenCoefficients?.initialTokensCoefficient}
+                      unpublished={t.status === 'DRAFT' || t.status === 'PENDING_APPROVAL'}
                     />,
                   ],
                   [
@@ -255,6 +291,7 @@ export function TournamentDetailView({ id }: { id: string }) {
                       key="stake"
                       value={t.stakePerGame}
                       coefficient={t.tokenCoefficients?.stakePerGameCoefficient}
+                      unpublished={t.status === 'DRAFT' || t.status === 'PENDING_APPROVAL'}
                     />,
                   ],
                   [
@@ -299,7 +336,7 @@ export function TournamentDetailView({ id }: { id: string }) {
           />
           <DataTable
             caption="Résultats du tournoi"
-            columns={resultColumns}
+            columns={resultColumns()}
             rows={RESULT_STATUSES.includes(t.status) ? results.data?.results : []}
             rowKey={(r) => String(r.rank)}
             loading={results.isFetching}
@@ -309,8 +346,16 @@ export function TournamentDetailView({ id }: { id: string }) {
           />
         </Card>
 
+        <PayoutsCard id={id} enabled={RESULT_STATUSES.includes(t.status)} />
+
         <Card>
-          <CardHeader title="Inscriptions et réservations" />
+          <CardHeader
+            title={
+              t.status === 'PENDING_APPROVAL'
+                ? 'Préinscriptions et réservations'
+                : 'Inscriptions et réservations'
+            }
+          />
           <DataTable
             caption="Inscriptions au tournoi"
             columns={registrationColumns}

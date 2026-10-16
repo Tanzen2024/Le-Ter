@@ -1,9 +1,23 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { useFocusEffect } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { TableBackdrop } from '../../components/table/TableDecor';
 import { useMessages } from '../../lib/i18n';
 import { useCurrentUser } from '../auth/hooks';
+import {
+  onLobbyPanelRequest,
+  rememberLobbyPanel,
+  takeLobbyPanelRequest,
+} from '../navigation/last-route';
 import { ShopFlow } from '../wallet/ShopFlow';
 import { useLobbyMetrics } from './lobby-metrics';
 import { BackGlyph, EmojiIcon, IconButton, LobbyHud } from './LobbyUi';
@@ -50,6 +64,32 @@ export function LobbyShell({
   const [panel, setPanel] = useState<LobbyPanelName | null>(null);
   const openPanel = useCallback((next: LobbyPanelName) => setPanel(next), []);
   const closePanel = useCallback(() => setPanel(null), []);
+
+  // Écran affiché : son panneau ouvert est mémorisé avec l'écran (rouvert si Android détruit
+  // le processus) et un panneau à restaurer lui est remis ; quitté : plus aucun panneau.
+  const focused = useRef(false);
+  const shownPanel = useRef(panel);
+  useEffect(() => {
+    shownPanel.current = panel;
+    if (focused.current) rememberLobbyPanel(panel);
+  }, [panel]);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      rememberLobbyPanel(shownPanel.current);
+      const take = () => {
+        const restored = takeLobbyPanelRequest();
+        if (restored) setPanel(restored);
+      };
+      take();
+      const off = onLobbyPanelRequest(take);
+      return () => {
+        focused.current = false;
+        off();
+        rememberLobbyPanel(null);
+      };
+    }, []),
+  );
 
   return (
     <LobbyContext.Provider value={{ openPanel }}>

@@ -3,7 +3,6 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
 import { useMessages } from '../../lib/i18n';
-import { openSupport } from '../../services/support-service';
 import { usePreferencesStore } from '../../stores/preferences-store';
 import { useLobbyMetrics } from './lobby-metrics';
 import { ChoiceGroup, LobbyPanel, PanelButton } from './LobbyUi';
@@ -92,7 +91,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <PanelButton
               title={t.settings.support}
               accessibilityLabel={t.settings.supportA11y}
-              onPress={() => void openSupport()}
+              // Aide et réclamations dans l'application (D-114) : assistant automatisé et
+              // réclamations officielles, utilisables même sans plateforme externe.
+              onPress={() => router.push('/support')}
             />
           </ChoiceGroup>
         </View>

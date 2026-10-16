@@ -10,17 +10,23 @@ import type { GameId, PlayerId } from '../domain/game/game-id';
 import type { SessionId } from '../domain/sessions/session';
 import {
   AlreadyRegisteredError,
+  BLOCKING_STATUSES,
   DEFAULT_TOURNAMENT_SETTINGS,
+  PRE_REGISTRATION_STATUSES,
   REGISTRATION_LIMIT_STATUSES,
   TournamentOverlapError,
   WAITING_STATUSES,
   type CancellationReason,
   type PrizeRule,
+  type RankingMethod,
+  type RankingTieBreak,
   type Tournament,
+  type TournamentGameTally,
   type TournamentId,
   type TournamentPlayerAccount,
   type TournamentRegistration,
   type TournamentSettings,
+  type TournamentSettlementRule,
   type TournamentStatus,
 } from '../domain/tournaments/tournament';
 import type { UserId } from '../domain/users/user';
@@ -31,10 +37,12 @@ import type {
   NotificationDraft,
   RegistrationListItem,
   ResultDraft,
+  ResultsHistoryItem,
   TournamentGameSettlement,
   TournamentRepository,
   TournamentResultRow,
   TournamentUnitOfWork,
+  TournamentPayoutState,
 } from './tournament.repository';
 import {
   captureReservation,
@@ -43,6 +51,12 @@ import {
   reserveFunds,
   type WalletReservation,
 } from './wallet-reservations';
+import { queryTournamentLedgerFacts } from './postgres-admin-query.repository';
+import type { TournamentLedgerFacts } from './admin-query.repository';
+import type {
+  TournamentPayout,
+  TournamentPayoutDraft,
+} from '../domain/tournaments/tournament-payouts';
 
 const PG_EXCLUSION_VIOLATION = '23P01';
 const OVERLAP_CONSTRAINT = 'tournaments_no_overlap';
@@ -85,8 +99,12 @@ interface TournamentRow {
   platform_fee_bps: number | null;
   ranking_tokens_weight_bps: number | null;
   ranking_games_weight_bps: number | null;
+  ranking_method: RankingMethod | null;
+  ranking_games_reference: number | null;
+  settlement_rule: TournamentSettlementRule | null;
   initial_tournament_tokens: number;
   stake_per_game: number;
+  token_setup_frozen_at: Date | null;
   cancellation_reason: CancellationReason | null;
   cancelled_at: Date | null;
   published_at: Date | null;
@@ -135,8 +153,14 @@ function toTournament(row: TournamentRow): Tournament {
           gamesBps: Number(row.ranking_games_weight_bps),
         },
       }),
+    ...(row.ranking_method && { rankingMethod: row.ranking_method }),
+    ...(row.ranking_games_reference !== null && {
+      rankingGamesReference: Number(row.ranking_games_reference),
+    }),
+    ...(row.settlement_rule && { settlementRule: row.settlement_rule }),
     initialTournamentTokens: Number(row.initial_tournament_tokens),
     stakePerGame: Number(row.stake_per_game),
+    ...(row.token_setup_frozen_at && { tokenSetupFrozenAt: date(row.token_setup_frozen_at) }),
     prizeRules: (row.prize_rules ?? []).map((r) => ({
       rank: Number(r.rank),
       shareBps: Number(r.shareBps),
@@ -191,6 +215,7 @@ interface AccountRow {
   rank: number | null;
   prize_amount: Num;
   status: TournamentPlayerAccount['status'];
+  finished_at: Date | null;
   username?: string;
 }
 
@@ -208,6 +233,7 @@ function toAccount(row: AccountRow): TournamentPlayerAccount {
     ...(row.rank !== null && { rank: Number(row.rank) }),
     prizeAmount: Number(row.prize_amount),
     status: row.status,
+    ...(row.finished_at && { finishedAt: new Date(row.finished_at) }),
   };
 }
 
@@ -241,6 +267,90 @@ function toReservation(row: ReservationRow): WalletReservation {
   };
 }
 
+interface ResultRow {
+  tournament_id: TournamentId;
+  rank: number;
+  player_id: UserId;
+  username: string;
+  initial_tokens: number;
+  remaining_tokens: number;
+  games_played: number;
+  games_won: number;
+  prize_share_bps: number;
+  prize_amount: Num;
+  prize_transaction_id: string | null;
+  paid_at: Date | null;
+  score: Num | null;
+  created_at: Date;
+  ranking_method: RankingMethod | null;
+  tokens_ratio: Num | null;
+  games_ratio: Num | null;
+  tokens_weight_bps: number | null;
+  games_weight_bps: number | null;
+  games_reference: number | null;
+  tie_break: RankingTieBreak | null;
+  registered_at: Date | null;
+}
+
+function toResultRow(r: ResultRow): TournamentResultRow {
+  return {
+    tournamentId: r.tournament_id,
+    rank: Number(r.rank),
+    playerId: r.player_id,
+    username: r.username,
+    initialTokens: Number(r.initial_tokens),
+    remainingTokens: Number(r.remaining_tokens),
+    gamesPlayed: Number(r.games_played),
+    gamesWon: Number(r.games_won),
+    ...(r.score !== null && { score: Number(r.score) }),
+    prizeShareBps: Number(r.prize_share_bps),
+    prizeAmount: Number(r.prize_amount),
+    ...(r.prize_transaction_id && { prizeTransactionId: r.prize_transaction_id }),
+    ...(r.paid_at && { paidAt: new Date(r.paid_at) }),
+    createdAt: new Date(r.created_at),
+    ...(r.ranking_method && { rankingMethod: r.ranking_method }),
+    ...(r.tokens_ratio !== null && { tokensRatio: Number(r.tokens_ratio) }),
+    ...(r.games_ratio !== null && { gamesRatio: Number(r.games_ratio) }),
+    ...(r.tokens_weight_bps !== null && { tokensWeightBps: Number(r.tokens_weight_bps) }),
+    ...(r.games_weight_bps !== null && { gamesWeightBps: Number(r.games_weight_bps) }),
+    ...(r.games_reference !== null && { gamesReference: Number(r.games_reference) }),
+    ...(r.tie_break && { tieBreak: r.tie_break }),
+    ...(r.registered_at && { registeredAt: new Date(r.registered_at) }),
+  };
+}
+
+interface PayoutRow {
+  tournament_id: TournamentId;
+  rank: number;
+  player_id: string;
+  amount: Num;
+  idempotency_key: string;
+  status: TournamentPayout['status'];
+  wallet_transaction_id: string | null;
+  attempts: number;
+  last_error: string | null;
+  last_attempt_at: Date | null;
+  created_at: Date;
+  credited_at: Date | null;
+}
+
+function toPayout(r: PayoutRow): TournamentPayout {
+  return {
+    tournamentId: r.tournament_id,
+    rank: Number(r.rank),
+    playerId: r.player_id,
+    amount: Number(r.amount),
+    idempotencyKey: r.idempotency_key,
+    status: r.status,
+    ...(r.wallet_transaction_id && { walletTransactionId: r.wallet_transaction_id }),
+    attempts: Number(r.attempts),
+    ...(r.last_error && { lastError: r.last_error }),
+    ...(r.last_attempt_at && { lastAttemptAt: new Date(r.last_attempt_at) }),
+    createdAt: new Date(r.created_at),
+    ...(r.credited_at && { creditedAt: new Date(r.credited_at) }),
+  };
+}
+
 const SETTING_KEYS: Record<keyof TournamentSettings, string> = {
   platformFeePercent: 'tournament_platform_fee_percent',
   initialTokensCoefficient: 'tournament_initial_tokens_coefficient',
@@ -255,6 +365,48 @@ const SETTING_KEYS: Record<keyof TournamentSettings, string> = {
   tournamentMaximumDurationMinutes: 'tournament_maximum_duration_minutes',
   tournamentMinimumEntryFee: 'tournament_minimum_entry_fee',
 };
+
+/**
+ * Bilan par joueur des parties réglées d'un tournoi (D-106), toutes ses tables confondues :
+ * seules les parties TERMINÉES, rattachées à CE tournoi (`games.tournament_id`) et réglées
+ * SETTLED comptent (ni partie ordinaire, ni partie d'un autre tournoi, ni partie annulée ou
+ * VOID). Les participants d'une partie sont les clés de `transfers` (un compte par joueur
+ * assis, écrit une seule fois au règlement) : chaque partie compte une fois par joueur.
+ */
+async function tallySettledGames(
+  db: SqlExecutor,
+  id: TournamentId,
+): Promise<Map<string, TournamentGameTally>> {
+  const { rows } = await db.query<{
+    player_id: string;
+    games_played: number;
+    games_won: number;
+    token_delta: number;
+  }>(
+    `SELECT e.key AS player_id,
+            count(DISTINCT tg.game_id)::int AS games_played,
+            count(DISTINCT tg.game_id) FILTER (WHERE tg.winner_id::text = e.key)::int
+              AS games_won,
+            COALESCE(sum(e.value::int), 0)::int AS token_delta
+       FROM tournament_games tg
+       JOIN games g ON g.id = tg.game_id AND g.tournament_id = tg.tournament_id
+        AND g.status = 'finished'
+      CROSS JOIN LATERAL jsonb_each_text(tg.transfers) e
+      WHERE tg.tournament_id = $1 AND tg.status = 'SETTLED'
+      GROUP BY e.key`,
+    [id],
+  );
+  return new Map(
+    rows.map((r) => [
+      r.player_id,
+      {
+        gamesPlayed: Number(r.games_played),
+        gamesWon: Number(r.games_won),
+        tokenDelta: Number(r.token_delta),
+      },
+    ]),
+  );
+}
 
 async function readSettings(db: SqlExecutor): Promise<TournamentSettings> {
   const { rows } = await db.query<{ key: string; value: unknown }>(
@@ -351,7 +503,8 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
            cancelled_at = $16, published_at = $17, approved_by = $18, started_at = $19,
            results_at = $20, completed_at = $21, participants = $22, gross_pool = $23,
            platform_fee = $24, prize_pool = $25, unallocated_prize = $26, updated_at = $27,
-           ranking_tokens_weight_bps = $28, ranking_games_weight_bps = $29
+           ranking_tokens_weight_bps = $28, ranking_games_weight_bps = $29,
+           ranking_method = $30, ranking_games_reference = $31, settlement_rule = $32
          WHERE id = $1`,
         [
           t.id,
@@ -383,6 +536,9 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
           t.updatedAt.toISOString(),
           t.rankingWeights?.tokensBps ?? null,
           t.rankingWeights?.gamesBps ?? null,
+          t.rankingMethod ?? null,
+          t.rankingGamesReference ?? null,
+          t.settlementRule ?? null,
         ],
       );
     } catch (err) {
@@ -419,12 +575,59 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
     await this.tx.query('SELECT pg_advisory_xact_lock($1)', [TOURNAMENT_SCHEDULE_LOCK_KEY]);
   }
 
-  async countWaitingTournaments(): Promise<number> {
+  /** Miroir SQL de `countsTowardRegistrationLimit` (domaine, D-113). */
+  async countWaitingTournaments(now: Date, excludeId?: TournamentId): Promise<number> {
     const { rows } = await this.tx.query<{ count: number }>(
-      'SELECT count(*)::int AS count FROM tournaments WHERE status = ANY($1::text[])',
-      [REGISTRATION_LIMIT_STATUSES],
+      `SELECT count(*)::int AS count FROM tournaments
+       WHERE (status = ANY($1::text[])
+              OR (status = ANY($2::text[])
+                  AND COALESCE(registration_closes_at, starts_at) > $3::timestamptz))
+         AND ($4::uuid IS NULL OR id <> $4::uuid)`,
+      [REGISTRATION_LIMIT_STATUSES, PRE_REGISTRATION_STATUSES, now.toISOString(), excludeId ?? null],
     );
     return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Même définition que `tournaments_no_overlap` : tstzrange '[)' qui se recouvrent. */
+  async findOverlappingPublished(
+    slot: { startsAt: Date; blockedUntil: Date },
+    excludeId?: TournamentId,
+  ): Promise<TournamentId | null> {
+    const { rows } = await this.tx.query<{ id: TournamentId }>(
+      `SELECT id FROM tournaments
+       WHERE status = ANY($1::text[])
+         AND starts_at < $3::timestamptz AND blocked_until > $2::timestamptz
+         AND ($4::uuid IS NULL OR id <> $4::uuid)
+       ORDER BY starts_at, id
+       LIMIT 1`,
+      [
+        BLOCKING_STATUSES,
+        slot.startsAt.toISOString(),
+        slot.blockedUntil.toISOString(),
+        excludeId ?? null,
+      ],
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  async freezeTokenSetup(
+    id: TournamentId,
+    tokens: { initialTournamentTokens: number; stakePerGame: number },
+    at: Date,
+  ): Promise<void> {
+    await this.tx.query(
+      `UPDATE tournaments SET version = version + 1, initial_tournament_tokens = $2,
+         stake_per_game = $3, token_setup_frozen_at = $4, updated_at = $4
+       WHERE id = $1`,
+      [id, tokens.initialTournamentTokens, tokens.stakePerGame, at.toISOString()],
+    );
+  }
+
+  async unfreezeTokenSetup(id: TournamentId): Promise<void> {
+    await this.tx.query(
+      `UPDATE tournaments SET version = version + 1, token_setup_frozen_at = NULL WHERE id = $1`,
+      [id],
+    );
   }
 
   async findRegistration(id: TournamentId, userId: UserId): Promise<TournamentRegistration | null> {
@@ -585,7 +788,8 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
   async updateAccount(a: TournamentPlayerAccount, now: Date): Promise<void> {
     await this.tx.query(
       `UPDATE tournament_player_accounts SET current_tokens = $2, games_played = $3,
-         games_won = $4, rank = $5, prize_amount = $6, status = $7, updated_at = $8
+         games_won = $4, rank = $5, prize_amount = $6, status = $7, updated_at = $8,
+         finished_at = $9
        WHERE id = $1`,
       [
         a.id,
@@ -596,6 +800,7 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
         a.prizeAmount,
         a.status,
         now.toISOString(),
+        iso(a.finishedAt),
       ],
     );
   }
@@ -603,8 +808,8 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
   async insertGameSettlement(s: TournamentGameSettlement): Promise<boolean> {
     const { rowCount } = await this.tx.query(
       `INSERT INTO tournament_games (game_id, tournament_id, session_id, status, winner_id, stake,
-         pot, transfers, void_reason, settled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+         pot, transfers, void_reason, settled_at, settlement_rule, victory_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
        ON CONFLICT (game_id) DO NOTHING`,
       [
         s.gameId,
@@ -617,19 +822,45 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
         JSON.stringify(s.transfers),
         s.voidReason ?? null,
         s.settledAt.toISOString(),
+        s.settlementRule,
+        s.victoryType ?? null,
       ],
     );
     return rowCount > 0;
   }
 
-  async countActiveGames(id: TournamentId, before: Date): Promise<number> {
+  async dissolveAccounts(id: TournamentId, now: Date): Promise<number> {
+    // Idempotent : seuls les comptes clos (classement publié) et pas encore dissous.
+    const { rowCount } = await this.tx.query(
+      `UPDATE tournament_player_accounts
+          SET status = 'DISSOLVED', dissolved_at = $2, updated_at = $2
+        WHERE tournament_id = $1 AND finished_at IS NOT NULL AND dissolved_at IS NULL`,
+      [id, now.toISOString()],
+    );
+    return rowCount;
+  }
+
+  async countActiveGames(id: TournamentId): Promise<number> {
     const { rows } = await this.tx.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM games g
-       JOIN tournament_sessions ts ON ts.session_id = g.session_id
-       WHERE ts.tournament_id = $1 AND g.status = 'in_progress' AND g.started_at < $2`,
-      [id, before.toISOString()],
+       WHERE g.tournament_id = $1 AND g.status = 'in_progress'`,
+      [id],
     );
     return Number(rows[0]?.count ?? 0);
+  }
+
+  async countUnsettledFinishedGames(id: TournamentId): Promise<number> {
+    const { rows } = await this.tx.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM games g
+       WHERE g.tournament_id = $1 AND g.status = 'finished'
+         AND NOT EXISTS (SELECT 1 FROM tournament_games tg WHERE tg.game_id = g.id)`,
+      [id],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  tallySettledGames(id: TournamentId): Promise<Map<string, TournamentGameTally>> {
+    return tallySettledGames(this.tx, id);
   }
 
   async insertResults(id: TournamentId, rows: ResultDraft[], now: Date): Promise<void> {
@@ -637,8 +868,10 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
       await this.tx.query(
         `INSERT INTO tournament_results (tournament_id, rank, player_id, initial_tokens,
            remaining_tokens, games_played, games_won, prize_share_bps, prize_amount, created_at,
-           score)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           score, ranking_method, tokens_ratio, games_ratio, tokens_weight_bps,
+           games_weight_bps, games_reference, tie_break, registered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+           $18, $19)
          ON CONFLICT (tournament_id, rank) DO NOTHING`,
         [
           id,
@@ -652,6 +885,14 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
           r.amount,
           now.toISOString(),
           r.score ?? null,
+          r.audit?.rankingMethod ?? null,
+          r.audit?.tokensRatio ?? null,
+          r.audit?.gamesRatio ?? null,
+          r.audit?.tokensWeightBps ?? null,
+          r.audit?.gamesWeightBps ?? null,
+          r.audit?.gamesReference ?? null,
+          r.audit?.tieBreak ?? null,
+          iso(r.registeredAt),
         ],
       );
     }
@@ -692,6 +933,95 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
       `UPDATE tournament_results SET prize_transaction_id = $3, paid_at = $4
        WHERE tournament_id = $1 AND rank = $2 AND paid_at IS NULL`,
       [id, rank, transactionId, now.toISOString()],
+    );
+  }
+
+  async listResultPrizes(id: TournamentId) {
+    const { rows } = await this.tx.query<{ rank: number; player_id: string; prize_amount: Num }>(
+      `SELECT rank, player_id, prize_amount FROM tournament_results
+       WHERE tournament_id = $1 ORDER BY rank`,
+      [id],
+    );
+    return rows.map((r) => ({
+      rank: Number(r.rank),
+      playerId: r.player_id,
+      prizeAmount: Number(r.prize_amount),
+    }));
+  }
+
+  async insertPayouts(id: TournamentId, drafts: TournamentPayoutDraft[], now: Date) {
+    for (const d of drafts) {
+      await this.tx.query(
+        `INSERT INTO tournament_payouts (tournament_id, rank, player_id, amount,
+           idempotency_key, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, 'PENDING', $6)
+         ON CONFLICT (tournament_id, rank) DO NOTHING`,
+        [id, d.rank, d.playerId, d.amount, d.idempotencyKey, now.toISOString()],
+      );
+    }
+  }
+
+  async lockPayouts(id: TournamentId): Promise<TournamentPayout[]> {
+    const { rows } = await this.tx.query<PayoutRow>(
+      'SELECT * FROM tournament_payouts WHERE tournament_id = $1 ORDER BY rank FOR UPDATE',
+      [id],
+    );
+    return rows.map(toPayout);
+  }
+
+  async lockNextPayout(id: TournamentId, retryBefore: Date): Promise<TournamentPayout | null> {
+    const { rows } = await this.tx.query<PayoutRow>(
+      `SELECT * FROM tournament_payouts
+       WHERE tournament_id = $1
+         AND (status = 'PENDING'
+              OR (status = 'FAILED' AND (last_attempt_at IS NULL OR last_attempt_at <= $2)))
+       ORDER BY rank LIMIT 1 FOR UPDATE`,
+      [id, retryBefore.toISOString()],
+    );
+    return rows[0] ? toPayout(rows[0]) : null;
+  }
+
+  async markPayoutCredited(id: TournamentId, rank: number, transactionId: string, now: Date) {
+    const { rowCount } = await this.tx.query(
+      `UPDATE tournament_payouts SET status = 'CREDITED', wallet_transaction_id = $3,
+         credited_at = $4, last_attempt_at = $4, attempts = attempts + 1
+       WHERE tournament_id = $1 AND rank = $2 AND status <> 'CREDITED'`,
+      [id, rank, transactionId, now.toISOString()],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`Versement introuvable ou déjà crédité (tournoi ${id}, rang ${rank})`);
+    }
+  }
+
+  async recordPayoutFailure(id: TournamentId, rank: number, error: string, now: Date) {
+    await this.tx.query(
+      `UPDATE tournament_payouts SET status = 'FAILED', attempts = attempts + 1,
+         last_error = $3, last_attempt_at = $4
+       WHERE tournament_id = $1 AND rank = $2 AND status <> 'CREDITED'`,
+      [id, rank, error.slice(0, 500), now.toISOString()],
+    );
+  }
+
+  async ledgerFacts(id: TournamentId): Promise<TournamentLedgerFacts | null> {
+    const [facts] = await queryTournamentLedgerFacts(this.tx, id);
+    return facts ?? null;
+  }
+
+  async markPayoutPlanValidated(id: TournamentId, now: Date) {
+    await this.tx.query(
+      `UPDATE tournaments SET payout_plan_validated_at = COALESCE(payout_plan_validated_at, $2),
+         payout_blocked_at = NULL, payout_block_reasons = NULL
+       WHERE id = $1`,
+      [id, now.toISOString()],
+    );
+  }
+
+  async blockPayouts(id: TournamentId, reasons: string[], now: Date) {
+    await this.tx.query(
+      `UPDATE tournaments SET payout_blocked_at = COALESCE(payout_blocked_at, $3),
+         payout_block_reasons = $2::text[]
+       WHERE id = $1`,
+      [id, reasons, now.toISOString()],
     );
   }
 
@@ -829,13 +1159,18 @@ export class PostgresTournamentRepository implements TournamentRepository {
     const since = history && filter.visibleSince ? filter.visibleSince.toISOString() : null;
     const { rows } = await this.db.query<TournamentRow>(
       `${SELECT_TOURNAMENT}
-       WHERE t.published_at IS NOT NULL AND t.status = ANY($1::text[])
+       WHERE (t.published_at IS NOT NULL OR t.status = 'PENDING_APPROVAL')
+         AND t.status = ANY($1::text[])
          AND ($3::timestamptz IS NULL
               OR (t.status = 'COMPLETED' AND t.ends_at > $3)
               OR (t.status = 'CANCELLED' AND t.cancelled_at > $3))
        ORDER BY t.starts_at ${history ? 'DESC' : 'ASC'}, t.id
        LIMIT $2`,
-      [history ? ['COMPLETED', 'CANCELLED'] : [...UPCOMING, ...LIVE], filter.limit, since],
+      [
+        history ? ['COMPLETED', 'CANCELLED'] : ['PENDING_APPROVAL', ...UPCOMING, ...LIVE],
+        filter.limit,
+        since,
+      ],
     );
     return rows.map(toTournament);
   }
@@ -953,41 +1288,90 @@ export class PostgresTournamentRepository implements TournamentRepository {
     return rows.map((r) => ({ ...toAccount(r), username: r.username }));
   }
 
+  tallySettledGames(id: TournamentId): Promise<Map<string, TournamentGameTally>> {
+    return tallySettledGames(this.db, id);
+  }
+
+  async findPayoutState(id: TournamentId): Promise<TournamentPayoutState> {
+    const [payouts, tournament] = await Promise.all([
+      this.db.query<PayoutRow & { username: string }>(
+        `SELECT p.*, u.username FROM tournament_payouts p JOIN users u ON u.id = p.player_id
+         WHERE p.tournament_id = $1 ORDER BY p.rank`,
+        [id],
+      ),
+      this.db.query<{
+        payout_plan_validated_at: Date | null;
+        payout_blocked_at: Date | null;
+        payout_block_reasons: string[] | null;
+      }>(
+        `SELECT payout_plan_validated_at, payout_blocked_at, payout_block_reasons
+         FROM tournaments WHERE id = $1`,
+        [id],
+      ),
+    ]);
+    const t = tournament.rows[0];
+    return {
+      payouts: payouts.rows.map((r) => ({ ...toPayout(r), username: r.username })),
+      ...(t?.payout_plan_validated_at && { planValidatedAt: new Date(t.payout_plan_validated_at) }),
+      ...(t?.payout_blocked_at && { blockedAt: new Date(t.payout_blocked_at) }),
+      blockReasons: t?.payout_block_reasons ?? [],
+    };
+  }
+
   async listResults(id: TournamentId): Promise<TournamentResultRow[]> {
-    const { rows } = await this.db.query<{
-      tournament_id: TournamentId;
-      rank: number;
-      player_id: UserId;
-      username: string;
-      initial_tokens: number;
-      remaining_tokens: number;
-      games_played: number;
-      games_won: number;
-      prize_share_bps: number;
-      prize_amount: Num;
-      prize_transaction_id: string | null;
-      paid_at: Date | null;
-      score: Num | null;
-    }>(
+    const { rows } = await this.db.query<ResultRow>(
       `SELECT r.*, u.username FROM tournament_results r JOIN users u ON u.id = r.player_id
        WHERE r.tournament_id = $1 ORDER BY r.rank`,
       [id],
     );
-    return rows.map((r) => ({
-      tournamentId: r.tournament_id,
-      rank: Number(r.rank),
-      playerId: r.player_id,
-      username: r.username,
-      initialTokens: Number(r.initial_tokens),
-      remainingTokens: Number(r.remaining_tokens),
-      gamesPlayed: Number(r.games_played),
-      gamesWon: Number(r.games_won),
-      ...(r.score !== null && { score: Number(r.score) }),
-      prizeShareBps: Number(r.prize_share_bps),
-      prizeAmount: Number(r.prize_amount),
-      ...(r.prize_transaction_id && { prizeTransactionId: r.prize_transaction_id }),
-      ...(r.paid_at && { paidAt: new Date(r.paid_at) }),
+    return rows.map(toResultRow);
+  }
+
+  async listResultsHistory(
+    userId: UserId,
+    page: { limit: number; before?: Date },
+  ): Promise<ResultsHistoryItem[]> {
+    const { rows } = await this.db.query<
+      TournamentRow & { my_rank: number; my_score: Num | null; published_at_results: Date }
+    >(
+      `SELECT t.*,
+         (SELECT COALESCE(json_agg(json_build_object('rank', pr.rank, 'shareBps', pr.share_bps)
+            ORDER BY pr.rank), '[]'::json)
+          FROM tournament_prize_rules pr WHERE pr.tournament_id = t.id) AS prize_rules,
+         r.rank AS my_rank, r.score AS my_score, r.created_at AS published_at_results
+       FROM tournament_results r JOIN tournaments t ON t.id = r.tournament_id
+       WHERE r.player_id = $1
+         AND t.status IN ('RESULTS_VALIDATED', 'DISTRIBUTING_PRIZES', 'COMPLETED')
+         AND ($3::timestamptz IS NULL OR t.ends_at < $3)
+       ORDER BY t.ends_at DESC, t.id
+       LIMIT $2`,
+      [userId, page.limit, iso(page.before)],
+    );
+    return rows.map((row) => ({
+      tournament: toTournament(row),
+      myRank: Number(row.my_rank),
+      ...(row.my_score !== null && { myScore: Number(row.my_score) }),
+      resultsPublishedAt: new Date(row.published_at_results),
     }));
+  }
+
+  async listIdleTables(
+    id: TournamentId,
+  ): Promise<{ sessionId: SessionId; playerIds: PlayerId[] }[]> {
+    const { rows } = await this.db.query<{ session_id: SessionId; player_ids: PlayerId[] }>(
+      `SELECT s.id AS session_id,
+         ARRAY(SELECT sp.player_id FROM session_players sp
+               WHERE sp.session_id = s.id AND sp.active ORDER BY sp.player_id) AS player_ids
+       FROM tournament_sessions ts JOIN sessions s ON s.id = ts.session_id AND s.status = 'open'
+       WHERE ts.tournament_id = $1
+         AND NOT EXISTS (SELECT 1 FROM games g WHERE g.session_id = s.id
+                         AND g.status = 'in_progress')
+       ORDER BY ts.created_at, ts.id`,
+      [id],
+    );
+    return rows
+      .map((r) => ({ sessionId: r.session_id, playerIds: [...(r.player_ids ?? [])] }))
+      .filter((r) => r.playerIds.length > 0);
   }
 
   async findJoinableSessions(id: TournamentId, limit: number): Promise<SessionId[]> {
@@ -1017,9 +1401,8 @@ export class PostgresTournamentRepository implements TournamentRepository {
 
   async findUnsettledFinishedGames(limit: number) {
     const { rows } = await this.db.query<{ game_id: GameId; tournament_id: TournamentId }>(
-      `SELECT g.id AS game_id, ts.tournament_id FROM games g
-       JOIN tournament_sessions ts ON ts.session_id = g.session_id
-       JOIN tournaments t ON t.id = ts.tournament_id
+      `SELECT g.id AS game_id, g.tournament_id FROM games g
+       JOIN tournaments t ON t.id = g.tournament_id
        WHERE g.status = 'finished' AND t.status IN ('IN_PROGRESS', 'CALCULATING_RESULTS')
          AND NOT EXISTS (SELECT 1 FROM tournament_games tg WHERE tg.game_id = g.id)
        ORDER BY g.finished_at LIMIT $1`,

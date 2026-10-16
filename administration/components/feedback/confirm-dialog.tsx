@@ -4,7 +4,11 @@ import { useState, type ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { messageOf } from '@/lib/api/errors';
+import { ApiError, messageOf } from '@/lib/api/errors';
+
+/** Messages par champ d'un refus de validation, sans doublon. */
+const fieldMessages = (error: unknown): string[] =>
+  error instanceof ApiError && error.fields ? [...new Set(Object.values(error.fields))] : [];
 
 /**
  * Confirmation explicite d'une action sensible. L'action n'est envoyée qu'après un clic
@@ -58,9 +62,17 @@ export function ConfirmDialog({
       <DialogContent title={title} description={description}>
         {children}
         {error !== null && (
-          <p role="alert" className="bg-danger-soft text-danger mt-3 rounded-md px-3 py-2 text-sm">
-            {messageOf(error)}
-          </p>
+          <div role="alert" className="bg-danger-soft text-danger mt-3 rounded-md px-3 py-2 text-sm">
+            <p>{messageOf(error)}</p>
+            {/* Refus de validation : le serveur dit précisément ce qui bloque (ex. délai). */}
+            {fieldMessages(error).length > 0 && (
+              <ul className="mt-1 list-disc pl-5">
+                {fieldMessages(error).map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={pending}>

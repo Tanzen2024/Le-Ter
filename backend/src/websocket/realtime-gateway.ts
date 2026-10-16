@@ -14,6 +14,7 @@ import type { ChatService } from '../services/chat/chat.service';
 import type { GameService } from '../services/game/game.service';
 import type { Logger } from '../utils/logger';
 import { parseChatMessageInput } from '../validators/chat.validators';
+import type { UserEventSubscriber } from './user-event-bus';
 
 /**
  * Transport temps réel vers les clients (T-01 tranché par D-045) : WebSocket natif (`ws`),
@@ -34,6 +35,7 @@ import { parseChatMessageInput } from '../validators/chat.validators';
  *     { type: 'ready' }                                     authentifié
  *     { type: 'chat:message', gameId, message }             salle `game:{gameId}:chat`
  *     { type: 'game:changed', gameId, version }             salle `game:{gameId}` (D-101)
+ *     { type: 'notification', notificationType, tournamentId? }  salle `user:{userId}` (D-106)
  *
  * Sécurité :
  * - Le jeton est envoyé dans la 1re trame, jamais dans l'URL (journaux, proxys) ; il n'est
@@ -95,6 +97,11 @@ export interface RealtimeGatewayOptions {
   chat: ChatService;
   /** Suivi des parties (D-101) ; absent, `game:subscribe` est refusé. */
   games?: Pick<GameService, 'subscribe'>;
+  /**
+   * Signaux personnels (D-106) : chaque connexion authentifiée est abonnée aux signaux de SON
+   * identité (jeton), jamais d'un autre joueur. Absent : aucun signal personnel.
+   */
+  userEvents?: UserEventSubscriber;
   logger: Logger;
   /** Délai pour s'authentifier après l'ouverture. */
   authTimeoutMs?: number;
@@ -197,6 +204,8 @@ class Connection {
   /** Suivi des parties (D-101), distinct du chat de la même partie. */
   private readonly gameSubscriptions = new Map<GameId, () => void>();
   private readonly gameSubscribing = new Set<GameId>();
+  /** Signaux personnels de l'identité du jeton (D-106). */
+  private userSubscription: (() => void) | undefined;
   private frames = { count: 0, resetAt: 0 };
   /** Trames traitées dans l'ordre de réception (l'abonnement suit toujours l'`auth`). */
   private queue: Promise<void> = Promise.resolve();
@@ -314,6 +323,15 @@ class Connection {
       this.userId = context.userId;
       this.token = token;
       this.scheduleExpiry(token);
+      if (!this.userSubscription && this.options.userEvents) {
+        this.userSubscription = this.options.userEvents.subscribe(context.userId, (event) =>
+          this.send({
+            type: 'notification',
+            notificationType: event.notificationType,
+            ...(event.tournamentId && { tournamentId: event.tournamentId }),
+          }),
+        );
+      }
       this.send({ type: 'ready' });
     } catch (err) {
       this.closeAfterAuthFailure(err, 'realtime auth rejected');
@@ -606,6 +624,8 @@ class Connection {
     }
     this.subscriptions.clear();
     this.gameSubscriptions.clear();
+    this.userSubscription?.();
+    this.userSubscription = undefined;
   }
 }
 

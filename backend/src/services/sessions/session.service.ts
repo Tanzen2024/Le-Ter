@@ -256,7 +256,7 @@ export class SessionService {
           firstPlayerId: creatorId, // première partie : J1 = créateur de la session
           creatorTablePosition: 0,
           // Table de tournoi : jetons de tournoi, hors mise du compte de jeu (D-073).
-          ...(tournamentId !== undefined && { tournamentTable: true }),
+          ...(tournamentId !== undefined && { tournamentTable: true, tournamentId }),
         });
         await this.deps.sessions.createWithFirstGame(
           session,

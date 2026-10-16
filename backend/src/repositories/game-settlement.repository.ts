@@ -8,6 +8,11 @@ import type { GameId, PlayerId } from '../domain/game/game-id';
 export interface PlayerSettlement {
   /** Variation nette signée, en jetons. */
   delta: number;
+  /**
+   * Compte réglé, décidé par le SERVEUR d'après le rattachement réel de la partie (D-111) :
+   * `WALLET` = compte de jeu réel (partie ordinaire), `TOURNAMENT` = compte FICTIF du tournoi.
+   */
+  account: 'WALLET' | 'TOURNAMENT';
 }
 
 /**
@@ -16,8 +21,9 @@ export interface PlayerSettlement {
  */
 export interface GameSettlementReader {
   /**
-   * Bilan de `playerId` pour `gameId`, ou null si la partie n'a pas de règlement (table de
-   * tournoi, partie sans mise) ou n'est pas encore réglée.
+   * Bilan de `playerId` pour `gameId` : règlement du compte de jeu (partie ordinaire) ou du
+   * compte fictif (partie de tournoi), ou null si la partie n'a pas de règlement (partie sans
+   * mise) ou n'est pas encore réglée.
    */
   findPlayerSettlement(gameId: GameId, playerId: PlayerId): Promise<PlayerSettlement | null>;
 }

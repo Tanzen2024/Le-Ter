@@ -3,9 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, renderHook } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
-import type { GameSubscriptionHandlers } from '../../lib/realtime-client';
+import type { GameSubscriptionHandlers, RealtimeNotification } from '../../lib/realtime-client';
 import type { GameView } from '../../types/game';
-import { useGameUpdates } from './game-updates';
+import { TOURNAMENT_GAME_SETTLED, useGameUpdates, useTournamentSettlementUpdates } from './game-updates';
 import { gameKeys } from './hooks';
 
 jest.mock('../chat/realtime', () => ({ realtime: { subscribeGame: jest.fn(() => () => undefined) } }));
@@ -80,5 +80,49 @@ describe('useGameUpdates : carte acceptée par le serveur → état relu aussit�
     const { client, wrapper } = setup();
     await renderHook(() => useGameUpdates('', client), { wrapper });
     expect(client.subscribeGame).not.toHaveBeenCalled();
+  });
+});
+
+describe('useTournamentSettlementUpdates : bilan fictif relu dès le règlement (D-111)', () => {
+  const T1 = 'tournoi-1';
+  function notifications() {
+    const listeners = new Set<(n: RealtimeNotification) => void>();
+    const client = {
+      onNotification: jest.fn((listener: (n: RealtimeNotification) => void) => {
+        listeners.add(listener);
+        return () => void listeners.delete(listener);
+      }),
+    };
+    const emit = (n: RealtimeNotification) => listeners.forEach((l) => l(n));
+    return { client, emit, listeners };
+  }
+
+  it('règlement de CE tournoi : la partie est relue (écran de fin avec son montant)', async () => {
+    const { invalidate, wrapper } = setup();
+    const { client, emit } = notifications();
+    await renderHook(() => useTournamentSettlementUpdates(GAME, T1, client), { wrapper });
+    emit({ notificationType: TOURNAMENT_GAME_SETTLED, tournamentId: T1 });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: gameKeys.detail(GAME), exact: true });
+  });
+
+  it('autre tournoi ou autre signal : aucune relecture', async () => {
+    const { invalidate, wrapper } = setup();
+    const { client, emit } = notifications();
+    await renderHook(() => useTournamentSettlementUpdates(GAME, T1, client), { wrapper });
+    emit({ notificationType: TOURNAMENT_GAME_SETTLED, tournamentId: 'tournoi-2' });
+    emit({ notificationType: 'TOURNAMENT_RESULTS_AVAILABLE', tournamentId: T1 });
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it('partie ordinaire (sans tournoi) : aucune écoute ; démontage : écoute retirée', async () => {
+    const { wrapper } = setup();
+    const ordinary = notifications();
+    await renderHook(() => useTournamentSettlementUpdates(GAME, undefined, ordinary.client), { wrapper });
+    expect(ordinary.client.onNotification).not.toHaveBeenCalled();
+    const table = notifications();
+    const view = await renderHook(() => useTournamentSettlementUpdates(GAME, T1, table.client), { wrapper });
+    expect(table.listeners.size).toBe(1);
+    await view.unmount();
+    expect(table.listeners.size).toBe(0);
   });
 });

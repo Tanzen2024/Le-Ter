@@ -27,8 +27,13 @@ import {
   NotTournamentCreatorError,
   percentToBps,
   PRE_CAPTURE_STATUSES,
-  rankAccounts,
-  rankingReferences,
+  PRE_REGISTRATION_STATUSES,
+  registrationWindowOpen,
+  countsTowardRegistrationLimit,
+  capitalRatioGamesReference,
+  CLOSING_ALERT_INTERVAL_MS,
+  CURRENT_RANKING_METHOD,
+  rankTournamentAccounts,
   rankingWeightsError,
   rankingWeightsOf,
   RESULTS_GRACE_MS,
@@ -39,7 +44,9 @@ import {
   durationLimitsError,
   coefficientHundredths,
   tokenCoefficientsError,
-  settleGameTokens,
+  planTournamentGame,
+  tournamentSettlementRule,
+  CURRENT_SETTLEMENT_RULE,
   STARTED_STATUSES,
   TooManyPendingTournamentsError,
   TooManyWaitingTournamentsError,
@@ -57,17 +64,23 @@ import {
   TournamentNotFoundError,
   TournamentNotStartedError,
   TournamentOutOfTokensError,
+  TournamentOverlapError,
   TournamentRegistrationClosedError,
   TournamentResultsUnavailableError,
   TournamentStartedError,
   TournamentTableAvailableError,
   TournamentTableRefusedError,
-  tournamentRankingWeights,
+  tournamentRankingRules,
+  reconcileAccountsWithLedger,
+  scoreBreakdown,
   tournamentTokenSetup,
   validateTournamentInput,
   type CancellationReason,
   type CreatorType,
+  type RankingBreakdown,
+  type RankingRules,
   type Tournament,
+  type TournamentGameTally,
   type TournamentId,
   type TournamentInput,
   type TournamentPlayerAccount,
@@ -82,6 +95,8 @@ import type {
   NotificationDraft,
   RegistrationListItem,
   ResultDraft,
+  ResultsHistoryItem,
+  TournamentPayoutState,
   TournamentRepository,
   TournamentResultRow,
   TournamentUnitOfWork,
@@ -90,6 +105,16 @@ import type { WalletReservation } from '../../repositories/wallet-reservations';
 import { BackgroundTasks } from '../../utils/background-tasks';
 import { KeyedSerialQueue } from '../../utils/keyed-serial-queue';
 import type { Logger } from '../../utils/logger';
+import type { UserEventPublisher } from '../../websocket/user-event-bus';
+import {
+  PAYOUT_RETRY_DELAY_MS,
+  payoutPlanAnomalies,
+  planPayouts,
+  tournamentFinancialState,
+  type TournamentFinancialState,
+  type TournamentPayout,
+} from '../../domain/tournaments/tournament-payouts';
+import { tournamentAnomalies } from '../admin/admin-reconciliation';
 import type { GameService } from '../game/game.service';
 import type { SessionService } from '../sessions/session.service';
 
@@ -128,6 +153,12 @@ const WEIGHT_SETTING_KEYS = ['rankingTokensWeightPercent', 'rankingGamesWeightPe
 /** Coefficients des jetons de départ et de la mise (D-071) : 2 décimales au plus. */
 const COEFFICIENT_SETTING_KEYS = ['initialTokensCoefficient', 'stakePerGameCoefficient'] as const;
 const SETTLEABLE_STATUSES: readonly TournamentStatus[] = ['IN_PROGRESS', 'CALCULATING_RESULTS'];
+/** Règlement refusé pour incohérence (journalisé en erreur) : jamais un mouvement partiel. */
+const ANOMALY_VOID_REASONS: readonly string[] = [
+  'WINNER_NOT_PARTICIPANT',
+  'PARTICIPANT_WITHOUT_ACCOUNT',
+  'INVALID_SETTLEMENT',
+];
 
 export interface TournamentServiceDependencies {
   tournaments: TournamentRepository;
@@ -137,6 +168,50 @@ export interface TournamentServiceDependencies {
   clock?: () => Date;
   /** Délai après `starts_at` avant d'annuler un démarrage bloqué (défaut START_RECOVERY_MS). */
   startRecoveryMs?: number;
+  /**
+   * Temps réel (D-106) : signal « nouvelle notification » envoyé aux participants APRÈS la
+   * publication des résultats. Facultatif et sans garantie : la notification et le classement
+   * sont dans PostgreSQL, relus par l'API à la prochaine ouverture.
+   */
+  userEvents?: UserEventPublisher;
+}
+
+/** Une page de l'historique des résultats d'un joueur (rubrique « Résultats des tournois »). */
+export const RESULTS_HISTORY_PAGE = 20;
+
+/** Classement officiel vu par un joueur : toutes les lignes publiques et SON détail. */
+export interface OfficialResults {
+  tournament: Tournament;
+  rows: TournamentResultRow[];
+  rules: RankingRules;
+  /** Ma ligne et le détail de mon score ; absent si je n'ai pas participé. */
+  me?: TournamentResultRow & RankingBreakdown;
+  /** MA récompense réelle et l'état de son versement (D-112) ; absente sans gain. */
+  myPayout?: Pick<TournamentPayout, 'amount' | 'status' | 'creditedAt'>;
+  viewerId: UserId;
+}
+
+/**
+ * Rapport financier d'un tournoi pour l'administration (D-112) : cagnotte issue des fonds
+ * capturés, commission, cagnotte distribuable, plan de versement et état de finalisation.
+ */
+export interface TournamentPayoutReport extends TournamentPayoutState {
+  tournament: Tournament;
+  financialState: TournamentFinancialState;
+  creditedTotal: number;
+  dueTotal: number;
+}
+
+/** Contexte de MON tournoi pendant une partie (HUD de la table, D-106). */
+export interface TournamentContext {
+  tournament: Tournament;
+  account: TournamentPlayerAccount;
+  /** Rang provisoire (en cours) ou officiel (publié). */
+  rank: number;
+  participants: number;
+  rules: RankingRules;
+  breakdown: RankingBreakdown;
+  now: Date;
 }
 
 interface CallMeta {
@@ -194,6 +269,10 @@ export class TournamentService {
   private readonly background = new BackgroundTasks();
   /** Échecs de démarrage consécutifs par tournoi (journalisation et alerte seulement). */
   private readonly startFailures = new Map<TournamentId, number>();
+  /** Derniers motifs de blocage des versements journalisés, par tournoi (D-112). */
+  private readonly payoutBlockAlerts = new Map<TournamentId, string>();
+  /** Dernière alerte « clôture retardée » par tournoi (journalisation seulement). */
+  private readonly closingAlerts = new Map<TournamentId, number>();
 
   constructor(private readonly deps: TournamentServiceDependencies) {
     this.clock = deps.clock ?? (() => new Date());
@@ -211,7 +290,7 @@ export class TournamentService {
       await uow.lockSchedule();
       const settings = await uow.readSettings();
       const valid = validateTournamentInput(input, { now, creatorType: 'ADMIN', settings });
-      await assertWaitingCapacity(uow);
+      await assertWaitingCapacity(uow, now);
       // Jetons de départ et mise calculés depuis les coefficients, figés par la publication.
       const tournament = publish(draftOf(valid, 'ADMIN', adminId, now), settings, now, adminId);
       await uow.insertTournament(tournament);
@@ -242,8 +321,9 @@ export class TournamentService {
       if (pending >= settings.maximumPendingTournamentsPerPlayer) {
         throw new TooManyPendingTournamentsError(settings.maximumPendingTournamentsPerPlayer);
       }
-      // Information au plus tôt (D-059) ; la garantie est à l'approbation, sous verrou.
-      await assertWaitingCapacity(uow);
+      // Information au plus tôt (D-059) ; la garantie est à la soumission et à l'approbation,
+      // sous verrou (D-113).
+      await assertWaitingCapacity(uow, now);
       const tournament = draftOf(valid, 'PLAYER', userId, now);
       await uow.insertTournament(tournament);
       return tournament;
@@ -255,22 +335,30 @@ export class TournamentService {
     return created;
   }
 
-  /** Le joueur soumet son brouillon à l'approbation. */
+  /**
+   * Le joueur soumet son brouillon à l'approbation : la proposition s'ouvre aux préinscriptions
+   * (D-108). Sous le verrou de planification (D-113, avant la ligne du tournoi, même ordre que
+   * l'approbation) : elle compte dans la limite des tournois aux inscriptions ouvertes, et ne
+   * doit chevaucher aucun tournoi publié. Rien n'est réservé ni inscrit à ce stade : un refus
+   * ne laisse aucun effet.
+   */
   submit(id: TournamentId, userId: UserId): Promise<Tournament> {
     return this.deps.tournaments.transaction(async (uow) => {
+      await uow.lockSchedule();
       const t = await this.lock(uow, id);
       if (t.creatorId !== userId) throw new NotTournamentCreatorError(id);
       if (t.status === 'PENDING_APPROVAL') return t;
       const now = this.clock();
       assertPlayerLeadTime(t, now);
+      const settings = await uow.readSettings();
       // Règles en vigueur revérifiées (un brouillon a pu être créé sous d'autres limites).
       const valid = validateTournamentInput(inputOf(t), {
         now,
         creatorType: t.creatorType,
-        settings: await uow.readSettings(),
+        settings,
       });
-      // Information au plus tôt (D-059) ; la garantie est à l'approbation, sous verrou.
-      await assertWaitingCapacity(uow);
+      await assertWaitingCapacity(uow, now);
+      await assertNoPublishedOverlap(uow, valid, settings, id);
       return this.transition(uow, t, 'PENDING_APPROVAL', tokensOf(valid));
     });
   }
@@ -278,53 +366,79 @@ export class TournamentService {
   /**
    * Approbation par l'administrateur : publication (taux de commission figé ici). Verrou de
    * planification AVANT la ligne du tournoi (même ordre que la création : pas d'interblocage).
+   * D-108 : plus de délai d'1 h, le début doit seulement être encore à venir ; les
+   * préinscriptions (mêmes inscriptions, mêmes réservations) sont conservées telles quelles,
+   * et leurs titulaires sont informés avec le créateur.
    */
   async approve(id: TournamentId, adminId: UserId): Promise<Tournament> {
     const now = this.clock();
+    const signals: UserId[] = [];
     const approved = await this.deps.tournaments.transaction(async (uow) => {
       await uow.lockSchedule();
       const t = await this.lock(uow, id);
       assertTransition(id, t.status, 'SCHEDULED');
-      assertPlayerLeadTime(t, now);
       const settings = await uow.readSettings();
-      // Règles en vigueur revérifiées avant publication (durée, joueurs, répartition…) ;
-      // jetons de départ et mise calculés avec les coefficients en vigueur, figés ici (D-071).
+      // Règles en vigueur revérifiées avant publication (début à venir, durée, joueurs,
+      // répartition…) ; jetons de départ et mise : ceux promis aux préinscrits s'ils sont
+      // figés (D-113), sinon calculés avec les coefficients en vigueur ; figés ici (D-071).
       const valid = validateTournamentInput(inputOf(t), {
         now,
         creatorType: t.creatorType,
         settings,
+        approval: true,
+        ...(t.tokenSetupFrozenAt && { frozenTokens: tokensOf(t) }),
       });
-      await assertWaitingCapacity(uow);
+      // La proposition elle-même est déjà comptée (préinscriptions, D-113).
+      await assertWaitingCapacity(uow, now, id);
       const saved = await uow.saveTournament(
         publish({ ...t, ...tokensOf(valid) }, settings, now, adminId),
       );
-      if (t.creatorId) {
-        await uow.notify(
-          [notice(t.creatorId, 'TOURNAMENT_APPROVED', saved, `approved:${id}`)],
-          now,
-        );
-      }
+      const preRegistered = await uow.listActiveRegistrations(id);
+      const recipients = new Set<UserId>(preRegistered.map((a) => a.registration.userId));
+      if (t.creatorId) recipients.add(t.creatorId);
+      // `preRegistered` : le destinataire n'est pas le créateur (texte « préinscription
+      // conservée » sur le mobile ; le créateur voit « Proposition approuvée » sur sa carte).
+      await uow.notify(
+        [...recipients].map((userId) =>
+          notice(
+            userId,
+            'TOURNAMENT_APPROVED',
+            saved,
+            `approved:${id}`,
+            userId === t.creatorId ? {} : { preRegistered: true },
+          ),
+        ),
+        now,
+      );
       await uow.audit({
         actorId: adminId,
         action: 'TOURNAMENT_APPROVED',
         tournamentId: id,
-        details: {},
+        details: { preRegistrations: preRegistered.length },
         now,
       });
+      signals.push(...recipients);
       return saved;
     });
+    this.announce(signals, 'TOURNAMENT_APPROVED', id);
     return this.advance(approved.id);
   }
 
-  /** Refus par l'administrateur : annulé (APPROVAL_REJECTED), le créateur est informé. */
-  reject(id: TournamentId, adminId: UserId): Promise<Tournament> {
-    return this.deps.tournaments.transaction(async (uow) => {
+  /**
+   * Refus par l'administrateur : annulé (APPROVAL_REJECTED), préinscriptions annulées et
+   * réservations libérées dans la même transaction, créateur et préinscrits informés (D-108).
+   * Idempotent : un refus répété renvoie le tournoi refusé sans rien relibérer ni renotifier.
+   */
+  async reject(id: TournamentId, adminId: UserId): Promise<Tournament> {
+    const signals: UserId[] = [];
+    const rejected = await this.deps.tournaments.transaction(async (uow) => {
       const t = await this.lock(uow, id);
+      if (t.status === 'CANCELLED' && t.cancellationReason === 'APPROVAL_REJECTED') return t;
       if (t.status !== 'PENDING_APPROVAL') {
         throw new InvalidTournamentTransitionError(id, t.status, 'CANCELLED');
       }
       const now = this.clock();
-      const cancelled = await this.cancelInTx(uow, t, 'APPROVAL_REJECTED', now);
+      const cancelled = await this.cancelInTx(uow, t, 'APPROVAL_REJECTED', now, signals);
       await uow.audit({
         actorId: adminId,
         action: 'TOURNAMENT_REJECTED',
@@ -334,6 +448,8 @@ export class TournamentService {
       });
       return cancelled;
     });
+    this.announce(signals, 'TOURNAMENT_CANCELLED', id);
+    return rejected;
   }
 
   /**
@@ -341,8 +457,9 @@ export class TournamentService {
    * réservations actives sont libérées dans la même transaction. Idempotente.
    * Administrateur : tout tournoi ; joueur : seulement son tournoi non publié.
    */
-  cancel(id: TournamentId, actor: TournamentActor): Promise<Tournament> {
-    return this.deps.tournaments.transaction(async (uow) => {
+  async cancel(id: TournamentId, actor: TournamentActor): Promise<Tournament> {
+    const signals: UserId[] = [];
+    const result = await this.deps.tournaments.transaction(async (uow) => {
       const t = await this.lock(uow, id);
       if (t.status === 'CANCELLED') return t;
       if (!actor.isAdmin) {
@@ -354,7 +471,7 @@ export class TournamentService {
       if (!PRE_CAPTURE_STATUSES.includes(t.status)) throw new TournamentStartedError(id);
       const now = this.clock();
       const reason: CancellationReason = actor.isAdmin ? 'ADMIN_CANCELLED' : 'CREATOR_CANCELLED';
-      const cancelled = await this.cancelInTx(uow, t, reason, now);
+      const cancelled = await this.cancelInTx(uow, t, reason, now, signals);
       if (actor.isAdmin) {
         await uow.audit({
           actorId: actor.userId,
@@ -367,6 +484,8 @@ export class TournamentService {
       this.deps.logger.info('TOURNAMENT_CANCELLED', { tournamentId: id, reason });
       return cancelled;
     });
+    this.announce(signals, 'TOURNAMENT_CANCELLED', id);
+    return result;
   }
 
   /**
@@ -378,6 +497,9 @@ export class TournamentService {
    */
   update(id: TournamentId, actor: TournamentActor, patch: TournamentPatch): Promise<Tournament> {
     return this.deps.tournaments.transaction(async (uow) => {
+      // Verrou de planification avant la ligne (même ordre que soumission et approbation) :
+      // une proposition ouverte aux préinscriptions est revérifiée (limite, chevauchement).
+      await uow.lockSchedule();
       const t = await this.lock(uow, id);
       const editable: TournamentStatus[] = actor.isAdmin
         ? ['DRAFT', 'PENDING_APPROVAL', 'SCHEDULED', 'REGISTRATION_OPEN']
@@ -391,9 +513,10 @@ export class TournamentService {
       );
       if (registered > 0 && changed.length > 0) throw new TournamentLockedError(id, changed);
       const settings = await uow.readSettings();
+      const sameFee = patch.entryFee === undefined || patch.entryFee === t.entryFee;
+      // Publié : figé par la publication ; proposition : figé à la 1re préinscription (D-113).
       const frozen =
-        !TOKEN_SETUP_STATUSES.includes(t.status) &&
-        (patch.entryFee === undefined || patch.entryFee === t.entryFee);
+        (!TOKEN_SETUP_STATUSES.includes(t.status) || !!t.tokenSetupFrozenAt) && sameFee;
       const valid = validateTournamentInput(
         { ...inputOf(t), ...stripUndefined(patch) },
         {
@@ -412,7 +535,25 @@ export class TournamentService {
           registrationClosesAt: valid.registrationClosesAt ?? valid.startsAt,
         }),
       };
-      const saved = await uow.saveTournament(next);
+      if (PRE_REGISTRATION_STATUSES.includes(t.status)) {
+        // Proposition ouverte aux préinscriptions (D-113) : nouvelles dates revérifiées.
+        if (!countsTowardRegistrationLimit(t, now) && countsTowardRegistrationLimit(next, now)) {
+          await assertWaitingCapacity(uow, now, id);
+        }
+        if (
+          next.startsAt.getTime() !== t.startsAt.getTime() ||
+          next.endsAt.getTime() !== t.endsAt.getTime()
+        ) {
+          await assertNoPublishedOverlap(uow, valid, settings, id);
+        }
+      }
+      let saved = await uow.saveTournament(next);
+      // Nouveau prix sans aucun inscrit actif : les valeurs suivent de nouveau les coefficients.
+      if (saved.tokenSetupFrozenAt && !sameFee) {
+        await uow.unfreezeTokenSetup(id);
+        saved = { ...saved, version: saved.version + 1 };
+        delete saved.tokenSetupFrozenAt;
+      }
       if (actor.isAdmin) {
         await uow.audit({
           actorId: actor.userId,
@@ -466,6 +607,12 @@ export class TournamentService {
           amount: t.entryFee,
           now,
         });
+        // Première préinscription (D-113) : jetons de départ et mise affichés à cet instant
+        // (coefficients en vigueur) deviennent les valeurs promises, sous le même verrou.
+        if (PRE_REGISTRATION_STATUSES.includes(t.status) && !t.tokenSetupFrozenAt) {
+          const tokens = tournamentTokenSetup(t.entryFee, await uow.readSettings());
+          await uow.freezeTokenSetup(id, tokens, now);
+        }
         await uow.notify(
           [
             notice(
@@ -566,7 +713,7 @@ export class TournamentService {
       case 'CALCULATING_RESULTS':
         return this.calculateResults(id);
       case 'RESULTS_VALIDATED':
-        return this.simpleTransition(id, 'RESULTS_VALIDATED', 'DISTRIBUTING_PRIZES');
+        return this.validatePayoutPlan(id);
       case 'DISTRIBUTING_PRIZES':
         return this.distributeOne(id);
       default:
@@ -693,9 +840,15 @@ export class TournamentService {
         })),
         now,
       );
+      // Règles de classement FIGÉES au démarrage (D-106) : méthode et parties de référence
+      // (les poids le sont depuis la publication, D-062).
       const started = await this.transition(uow, t, 'IN_PROGRESS', {
         startedAt: now,
         participants: paid.length,
+        rankingMethod: CURRENT_RANKING_METHOD,
+        rankingGamesReference: capitalRatioGamesReference(t),
+        // Règle de règlement des parties figée au démarrage (D-111).
+        settlementRule: CURRENT_SETTLEMENT_RULE,
         ...pool,
       });
       await uow.notify(
@@ -716,25 +869,39 @@ export class TournamentService {
   }
 
   /**
-   * Résultats : attend la fin des parties commencées avant la fin du tournoi (au plus
-   * RESULTS_GRACE_MS), règle celles qui sont terminées, puis classe, calcule les gains et
-   * fige les résultats (RESULTS_VALIDATED), en UNE transaction.
+   * Clôture et publication du classement officiel (D-106). À la fin du tournoi, plus aucune
+   * partie ne démarre (politique de démarrage, garde-fou en base) et les tables en attente sont
+   * fermées ; les parties DÉJÀ COMMENCÉES se terminent normalement. Le classement attend
+   * qu'il n'en reste AUCUNE en cours et que toutes les parties terminées soient réglées :
+   * jamais de résultat forcé, jamais d'annulation pour accélérer la clôture. Puis, en UNE
+   * transaction : classement selon les règles figées, gains, résultats d'audit, comptes clos,
+   * RESULTS_VALIDATED et notifications (boîte d'envoi durable : la notification est écrite avec
+   * le classement). Le signal temps réel suit, après le COMMIT, sans garantie.
    */
   private async calculateResults(id: TournamentId): Promise<boolean> {
     await this.settlePendingGames(id);
-    return this.deps.tournaments.transaction(async (uow) => {
+    await this.releaseIdleTables(id);
+    const published = await this.deps.tournaments.transaction(async (uow) => {
       const t = await uow.lockTournament(id);
-      if (!t || t.status !== 'CALCULATING_RESULTS') return false;
+      if (!t || t.status !== 'CALCULATING_RESULTS') return null;
       const now = this.clock();
-      const playing = await uow.countActiveGames(id, t.endsAt);
-      if (playing > 0 && now.getTime() < t.endsAt.getTime() + RESULTS_GRACE_MS) return false;
-      // Poids figés à la publication, références issues des seuls paramètres du tournoi :
-      // le classement ne dépend jamais des paramètres plateforme courants (D-062).
-      const ranked = rankAccounts(
+      const playing = await uow.countActiveGames(id);
+      const unsettled = await uow.countUnsettledFinishedGames(id);
+      if (playing > 0 || unsettled > 0) {
+        this.alertSlowClosing(t, now, playing, unsettled);
+        return null;
+      }
+      // Règles figées (poids à la publication, méthode et références au démarrage) : le
+      // classement ne dépend jamais des paramètres plateforme courants (D-062, D-106).
+      const rules = tournamentRankingRules(t);
+      // Compteurs recalculés sur TOUTES les parties réglées du tournoi (toutes tables) : le
+      // registre fait foi, jamais un compteur limité à une table ni un cache dérivé.
+      const accounts = this.withLedger(
+        t,
         await uow.listAccounts(id),
-        rankingReferences(t),
-        tournamentRankingWeights(t),
+        await uow.tallySettledGames(id),
       );
+      const ranked = rankTournamentAccounts(accounts, rules);
       const { prizes, unallocated } = computePrizes(t.prizePool ?? 0, t.prizeRules, ranked.length);
       const prizeByRank = new Map(prizes.map((p) => [p.rank, p]));
       const rows: ResultDraft[] = ranked.map((a, index) => {
@@ -750,12 +917,32 @@ export class TournamentService {
           gamesPlayed: a.gamesPlayed,
           gamesWon: a.gamesWon,
           score: a.score,
+          registeredAt: a.registeredAt,
+          audit: {
+            rankingMethod: rules.method,
+            tokensRatio: a.tokensRatio,
+            gamesRatio: a.gamesRatio,
+            tokensWeightBps: rules.weights.tokensBps,
+            gamesWeightBps: rules.weights.gamesBps,
+            gamesReference: rules.gamesReference,
+            ...(a.tieBreak && { tieBreak: a.tieBreak }),
+          },
         };
       });
       await uow.insertResults(id, rows, now);
+      // Plan de versement des récompenses RÉELLES (D-112), écrit avec le classement : il sera
+      // validé (contrôles financiers) avant tout crédit du compte de jeu.
+      await uow.insertPayouts(
+        id,
+        planPayouts(
+          id,
+          rows.map((r) => ({ rank: r.rank, playerId: r.playerId, amount: r.amount })),
+        ),
+        now,
+      );
       for (const [index, account] of ranked.entries()) {
         await uow.updateAccount(
-          { ...account, rank: index + 1, prizeAmount: rows[index]!.amount },
+          { ...account, rank: index + 1, prizeAmount: rows[index]!.amount, finishedAt: now },
           now,
         );
       }
@@ -767,69 +954,284 @@ export class TournamentService {
           now,
         });
       }
-      await this.transition(uow, t, 'RESULTS_VALIDATED', {
+      const validated = await this.transition(uow, t, 'RESULTS_VALIDATED', {
         resultsAt: now,
         unallocatedPrize: unallocated,
       });
+      // Publication : une notification par participant, dans la transaction du classement ;
+      // la même clé qu'à COMPLETED (dédoublonnée : jamais deux annonces).
+      await uow.notify(
+        ranked.map((a, index) =>
+          notice(a.playerId, 'TOURNAMENT_RESULTS_AVAILABLE', validated, `results:${id}`, {
+            rank: index + 1,
+            score: a.score,
+            prizeAmount: rows[index]!.amount,
+          }),
+        ),
+        now,
+      );
       this.deps.logger.info('TOURNAMENT_RESULTS_VALIDATED', {
         tournamentId: id,
         ranked: ranked.length,
         unallocated,
-        playingAtCutoff: playing,
+        rankingMethod: rules.method,
+      });
+      return ranked.map((a) => a.playerId);
+    });
+    if (!published) return false;
+    this.closingAlerts.delete(id);
+    this.announce(published, 'TOURNAMENT_RESULTS_AVAILABLE', id);
+    return true;
+  }
+
+  /**
+   * Tables du tournoi sans partie en cours (partie en attente, ou partie terminée et ronde
+   * Poursuivre/Quitter) : aucune partie n'y démarrera plus (fin du tournoi). Leurs joueurs les
+   * quittent par le départ de session existant (R-19, D-037), ce qui leur rend aussitôt
+   * l'accès aux parties ordinaires et au tournoi suivant, et sont informés (une fois par
+   * table). Une table dont la partie est en cours n'est pas touchée : elle le sera après la fin
+   * de sa partie. Idempotent ; un échec est journalisé et repris au tick suivant.
+   */
+  private async releaseIdleTables(id: TournamentId): Promise<void> {
+    const t = await this.deps.tournaments.findById(id);
+    if (!t || t.status !== 'CALCULATING_RESULTS') return;
+    for (const { sessionId, playerIds } of await this.deps.tournaments.listIdleTables(id)) {
+      for (const playerId of playerIds) {
+        await this.deps.sessions.leaveSession(sessionId, playerId).catch((err: unknown) =>
+          this.deps.logger.warn('tournament table release failed', {
+            tournamentId: id,
+            sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+      await this.deps.tournaments.transaction((uow) =>
+        uow.notify(
+          playerIds.map((playerId) =>
+            notice(
+              playerId as string as UserId,
+              'TOURNAMENT_TABLE_CLOSED',
+              t,
+              `table-closed:${sessionId}`,
+              { sessionId },
+            ),
+          ),
+          this.clock(),
+        ),
+      );
+      this.deps.logger.info('TOURNAMENT_TABLE_RELEASED', {
+        tournamentId: id,
+        sessionId,
+        players: playerIds.length,
+      });
+    }
+  }
+
+  /** Clôture plus longue que prévu : alerte (journal), jamais d'action sur les parties. */
+  private alertSlowClosing(t: Tournament, now: Date, playing: number, unsettled: number): void {
+    if (now.getTime() < t.endsAt.getTime() + RESULTS_GRACE_MS) return;
+    const last = this.closingAlerts.get(t.id);
+    if (last !== undefined && now.getTime() - last < CLOSING_ALERT_INTERVAL_MS) return;
+    this.closingAlerts.set(t.id, now.getTime());
+    this.deps.logger.error('TOURNAMENT_CLOSING_DELAYED', {
+      tournamentId: t.id,
+      endsAt: t.endsAt.toISOString(),
+      playing,
+      unsettled,
+      alert: true,
+    });
+  }
+
+  /** Signal temps réel après COMMIT (sans garantie : la donnée est déjà dans PostgreSQL). */
+  private announce(
+    userIds: readonly UserId[],
+    // Types des notifications enregistrées, ou signal seul (aucune notification écrite).
+    notificationType: NotificationDraft['type'] | 'TOURNAMENT_GAME_SETTLED',
+    tournamentId: TournamentId,
+  ): void {
+    const events = this.deps.userEvents;
+    if (!events) return;
+    for (const userId of userIds) {
+      try {
+        events.publish({ type: 'notification', userId, notificationType, tournamentId });
+      } catch (err) {
+        this.deps.logger.warn('tournament realtime signal failed', {
+          tournamentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /**
+   * Validation financière du plan de versement (D-112), RESULTS_VALIDATED → DISTRIBUTING_PRIZES :
+   * avant tout crédit réel, la cagnotte doit correspondre aux fonds réellement capturés, à la
+   * commission figée et à son écriture au compte de la plateforme (mêmes contrôles que la
+   * réconciliation de l'administration), et le plan doit être exactement la répartition
+   * officielle du classement validé. Toute incohérence BLOQUE les versements (motifs visibles
+   * dans l'administration, alerte journalisée) ; les contrôles sont rejoués à chaque tick et
+   * le blocage se lève de lui-même une fois les données cohérentes. Aucune correction
+   * administrative n'est inventée.
+   */
+  private validatePayoutPlan(id: TournamentId): Promise<boolean> {
+    return this.deps.tournaments.transaction(async (uow) => {
+      const t = await uow.lockTournament(id);
+      if (!t || t.status !== 'RESULTS_VALIDATED') return false;
+      const now = this.clock();
+      const payouts = await uow.lockPayouts(id);
+      if (await this.blockIfInconsistent(uow, t, payouts, now)) return false;
+      await this.transition(uow, t, 'DISTRIBUTING_PRIZES', {});
+      this.deps.logger.info('TOURNAMENT_PAYOUT_PLAN_VALIDATED', {
+        tournamentId: id,
+        payouts: payouts.length,
+        total: payouts.reduce((sum, p) => sum + p.amount, 0),
       });
       return true;
     });
   }
 
   /**
-   * Verse UN gain non versé (une transaction, clé d'idempotence par rang) ; quand tout est
-   * versé : COMPLETED et résultats annoncés à tous les participants.
+   * Contrôles financiers du plan (D-112), rejoués avant la validation, avant CHAQUE crédit et
+   * avant la finalisation : une incohérence apparue en cours de distribution bloque aussi les
+   * versements restants et la clôture. Bloqué : motifs enregistrés, alerte journalisée (une
+   * fois par jeu de motifs), `true`. Cohérent : plan (re)validé, blocage levé, `false`.
    */
-  private distributeOne(id: TournamentId): Promise<boolean> {
-    return this.deps.tournaments.transaction(async (uow) => {
-      const t = await uow.lockTournament(id);
-      if (!t || t.status !== 'DISTRIBUTING_PRIZES') return false;
-      const now = this.clock();
-      const [next] = await uow.lockUnpaidResults(id);
-      if (next) {
-        const { transactionId, credited } = await uow.creditPrize({
-          userId: next.playerId,
-          amount: next.amount,
-          idempotencyKey: `tournament-prize:${id}:${next.rank}`,
-          now,
-        });
-        await uow.markResultPaid(id, next.rank, transactionId, now);
+  private async blockIfInconsistent(
+    uow: TournamentUnitOfWork,
+    t: Tournament,
+    payouts: readonly TournamentPayout[],
+    now: Date,
+  ): Promise<boolean> {
+    const facts = await uow.ledgerFacts(t.id);
+    const reasons = [
+      ...(facts
+        ? tournamentAnomalies([facts])
+            .filter((a) => a.severity === 'CRITICAL')
+            .map((a) => a.type)
+        : ['LEDGER_FACTS_MISSING']),
+      ...payoutPlanAnomalies({
+        prizePool: t.prizePool,
+        unallocatedPrize: t.unallocatedPrize,
+        prizeRules: t.prizeRules,
+        results: await uow.listResultPrizes(t.id),
+        payouts,
+      }),
+    ];
+    if (reasons.length === 0) {
+      this.payoutBlockAlerts.delete(t.id);
+      await uow.markPayoutPlanValidated(t.id, now);
+      return false;
+    }
+    await uow.blockPayouts(t.id, reasons, now);
+    const key = reasons.join(',');
+    if (this.payoutBlockAlerts.get(t.id) !== key) {
+      this.payoutBlockAlerts.set(t.id, key);
+      this.deps.logger.error('TOURNAMENT_PAYOUTS_BLOCKED', {
+        tournamentId: t.id,
+        status: t.status,
+        reasons,
+        alert: true,
+      });
+    }
+    return true;
+  }
+
+  /**
+   * Verse UNE récompense du plan validé (D-112), dans UNE transaction : crédit du compte de
+   * jeu (écriture interne `tournament_prize`, clé d'idempotence UNIQUE en base), versement
+   * CREDITED (référence vérifiée par un trigger : même joueur, même montant, même clé),
+   * résultat marqué versé et notification de gain — la notification n'existe donc que si le
+   * crédit est validé. Un échec annule tout et est enregistré à part (FAILED, motif,
+   * tentatives) : il reste visible et sera repris après PAYOUT_RETRY_DELAY_MS, sans bloquer les
+   * autres bénéficiaires. Une reprise ne recrédite jamais : la clé déjà utilisée renvoie la
+   * transaction existante. Quand tout le plan est CREDITED : COMPLETED (refusé en base sinon),
+   * comptes fictifs dissous (D-111), résultats annoncés.
+   */
+  private async distributeOne(id: TournamentId): Promise<boolean> {
+    const attempt: { rank?: number; playerId?: UserId } = {};
+    try {
+      const progressed = await this.deps.tournaments.transaction(async (uow) => {
+        const t = await uow.lockTournament(id);
+        if (!t || t.status !== 'DISTRIBUTING_PRIZES') return false;
+        const now = this.clock();
+        const payouts = await uow.lockPayouts(id);
+        // Plus aucun crédit ni clôture si la cagnotte ou le plan sont devenus incohérents.
+        if (await this.blockIfInconsistent(uow, t, payouts, now)) return false;
+        const next = await uow.lockNextPayout(id, new Date(now.getTime() - PAYOUT_RETRY_DELAY_MS));
+        if (next) {
+          attempt.rank = next.rank;
+          const playerId = next.playerId as UserId;
+          const { transactionId, credited } = await uow.creditPrize({
+            userId: playerId,
+            amount: next.amount,
+            idempotencyKey: next.idempotencyKey,
+            now,
+          });
+          await uow.markPayoutCredited(id, next.rank, transactionId, now);
+          await uow.markResultPaid(id, next.rank, transactionId, now);
+          await uow.notify(
+            [
+              notice(playerId, 'TOURNAMENT_PRIZE_CREDITED', t, `prize:${id}:${next.rank}`, {
+                rank: next.rank,
+                amount: next.amount,
+              }),
+            ],
+            now,
+          );
+          attempt.playerId = playerId;
+          this.deps.logger.info('TOURNAMENT_PRIZE_PAID', {
+            tournamentId: id,
+            rank: next.rank,
+            amount: next.amount,
+            transactionId,
+            credited,
+          });
+          return true;
+        }
+        // Reste un versement en échec, en attente de reprise : jamais COMPLETED avant.
+        if (payouts.some((p) => p.status !== 'CREDITED')) return false;
+        const accounts = await uow.listAccounts(id);
+        const completed = await this.transition(uow, t, 'COMPLETED', { completedAt: now });
+        // Classement publié, gains versés : comptes fictifs dissous (D-111), conservés pour
+        // l'audit, sans aucun mouvement du compte de jeu réel. Idempotent.
+        const dissolved = await uow.dissolveAccounts(id, now);
         await uow.notify(
-          [
-            notice(next.playerId, 'TOURNAMENT_PRIZE_CREDITED', t, `prize:${id}:${next.rank}`, {
-              rank: next.rank,
-              amount: next.amount,
+          accounts.map((a) =>
+            notice(a.playerId, 'TOURNAMENT_RESULTS_AVAILABLE', completed, `results:${id}`, {
+              rank: a.rank,
+              prizeAmount: a.prizeAmount,
             }),
-          ],
+          ),
           now,
         );
-        this.deps.logger.info('TOURNAMENT_PRIZE_PAID', {
+        this.deps.logger.info('TOURNAMENT_COMPLETED', {
           tournamentId: id,
-          rank: next.rank,
-          amount: next.amount,
-          credited,
+          dissolved,
+          paid: payouts.length,
         });
         return true;
+      });
+      if (attempt.playerId) {
+        this.announce([attempt.playerId], 'TOURNAMENT_PRIZE_CREDITED', id);
       }
-      const accounts = await uow.listAccounts(id);
-      const completed = await this.transition(uow, t, 'COMPLETED', { completedAt: now });
-      await uow.notify(
-        accounts.map((a) =>
-          notice(a.playerId, 'TOURNAMENT_RESULTS_AVAILABLE', completed, `results:${id}`, {
-            rank: a.rank,
-            prizeAmount: a.prizeAmount,
-          }),
-        ),
-        now,
+      return progressed;
+    } catch (err) {
+      if (attempt.rank === undefined) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      const rank = attempt.rank;
+      await this.deps.tournaments.transaction((uow) =>
+        uow.recordPayoutFailure(id, rank, message, this.clock()),
       );
-      this.deps.logger.info('TOURNAMENT_COMPLETED', { tournamentId: id });
+      this.deps.logger.error('TOURNAMENT_PRIZE_PAYOUT_FAILED', {
+        tournamentId: id,
+        rank,
+        error: message,
+        alert: true,
+      });
+      // On continue avec les autres bénéficiaires : la ligne en échec vient d'être datée et
+      // n'est plus éligible avant PAYOUT_RETRY_DELAY_MS (pas de boucle sur la panne).
       return true;
-    });
+    }
   }
 
   // --- Parties : jetons de tournoi -------------------------------------------------------
@@ -840,13 +1242,27 @@ export class TournamentService {
    */
   async settleGame(game: Game): Promise<void> {
     if (game.status !== 'finished' || !game.sessionId) return;
-    const tournamentId = await this.deps.tournaments.findTournamentOfSession(game.sessionId);
+    // Rattachement EXPLICITE de la partie (D-106), écrit à sa création ; une partie ordinaire
+    // n'en a pas. Repli sur la table pour une partie lue sans la colonne (garde-fou en base :
+    // les deux coïncident toujours).
+    const tournamentId = (game.tournamentId ??
+      (await this.deps.tournaments.findTournamentOfSession(game.sessionId))) as TournamentId | null;
     if (!tournamentId) return;
     const sessionId = game.sessionId;
-    await this.deps.tournaments.transaction(async (uow) => {
+    const settled = await this.deps.tournaments.transaction(async (uow) => {
       const t = await uow.lockTournament(tournamentId);
-      if (!t) return;
+      if (!t) {
+        // Contexte incohérent (partie rattachée à un tournoi introuvable) : aucun mouvement,
+        // ni fictif ni réel (le compte réel ignore toute partie de tournoi), anomalie journalisée.
+        this.deps.logger.error('TOURNAMENT_GAME_SETTLEMENT_REFUSED', {
+          tournamentId,
+          gameId: game.id,
+          reason: 'TOURNAMENT_NOT_FOUND',
+        });
+        return undefined;
+      }
       const now = this.clock();
+      const rule = tournamentSettlementRule(t);
       const base = {
         gameId: game.id,
         tournamentId,
@@ -855,53 +1271,66 @@ export class TournamentService {
         pot: 0,
         transfers: {},
         settledAt: now,
+        settlementRule: rule,
       };
-      const winnerId = game.result?.winnerId;
-      const voidReason = !SETTLEABLE_STATUSES.includes(t.status)
+      // Contexte vérifié SOUS VERROU avant tout mouvement : tournoi encore réglable, partie
+      // démarrée avant la fin. Sinon : VOID, aucun mouvement (jamais le compte de jeu réel).
+      const contextVoid = !SETTLEABLE_STATUSES.includes(t.status)
         ? 'TOURNAMENT_NOT_IN_PROGRESS'
         : !game.startedAt || game.startedAt.getTime() >= t.endsAt.getTime()
           ? 'STARTED_AFTER_END'
-          : !winnerId
-            ? (game.endReason ?? 'NO_WINNER')
-            : undefined;
-      if (voidReason || !winnerId) {
-        await uow.insertGameSettlement({ ...base, status: 'VOID', voidReason });
+          : undefined;
+      if (contextVoid) {
+        await uow.insertGameSettlement({ ...base, status: 'VOID', voidReason: contextVoid });
         return;
       }
+      // Comptes FICTIFS de CE tournoi seulement (clé tournoi + joueur), verrouillés.
       const accounts = await uow.lockAccounts(
         tournamentId,
         game.players.map((p) => p.playerId),
       );
-      const winner = accounts.find((a) => a.playerId === (winnerId as string));
-      if (!winner) {
-        await uow.insertGameSettlement({
+      const plan = planTournamentGame({
+        game,
+        stake: t.stakePerGame,
+        rule,
+        tokensByPlayer: new Map(accounts.map((a) => [a.playerId as string, a.currentTokens])),
+      });
+      if (plan.status === 'VOID') {
+        const inserted = await uow.insertGameSettlement({
           ...base,
           status: 'VOID',
-          voidReason: 'WINNER_NOT_PARTICIPANT',
+          voidReason: plan.voidReason,
         });
+        if (inserted && ANOMALY_VOID_REASONS.includes(plan.voidReason)) {
+          this.deps.logger.error('TOURNAMENT_GAME_SETTLEMENT_REFUSED', {
+            tournamentId,
+            gameId: game.id,
+            reason: plan.voidReason,
+          });
+        }
         return;
       }
-      const { transfers, pot } = settleGameTokens(
-        t.stakePerGame,
-        winnerId,
-        new Map(accounts.map((a) => [a.playerId as string, a.currentTokens])),
-      );
       const inserted = await uow.insertGameSettlement({
         ...base,
         status: 'SETTLED',
-        winnerId: winner.playerId,
-        pot,
-        transfers,
+        winnerId: plan.winnerId as UserId,
+        pot: plan.pot,
+        transfers: plan.transfers,
+        ...(plan.victoryType && { victoryType: plan.victoryType }),
       });
-      if (!inserted) return; // déjà réglée
+      if (!inserted) return; // déjà réglée : aucun mouvement en double
+      // Seuls les comptes RÉGLÉS bougent (clés de `transfers`) ; même transaction que la ligne
+      // de règlement : tout ou rien.
       for (const account of accounts) {
-        const currentTokens = account.currentTokens + (transfers[account.playerId] ?? 0);
+        const delta = plan.transfers[account.playerId];
+        if (delta === undefined) continue;
+        const currentTokens = account.currentTokens + delta;
         await uow.updateAccount(
           {
             ...account,
             currentTokens,
             gamesPlayed: account.gamesPlayed + 1,
-            gamesWon: account.gamesWon + (account.playerId === winner.playerId ? 1 : 0),
+            gamesWon: account.gamesWon + (account.playerId === plan.winnerId ? 1 : 0),
             status: accountStatusFor(currentTokens, t.stakePerGame),
           },
           now,
@@ -910,10 +1339,17 @@ export class TournamentService {
       this.deps.logger.info('TOURNAMENT_GAME_SETTLED', {
         tournamentId,
         gameId: game.id,
-        winnerId,
-        pot,
+        winnerId: plan.winnerId,
+        victoryType: plan.victoryType,
+        settlementRule: rule,
+        pot: plan.pot,
       });
+      return Object.keys(plan.transfers) as UserId[];
     });
+    // Après le COMMIT : les joueurs réglés relisent leur bilan (écran de fin) et le contexte du
+    // tournoi tout de suite, comme le règlement d'une partie ordinaire écrit avec la fin de
+    // partie. Signal sans garantie : la relecture périodique reste le filet de sécurité.
+    if (settled) this.announce(settled, 'TOURNAMENT_GAME_SETTLED', tournamentId);
   }
 
   /**
@@ -1198,7 +1634,10 @@ export class TournamentService {
     { isAdmin = false }: { isAdmin?: boolean } = {},
   ): Promise<TournamentSnapshot> {
     const t = await this.loadVisible(id, viewerId, isAdmin);
-    if (!TOKEN_SETUP_STATUSES.includes(t.status)) return this.snapshot(t, viewerId);
+    // Publié, ou figé à la première préinscription (D-113) : valeurs figées, sans coefficients.
+    if (!TOKEN_SETUP_STATUSES.includes(t.status) || t.tokenSetupFrozenAt) {
+      return this.snapshot(t, viewerId);
+    }
     const settings = await this.deps.tournaments.readSettings();
     return {
       ...(await this.snapshot(withTokenSetup(t, settings), viewerId)),
@@ -1215,11 +1654,7 @@ export class TournamentService {
     if (RESULT_STATUSES.includes(t.status)) {
       return { tournament: t, live: false, rows: await this.deps.tournaments.listResults(id) };
     }
-    const ranked = rankAccounts(
-      await this.deps.tournaments.listAccountsWithNames(id),
-      rankingReferences(t),
-      tournamentRankingWeights(t),
-    );
+    const ranked = rankTournamentAccounts(await this.liveAccounts(t), tournamentRankingRules(t));
     return {
       tournament: t,
       live: true,
@@ -1246,6 +1681,135 @@ export class TournamentService {
     const t = await this.load(id);
     if (!RESULT_STATUSES.includes(t.status)) throw new TournamentResultsUnavailableError(id);
     return { tournament: t, rows: await this.deps.tournaments.listResults(id) };
+  }
+
+  /**
+   * Classement général OFFICIEL vu par un joueur (D-106) : lu dans PostgreSQL seulement (ni
+   * Redis, ni notification), donc disponible après déconnexion, redémarrage ou des semaines
+   * plus tard. Toutes les lignes publiques (rang, pseudo, score, jetons, parties), et le
+   * détail de SON score à lui seul. Tant que la publication n'est pas faite (clôture en
+   * cours) : TournamentResultsUnavailableError, jamais un classement provisoire présenté comme
+   * officiel. Un tournoi non publié reste invisible (D-056).
+   */
+  async officialResults(
+    id: TournamentId,
+    viewerId: UserId,
+    { isAdmin = false }: { isAdmin?: boolean } = {},
+  ): Promise<OfficialResults> {
+    const t = await this.loadVisible(id, viewerId, isAdmin);
+    if (!RESULT_STATUSES.includes(t.status)) throw new TournamentResultsUnavailableError(id);
+    const [rows, payoutState] = await Promise.all([
+      this.deps.tournaments.listResults(id),
+      this.deps.tournaments.findPayoutState(id),
+    ]);
+    const rules = tournamentRankingRules(t);
+    const mine = rows.find((r) => r.playerId === viewerId);
+    const myPayout = payoutState.payouts.find((p) => p.playerId === viewerId);
+    return {
+      tournament: t,
+      rows,
+      rules,
+      viewerId,
+      ...(myPayout && {
+        myPayout: {
+          amount: myPayout.amount,
+          status: myPayout.status,
+          ...(myPayout.creditedAt && { creditedAt: myPayout.creditedAt }),
+        },
+      }),
+      ...(mine && {
+        me: {
+          ...mine,
+          ...scoreBreakdown(
+            {
+              tokens: mine.remainingTokens,
+              initialTokens: mine.initialTokens,
+              gamesPlayed: mine.gamesPlayed,
+            },
+            rules,
+          ),
+          // Le score officiel est celui FIGÉ avec le rang (jamais recalculé).
+          ...(mine.score !== undefined && { score: mine.score }),
+          ...(mine.tieBreak && { tieBreak: mine.tieBreak }),
+        },
+      }),
+    };
+  }
+
+  /**
+   * Rapport financier (administration, D-112) : plan de versement (bénéficiaires, montants,
+   * références, statuts, échecs), blocage éventuel et état de finalisation financière. Lu
+   * dans PostgreSQL ; aucune action financière ici.
+   */
+  async payoutReport(id: TournamentId): Promise<TournamentPayoutReport> {
+    const t = await this.load(id);
+    const state = await this.deps.tournaments.findPayoutState(id);
+    return {
+      tournament: t,
+      ...state,
+      financialState: tournamentFinancialState({
+        status: t.status,
+        blocked: state.blockedAt !== undefined,
+        payouts: state.payouts,
+      }),
+      creditedTotal: state.payouts
+        .filter((p) => p.status === 'CREDITED')
+        .reduce((sum, p) => sum + p.amount, 0),
+      dueTotal: state.payouts.reduce((sum, p) => sum + p.amount, 0),
+    };
+  }
+
+  /**
+   * Historique des tournois terminés où le joueur est classé (rubrique « Résultats des
+   * tournois », D-106) : sans la limite de 7 jours de la liste principale (D-072), aucun
+   * classement n'étant jamais supprimé. Fin la plus récente d'abord ; `before` pagine.
+   */
+  resultsHistory(
+    userId: UserId,
+    page: { limit?: number; before?: Date } = {},
+  ): Promise<ResultsHistoryItem[]> {
+    return this.deps.tournaments.listResultsHistory(userId, {
+      limit: Math.min(Math.max(1, page.limit ?? RESULTS_HISTORY_PAGE), 50),
+      ...(page.before && { before: page.before }),
+    });
+  }
+
+  /**
+   * MON contexte dans un tournoi démarré (HUD de la table, D-106) : jetons de CE tournoi,
+   * parties jouées dans ce tournoi, rang provisoire (officiel une fois publié), échéance.
+   * Jamais le compte de jeu ordinaire. Réservé aux participants.
+   */
+  async myContext(id: TournamentId, userId: UserId): Promise<TournamentContext> {
+    const t = await this.load(id);
+    const account = await this.deps.tournaments.findAccount(id, userId);
+    if (!account) throw new NotRegisteredError(id);
+    const rules = tournamentRankingRules(t);
+    const ranked = rankTournamentAccounts(await this.liveAccounts(t), rules);
+    const index = ranked.findIndex((a) => a.playerId === account.playerId);
+    const mine = ranked[index]!;
+    return {
+      tournament: t,
+      account: account.finishedAt
+        ? account
+        : {
+            ...account,
+            currentTokens: mine.currentTokens,
+            gamesPlayed: mine.gamesPlayed,
+            gamesWon: mine.gamesWon,
+            status: mine.status,
+          },
+      rank: account.rank ?? index + 1,
+      participants: ranked.length,
+      rules,
+      breakdown: {
+        score: mine.score,
+        tokensRatio: mine.tokensRatio,
+        gamesRatio: mine.gamesRatio,
+        tokensPoints: mine.tokensPoints,
+        gamesPoints: mine.gamesPoints,
+      },
+      now: this.clock(),
+    };
   }
 
   async listForAdmin(statuses?: TournamentStatus[]): Promise<AdminTournamentListItem[]> {
@@ -1409,22 +1973,34 @@ export class TournamentService {
     });
   }
 
-  private cancelIfStatus(id: TournamentId, from: TournamentStatus, reason: CancellationReason) {
-    return this.deps.tournaments.transaction(async (uow) => {
+  private async cancelIfStatus(
+    id: TournamentId,
+    from: TournamentStatus,
+    reason: CancellationReason,
+  ): Promise<boolean> {
+    const signals: UserId[] = [];
+    const cancelled = await this.deps.tournaments.transaction(async (uow) => {
       const t = await uow.lockTournament(id);
       if (!t || t.status !== from) return false;
-      await this.cancelInTx(uow, t, reason, this.clock());
+      await this.cancelInTx(uow, t, reason, this.clock(), signals);
       this.deps.logger.info('TOURNAMENT_CANCELLED', { tournamentId: id, reason });
       return true;
     });
+    this.announce(signals, 'TOURNAMENT_CANCELLED', id);
+    return cancelled;
   }
 
-  /** Annulation sur la ligne verrouillée : libère TOUTES les réservations actives. */
+  /**
+   * Annulation sur la ligne verrouillée : libère TOUTES les réservations actives. Les
+   * destinataires de la notification sont ajoutés à `signals`, que l'appelant annonce en
+   * temps réel APRÈS le COMMIT.
+   */
   private async cancelInTx(
     uow: TournamentUnitOfWork,
     t: Tournament,
     reason: CancellationReason,
     now: Date,
+    signals: UserId[] = [],
   ): Promise<Tournament> {
     const active = await uow.listActiveRegistrations(t.id);
     for (const { reservation } of active) {
@@ -1442,6 +2018,7 @@ export class TournamentService {
       ),
       now,
     );
+    signals.push(...recipients);
     return cancelled;
   }
 
@@ -1456,6 +2033,40 @@ export class TournamentService {
     return uow.saveTournament({ ...t, ...patch, status: to, updatedAt: this.clock() });
   }
 
+  /**
+   * Comptes avec pseudos, compteurs recalculés sur le registre des parties réglées (classement
+   * provisoire) ; un compte clos (classement publié) est figé et repris tel quel.
+   */
+  private async liveAccounts(t: Tournament) {
+    const [accounts, ledger] = await Promise.all([
+      this.deps.tournaments.listAccountsWithNames(t.id),
+      this.deps.tournaments.tallySettledGames(t.id),
+    ]);
+    return this.withLedger(t, accounts, ledger);
+  }
+
+  /** Applique le registre (D-106) ; un écart avec les compteurs en cache est journalisé. */
+  private withLedger<T extends TournamentPlayerAccount>(
+    t: Tournament,
+    accounts: readonly T[],
+    ledger: ReadonlyMap<string, TournamentGameTally>,
+  ): T[] {
+    const open = accounts.filter((a) => !a.finishedAt);
+    const { accounts: reconciled, drifted } = reconcileAccountsWithLedger(
+      open,
+      ledger,
+      t.stakePerGame,
+    );
+    if (drifted.length > 0) {
+      this.deps.logger.warn('TOURNAMENT_ACCOUNTS_RECONCILED', {
+        tournamentId: t.id,
+        players: drifted.map((a) => a.playerId),
+      });
+    }
+    const byPlayer = new Map(reconciled.map((a) => [a.playerId as string, a]));
+    return accounts.map((a) => byPlayer.get(a.playerId) ?? a);
+  }
+
   private async lock(uow: TournamentUnitOfWork, id: TournamentId): Promise<Tournament> {
     const t = await uow.lockTournament(id);
     if (!t) throw new TournamentNotFoundError(id);
@@ -1468,10 +2079,18 @@ export class TournamentService {
     isAdmin: boolean,
   ): Promise<Tournament> {
     const t = await this.load(id);
-    if (!t.publishedAt && !isAdmin && t.creatorId !== viewerId) {
-      throw new TournamentNotFoundError(id);
+    if (
+      t.publishedAt ||
+      isAdmin ||
+      t.creatorId === viewerId ||
+      PRE_REGISTRATION_STATUSES.includes(t.status)
+    ) {
+      return t;
     }
-    return t;
+    // Proposition refusée, retirée ou expirée (D-108) : ses préinscrits gardent l'accès à la
+    // fiche (ils ont été notifiés) ; pour tout autre compte elle « n'existe pas ».
+    if (await this.deps.tournaments.findRegistration(id, viewerId)) return t;
+    throw new TournamentNotFoundError(id);
   }
 
   private async load(id: TournamentId): Promise<Tournament> {
@@ -1533,10 +2152,11 @@ function tokensOf(t: TournamentTokenSetup): TournamentTokenSetup {
 
 /**
  * Tournoi non publié : jetons de départ et mise relus avec les coefficients EN VIGUEUR (D-071),
- * pour l'affichage ; l'approbation les recalcule et les fige. Publié : inchangé (figé).
+ * pour l'affichage ; l'approbation les recalcule et les fige. Publié, ou proposition figée à
+ * sa première préinscription (D-113) : inchangé (valeurs promises).
  */
 function withTokenSetup(t: Tournament, settings: TournamentSettings): Tournament {
-  if (!TOKEN_SETUP_STATUSES.includes(t.status)) return t;
+  if (!TOKEN_SETUP_STATUSES.includes(t.status) || t.tokenSetupFrozenAt) return t;
   return { ...t, ...tournamentTokenSetup(t.entryFee, settings) };
 }
 
@@ -1555,9 +2175,9 @@ function inputOf(t: Tournament): TournamentInput {
 }
 
 /**
- * Délai minimal d'une proposition de joueur (D-054), revérifié à la soumission ET à
- * l'approbation (D-056) : le début doit rester au moins 1 h plus tard. Un tournoi créé par
- * l'administration doit seulement commencer dans le futur.
+ * Délai minimal d'une proposition de joueur (D-054), revérifié à la soumission (D-056) : le
+ * début doit rester au moins 1 h plus tard. Plus à l'approbation (D-108), qui exige seulement
+ * un début encore à venir (`validateTournamentInput`, option `approval`).
  */
 function assertPlayerLeadTime(t: Tournament, now: Date): void {
   const lead = t.creatorType === 'PLAYER' ? TOURNAMENT_LIMITS.playerMinLeadMs : 0;
@@ -1573,13 +2193,38 @@ function assertPlayerLeadTime(t: Tournament, now: Date): void {
 
 /**
  * Au plus `maxWaitingTournaments` tournois aux inscriptions ouvertes ou à ouvrir sur la
- * plateforme (D-059, comptage D-072), sous le verrou de planification.
+ * plateforme (D-059, comptage D-072), propositions ouvertes aux préinscriptions comprises
+ * (`countsTowardRegistrationLimit`, D-113), sous le verrou de planification. `excludeId` : le
+ * tournoi déjà compté que la commande ne fait que faire évoluer (approbation, modification).
  */
-async function assertWaitingCapacity(uow: TournamentUnitOfWork): Promise<void> {
+async function assertWaitingCapacity(
+  uow: TournamentUnitOfWork,
+  now: Date,
+  excludeId?: TournamentId,
+): Promise<void> {
   const limit = TOURNAMENT_LIMITS.maxWaitingTournaments;
-  if ((await uow.countWaitingTournaments()) >= limit) {
+  if ((await uow.countWaitingTournaments(now, excludeId)) >= limit) {
     throw new TooManyWaitingTournamentsError(limit);
   }
+}
+
+/**
+ * Contrôle préalable du chevauchement (D-113) pour une proposition qui s'ouvre aux
+ * préinscriptions : son créneau tel que la publication le fixera (début → fin + transition,
+ * `blockedUntil`) ne doit recouvrir aucun tournoi publié (créneaux persistés). Sous le verrou
+ * de planification ; la contrainte `tournaments_no_overlap` reste la garantie à l'approbation.
+ */
+async function assertNoPublishedOverlap(
+  uow: TournamentUnitOfWork,
+  slot: { startsAt: Date; endsAt: Date },
+  settings: TournamentSettings,
+  excludeId: TournamentId,
+): Promise<void> {
+  const conflict = await uow.findOverlappingPublished(
+    { startsAt: slot.startsAt, blockedUntil: blockedUntil(slot.endsAt, settings) },
+    excludeId,
+  );
+  if (conflict) throw new TournamentOverlapError();
 }
 
 function blockedUntil(endsAt: Date, settings: TournamentSettings): Date {
@@ -1599,16 +2244,6 @@ function publish(t: Tournament, settings: TournamentSettings, now: Date, by: Use
     registrationClosesAt: t.registrationClosesAt ?? t.startsAt,
     updatedAt: now,
   };
-}
-
-/** Fenêtre d'inscription : statut ET horloge (le planificateur peut avoir un tick de retard). */
-function registrationWindowOpen(t: Tournament, now: Date): boolean {
-  const at = now.getTime();
-  return (
-    t.status === 'REGISTRATION_OPEN' &&
-    at >= (t.registrationOpensAt ?? t.publishedAt ?? now).getTime() &&
-    at < (t.registrationClosesAt ?? t.startsAt).getTime()
-  );
 }
 
 function notice(
@@ -1634,4 +2269,4 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
-export type { TournamentInput };
+export type { ResultsHistoryItem, TournamentInput };

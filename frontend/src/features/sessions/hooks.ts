@@ -30,6 +30,7 @@ export function useMySessions() {
   return useQuery({
     queryKey: sessionKeys.mine,
     queryFn: async () => (await withAccessToken((t) => sessionsApi.listMine(t))).sessions,
+    staleTime: 0,
   });
 }
 
@@ -37,6 +38,7 @@ export function useMySessions() {
 const openTablesQuery = {
   queryKey: sessionKeys.open,
   queryFn: () => withAccessToken((t) => sessionsApi.listOpen(t)),
+  staleTime: 0,
   refetchInterval: SESSION_REFRESH_MS,
 };
 
@@ -64,6 +66,7 @@ export function useSession(sessionId: string) {
     queryKey: sessionKeys.detail(sessionId),
     queryFn: async () => (await withAccessToken((t) => sessionsApi.get(t, sessionId))).session,
     enabled: isSessionId(sessionId),
+    staleTime: 0,
     refetchInterval: (query) =>
       query.state.data?.decision?.open ? DECISION_REFRESH_MS : SESSION_REFRESH_MS,
   });

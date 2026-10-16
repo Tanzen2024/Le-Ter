@@ -155,6 +155,18 @@ export class GameAlreadyStartedError extends GameRuleViolationError {
 }
 
 /**
+ * Démarrage refusé : la partie appartient à un tournoi dont l'échéance est atteinte (D-106).
+ * Aucune nouvelle partie de tournoi ne commence après la fin ; la partie reste en attente et
+ * sa table est fermée par la clôture du tournoi.
+ */
+export class GameStartClosedError extends GameRuleViolationError {
+  constructor(gameId: GameId) {
+    super(gameId, `La partie ${gameId} ne peut plus démarrer : tournoi terminé`);
+    this.name = 'GameStartClosedError';
+  }
+}
+
+/**
  * Le temps du tour est écoulé (D-034) : le serveur seul décide de l'expiration, à partir
  * de l'échéance persistée. Le coup du joueur arrive trop tard ; c'est le coup automatique
  * déclenché par TURN_TIMEOUT qui doit être joué.

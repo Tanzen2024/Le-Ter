@@ -191,8 +191,8 @@ describe('parcours complet', () => {
   });
 });
 
-describe('confidentialité des brouillons (D-056)', () => {
-  it('brouillon : créateur et admin seulement ; un autre joueur reçoit 404 ; visible une fois publié', async () => {
+describe('confidentialité des brouillons (D-056, D-108)', () => {
+  it('brouillon : créateur et admin seulement ; soumise : visible de tous et ouverte aux préinscriptions', async () => {
     const admin = await user(0, 'admin');
     const [owner, other] = [await user(), await user()];
     const id = (await owner.post('/api/tournaments', body(2 * HOUR)).expect(201)).body.tournament
@@ -206,16 +206,24 @@ describe('confidentialité des brouillons (D-056)', () => {
     await admin.get(`/api/tournaments/${id}`).expect(200);
     await admin.get(`/api/admin/tournaments/${id}`).expect(200);
 
-    // En attente d'approbation : toujours privé.
+    // En attente d'approbation (D-108) : visible de tous, dans la liste, préinscription possible.
     await owner.post(`/api/tournaments/${id}/submit`).expect(200);
-    expect((await other.get(`/api/tournaments/${id}`)).status).toBe(404);
+    const pending = await other.get(`/api/tournaments/${id}`).expect(200);
+    expect(pending.body.tournament).toMatchObject({
+      status: 'PENDING_APPROVAL',
+      canRegister: true,
+    });
+    const list = await other.get('/api/tournaments').expect(200);
+    expect(list.body.tournaments.map((t: { tournamentId: string }) => t.tournamentId)).toContain(
+      id,
+    );
 
     // Publié : visible de tous.
     await admin.post(`/api/admin/tournaments/${id}/approve`).expect(200);
     await other.get(`/api/tournaments/${id}`).expect(200);
   });
 
-  it('proposition refusée (jamais publiée) : reste privée', async () => {
+  it('proposition refusée (jamais publiée) : privée pour qui ne s’y était pas préinscrit', async () => {
     const admin = await user(0, 'admin');
     const [owner, other] = [await user(), await user()];
     const id = (await owner.post('/api/tournaments', body(2 * HOUR)).expect(201)).body.tournament

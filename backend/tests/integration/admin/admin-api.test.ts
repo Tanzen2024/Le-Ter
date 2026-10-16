@@ -382,12 +382,13 @@ describe('rapprochement et compte financier de la plateforme', () => {
     await database.sql.query(
       `INSERT INTO tournaments (id, starts_at, ends_at, created_at, updated_at, status,
          entry_fee, platform_fee_bps, participants, gross_pool, platform_fee, prize_pool,
-         published_at, blocked_until, registration_closes_at, started_at)
+         published_at, blocked_until, registration_closes_at, started_at, ranking_method,
+         settlement_rule)
        VALUES ($1, '2026-10-08T10:00:00Z', '2026-10-08T11:00:00Z',
                '2026-10-01T10:00:00Z', '2026-10-08T10:00:00Z', 'IN_PROGRESS',
                1000, 1000, 20, 20000, 2000, 18000,
                '2026-10-01T10:00:00Z', '2026-10-08T11:00:00Z', '2026-10-08T10:00:00Z',
-               '2026-10-08T10:00:00Z')`,
+               '2026-10-08T10:00:00Z', 'D106_CAPITAL_RATIO', 'D111_ORDINARY_RULES')`,
       [tournamentId],
     );
     await database.sql.query(

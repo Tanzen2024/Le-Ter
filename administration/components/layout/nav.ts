@@ -7,6 +7,7 @@ import {
   Gamepad2,
   Landmark,
   LayoutDashboard,
+  MessageSquareWarning,
   PiggyBank,
   ScrollText,
   Settings,
@@ -44,6 +45,7 @@ export const NAV: NavGroup[] = [
       { href: '/parties', label: 'Parties', icon: Gamepad2 },
       { href: '/tournois', label: 'Tournois', icon: Trophy },
       { href: '/anti-collusion', label: 'Anti-collusion', icon: ShieldAlert },
+      { href: '/reclamations', label: 'Réclamations', icon: MessageSquareWarning },
     ],
   },
   {

@@ -844,7 +844,7 @@ describe('Idempotence, concurrence et atomicité', () => {
     expect(await settlement(gameId)).toMatchObject({ status: 'SETTLED' });
     // Reprise du client par la vue : bilan lu dans l'état enregistré, aucun nouveau règlement.
     const view = await expectStatus(seated[1]!.api.get(`/api/games/${gameId}`), 200);
-    expect(view.body.game.mySettlement).toEqual({ delta: -100 });
+    expect(view.body.game.mySettlement).toEqual({ delta: -100, account: 'WALLET' });
     await ctx.games.finishGame(gameId);
     expect((await gameTransactions(gameId)).length).toBe(2);
     expect(await ledger()).toHaveLength(1);
@@ -911,9 +911,9 @@ describe('Bilan du joueur dans sa vue (panneau de fin de partie)', () => {
       await play(B, gameId, SIMPLE[1]![trick]!);
     }
 
-    expect((await view(A, gameId)).mySettlement).toEqual({ delta: 99 });
-    expect((await view(B, gameId)).mySettlement).toEqual({ delta: -100 });
-    expect((await view(C, gameId)).mySettlement).toEqual({ delta: 0 });
+    expect((await view(A, gameId)).mySettlement).toEqual({ delta: 99, account: 'WALLET' });
+    expect((await view(B, gameId)).mySettlement).toEqual({ delta: -100, account: 'WALLET' });
+    expect((await view(C, gameId)).mySettlement).toEqual({ delta: 0, account: 'WALLET' });
   });
 
   it('parties simultanées : le bilan vient de la partie demandée seulement', async () => {
@@ -929,9 +929,9 @@ describe('Bilan du joueur dans sa vue (panneau de fin de partie)', () => {
     await playOut(first.gameId, first.seated, TWO);
     await playOut(second.gameId, second.seated, TWO);
 
-    expect((await view(first.seated[0]!, first.gameId)).mySettlement).toEqual({ delta: 99 });
-    expect((await view(first.seated[1]!, first.gameId)).mySettlement).toEqual({ delta: -100 });
-    expect((await view(second.seated[0]!, second.gameId)).mySettlement).toEqual({ delta: 50 });
-    expect((await view(second.seated[1]!, second.gameId)).mySettlement).toEqual({ delta: -50 });
+    expect((await view(first.seated[0]!, first.gameId)).mySettlement).toEqual({ delta: 99, account: 'WALLET' });
+    expect((await view(first.seated[1]!, first.gameId)).mySettlement).toEqual({ delta: -100, account: 'WALLET' });
+    expect((await view(second.seated[0]!, second.gameId)).mySettlement).toEqual({ delta: 50, account: 'WALLET' });
+    expect((await view(second.seated[1]!, second.gameId)).mySettlement).toEqual({ delta: -50, account: 'WALLET' });
   });
 });

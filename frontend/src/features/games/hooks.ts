@@ -33,7 +33,8 @@ export async function fetchActiveGames(): Promise<GameView[]> {
 }
 
 export function useActiveGames() {
-  return useQuery({ queryKey: gameKeys.active, queryFn: fetchActiveGames });
+  // Donnée vivante : relue à chaque retour au premier plan (fraîcheur nulle).
+  return useQuery({ queryKey: gameKeys.active, queryFn: fetchActiveGames, staleTime: 0 });
 }
 
 export function useGame(gameId: string) {
@@ -48,6 +49,8 @@ export function useGame(gameId: string) {
       return newestGame(queryClient.getQueryData<GameView>(gameKeys.detail(gameId)), fetched);
     },
     enabled: isGameId(gameId),
+    // Donnée vivante : relue à chaque retour au premier plan (fraîcheur nulle).
+    staleTime: 0,
     refetchInterval: GAME_REFRESH_MS,
   });
 }

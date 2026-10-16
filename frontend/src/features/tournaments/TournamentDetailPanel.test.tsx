@@ -209,6 +209,48 @@ describe('fiche d’un tournoi à venir', () => {
   });
 });
 
+describe('proposition en attente d’approbation (D-108)', () => {
+  const pending = (overrides: Partial<TournamentView> = {}) =>
+    view({ status: 'PENDING_APPROVAL', creatorType: 'PLAYER', ...overrides });
+  const NOTICE = /Proposition en attente d'approbation\. Votre préinscription réserve/;
+
+  it('statut « Préinscriptions ouvertes », explication, inscription possible', async () => {
+    serve(pending());
+    await renderDetail();
+    expect(screen.getByText('Préinscriptions ouvertes')).toBeTruthy();
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+    expect(screen.getByText("S'inscrire")).toBeTruthy();
+  });
+
+  it('préinscrit : état inscrit relu du serveur, explication conservée', async () => {
+    serve(pending({ registration, canRegister: false, canUnregister: true }));
+    await renderDetail();
+    expect(screen.getByText('Vous êtes inscrit à ce tournoi')).toBeTruthy();
+    expect(screen.getByText('1 000 FCFA réservés')).toBeTruthy();
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+  });
+
+  it('approuvée : statut publié, plus d’explication de préinscription', async () => {
+    serve(pending({ status: 'REGISTRATION_OPEN', registration, canRegister: false }));
+    await renderDetail();
+    expect(screen.getByText('Inscriptions ouvertes')).toBeTruthy();
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it('refusée : annulée, motif affiché, aucune inscription possible', async () => {
+    serve(
+      pending({
+        status: 'CANCELLED',
+        cancellationReason: 'APPROVAL_REJECTED',
+        canRegister: false,
+      }),
+    );
+    await renderDetail();
+    expect(screen.getByText('Proposition non retenue.')).toBeTruthy();
+    expect(screen.queryByText("S'inscrire")).toBeNull();
+  });
+});
+
 describe('confirmation de l’inscription', () => {
   it('« S’inscrire » ouvre le dialogue : nom, prix d’entrée, message ; aucune requête', async () => {
     serve(view());
@@ -474,6 +516,24 @@ describe('notifications', () => {
       await screen.findByText('🔔 Tournoi du 12/10/2026 18:00 : gain de 27 000 FCFA crédité.'),
     ).toBeTruthy();
     expect(screen.getByText(/^S.inscrire$/)).toBeTruthy();
+    expect(screen.queryByText(/votre proposition est approuvée/)).toBeNull();
+  });
+
+  it('D-108 : un préinscrit voit l’approbation, avec un texte qui ne parle pas de « sa » proposition', async () => {
+    const approved: AppNotification = {
+      id: '88888888-8888-4888-8888-888888888888',
+      type: 'TOURNAMENT_APPROVED',
+      payload: { startsAt: new Date(2026, 9, 12, 18, 0).toISOString(), preRegistered: true },
+      createdAt: '2026-10-10T09:00:00.000Z',
+    };
+    serve(view({ registration, canRegister: false }));
+    api.notifications.mockResolvedValue({ notifications: [approved], unread: 1 });
+    await renderDetail();
+    expect(
+      await screen.findByText(
+        '🔔 Tournoi du 12/10/2026 18:00 : tournoi approuvé, votre préinscription est conservée.',
+      ),
+    ).toBeTruthy();
     expect(screen.queryByText(/votre proposition est approuvée/)).toBeNull();
   });
 });

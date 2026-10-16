@@ -1,6 +1,7 @@
 import { createApp } from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { loadEnvFile, readEnv } from './config/env';
+import { readAssistantEnv, readSupportLimits } from './config/assistant-env';
 import { connectRedis, disconnectRedis, type RedisConnections } from './config/redis';
 import { loadMigrations, pendingMigrations } from './database/migrator';
 import type { SqlClient } from './database/sql-client';
@@ -23,6 +24,7 @@ import type { TournamentScheduler } from './services/tournaments/tournament-sche
 import type { TournamentService } from './services/tournaments/tournament.service';
 import type { ChatService } from './services/chat/chat.service';
 import { createChatService } from './services/chat/create-chat-service';
+import { createComplaintServices } from './services/complaints/create-complaint-services';
 import { createPaymentServices } from './services/payments/create-payment-service';
 import {
   createPaymentHealthReport,
@@ -46,6 +48,7 @@ import { PostgresAdminAuditRepository } from './repositories/postgres-admin-audi
 import type { WalletService } from './services/wallet/wallet.service';
 import { createLogger } from './utils/logger';
 import { attachRealtimeGateway, type RealtimeGateway } from './websocket/realtime-gateway';
+import type { UserEventBus } from './websocket/user-event-bus';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
   let tournaments: TournamentService | undefined;
   let tournamentScheduler: TournamentScheduler | undefined;
   let notifications: NotificationService | undefined;
+  let userEvents: UserEventBus | undefined;
   if (sql && auth) {
     ({
       games,
@@ -114,6 +118,7 @@ async function main(): Promise<void> {
       tournaments,
       tournamentScheduler,
       notifications,
+      userEvents,
     } = createGameService({
       sql,
       redis,
@@ -281,6 +286,30 @@ async function main(): Promise<void> {
     logger.info('Proxys de confiance configurés', { trustProxy: env.trustProxy });
   }
 
+  // Réclamations et assistant automatisé (D-114) : utilisables SANS fournisseur d'IA (mode
+  // dégradé). Ollama est joint côté serveur seulement ; son URL n'est jamais journalisée.
+  const assistantEnv = readAssistantEnv();
+  const supportLimits = readSupportLimits();
+  const complaintServices =
+    sql && auth
+      ? createComplaintServices({
+          sql,
+          logger,
+          assistant: assistantEnv,
+          limits: supportLimits,
+          ...(userEvents && { signals: userEvents }),
+        })
+      : undefined;
+  if (complaintServices) {
+    // Reprise des analyses interrompues (redémarrage), puis balayage périodique.
+    complaintServices.analyzer.start();
+    logger.info(
+      assistantEnv
+        ? `Assistant des réclamations : Ollama, modèle ${assistantEnv.model}`
+        : 'Assistant des réclamations : aucun fournisseur IA (mode dégradé)',
+    );
+  }
+
   const server = createApp({
     logger,
     auth,
@@ -311,6 +340,12 @@ async function main(): Promise<void> {
     gameCommissionSettings,
     tournaments,
     notifications,
+    complaints: complaintServices && {
+      complaints: complaintServices.complaints,
+      assistant: complaintServices.assistant,
+      ...(adminServices && { rateLimitStore: adminServices.rateLimitStore }),
+      limits: { assistantMessagesPerHour: supportLimits.playerMessagesPerHour },
+    },
   }).listen(env.port, () => {
     logger.info(`API Le Ter démarrée sur le port ${env.port} (${env.nodeEnv})`);
   });
@@ -330,7 +365,7 @@ async function main(): Promise<void> {
   // Temps réel (D-045) : WebSocket sur le même serveur HTTP, chemin /ws.
   let realtime: RealtimeGateway | undefined;
   if (auth && chat) {
-    realtime = attachRealtimeGateway(server, { auth, chat, games, logger });
+    realtime = attachRealtimeGateway(server, { auth, chat, games, userEvents, logger });
     logger.info('Temps réel disponible sur /ws');
   }
 
@@ -351,6 +386,7 @@ async function main(): Promise<void> {
     paymentReconciler?.stop();
     withdrawalReconciler?.stop();
     platformFinance?.executor.stop();
+    complaintServices?.analyzer.stop();
     stopPositionRetention?.();
     timers?.cancelAll();
     games?.cancelStartTimers();
@@ -371,6 +407,8 @@ async function main(): Promise<void> {
         // Relecture de retrait en cours : terminée avant la fermeture de la base.
         withdrawalReconciler?.idle(),
         platformFinance?.executor.idle(),
+        // Analyse de réclamation en cours : terminée avant la fermeture ; sinon reprise au démarrage.
+        complaintServices?.analyzer.idle(),
       ])
         .catch(() => undefined)
         .then(() => Promise.allSettled([disconnectRedis(), disconnectDatabase()]))

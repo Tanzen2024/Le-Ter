@@ -35,5 +35,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # Assistant des réclamations (D-114) : Ollama, FACULTATIF (profil `ai`) :
+  #   docker compose --profile ai up -d ollama
+  #   docker compose exec ollama ollama pull qwen2.5:1.5b
+  # Port publié sur 127.0.0.1 SEULEMENT (jamais sur une interface publique). Un backend placé
+  # dans ce réseau Docker utilise http://ollama:11434 ; le port publié peut alors être retiré.
+  # Mémoire bornée : le modèle par défaut tient en ~2 Go sur CPU.
+  ollama:
+    image: ollama/ollama
+    profiles: ['ai']
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      - ollama-models:/root/.ollama
+    mem_limit: 4g
+
 volumes:
   postgres-data:
+  ollama-models:

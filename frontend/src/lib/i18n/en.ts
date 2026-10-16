@@ -95,6 +95,8 @@ export const en: Messages = {
     },
     noChange: 'No gain, no loss',
     amountA11y: (signed: string) => `${signed} tokens`,
+    tournamentAmountA11y: (signed: string) => `${signed} tournament tokens (practice balance)`,
+    tournamentAmountNote: 'Tournament tokens — practice balance, your real balance is unchanged',
     quit: 'Quit',
     replay: 'Play again',
     cannotContinue: 'Balance too low to continue: you need at least twice the stake.',

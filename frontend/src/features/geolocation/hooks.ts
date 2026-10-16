@@ -2,9 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import { router, useIsFocused } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
 
 import { ApiError } from '../../lib/api-client';
+import { useAppState } from '../../lib/app-lifecycle';
 import { geolocationApi } from '../../services/geolocation-api';
 import { useGameUiStore } from '../../stores/game-ui-store';
 import type { GeolocationStatus } from '../../types/geolocation';
@@ -149,13 +149,7 @@ const isForeground = (state: unknown) => state !== 'background' && state !== 'in
 /** Écran de la partie affiché et application au premier plan. */
 export function useScreenActive(): boolean {
   const focused = useIsFocused();
-  const [foreground, setForeground] = useState(() => isForeground(AppState.currentState));
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) =>
-      setForeground(isForeground(state)),
-    );
-    return () => subscription.remove();
-  }, []);
+  const foreground = isForeground(useAppState());
   return focused && foreground;
 }
 

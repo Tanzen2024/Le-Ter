@@ -24,6 +24,7 @@ import {
   useNotifications,
   useRegisterTournament,
 } from './hooks';
+import { ReportProblemLink } from '../complaints/ReportProblemLink';
 import {
   formatDuration,
   useTournamentMessages,
@@ -36,6 +37,7 @@ import {
   hasResults,
   isFull,
   remainingBeforeStartMs,
+  rewardMedal,
   rewardedRanks,
   tournamentStatusKey,
   tournamentWidgetState,
@@ -44,7 +46,6 @@ import {
 
 /** Le compte à rebours avant le début n'a pas besoin d'être plus fin. */
 const COUNTDOWN_TICK_MS = 30_000;
-const MEDALS = ['🥇', '🥈', '🥉'];
 /** Notifications non lues montrées dans la fiche. */
 const NOTICES_SHOWN = 3;
 /** Code de l'API quand la capacité maximale est atteinte (seule erreur traitée ainsi). */
@@ -323,6 +324,8 @@ export function TournamentDetailPanel({
       ) : null}
       {canRegisterNow ? null : errorNotice}
       <TournamentNotices textStyle={small} />
+      {/* Réclamation sur ce tournoi (D-114) : le serveur vérifie l'inscription du joueur. */}
+      <ReportProblemLink tournamentId={tournament.tournamentId} category="TOURNAMENT" />
     </View>
   );
 }
@@ -524,15 +527,22 @@ function tournamentDetails({
   fullNoticeShown?: boolean;
 }): ReactNode {
   const account = tournament.account;
+  const preRegistration = tournament.status === 'PENDING_APPROVAL';
   switch (state) {
     case 'UPCOMING':
       if (isFull(tournament)) return fullNoticeShown ? null : <FullNotice variant="join" />;
-      return <Text style={textStyle}>{t.notRegistered}</Text>;
+      return (
+        <>
+          <Text style={textStyle}>{t.notRegistered}</Text>
+          {preRegistration && <Text style={textStyle}>{t.preRegistration}</Text>}
+        </>
+      );
     case 'REGISTERED':
     case 'WAITING':
       return (
         <>
           <RegisteredBadge />
+          {preRegistration && <Text style={textStyle}>{t.preRegistration}</Text>}
           {state === 'REGISTERED' && (
             <Text accessibilityLiveRegion="polite" style={textStyle}>
               {t.registeredNow}
@@ -578,7 +588,7 @@ function tournamentDetails({
           <Text style={textStyle}>{t.completed}</Text>
           {tournament.podium.map((row) => (
             <Text key={row.rank} style={textStyle}>
-              {`${MEDALS[row.rank - 1] ?? `${row.rank}.`} ${row.username} — ${formatFcfa(row.prizeAmount)}`}
+              {`${rewardMedal(row) ?? `${row.rank}.`} ${row.username} — ${formatFcfa(row.prizeAmount)}`}
             </Text>
           ))}
           {account?.rank !== undefined && (
@@ -586,6 +596,14 @@ function tournamentDetails({
               {t.myResult(account.rank, formatFcfa(account.prizeAmount))}
             </Text>
           )}
+          <Pressable
+            testID="tournament-view-ranking"
+            accessibilityRole="link"
+            onPress={() => router.push(`/tournament/results/${tournament.tournamentId}`)}
+            style={styles.linkButton}
+          >
+            <Text style={[textStyle, styles.link]}>{t.results.viewRanking}</Text>
+          </Pressable>
         </>
       );
   }
@@ -830,8 +848,8 @@ function TournamentFacts({ tournament }: { tournament: TournamentView }) {
 
 /**
  * Notifications non lues (dans l'application, sans push) ; un appui les marque lues.
- * L'approbation d'une proposition n'y figure plus : son initiateur la voit sur la carte du
- * tournoi dans la liste (« ✓ Proposition approuvée »).
+ * L'approbation d'une proposition n'y figure pas pour son initiateur, qui la voit sur la carte
+ * du tournoi dans la liste (« ✓ Proposition approuvée ») ; un préinscrit la reçoit ici (D-108).
  */
 function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
   const t = useTournamentMessages();
@@ -840,7 +858,12 @@ function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
   const unread = (data?.notifications ?? [])
     .filter(
       // Avertissements de l'administration : affichés à l'accueil (ModerationNotice).
-      (n) => !n.readAt && n.type !== 'TOURNAMENT_APPROVED' && n.type !== 'MODERATION_WARNING',
+      (n) =>
+        !n.readAt &&
+        (n.type !== 'TOURNAMENT_APPROVED' || n.payload.preRegistered === true) &&
+        n.type !== 'MODERATION_WARNING' &&
+        // Réclamations (D-114) : bandeau dédié à l'accueil (ComplaintNotice).
+        (n.type as string) !== 'COMPLAINT_UPDATE',
     )
     .slice(0, NOTICES_SHOWN);
   if (unread.length === 0) return null;
@@ -850,7 +873,13 @@ function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
         <Pressable
           key={n.id}
           accessibilityRole="button"
-          onPress={() => markRead.mutate(n.id)}
+          onPress={() => {
+            markRead.mutate(n.id);
+            // Fin de tournoi : la notification mène au classement officiel (D-106).
+            if (n.type === 'TOURNAMENT_RESULTS_AVAILABLE' && n.payload.tournamentId) {
+              router.push(`/tournament/results/${n.payload.tournamentId}`);
+            }
+          }}
           style={styles.notice}
         >
           <Text style={textStyle}>{`🔔 ${t.notification(n)}`}</Text>
@@ -897,7 +926,7 @@ export function StatusChip({
       testID="tournament-status"
       style={[
         styles.chip,
-        (key === 'IN_PROGRESS' || key === 'OPEN') && styles.chipLive,
+        (key === 'IN_PROGRESS' || key === 'OPEN' || key === 'PRE_REGISTRATION') && styles.chipLive,
         key === 'CANCELLED' && styles.chipMuted,
       ]}
     >

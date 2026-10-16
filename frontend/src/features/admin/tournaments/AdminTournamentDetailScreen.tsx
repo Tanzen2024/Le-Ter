@@ -106,6 +106,12 @@ function Actions({ tournament: t }: { tournament: TournamentSummary }) {
     <View style={adminStyles.section}>
       <Text style={adminStyles.sectionTitle}>Actions</Text>
       {pending ? (
+        <Text style={adminStyles.line}>
+          Préinscriptions ouvertes : approuver les conserve ; refuser les annule et libère
+          leurs réservations.
+        </Text>
+      ) : null}
+      {pending ? (
         <View style={styles.row}>
           <Button
             title="Approuver"

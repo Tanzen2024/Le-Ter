@@ -1,8 +1,8 @@
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
+import { useCallback, useState } from 'react';
 
 import { ApiError } from '../../lib/api-client';
+import { useAppForeground } from '../../lib/app-lifecycle';
 import type { ReconnectionState } from './ReconnectionPanel';
 
 /**
@@ -38,21 +38,15 @@ export function useGameReconnection(
   options: { resume?: boolean } = {},
 ): { state: ReconnectionState | null; retry: () => void } {
   const [resumedAt, setResumedAt] = useState<number | null>(null);
-  const appState = useRef<AppStateStatus>(AppState.currentState);
   const { refetch } = game;
 
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (next) => {
-      const previous = appState.current;
-      appState.current = next;
-      // `inactive` (centre de notifications, appel entrant) n'est pas une absence.
-      if (previous === 'background' && next === 'active') {
-        setResumedAt(Date.now());
-        void refetch();
-      }
-    });
-    return () => subscription.remove();
-  }, [refetch]);
+  // Retour RÉEL au premier plan (`inactive` seul n'est pas une absence) : l'état officiel est
+  // relu. `cancelRefetch: false` rejoint la relecture déjà lancée par le focus de TanStack
+  // Query au lieu de l'annuler : UNE requête par retour, jamais deux.
+  useAppForeground(() => {
+    setResumedAt(Date.now());
+    void refetch({ cancelRefetch: false });
+  });
 
   // Échecs consécutifs : un par réponse en erreur, remis à zéro par une réponse réussie.
   // État ajusté pendant le rendu, quand les dates de réponse de la requête changent.

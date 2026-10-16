@@ -21,6 +21,7 @@ const fr = {
   iconA11y: 'Tournois',
   none: 'Aucun tournoi programmé pour le moment.',
   status: {
+    PRE_REGISTRATION: 'Préinscriptions ouvertes',
     UPCOMING: 'À venir',
     OPEN: 'Inscriptions ouvertes',
     CLOSED: 'Inscriptions clôturées',
@@ -90,6 +91,9 @@ const fr = {
   panelA11y: (date: string) => `Tournoi du ${date}, voir le tournoi`,
   viewTournament: 'Voir le tournoi',
   notRegistered: "Vous n'êtes pas encore inscrit.",
+  /** Proposition de joueur pas encore approuvée (D-108). */
+  preRegistration:
+    "Proposition en attente d'approbation. Votre préinscription réserve le prix d'entrée sans le débiter : elle est conservée si le tournoi est approuvé, et la réservation est libérée en cas de refus.",
   reservationInfo: (fee: string) =>
     `Les frais d'inscription de ${fee} seront réservés sur votre compte de jeu. Le débit aura lieu uniquement au démarrage du tournoi. En cas d'annulation, le montant réservé sera libéré.`,
   register: "S'inscrire",
@@ -139,6 +143,79 @@ const fr = {
       'Ce tournoi a atteint son nombre maximum de participants. Merci pour ton intérêt ! Découvre les autres tournois disponibles pour participer à la prochaine partie.',
     join: 'Toutes les places de ce tournoi sont prises. Merci pour ton intérêt, on te retrouve au prochain tournoi !',
   },
+  /** Rubrique « Résultats des tournois » et classement général officiel (D-106). */
+  results: {
+    entry: '🏆 Résultats des tournois',
+    title: 'Résultats des tournois',
+    empty: 'Aucun résultat pour le moment : vos tournois terminés apparaîtront ici.',
+    error: 'Impossible de charger les résultats.',
+    retry: 'Réessayer',
+    more: 'Afficher plus',
+    tournamentOf: (date: string) => `Tournoi du ${date}`,
+    item: (participants: number, published: string) =>
+      `👥 ${participants} participants · résultats publiés le ${published}`,
+    myRank: (rank: number, participants: number) => `Votre position : ${rank} / ${participants}`,
+    open: (date: string) => `Ouvrir le classement du tournoi du ${date}`,
+    viewRanking: 'Voir le classement complet',
+    officialTitle: 'Classement officiel',
+    pending:
+      'Le tournoi est terminé : les dernières parties se terminent et le classement officiel est en cours de publication. Cette page se mettra à jour automatiquement.',
+    notFound: 'Ce tournoi est introuvable.',
+    columns: {
+      rank: 'Rang',
+      player: 'Joueur',
+      score: 'Score',
+      tokens: 'Jetons',
+      games: 'Parties',
+    },
+    you: 'Vous',
+    tieBreak: 'Départagé',
+    tieBreakA11y: {
+      GAMES_WON: 'départagé au nombre de parties gagnées',
+      REGISTRATION_ORDER: 'départagé à l’ordre d’inscription',
+      PLAYER_ID: 'départagé à l’identifiant du joueur',
+    },
+    mine: {
+      title: 'Votre résultat',
+      rank: 'Rang final',
+      score: 'Score final',
+      capital: 'Capital initial',
+      remaining: 'Jetons restants',
+      games: 'Parties jouées',
+      weights: 'Pondérations',
+      weightsValue: (tokens: number, games: number) => `${tokens} % jetons · ${games} % parties`,
+      tokensCriterion: (ratio: string, points: string) =>
+        `Jetons conservés : ${ratio} du capital → ${points} pts`,
+      gamesCriterion: (played: number, points: string) =>
+        `Parties jouées : ${played} → ${points} pts`,
+      notParticipant: 'Vous n’avez pas participé à ce tournoi : classement public seulement.',
+      prize: (amount: string) => `Gain : ${amount}`,
+      /** Récompense RÉELLE (compte de jeu) et état du versement (D-112). */
+      payoutCredited: (amount: string) => `Récompense réelle : ${amount}, créditée sur votre compte de jeu`,
+      payoutPending: (amount: string) =>
+        `Récompense réelle : ${amount}, versement en cours sur votre compte de jeu`,
+      fictionalTokens: 'Jetons de tournoi : sans valeur monétaire, utilisés seulement pour ce classement.',
+    },
+    participants: (n: number) => `${n} participants classés`,
+    published: (date: string) => `Publié le ${date}`,
+  },
+  /** HUD de la table d'un tournoi (D-106) : uniquement les jetons de CE tournoi. */
+  hud: {
+    /** Étiquette visible : ce solde est celui, fictif, du tournoi (jamais le compte réel). */
+    tag: 'Tournoi',
+    tokens: (n: number) => `${n}`,
+    tokensA11y: (n: number) => `${n} jetons de tournoi restants (solde fictif)`,
+    games: (n: number) => `${n} partie${n > 1 ? 's' : ''}`,
+    rank: (rank: number, total: number) => `#${rank}/${total}`,
+    rankA11y: (rank: number, total: number) => `Classement provisoire : ${rank} sur ${total}`,
+    remaining: (duration: string) => `Fin dans ${duration}`,
+    ended: 'Tournoi terminé',
+    status: {
+      ACTIVE: 'En course',
+      OUT_OF_TOKENS: 'Jetons insuffisants',
+      FINISHED: 'Classé',
+    },
+  },
   notifications: 'Notifications',
   notification: (n: AppNotification): string => {
     const name = n.payload.startsAt
@@ -146,7 +223,9 @@ const fr = {
       : 'Tournoi';
     switch (n.type) {
       case 'TOURNAMENT_APPROVED':
-        return `${name} : votre proposition est approuvée.`;
+        return n.payload.preRegistered
+          ? `${name} : tournoi approuvé, votre préinscription est conservée.`
+          : `${name} : votre proposition est approuvée.`;
       case 'TOURNAMENT_REGISTRATION_CONFIRMED':
         return `${name} : inscription confirmée.`;
       case 'TOURNAMENT_CANCELLED':
@@ -154,7 +233,7 @@ const fr = {
       case 'TOURNAMENT_STARTED':
         return `${name} : le tournoi commence !`;
       case 'TOURNAMENT_RESULTS_AVAILABLE':
-        return `${name} : les résultats sont disponibles.`;
+        return `${name} : le tournoi est terminé ! Le classement officiel est disponible. Consultez vos résultats et votre position finale.`;
       case 'TOURNAMENT_PRIZE_CREDITED':
         return `${name} : gain de ${formatFcfa(n.payload.amount ?? 0)} crédité.`;
       case 'TOURNAMENT_TABLE_CLOSED':
@@ -172,6 +251,7 @@ const en: TournamentMessages = {
   iconA11y: 'Tournaments',
   none: 'No tournament scheduled for now.',
   status: {
+    PRE_REGISTRATION: 'Pre-registration open',
     UPCOMING: 'Upcoming',
     OPEN: 'Registration open',
     CLOSED: 'Registration closed',
@@ -233,6 +313,8 @@ const en: TournamentMessages = {
   panelA11y: (name) => `Tournament ${name}, view the tournament`,
   viewTournament: 'View the tournament',
   notRegistered: 'You are not registered yet.',
+  preRegistration:
+    'Proposal awaiting approval. Your pre-registration reserves the entry fee without charging it: it is kept if the tournament is approved, and the reservation is released if it is rejected.',
   reservationInfo: (fee) =>
     `The ${fee} entry fee will be reserved on your game account. It is only charged when the tournament starts. If it is cancelled, the reserved amount is released.`,
   register: 'Register',
@@ -277,6 +359,72 @@ const en: TournamentMessages = {
       'This tournament has reached its maximum number of participants. Thanks for your interest! Check out the other tournaments to join the next game.',
     join: 'All the places in this tournament are taken. Thanks for your interest, see you at the next tournament!',
   },
+  results: {
+    entry: '🏆 Tournament results',
+    title: 'Tournament results',
+    empty: 'No results yet: your finished tournaments will appear here.',
+    error: 'Could not load the results.',
+    retry: 'Try again',
+    more: 'Show more',
+    tournamentOf: (date) => `Tournament on ${date}`,
+    item: (participants, published) =>
+      `👥 ${participants} players · results published on ${published}`,
+    myRank: (rank, participants) => `Your position: ${rank} / ${participants}`,
+    open: (date) => `Open the ranking of the tournament on ${date}`,
+    viewRanking: 'View the full ranking',
+    officialTitle: 'Official ranking',
+    pending:
+      'The tournament is over: the last games are finishing and the official ranking is being published. This page will refresh automatically.',
+    notFound: 'This tournament could not be found.',
+    columns: {
+      rank: 'Rank',
+      player: 'Player',
+      score: 'Score',
+      tokens: 'Tokens',
+      games: 'Games',
+    },
+    you: 'You',
+    tieBreak: 'Tie-break',
+    tieBreakA11y: {
+      GAMES_WON: 'tie broken by games won',
+      REGISTRATION_ORDER: 'tie broken by registration order',
+      PLAYER_ID: 'tie broken by player identifier',
+    },
+    mine: {
+      title: 'Your result',
+      rank: 'Final rank',
+      score: 'Final score',
+      capital: 'Starting capital',
+      remaining: 'Tokens left',
+      games: 'Games played',
+      weights: 'Weights',
+      weightsValue: (tokens, games) => `${tokens}% tokens · ${games}% games`,
+      tokensCriterion: (ratio, points) => `Tokens kept: ${ratio} of capital → ${points} pts`,
+      gamesCriterion: (played, points) => `Games played: ${played} → ${points} pts`,
+      notParticipant: 'You did not take part in this tournament: public ranking only.',
+      prize: (amount) => `Prize: ${amount}`,
+      payoutCredited: (amount) => `Real prize: ${amount}, credited to your game account`,
+      payoutPending: (amount) => `Real prize: ${amount}, being credited to your game account`,
+      fictionalTokens: 'Tournament tokens have no monetary value; they only count for this ranking.',
+    },
+    participants: (n) => `${n} ranked players`,
+    published: (date) => `Published on ${date}`,
+  },
+  hud: {
+    tag: 'Tournament',
+    tokens: (n) => `${n}`,
+    tokensA11y: (n) => `${n} tournament tokens left (not real money)`,
+    games: (n) => `${n} game${n > 1 ? 's' : ''}`,
+    rank: (rank, total) => `#${rank}/${total}`,
+    rankA11y: (rank, total) => `Provisional ranking: ${rank} of ${total}`,
+    remaining: (duration) => `Ends in ${duration}`,
+    ended: 'Tournament over',
+    status: {
+      ACTIVE: 'Playing',
+      OUT_OF_TOKENS: 'Not enough tokens',
+      FINISHED: 'Ranked',
+    },
+  },
   notifications: 'Notifications',
   notification: (n) => {
     const name = n.payload.startsAt
@@ -284,7 +432,9 @@ const en: TournamentMessages = {
       : 'Tournament';
     switch (n.type) {
       case 'TOURNAMENT_APPROVED':
-        return `${name}: your proposal was approved.`;
+        return n.payload.preRegistered
+          ? `${name}: tournament approved, your pre-registration is kept.`
+          : `${name}: your proposal was approved.`;
       case 'TOURNAMENT_REGISTRATION_CONFIRMED':
         return `${name}: registration confirmed.`;
       case 'TOURNAMENT_CANCELLED':
@@ -292,7 +442,7 @@ const en: TournamentMessages = {
       case 'TOURNAMENT_STARTED':
         return `${name}: the tournament is starting!`;
       case 'TOURNAMENT_RESULTS_AVAILABLE':
-        return `${name}: results are available.`;
+        return `${name}: the tournament is over! The official ranking is available. Check your results and your final position.`;
       case 'TOURNAMENT_PRIZE_CREDITED':
         return `${name}: prize of ${formatFcfa(n.payload.amount ?? 0)} credited.`;
       case 'TOURNAMENT_TABLE_CLOSED':
