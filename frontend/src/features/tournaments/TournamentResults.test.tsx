@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { StyleSheet } from 'react-native';
 
+import { colors } from '../../constants/theme';
 import { ApiError } from '../../lib/api-client';
 import { tournamentsApi } from '../../services/tournaments-api';
 import { useAuthStore } from '../../stores/auth-store';
@@ -15,6 +16,7 @@ import type {
 } from '../../types/tournament';
 import { TournamentTableHud } from '../games/table/TournamentTableHud';
 import {
+  rankingLayout,
   TournamentOfficialResultsScreen,
   TournamentResultsHistoryScreen,
 } from './TournamentResultsScreens';
@@ -39,7 +41,10 @@ const api = tournamentsApi as jest.Mocked<typeof tournamentsApi>;
 const push = router.push as jest.Mock;
 const T1 = '11111111-1111-4111-8111-111111111111';
 
-const row = (rank: number, overrides: Partial<TournamentResultView> = {}): TournamentResultView => ({
+const row = (
+  rank: number,
+  overrides: Partial<TournamentResultView> = {},
+): TournamentResultView => ({
   rank,
   username: `joueur${rank}`,
   initialTokens: 1000,
@@ -80,8 +85,20 @@ function official(overrides: Partial<OfficialTournamentResults> = {}): OfficialT
       gamesReference: 42,
     },
     results: [
-      row(1, { username: 'ben', remainingTokens: 1300, gamesPlayed: 3, score: 80.857, prizeAmount: 9000 }),
-      row(2, { username: 'ana', remainingTokens: 900, gamesPlayed: 3, score: 56.857, isViewer: true }),
+      row(1, {
+        username: 'ben',
+        remainingTokens: 1300,
+        gamesPlayed: 3,
+        score: 80.857,
+        prizeAmount: 9000,
+      }),
+      row(2, {
+        username: 'ana',
+        remainingTokens: 900,
+        gamesPlayed: 3,
+        score: 56.857,
+        isViewer: true,
+      }),
       row(3, { username: 'cid', tieBreak: 'REGISTRATION_ORDER' }),
       row(4, { username: 'dan', tieBreak: 'REGISTRATION_ORDER' }),
     ],
@@ -146,7 +163,14 @@ describe('classement général officiel (D-106)', () => {
     await renderWith(<TournamentOfficialResultsScreen />);
     const card = await screen.findByTestId('tournament-my-result');
     // Formats français (espaces insécables fines) : `\s` les reconnaît.
-    for (const text of [/2 \/ 4/, /^56,86$/, /^1\s000$/, /^900$/, /^3$/, /60 % jetons · 40 % parties/]) {
+    for (const text of [
+      /2 \/ 4/,
+      /^56,86$/,
+      /^1\s000$/,
+      /^900$/,
+      /^3$/,
+      /60 % jetons · 40 % parties/,
+    ]) {
       expect(within(card).getByText(text)).toBeTruthy();
     }
     expect(within(card).getByText(/Jetons conservés : 90\s% du capital → 54 pts/)).toBeTruthy();
@@ -217,7 +241,9 @@ describe('médailles : seules les récompenses effectivement attribuées', () =>
     expect(within(screen.getByTestId('tournament-my-result')).getByText('2 / 4')).toBeTruthy();
     // Le rang reste affiché, médaille ou non.
     for (const rank of [1, 2, 3, 4, 5]) {
-      const line = screen.getByTestId(rank === 2 ? 'tournament-results-me' : `tournament-results-row-${rank}`);
+      const line = screen.getByTestId(
+        rank === 2 ? 'tournament-results-me' : `tournament-results-row-${rank}`,
+      );
       expect(within(line).getByText(String(rank))).toBeTruthy();
     }
   });
@@ -314,7 +340,12 @@ describe('classement long', () => {
     api.results.mockResolvedValue(
       official({
         results: [
-          row(1, { username: long, remainingTokens: 1_234_567_890, gamesPlayed: 12_345, score: 99.99 }),
+          row(1, {
+            username: long,
+            remainingTokens: 1_234_567_890,
+            gamesPlayed: 12_345,
+            score: 99.99,
+          }),
           row(2, { username: long, isViewer: true }),
         ],
       }),
@@ -334,6 +365,46 @@ describe('classement long', () => {
     // « (Vous) » reste visible même quand le nom est tronqué.
     const me = screen.getByTestId('tournament-results-me');
     expect(flat(within(me).getByText(' (Vous)'))).toMatchObject({ flexShrink: 0 });
+  });
+
+  it('petit écran : la colonne « Joueur » garde une largeur lisible, les nombres se resserrent', async () => {
+    api.results.mockResolvedValue(official({ results: [row(1, { username: 'Mireille' })] }));
+    await renderWith(<TournamentOfficialResultsScreen />);
+    const list = await screen.findByTestId('tournament-official-results');
+    const width = 420;
+    await act(async () => {
+      fireEvent(list, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width, height: 300 } } });
+    });
+    const first = screen.getByTestId('tournament-results-row-1');
+    const numeric = [
+      flat(within(first).getAllByText('1')[0]!).width,
+      flat(screen.getByTestId('tournament-results-medal-1')).width,
+      flat(screen.getByTestId('tournament-results-prize-1')).width,
+    ];
+    for (const w of numeric) expect(w).toBeGreaterThan(0);
+    const { gap, widths } = rankingLayout(width, flat(first).paddingHorizontal as number);
+    const used =
+      Object.values(widths).reduce((sum, w) => sum + w, 0) +
+      gap * 6 +
+      2 * (flat(first).paddingHorizontal as number);
+    // Le nom garde au moins 96 dp (~30 % de la ligne), qui s'affiche.
+    expect(width - used).toBeGreaterThanOrEqual(96);
+    expect(within(first).getByText('Mireille')).toBeTruthy();
+    // En-tête et lignes partagent les mêmes largeurs.
+    expect(
+      flat(within(screen.getByTestId('tournament-results-columns')).getByText('Gain')).width,
+    ).toBe(widths.prize);
+  });
+
+  it('rankingLayout : largeurs de référence sur grand écran, jamais de colonne nom écrasée', () => {
+    expect(rankingLayout(0, 8).widths.tokens).toBe(84);
+    expect(rankingLayout(900, 8).widths).toMatchObject({ tokens: 84, prize: 96, games: 56 });
+    for (const width of [320, 360, 420, 480, 560, 640]) {
+      const { gap, widths } = rankingLayout(width, 6);
+      const player = width - 12 - gap * 6 - Object.values(widths).reduce((s, w) => s + w, 0);
+      expect(player).toBeGreaterThanOrEqual(Math.min(96, width * 0.25));
+      expect(widths.medal).toBeGreaterThanOrEqual(24);
+    }
   });
 });
 
@@ -400,7 +471,9 @@ describe('HUD d’une table de tournoi', () => {
     const hud = await screen.findByTestId('tournament-table-hud');
     expect(within(hud).getByText('1250')).toBeTruthy();
     expect(within(hud).getByText(/4 parties · #3\/20 · Fin dans 1[12] min/)).toBeTruthy();
-    expect(hud.props.accessibilityLabel).toContain('1250 jetons de tournoi restants (solde fictif)');
+    expect(hud.props.accessibilityLabel).toContain(
+      '1250 jetons de tournoi restants (solde fictif)',
+    );
     // Solde visiblement identifié comme celui du tournoi, jamais confondu avec le compte réel.
     expect(within(hud).getByTestId('tournament-table-hud-tag')).toHaveTextContent('Tournoi');
     expect(api.myContext).toHaveBeenCalledWith('jeton', T1);
@@ -415,9 +488,15 @@ describe('récompense réelle et état du versement (D-112)', () => {
       }),
     );
     await renderWith(<TournamentOfficialResultsScreen />);
-    expect((await screen.findByTestId('tournament-my-payout')).props.children).toMatch(
+    const payout = await screen.findByTestId('tournament-my-payout');
+    expect(payout.props.children).toMatch(
       /Récompense réelle : 9\s000\sFCFA, créditée sur votre compte de jeu/,
     );
+    // Récompense réelle surlignée en vert clair, texte vert foncé lisible.
+    expect(StyleSheet.flatten(payout.props.style)).toMatchObject({
+      backgroundColor: colors.successBg,
+      color: colors.success,
+    });
     expect(screen.getByText(/Jetons de tournoi : sans valeur monétaire/)).toBeTruthy();
   });
 
@@ -431,5 +510,30 @@ describe('récompense réelle et état du versement (D-112)', () => {
     const text = (await screen.findByTestId('tournament-my-payout')).props.children as string;
     expect(text).toMatch(/versement en cours/);
     expect(text).not.toMatch(/créditée/);
+  });
+});
+
+describe('carte « Gain » du résultat personnel', () => {
+  it('dernière carte, juste après « Pondérations » : montant réel du classement officiel', async () => {
+    api.results.mockResolvedValue(official({ me: { ...official().me!, prizeAmount: 9000 } }));
+    await renderWith(<TournamentOfficialResultsScreen />);
+    const card = await screen.findByTestId('tournament-my-result');
+    const labels = within(card)
+      .getAllByText(/^(Parties jouées|Gain|Pondérations)$/)
+      .map((n) => n.props.children);
+    expect(labels).toEqual(['Parties jouées', 'Pondérations', 'Gain']);
+    expect(within(card).getByText(/^9\s000\sFCFA$/)).toBeTruthy();
+    // Mise en évidence vert clair de la seule carte « Gain ».
+    const gain = within(card).getByTestId('tournament-my-gain');
+    expect(gain).toHaveStyle({ backgroundColor: '#D4F7DC' });
+    expect(within(gain).getByText('Gain')).toBeTruthy();
+  });
+
+  it('non récompensé : gain de 0', async () => {
+    api.results.mockResolvedValue(official({ me: { ...official().me!, prizeAmount: 0 } }));
+    await renderWith(<TournamentOfficialResultsScreen />);
+    const card = await screen.findByTestId('tournament-my-result');
+    expect(within(card).getByText('Gain')).toBeTruthy();
+    expect(within(card).getByText(/^0\sFCFA$/)).toBeTruthy();
   });
 });

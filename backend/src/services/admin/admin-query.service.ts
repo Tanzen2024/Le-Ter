@@ -255,6 +255,23 @@ export class AdminQueryService {
     };
   }
 
+  /**
+   * Points d'attention seuls (cloche de l'administration, D-116) : léger, relu à chaque signal
+   * temps réel et périodiquement, sans le reste du tableau de bord.
+   */
+  async attention() {
+    const now = this.clock();
+    const [alerts, reconciliation] = await Promise.all([
+      this.deps.queries.attention(now),
+      this.anomalies(),
+    ]);
+    return {
+      generatedAt: iso(now),
+      alerts,
+      reconciliationAnomalies: reconciliation.summary,
+    };
+  }
+
   // --- Joueurs --------------------------------------------------------------------------------
 
   async listUsers(query: UserListQuery) {

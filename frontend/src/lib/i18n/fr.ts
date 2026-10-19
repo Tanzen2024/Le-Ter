@@ -92,6 +92,14 @@ export const fr = {
     youFled: 'Vous avez fui la partie',
     bySpecialHand: (combination?: string) =>
       combination ? `Victoire par main spéciale : ${combination}` : 'Victoire par main spéciale',
+    /** Ma victoire par Full (THREE_AND_TWO) : surtitre, libellé puis nom de la main. */
+    specialHandKicker: 'Main spéciale',
+    specialHandLabel: 'Main spéciale :',
+    fullHouse: 'Full',
+    /** Ma victoire par SUM_AT_MOST_21 : nom de la main, dans le même bloc que le Full. */
+    sumAtMost21: 'Somme inférieur ou égale à 21',
+    /** Main spéciale « deux 7, un 4, un 3 » (D-118). */
+    compositionOfSeven: 'Composition de 7',
     opponentFled: (name: string) => `${name} s’est couché.`,
     combinations: {
       THREE_SEVENS: 'Trois 7',
@@ -99,6 +107,7 @@ export const fr = {
       FIVE_SAME_SUIT: 'Cinq cartes de la même famille',
       FOUR_OF_A_VALUE: 'Quatre cartes de même valeur',
       THREE_AND_TWO: 'Trois + deux',
+      COMPOSITION_OF_SEVEN: 'Composition de 7',
       THREE_THREES: 'Trois 3',
     } as Record<string, string>,
     noChange: 'Aucun gain ni perte',

@@ -159,8 +159,23 @@ export function GameOverPanel({
   const fledName = result?.fledPlayerIds[0]
     ? playerLabel(game, result.fledPlayerIds[0])
     : undefined;
-  const reason =
-    result?.method === "INSTANT_WIN"
+  // Ma victoire par Full (THREE_AND_TWO : 3 cartes d'une valeur + 2 d'une autre) ou par
+  // « somme ≤ 21 » (SUM_AT_MOST_21) : combinaison retenue par le serveur (D-035), jamais
+  // recalculée ici. Le bloc « Main spéciale » remplace alors la ligne de raison.
+  const specialHandName =
+    iWon && result?.method === "INSTANT_WIN"
+      ? result.instantWinCombination === "THREE_AND_TWO"
+        ? t.fullHouse
+        : result.instantWinCombination === "SUM_AT_MOST_21"
+          ? t.sumAtMost21
+          : // « Composition de 7 » (deux 7, un 4, un 3 ; D-118), retenue par le serveur.
+            result.instantWinCombination === "COMPOSITION_OF_SEVEN"
+            ? t.compositionOfSeven
+            : undefined
+      : undefined;
+  const reason = specialHandName
+    ? undefined
+    : result?.method === "INSTANT_WIN"
       ? t.bySpecialHand(
           result.instantWinCombination
             ? t.combinations[result.instantWinCombination]
@@ -218,6 +233,19 @@ export function GameOverPanel({
           />
         </View>
       ) : null}
+      {specialHandName ? (
+        <Text
+          testID="game-over-special-kicker"
+          style={[
+            styles.white,
+            font,
+            styles.muted,
+            { fontSize: m.smallSize, paddingLeft: stack * 0.75 },
+          ]}
+        >
+          {t.specialHandKicker}
+        </Text>
+      ) : null}
       <Text
         testID="game-over-title"
         accessibilityRole="header"
@@ -238,6 +266,24 @@ export function GameOverPanel({
         >
           {reason}
         </Text>
+      ) : null}
+      {specialHandName ? (
+        <View testID="game-over-special-hand" style={styles.centerRow}>
+          <Text style={[styles.white, font, { fontSize: m.smallSize }]}>
+            {t.specialHandLabel}
+          </Text>
+          <Text
+            testID="game-over-special-name"
+            // Nom long (« Somme inférieur ou égale à 21 ») : réduit sur une ligne, jamais coupé,
+            // pour que la hauteur du panneau ne change pas.
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.5}
+            style={[styles.white, font, styles.gold, { fontSize: m.bodySize * 1.5 }]}
+          >
+            {specialHandName}
+          </Text>
+        </View>
       ) : null}
       {outcome ? (
         <Text
@@ -365,6 +411,9 @@ const styles = StyleSheet.create({
     pointerEvents: "none",
   },
   white: { color: "#FFFFFF", fontWeight: "800", textAlign: "center" },
+  muted: { opacity: 0.75, textTransform: "uppercase", letterSpacing: 1 },
+  gold: { color: palette.gold },
+  centerRow: { alignItems: "center" },
   amountRow: {
     flexDirection: "row",
     alignItems: "center",

@@ -37,6 +37,7 @@ import {
   rankingWeightsError,
   rankingWeightsOf,
   RESULTS_GRACE_MS,
+  TOURNAMENT_THANKS_DELAY_MS,
   START_FAILURE_ALERT_THRESHOLD,
   START_RECOVERY_MS,
   SETTINGS_LIMITS,
@@ -105,6 +106,7 @@ import type { WalletReservation } from '../../repositories/wallet-reservations';
 import { BackgroundTasks } from '../../utils/background-tasks';
 import { KeyedSerialQueue } from '../../utils/keyed-serial-queue';
 import type { Logger } from '../../utils/logger';
+import { announceToAdmin, type AdminEventPublisher } from '../../websocket/admin-event-bus';
 import type { UserEventPublisher } from '../../websocket/user-event-bus';
 import {
   PAYOUT_RETRY_DELAY_MS,
@@ -174,6 +176,11 @@ export interface TournamentServiceDependencies {
    * sont dans PostgreSQL, relus par l'API à la prochaine ouverture.
    */
   userEvents?: UserEventPublisher;
+  /**
+   * Temps réel de l'administration (D-116) : signal quand la file des propositions à approuver
+   * change (soumission, approbation, refus, annulation). Facultatif, sans garantie.
+   */
+  adminEvents?: AdminEventPublisher;
 }
 
 /** Une page de l'historique des résultats d'un joueur (rubrique « Résultats des tournois »). */
@@ -273,6 +280,8 @@ export class TournamentService {
   private readonly payoutBlockAlerts = new Map<TournamentId, string>();
   /** Dernière alerte « clôture retardée » par tournoi (journalisation seulement). */
   private readonly closingAlerts = new Map<TournamentId, number>();
+  /** Signaux différés du remerciement de fin de tournoi (D-117), annulés à l'arrêt. */
+  private readonly thanksSignals = new Set<NodeJS.Timeout>();
 
   constructor(private readonly deps: TournamentServiceDependencies) {
     this.clock = deps.clock ?? (() => new Date());
@@ -342,8 +351,9 @@ export class TournamentService {
    * doit chevaucher aucun tournoi publié. Rien n'est réservé ni inscrit à ce stade : un refus
    * ne laisse aucun effet.
    */
-  submit(id: TournamentId, userId: UserId): Promise<Tournament> {
-    return this.deps.tournaments.transaction(async (uow) => {
+  async submit(id: TournamentId, userId: UserId): Promise<Tournament> {
+    let submitted = false;
+    const result = await this.deps.tournaments.transaction(async (uow) => {
       await uow.lockSchedule();
       const t = await this.lock(uow, id);
       if (t.creatorId !== userId) throw new NotTournamentCreatorError(id);
@@ -359,8 +369,11 @@ export class TournamentService {
       });
       await assertWaitingCapacity(uow, now);
       await assertNoPublishedOverlap(uow, valid, settings, id);
+      submitted = true;
       return this.transition(uow, t, 'PENDING_APPROVAL', tokensOf(valid));
     });
+    if (submitted) this.announceApprovalQueue();
+    return result;
   }
 
   /**
@@ -421,6 +434,7 @@ export class TournamentService {
       return saved;
     });
     this.announce(signals, 'TOURNAMENT_APPROVED', id);
+    this.announceApprovalQueue();
     return this.advance(approved.id);
   }
 
@@ -431,6 +445,7 @@ export class TournamentService {
    */
   async reject(id: TournamentId, adminId: UserId): Promise<Tournament> {
     const signals: UserId[] = [];
+    let changed = false;
     const rejected = await this.deps.tournaments.transaction(async (uow) => {
       const t = await this.lock(uow, id);
       if (t.status === 'CANCELLED' && t.cancellationReason === 'APPROVAL_REJECTED') return t;
@@ -439,6 +454,7 @@ export class TournamentService {
       }
       const now = this.clock();
       const cancelled = await this.cancelInTx(uow, t, 'APPROVAL_REJECTED', now, signals);
+      changed = true;
       await uow.audit({
         actorId: adminId,
         action: 'TOURNAMENT_REJECTED',
@@ -449,6 +465,7 @@ export class TournamentService {
       return cancelled;
     });
     this.announce(signals, 'TOURNAMENT_CANCELLED', id);
+    if (changed) this.announceApprovalQueue();
     return rejected;
   }
 
@@ -459,6 +476,7 @@ export class TournamentService {
    */
   async cancel(id: TournamentId, actor: TournamentActor): Promise<Tournament> {
     const signals: UserId[] = [];
+    let wasPending = false;
     const result = await this.deps.tournaments.transaction(async (uow) => {
       const t = await this.lock(uow, id);
       if (t.status === 'CANCELLED') return t;
@@ -472,6 +490,7 @@ export class TournamentService {
       const now = this.clock();
       const reason: CancellationReason = actor.isAdmin ? 'ADMIN_CANCELLED' : 'CREATOR_CANCELLED';
       const cancelled = await this.cancelInTx(uow, t, reason, now, signals);
+      wasPending = t.status === 'PENDING_APPROVAL';
       if (actor.isAdmin) {
         await uow.audit({
           actorId: actor.userId,
@@ -485,6 +504,7 @@ export class TournamentService {
       return cancelled;
     });
     this.announce(signals, 'TOURNAMENT_CANCELLED', id);
+    if (wasPending) this.announceApprovalQueue();
     return result;
   }
 
@@ -970,6 +990,16 @@ export class TournamentService {
         ),
         now,
       );
+      // Remerciement (D-117) : écrit avec le classement (résultats garantis consultables),
+      // visible 10 s après la fin effective (`resultsAt`, horloge du serveur), une seule fois
+      // par participant (clé dédoublonnée : reprise, relance, plusieurs instances).
+      await uow.notify(
+        ranked.map((a) => ({
+          ...notice(a.playerId, 'TOURNAMENT_THANK_YOU', validated, `thanks:${id}`),
+          availableAt: new Date(now.getTime() + TOURNAMENT_THANKS_DELAY_MS),
+        })),
+        now,
+      );
       this.deps.logger.info('TOURNAMENT_RESULTS_VALIDATED', {
         tournamentId: id,
         ranked: ranked.length,
@@ -981,7 +1011,29 @@ export class TournamentService {
     if (!published) return false;
     this.closingAlerts.delete(id);
     this.announce(published, 'TOURNAMENT_RESULTS_AVAILABLE', id);
+    this.announceThanksLater(published, id);
     return true;
+  }
+
+  /**
+   * Signal temps réel du remerciement (D-117), à l'instant où il devient visible. Sans garantie
+   * (instance arrêtée entre-temps) : la notification est dans PostgreSQL et relue par l'API au
+   * retour du joueur sur l'écran ou dans l'application.
+   */
+  private announceThanksLater(userIds: readonly UserId[], tournamentId: TournamentId): void {
+    if (!this.deps.userEvents) return;
+    const handle = setTimeout(() => {
+      this.thanksSignals.delete(handle);
+      this.announce(userIds, 'TOURNAMENT_THANK_YOU', tournamentId);
+    }, TOURNAMENT_THANKS_DELAY_MS);
+    handle.unref?.();
+    this.thanksSignals.add(handle);
+  }
+
+  /** Arrêt : abandonne les signaux différés (les notifications restent dans PostgreSQL). */
+  cancelTimers(): void {
+    for (const handle of this.thanksSignals) clearTimeout(handle);
+    this.thanksSignals.clear();
   }
 
   /**
@@ -1040,6 +1092,11 @@ export class TournamentService {
       unsettled,
       alert: true,
     });
+  }
+
+  /** Signal à l'administration après COMMIT : la file des propositions à approuver a changé. */
+  private announceApprovalQueue(): void {
+    announceToAdmin(this.deps.adminEvents, 'TOURNAMENT_APPROVAL', this.deps.logger);
   }
 
   /** Signal temps réel après COMMIT (sans garantie : la donnée est déjà dans PostgreSQL). */

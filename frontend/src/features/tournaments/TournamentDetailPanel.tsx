@@ -863,7 +863,9 @@ function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
         (n.type !== 'TOURNAMENT_APPROVED' || n.payload.preRegistered === true) &&
         n.type !== 'MODERATION_WARNING' &&
         // Réclamations (D-114) : bandeau dédié à l'accueil (ComplaintNotice).
-        (n.type as string) !== 'COMPLAINT_UPDATE',
+        (n.type as string) !== 'COMPLAINT_UPDATE' &&
+        // Remerciement de fin de tournoi (D-117) : message dédié (TournamentThanksNotice).
+        n.type !== 'TOURNAMENT_THANK_YOU',
     )
     .slice(0, NOTICES_SHOWN);
   if (unread.length === 0) return null;

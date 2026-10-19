@@ -33,6 +33,7 @@ import { TournamentService } from '../../src/services/tournaments/tournament.ser
 import { createLogger } from '../../src/utils/logger';
 import { InMemoryGameEventHub } from '../../src/websocket/in-memory-game-event-hub';
 import { InMemorySessionEventHub } from '../../src/websocket/session-event-publisher';
+import type { AdminEventPublisher } from '../../src/websocket/admin-event-bus';
 import type { UserEventPublisher } from '../../src/websocket/user-event-bus';
 import { NO_RATE_LIMITS, TEST_JWT_SECRET } from './auth';
 import type { RandomSource } from '../../src/domain/cards/random-source';
@@ -69,6 +70,8 @@ export function createTournamentTestStack(
     gameClock?: boolean;
     /** Signaux temps réel des résultats (D-106). */
     userEvents?: UserEventPublisher;
+    /** Signaux de l'administration (D-116). */
+    adminEvents?: AdminEventPublisher;
     /** Journal observé par le test (anomalies) ; muet par défaut. */
     logSink?: (line: string) => void;
   } = {},
@@ -122,6 +125,7 @@ export function createTournamentTestStack(
     logger,
     clock: clock.now,
     ...(options.userEvents && { userEvents: options.userEvents }),
+    ...(options.adminEvents && { adminEvents: options.adminEvents }),
   });
   games.onGameFinished((game) => tournaments.observeFinishedGame(game));
   const scheduler = new TournamentScheduler({ tournaments, repository, logger, clock: clock.now });
@@ -162,6 +166,7 @@ export function createTournamentTestStack(
       timers.cancelAll();
       games.cancelStartTimers();
       sessionTimers.cancelAll();
+      tournaments.cancelTimers();
       await scheduler.idle();
       await tournaments.idle();
       await sessions.idle();

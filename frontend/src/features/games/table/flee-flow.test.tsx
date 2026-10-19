@@ -67,12 +67,15 @@ const NO_ACTIONS = {
   canDeclareInstantWin: false,
 };
 
-/** Tour 1 d'une partie à 2 : OTHER (J1) est attendu, je n'ai joué aucune carte. */
+/**
+ * Tour 1 d'une partie à 2 : c'est MON tour (J1), je n'ai joué aucune carte. « Main spéciale »
+ * et « Se coucher » ne s'affichent que pendant le tour du joueur.
+ */
 function inProgress(overrides: Partial<GameView> = {}): GameView {
   return {
     gameId: GAME,
     sessionId: SESSION,
-    firstPlayerId: OTHER,
+    firstPlayerId: ME,
     version: 5,
     status: 'in_progress',
     creatorId: OTHER,
@@ -83,18 +86,18 @@ function inProgress(overrides: Partial<GameView> = {}): GameView {
     ],
     play: {
       trickNumber: 1,
-      dealOrder: [OTHER, ME],
+      dealOrder: [ME, OTHER],
       dealSequence: [],
-      controllerId: OTHER,
-      nextPlayerId: OTHER,
-      trickOrder: [OTHER, ME],
+      controllerId: ME,
+      nextPlayerId: ME,
+      trickOrder: [ME, OTHER],
       currentTrick: [],
       completedTricks: [],
       myHand: ['COEUR-3', 'PIQUE-8', 'ETOILE-5', 'TREFLE-10', 'COEUR-9'],
       handCounts: { [ME]: 5, [OTHER]: 5 },
       stockCount: 0,
     },
-    activePlayerId: OTHER,
+    activePlayerId: ME,
     turnStartedAt: '2026-10-14T10:01:00.000Z',
     turnDeadlineAt: '2026-10-14T10:01:13.000Z',
     serverNow: '2026-10-14T10:01:01.000Z',
@@ -238,6 +241,26 @@ describe('« Se coucher » sur la table', () => {
     expect(screen.getByText('Vous avez fui la partie')).toBeTruthy();
   });
 
+  it('tour d’un autre joueur : ni « Se coucher » ni « Main spéciale »', async () => {
+    await openTable(
+      inProgress({
+        firstPlayerId: OTHER,
+        activePlayerId: OTHER,
+        play: {
+          ...inProgress().play!,
+          dealOrder: [OTHER, ME],
+          controllerId: OTHER,
+          nextPlayerId: OTHER,
+          trickOrder: [OTHER, ME],
+        },
+        myActions: { ...NO_ACTIONS, canFlee: true, canDeclareInstantWin: true },
+      }),
+    );
+    expect(await screen.findByText('Tour de Kofi')).toBeTruthy();
+    expect(screen.queryByText('Se coucher')).toBeNull();
+    expect(screen.queryByText('Main spéciale')).toBeNull();
+  });
+
   it('partie à 3 : après ma fuite la partie continue sans moi, sans bouton ni plantage', async () => {
     const three = inProgress({
       maxPlayers: 3,
@@ -247,8 +270,8 @@ describe('« Se coucher » sur la table', () => {
       ],
       play: {
         ...inProgress().play!,
-        dealOrder: [OTHER, THIRD, ME],
-        trickOrder: [OTHER, THIRD, ME],
+        dealOrder: [ME, OTHER, THIRD],
+        trickOrder: [ME, OTHER, THIRD],
         handCounts: { [ME]: 5, [OTHER]: 5, [THIRD]: 5 },
       },
     });

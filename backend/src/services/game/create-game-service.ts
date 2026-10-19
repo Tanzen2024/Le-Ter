@@ -26,6 +26,11 @@ import { InMemoryGameEventHub } from '../../websocket/in-memory-game-event-hub';
 import { PubSubGameEventBus } from '../../websocket/pubsub-game-event-bus';
 import { RedisPubSubTransport } from '../../websocket/pubsub-transport';
 import {
+  InMemoryAdminEventHub,
+  PubSubAdminEventBus,
+  type AdminEventBus,
+} from '../../websocket/admin-event-bus';
+import {
   InMemoryUserEventHub,
   PubSubUserEventBus,
   type UserEventBus,
@@ -89,6 +94,8 @@ export function createGameService(options: {
   notifications: NotificationService;
   /** Signaux personnels temps réel (D-106), branchés sur la passerelle WebSocket. */
   userEvents: UserEventBus;
+  /** Signaux de l'administration (D-116), servis par le flux SSE /api/admin/events. */
+  adminEvents: AdminEventBus;
 } {
   // Séquestre et règlement des mises (D-074), dans la transaction de chaque écriture de
   // partie : démarrage = mises réservées, fin = partie réglée (ou tout ou rien).
@@ -186,7 +193,11 @@ export function createGameService(options: {
   // comportementales sur l'historique surveillé. Aucun score (étape 4).
   // Interrupteur GLOBAL (D-053), relu dans PostgreSQL à chaque consultation : désactivé
   // (défaut), aucune analyse, aucun score, aucune alerte, aucune position acceptée.
+  const adminEvents: AdminEventBus = transport
+    ? new PubSubAdminEventBus(transport, options.logger)
+    : new InMemoryAdminEventHub();
   const detection = new DetectionService({
+    adminEvents,
     repository: new PostgresDetectionRepository(options.sql),
     globalSwitch: detectionSettings,
     logger: options.logger,
@@ -207,6 +218,7 @@ export function createGameService(options: {
     games,
     logger: options.logger,
     userEvents,
+    adminEvents,
   });
   games.onGameFinished((game) => tournaments.observeFinishedGame(game));
   const tournamentScheduler = new TournamentScheduler({
@@ -220,6 +232,7 @@ export function createGameService(options: {
     tournamentScheduler,
     notifications,
     userEvents,
+    adminEvents,
     games,
     sessions,
     timers,

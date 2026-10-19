@@ -84,6 +84,11 @@ export const en: Messages = {
     youFled: 'You fled the game',
     bySpecialHand: (combination?: string) =>
       combination ? `Special hand win: ${combination}` : 'Special hand win',
+    specialHandKicker: 'Special hand',
+    specialHandLabel: 'Special hand:',
+    fullHouse: 'Full house',
+    sumAtMost21: 'Total of 21 or less',
+    compositionOfSeven: 'Composition of 7',
     opponentFled: (name: string) => `${name} folded.`,
     combinations: {
       THREE_SEVENS: 'Three 7s',
@@ -91,6 +96,7 @@ export const en: Messages = {
       FIVE_SAME_SUIT: 'Five cards of the same suit',
       FOUR_OF_A_VALUE: 'Four of a kind',
       THREE_AND_TWO: 'Three + two',
+      COMPOSITION_OF_SEVEN: 'Composition of 7',
       THREE_THREES: 'Three 3s',
     },
     noChange: 'No gain, no loss',

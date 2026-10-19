@@ -31,12 +31,25 @@ export interface GatewayResponse {
   cookies: CookieToSet[];
 }
 
+/** Réponse en flux (événements du serveur, D-116) : corps relayé sans mise en mémoire. */
+export interface GatewayStreamResponse extends Omit<GatewayResponse, 'body'> {
+  body: GatewayResponse['body'] | ReadableStream<Uint8Array>;
+}
+
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 const BACKEND_TIMEOUT_MS = 15_000;
 const SEGMENT = /^[A-Za-z0-9._-]{1,100}$/;
-/** Routes de session traitées par des Route Handlers dédiés, jamais par le relais générique. */
-const RESERVED = new Set(['auth/login', 'auth/logout']);
+/**
+ * Routes traitées par des Route Handlers dédiés, jamais par le relais générique : session, et
+ * flux d'événements (le relais générique met la réponse en mémoire et coupe après 15 s).
+ */
+const RESERVED = new Set(['auth/login', 'auth/logout', 'events']);
+/**
+ * Lecture passive (D-116) : le backend la contrôle sans la compter comme une activité de
+ * l'administrateur. Relayée seulement pour un GET et la seule valeur `1`.
+ */
+export const PASSIVE_HEADER = 'x-admin-passive';
 const FORWARDED_RESPONSE_HEADERS = ['content-type', 'content-disposition', 'retry-after'];
 const SESSION_ENDED_CODES = new Set(['ADMIN_SESSION_EXPIRED', 'ADMIN_SESSION_REQUIRED']);
 
@@ -68,10 +81,10 @@ async function callBackend(
 ): Promise<Response | null> {
   try {
     return await fetchImpl(url, {
+      signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
       ...init,
       cache: 'no-store',
       redirect: 'manual',
-      signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
     });
   } catch {
     return null;
@@ -134,6 +147,9 @@ export async function forwardAdminRequest(
     if (request.body !== null && contentType) headers['content-type'] = contentType;
     const idempotencyKey = request.headers.get('idempotency-key');
     if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
+    if (request.method === 'GET' && request.headers.get(PASSIVE_HEADER) === '1') {
+      headers[PASSIVE_HEADER] = '1';
+    }
     return callBackend(fetchImpl, `${config.apiUrl}${path}${search}`, {
       method: request.method,
       headers,
@@ -185,6 +201,65 @@ export async function forwardAdminRequest(
       cookies = clearedCookies(config.secureCookies);
     }
   }
+  return toGatewayResponse(response, cookies);
+}
+
+/**
+ * Flux d'événements de l'administration (D-116) : `GET /api/admin/events` du backend relayé
+ * en continu (Server-Sent Events), toujours en lecture PASSIVE (un onglet ouvert ne prolonge
+ * pas la session). Seul le délai d'ouverture est borné ; le flux suit ensuite la connexion du
+ * navigateur (`signal`).
+ *
+ * Ce relais ne renouvelle JAMAIS l'access token : un refresh token ne sert qu'une fois, et deux
+ * renouvellements simultanés (flux + requête de l'interface) fermeraient la session. Jeton
+ * expiré : 401 UNAUTHENTICATED, cookies conservés ; le client relit ses compteurs par le relais
+ * générique (qui renouvelle), puis rouvre le flux.
+ */
+export async function openAdminEvents(
+  request: GatewayRequest,
+  config: ServerConfig,
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<GatewayStreamResponse> {
+  if (!request.cookies.access) {
+    return request.cookies.refresh
+      ? error(401, 'UNAUTHENTICATED', 'Jeton à renouveler.')
+      : error(401, 'ADMIN_SESSION_REQUIRED', "Connectez-vous à l'administration.");
+  }
+  const opening = new AbortController();
+  const abort = () => opening.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, BACKEND_TIMEOUT_MS);
+  const response = await callBackend(fetchImpl, `${config.apiUrl}/api/admin/events`, {
+    method: 'GET',
+    headers: {
+      accept: 'text/event-stream',
+      authorization: `Bearer ${request.cookies.access}`,
+      [PASSIVE_HEADER]: '1',
+    },
+    signal: opening.signal,
+  });
+  clearTimeout(timeout);
+  if (!response) {
+    signal?.removeEventListener('abort', abort);
+    return error(502, 'BACKEND_UNAVAILABLE', 'Le serveur Le Ter ne répond pas. Réessayez.');
+  }
+  if (
+    response.ok &&
+    response.body &&
+    response.headers.get('content-type')?.startsWith('text/event-stream')
+  ) {
+    return {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8', 'x-accel-buffering': 'no' },
+      body: response.body,
+      cookies: [],
+    };
+  }
+  signal?.removeEventListener('abort', abort);
+  const code = response.status === 401 ? await codeOf(response) : undefined;
+  // Session terminée : cookies effacés comme pour toute requête ; jeton expiré : conservés.
+  const cookies = code && SESSION_ENDED_CODES.has(code) ? clearedCookies(config.secureCookies) : [];
   return toGatewayResponse(response, cookies);
 }
 

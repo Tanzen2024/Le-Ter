@@ -618,7 +618,8 @@ export function cardsPlayedBy(game: GameView, playerId: string): number {
 
 /**
  * Bas droit, côte à côte comme sur la référence : « Main spéciale » (victoire instantanée,
- * DECLARE_WIN) et « Se coucher » (la fuite, commande FLEE). Visibilité (D-085) :
+ * DECLARE_WIN) et « Se coucher » (la fuite, commande FLEE). Visibilité (D-085), et dans
+ * tous les cas UNIQUEMENT pendant le tour du joueur :
  * - « Main spéciale » : visible tant que le joueur n'a joué AUCUNE carte. Un appui envoie la
  *   déclaration seulement si le serveur a reconnu une main gagnante (`canDeclareInstantWin`) ;
  *   sinon un court message l'explique, sans rien envoyer.
@@ -666,8 +667,13 @@ export function TurnActions({
   // tous les joueurs.
   const someoneFled = game.players.some((p) => p.fledAt);
   const played = cardsPlayedBy(game, game.viewerId);
-  const showSpecial = !me?.fledAt && played === 0;
-  const showFold = !someoneFled && played < 2;
+  // Les deux boutons ne s'affichent que pendant MON tour (même joueur actif que le bandeau
+  // « C'est ton tour ! »), en plus des règles ci-dessus ; le serveur revalide toujours.
+  const myTurn =
+    game.status === 'in_progress' &&
+    (game.activePlayerId ?? game.play?.nextPlayerId) === game.viewerId;
+  const showSpecial = myTurn && !me?.fledAt && played === 0;
+  const showFold = myTurn && !someoneFled && played < 2;
   if (!showSpecial && !showFold) return null;
 
   const size = layout.action.size;

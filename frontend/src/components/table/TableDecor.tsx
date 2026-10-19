@@ -1,6 +1,6 @@
 import { Cinzel_700Bold } from '@expo-google-fonts/cinzel';
 import { Rajdhani_700Bold } from '@expo-google-fonts/rajdhani';
-import { useFonts } from 'expo-font';
+import { loadAsync, useFonts } from 'expo-font';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
@@ -49,9 +49,20 @@ export interface TableFonts {
   button?: string;
 }
 
+const TABLE_FONT_FILES = { Cinzel_700Bold, Rajdhani_700Bold };
+
+/**
+ * Chargement lancé au démarrage (racine), en parallèle de la restauration de la session : le
+ * premier écran s'affiche directement avec ses polices, au lieu d'un texte en police système
+ * qui change de largeur une fois les polices prêtes. Un échec garde la police de repli.
+ */
+export function preloadTableFonts(): Promise<void> {
+  return loadAsync(TABLE_FONT_FILES).catch(() => undefined);
+}
+
 /** Tant que les polices chargent (ou si elles échouent), la police système prend le relais. */
 export function useTableFonts(): TableFonts {
-  const [fontsLoaded] = useFonts({ Cinzel_700Bold, Rajdhani_700Bold });
+  const [fontsLoaded] = useFonts(TABLE_FONT_FILES);
   return fontsLoaded ? { title: 'Cinzel_700Bold', button: 'Rajdhani_700Bold' } : {};
 }
 

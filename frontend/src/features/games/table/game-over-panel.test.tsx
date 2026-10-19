@@ -7,7 +7,7 @@ import {
   renderHook,
   screen,
 } from "@testing-library/react-native";
-import { Text } from "react-native";
+import { StyleSheet, Text } from "react-native";
 
 import {
   DEFAULT_PREFERENCES,
@@ -387,6 +387,210 @@ describe("panneau de fin de partie : message selon le résultat officiel", () =>
       "Special hand win: Five cards of the same suit",
     );
     expect(screen.getByText("You lose")).toBeTruthy();
+  });
+});
+
+describe("panneau de fin de partie : victoire par Full (THREE_AND_TWO)", () => {
+  const instantWin = (combination: "THREE_AND_TWO" | "FIVE_SAME_SUIT", winnerId = ME) => ({
+    winnerId,
+    method: "INSTANT_WIN" as const,
+    instantWinRank: combination === "THREE_AND_TWO" ? 5 : 3,
+    instantWinCombination: combination,
+    automatic: false,
+    victoryType: "SIMPLE" as const,
+    remainingOpponentIds: [winnerId === ME ? OTHER : ME],
+    fledPlayerIds: [],
+  });
+  const wonWith = (combination: "THREE_AND_TWO" | "FIVE_SAME_SUIT") =>
+    finishedGame({
+      result: instantWin(combination),
+      mySettlement: { delta: 98, account: "WALLET" },
+    });
+
+  it("ma victoire par Full : surtitre, « Vous avez gagné ! », « Main spéciale : » puis « Full »", async () => {
+    await render(<GameOverPanel {...panel({ game: wonWith("THREE_AND_TWO") }).props} />);
+
+    expect(screen.getByTestId("game-over-special-kicker")).toHaveTextContent("Main spéciale");
+    expect(screen.getByTestId("game-over-title")).toHaveTextContent("Vous avez gagné !");
+    expect(screen.getByText("Main spéciale :")).toBeTruthy();
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent("Full");
+    // Même icône de victoire, même bilan ; l'ancienne ligne de raison n'est pas doublée.
+    expect(screen.getByTestId("game-over-chips")).toBeTruthy();
+    expect(screen.getByText("Vous gagnez")).toBeTruthy();
+    expect(screen.getByText("+98")).toBeTruthy();
+    expect(screen.queryByTestId("game-over-reason")).toBeNull();
+  });
+
+  it("autre main spéciale gagnée : comportement inchangé, aucun bloc Full", async () => {
+    await render(<GameOverPanel {...panel({ game: wonWith("FIVE_SAME_SUIT") }).props} />);
+
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent(
+      "Victoire par main spéciale : Cinq cartes de la même famille",
+    );
+    expect(screen.queryByTestId("game-over-special-kicker")).toBeNull();
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+  });
+
+  it("Full gagné par un adversaire, ou victoire au contrôle : comportement inchangé", async () => {
+    const lost = finishedGame({ result: instantWin("THREE_AND_TWO", OTHER) });
+    await render(<GameOverPanel {...panel({ game: lost }).props} />);
+    expect(screen.getByTestId("game-over-title")).toHaveTextContent("Sorobio a gagné la partie.");
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent(
+      "Victoire par main spéciale : Trois + deux",
+    );
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+    await cleanup();
+
+    await render(<GameOverPanel {...panel().props} />);
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+    expect(screen.queryByTestId("game-over-special-kicker")).toBeNull();
+  });
+
+  it("même boîte que les autres victoires : largeur et positionnement du panneau inchangés", async () => {
+    const boxOf = () => {
+      const style = StyleSheet.flatten(screen.getByTestId("game-over-panel").props.style);
+      return { width: style.width, position: style.position, top: style.top, left: style.left };
+    };
+    await render(<GameOverPanel {...panel({ game: wonWith("FIVE_SAME_SUIT") }).props} />);
+    const ordinary = boxOf();
+    await cleanup();
+
+    await render(<GameOverPanel {...panel({ game: wonWith("THREE_AND_TWO") }).props} />);
+    expect(boxOf()).toEqual(ordinary);
+    expect(ordinary).toEqual({ width: 320, position: undefined, top: undefined, left: undefined });
+    // Le bloc Full reste dans le flux du panneau : rien n'est posé par-dessus la table.
+    const block = StyleSheet.flatten(screen.getByTestId("game-over-special-hand").props.style);
+    expect(block.position).toBeUndefined();
+  });
+
+  it("aucun recalcul : seule la combinaison du serveur compte, jamais les cartes", async () => {
+    // Main affichée qui formerait un Full : sans THREE_AND_TWO du serveur, pas de Full.
+    const fullLookingHand = {
+      ...wonWith("FIVE_SAME_SUIT"),
+      myHand: ["H7", "S7", "D7", "H3", "S3"],
+    } as unknown as GameView;
+    await render(<GameOverPanel {...panel({ game: fullLookingHand }).props} />);
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+    await cleanup();
+
+    // Combinaison du serveur sans aucune carte connue : le Full est affiché quand même.
+    const noCards = { ...wonWith("THREE_AND_TWO"), myHand: [] } as unknown as GameView;
+    await render(<GameOverPanel {...panel({ game: noCards }).props} />);
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent("Full");
+  });
+
+  it("en anglais", async () => {
+    usePreferencesStore.getState().setLanguage("en");
+    await render(<GameOverPanel {...panel({ game: wonWith("THREE_AND_TWO") }).props} />);
+    expect(screen.getByTestId("game-over-special-kicker")).toHaveTextContent("Special hand");
+    expect(screen.getByTestId("game-over-title")).toHaveTextContent("You won!");
+    expect(screen.getByText("Special hand:")).toBeTruthy();
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent("Full house");
+  });
+});
+
+describe("panneau de fin de partie : victoire par « Somme ≤ 21 » (SUM_AT_MOST_21)", () => {
+  // Main de la capture : 3♠ 5♠ 4♥ 4♣ 4⭐ (3 + 5 + 4 + 4 + 4 = 20), combinaison retenue par le serveur.
+  const sumWin = (winnerId = ME) =>
+    finishedGame({
+      result: {
+        winnerId,
+        method: "INSTANT_WIN" as const,
+        instantWinRank: 2,
+        instantWinCombination: "SUM_AT_MOST_21",
+        automatic: false,
+        victoryType: "SIMPLE" as const,
+        remainingOpponentIds: [winnerId === ME ? OTHER : ME],
+        fledPlayerIds: [],
+      },
+      mySettlement: { delta: 98, account: "WALLET" },
+    });
+
+  it("ma victoire : « Main spéciale », « Vous avez gagné ! », « Main spéciale : » puis le nom", async () => {
+    await render(<GameOverPanel {...panel({ game: sumWin() }).props} />);
+
+    expect(screen.getByTestId("game-over-special-kicker")).toHaveTextContent("Main spéciale");
+    expect(screen.getByTestId("game-over-title")).toHaveTextContent("Vous avez gagné !");
+    expect(screen.getByText("Main spéciale :")).toBeTruthy();
+    const name = screen.getByTestId("game-over-special-name");
+    expect(name).toHaveTextContent("Somme inférieur ou égale à 21");
+    // Nom long : réduit sur une ligne, la hauteur du panneau ne bouge pas.
+    expect(name.props).toMatchObject({ numberOfLines: 1, adjustsFontSizeToFit: true });
+    expect(screen.getByTestId("game-over-chips")).toBeTruthy();
+    expect(screen.queryByTestId("game-over-reason")).toBeNull();
+  });
+
+  it("même boîte que le Full : largeur et position du panneau inchangées", async () => {
+    await render(<GameOverPanel {...panel({ game: sumWin() }).props} />);
+    const style = StyleSheet.flatten(screen.getByTestId("game-over-panel").props.style);
+    expect(style).toMatchObject({ width: 320 });
+    expect(style.position).toBeUndefined();
+  });
+
+  it("gagnée par un adversaire : ligne de raison inchangée, pas de bloc", async () => {
+    await render(<GameOverPanel {...panel({ game: sumWin(OTHER) }).props} />);
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent(
+      "Victoire par main spéciale : Somme ≤ 21",
+    );
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+  });
+
+  it("en anglais", async () => {
+    usePreferencesStore.getState().setLanguage("en");
+    await render(<GameOverPanel {...panel({ game: sumWin() }).props} />);
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent("Total of 21 or less");
+  });
+});
+
+describe("panneau de fin de partie : victoire par « Composition de 7 » (COMPOSITION_OF_SEVEN, D-118)", () => {
+  // Main de la capture : 3♠ 4♥ 8♥ 7♣ 7★ (deux 7, un 4, un 3), combinaison retenue par le serveur.
+  const compositionWin = (winnerId = ME) =>
+    finishedGame({
+      result: {
+        winnerId,
+        method: "INSTANT_WIN" as const,
+        instantWinRank: 6,
+        instantWinCombination: "COMPOSITION_OF_SEVEN",
+        automatic: false,
+        victoryType: "SIMPLE" as const,
+        remainingOpponentIds: [winnerId === ME ? OTHER : ME],
+        fledPlayerIds: [],
+      },
+      mySettlement: { delta: 98, account: "WALLET" },
+    });
+
+  it("ma victoire : « Main spéciale », « Vous avez gagné ! », « Main spéciale : » puis « Composition de 7 »", async () => {
+    await render(<GameOverPanel {...panel({ game: compositionWin() }).props} />);
+
+    expect(screen.getByTestId("game-over-special-kicker")).toHaveTextContent("Main spéciale");
+    expect(screen.getByTestId("game-over-title")).toHaveTextContent("Vous avez gagné !");
+    expect(screen.getByText("Main spéciale :")).toBeTruthy();
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent(/^Composition de 7$/);
+    // Ni « Full » ni « Paire », ni la ligne de raison générique.
+    expect(screen.queryByText(/Full|Paire/)).toBeNull();
+    expect(screen.queryByTestId("game-over-reason")).toBeNull();
+    expect(screen.getByTestId("game-over-chips")).toBeTruthy();
+  });
+
+  it("même boîte que les autres mains spéciales : largeur et position du panneau inchangées", async () => {
+    await render(<GameOverPanel {...panel({ game: compositionWin() }).props} />);
+    const style = StyleSheet.flatten(screen.getByTestId("game-over-panel").props.style);
+    expect(style).toMatchObject({ width: 320 });
+    expect(style.position).toBeUndefined();
+  });
+
+  it("gagnée par un adversaire : ligne de raison habituelle avec le nom, pas de bloc", async () => {
+    await render(<GameOverPanel {...panel({ game: compositionWin(OTHER) }).props} />);
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent(
+      "Victoire par main spéciale : Composition de 7",
+    );
+    expect(screen.queryByTestId("game-over-special-hand")).toBeNull();
+  });
+
+  it("en anglais", async () => {
+    usePreferencesStore.getState().setLanguage("en");
+    await render(<GameOverPanel {...panel({ game: compositionWin() }).props} />);
+    expect(screen.getByTestId("game-over-special-name")).toHaveTextContent("Composition of 7");
   });
 });
 

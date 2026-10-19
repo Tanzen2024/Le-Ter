@@ -17,7 +17,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/form-controls';
-import { dashboardQuery } from '@/features/dashboard/api';
+import { attentionQuery } from '@/features/attention/api';
+import { useAttentionStream } from '@/features/attention/use-attention-stream';
 import { useAdminSession, useLogout } from '@/hooks/use-session';
 import { formatDateTime } from '@/lib/format';
 
@@ -25,9 +26,13 @@ import { Logo } from './logo';
 import { sectionOf } from './nav';
 import { SidebarNav } from './sidebar';
 
-/** Alertes à traiter, calculées par le backend (aucun système de notification inventé). */
+/**
+ * Alertes à traiter, calculées par le backend (aucun système de notification inventé), mises
+ * à jour automatiquement (D-116) : signal temps réel, relecture passive, sans rafraîchir la page.
+ */
 function Notifications() {
-  const { data } = useQuery(dashboardQuery());
+  useAttentionStream();
+  const { data } = useQuery(attentionQuery());
   const items = data
     ? [
         {

@@ -9,6 +9,7 @@ import {
   forwardAdminRequest,
   loginAdmin,
   logoutAdmin,
+  openAdminEvents,
   type GatewayRequest,
 } from '@/lib/server/gateway';
 import { COOKIE_NAMES } from '@/lib/server/session-cookies';
@@ -166,6 +167,81 @@ describe('relais /api/admin/* (passerelle serveur)', () => {
   });
 });
 
+describe('lecture passive et flux d’événements (D-116)', () => {
+  it('X-Admin-Passive: 1 relayé sur un GET seulement', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(json(200, { ok: true })));
+    await forwardAdminRequest(
+      ['attention'],
+      request({ headers: { 'x-admin-passive': '1' } }),
+      config,
+      fetchImpl,
+    );
+    expect((fetchImpl.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
+      'x-admin-passive': '1',
+    });
+    await forwardAdminRequest(
+      ['attention'],
+      request({ headers: { 'x-admin-passive': 'yes' } }),
+      config,
+      fetchImpl,
+    );
+    expect((fetchImpl.mock.calls[1]![1] as RequestInit).headers).not.toHaveProperty(
+      'x-admin-passive',
+    );
+  });
+
+  it('le relais générique refuse /events (route dédiée)', () => {
+    expect(adminPath(['events'])).toBeNull();
+  });
+
+  it('flux relayé en continu, en lecture passive, avec le jeton du cookie', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('event: ready\ndata: {}\n\n'));
+      },
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      );
+    const res = await openAdminEvents(request(), config, fetchImpl);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeInstanceOf(ReadableStream);
+    expect(res.headers['content-type']).toMatch(/^text\/event-stream/);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('http://backend.test/api/admin/events');
+    expect((init as RequestInit).headers).toMatchObject({
+      authorization: 'Bearer access-1',
+      'x-admin-passive': '1',
+    });
+  });
+
+  it('jeton expiré : 401 UNAUTHENTICATED, jamais de renouvellement, cookies conservés', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json(401, { code: 'UNAUTHENTICATED' }));
+    const res = await openAdminEvents(request(), config, fetchImpl);
+    expect(res.status).toBe(401);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(res.cookies).toEqual([]);
+
+    const noAccess = await openAdminEvents(
+      request({ cookies: { refresh: 'refresh-1' } }),
+      config,
+      fetchImpl,
+    );
+    expect(noAccess.status).toBe(401);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('session d’administration terminée : cookies effacés', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json(401, { code: 'ADMIN_SESSION_EXPIRED' }));
+    const res = await openAdminEvents(request(), config, fetchImpl);
+    expect(res.status).toBe(401);
+    expect(res.cookies.length).toBeGreaterThan(0);
+    expect(res.cookies.every((c) => c.options.maxAge === 0)).toBe(true);
+  });
+});
+
 describe('connexion et déconnexion', () => {
   it('connexion : jetons gardés en cookies httpOnly, jamais renvoyés au navigateur', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
@@ -289,9 +365,11 @@ describe('connexion et déconnexion', () => {
   });
 
   it('connexion : cookies httpOnly, SameSite=Strict, Secure, chemin /, 8 h au plus', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      json(200, { accessToken: 'a', refreshToken: 'r', user: {}, displayRole: 'X', session: {} }),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        json(200, { accessToken: 'a', refreshToken: 'r', user: {}, displayRole: 'X', session: {} }),
+      );
     const res = await loginAdmin(
       request({
         method: 'POST',

@@ -17,9 +17,22 @@ declare global {
 }
 
 /**
+ * En-tête d'une lecture PASSIVE (D-116) : requête automatique de l'interface (points
+ * d'attention, flux d'événements), qui ne compte pas comme une activité de l'administrateur.
+ * Il ne peut que raccourcir la session de celui qui l'envoie : jamais d'accès supplémentaire.
+ */
+export const ADMIN_PASSIVE_HEADER = 'x-admin-passive';
+
+/** Lecture passive : GET avec `X-Admin-Passive: 1` (toute modification reste une activité). */
+export function isPassiveRead(req: Request): boolean {
+  return req.method === 'GET' && req.get(ADMIN_PASSIVE_HEADER) === '1';
+}
+
+/**
  * Exige une session d'administration ouverte et non expirée (8 h absolues, 30 min
  * d'inactivité), APRÈS requireAuth et requireRole('admin'). Un jeton de session mobile,
- * même d'un compte `admin`, est refusé (401 ADMIN_SESSION_REQUIRED).
+ * même d'un compte `admin`, est refusé (401 ADMIN_SESSION_REQUIRED). Une lecture passive est
+ * contrôlée de la même façon, sans enregistrer d'activité.
  */
 export function createRequireAdminSession(
   sessions: AdminSessionService,
@@ -27,7 +40,9 @@ export function createRequireAdminSession(
 ): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      res.locals.adminSession = await sessions.assertActive(getAuth(res));
+      res.locals.adminSession = await sessions.assertActive(getAuth(res), {
+        touch: !isPassiveRead(req),
+      });
       next();
     } catch (err) {
       logger.warn('admin session rejected', {

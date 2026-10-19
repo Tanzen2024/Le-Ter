@@ -1,5 +1,9 @@
 import { Router, type Request } from 'express';
 
+import {
+  createAdminEventsHandler,
+  type AdminEventStreams,
+} from '../controllers/admin-events.controller';
 import { createAdminController, type AdminSystemInfo } from '../controllers/admin.controller';
 import { createPlayerModerationController } from '../controllers/player-moderation.controller';
 import { ADMIN_LOGIN_LIMITS, type AdminLoginLimits } from '../domain/admin/admin';
@@ -16,6 +20,7 @@ import type { AdminSessionService } from '../services/admin/admin-session.servic
 import type { PlayerModerationService } from '../services/admin/player-moderation.service';
 import type { AuthService } from '../services/auth/auth.service';
 import type { Logger } from '../utils/logger';
+import type { AdminEventSubscriber } from '../websocket/admin-event-bus';
 
 export interface AdminRouterDependencies {
   auth: AuthService;
@@ -26,6 +31,10 @@ export interface AdminRouterDependencies {
   loginLimits?: AdminLoginLimits;
   system: AdminSystemInfo;
   logger: Logger;
+  /** Signaux temps réel de l'administration (D-116) ; absents, GET /events répond 503. */
+  events?: AdminEventSubscriber;
+  /** Flux d'événements : registre (arrêt du serveur) et rythme (tests). */
+  eventStream?: { streams?: AdminEventStreams; heartbeatMs?: number; recheckMs?: number };
 }
 
 /**
@@ -40,6 +49,9 @@ export interface AdminRouterDependencies {
  *   POST /auth/logout                          déconnexion effective (auditée)
  *   GET  /auth/session                         compte et session courants
  *   GET  /dashboard?from&to                    indicateurs réels
+ *   GET  /attention                            points d'attention seuls (cloche, D-116)
+ *   GET  /events                               flux SSE « point d'attention changé » (D-116)
+ *   (en-tête `X-Admin-Passive: 1` sur un GET : contrôlé sans compter comme une activité)
  *   GET  /users  /users/:userId (audité)  /users/:userId/games  /users/:userId/transactions
  *   Gestion des joueurs (D-079) — lecture :
  *   GET  /users/:userId/moderation  /sanctions  /notes  /moderation-log?includeViews
@@ -108,6 +120,20 @@ export function createAdminRouter(deps: AdminRouterDependencies): Router {
   router.post('/auth/logout', controller.logout);
   router.get('/auth/session', controller.session);
   router.get('/dashboard', controller.dashboard);
+  router.get('/attention', controller.attention);
+  const events = deps.events;
+  router.get(
+    '/events',
+    events
+      ? createAdminEventsHandler({ auth, sessions, events, logger, ...deps.eventStream })
+      : (_req, res) => {
+          res.status(503).json({
+            error: 'Service Unavailable',
+            code: 'REALTIME_UNAVAILABLE',
+            message: 'Les mises à jour en temps réel ne sont pas disponibles.',
+          });
+        },
+  );
   router.get('/users', controller.users);
   router.get('/users/:userId', controller.user);
   router.get('/users/:userId/games', controller.userGames);

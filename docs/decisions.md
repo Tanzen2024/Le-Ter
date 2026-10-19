@@ -3916,3 +3916,102 @@ Une décision n'est remplacée que par une nouvelle entrée qui la cite.
   par PostgreSQL (TOAST), lu seulement à la demande (jamais dans les listes), transactions et
   sauvegardes communes avec le dossier, accès contrôlé par le serveur. Évolution possible, non
   réalisée : stockage objet privé (URL signées courtes) si le volume le justifie.
+
+## D-116 — Administration : mise à jour automatique des points d'attention (SSE + lecture passive)
+
+- **Date** : 2026-10-16 · **Statut** : demandé par le propriétaire du projet · **Complète** :
+  D-061 (session d'administration), D-106 (signaux temps réel sans contenu).
+- **Constat** : la cloche de l'administration n'est pas alimentée par une table de
+  notifications (la table `notifications` ne vise que les joueurs) ; elle affiche les **points
+  d'attention** calculés par le serveur (alertes anti-collusion `NEW`, propositions de tournoi
+  `PENDING_APPROVAL`, paiements en attente anciens, anomalies de rapprochement, échéances de
+  tour dépassées). Aucun état lu/non lu n'existe : le compteur est le nombre d'éléments encore à
+  traiter. Aucune table de notifications d'administration n'est créée (hors périmètre).
+- **Lecture passive** : un `GET` portant `X-Admin-Passive: 1` est contrôlé par
+  `requireAdminSession` (8 h, 30 min) **sans enregistrer d'activité**. L'en-tête ne peut que
+  raccourcir la session de celui qui l'envoie. Toute modification reste une activité. La règle
+  « aucune requête de fond ne maintient la session » est conservée.
+- **Compteurs seuls** : `GET /api/admin/attention` → `{ generatedAt, alerts,
+  reconciliationAnomalies }`, mêmes calculs que le tableau de bord, sans le reste.
+- **Temps réel** : `GET /api/admin/events`, flux **Server-Sent Events** derrière la garde
+  commune (le navigateur n'a pas de JWT : la passerelle WebSocket `/ws` n'est pas joignable par
+  la console, dont les jetons restent en cookies httpOnly côté Next.js). Événements `ready`,
+  `attention { source }`, `end { code }` ; aucune donnée métier, le client relit
+  `/attention`. Bus `AdminEventBus` sur le transport Redis Pub/Sub existant (canal
+  `le-ter:admin:events`, repli local, D-024) ; publié APRÈS commit, sans jamais faire échouer
+  l'opération : nouvelle alerte de détection (`DETECTION_ALERT`), soumission / approbation /
+  refus / annulation d'une proposition (`TOURNAMENT_APPROVAL`). Jeton et session revérifiés
+  chaque minute en lecture passive ; échec → `end` et fermeture ; flux fermés à l'arrêt.
+- **Relais Next.js** : route dédiée `app/api/admin/events` (flux non mis en mémoire). Elle ne
+  renouvelle **jamais** l'access token (un refresh token ne sert qu'une fois : deux
+  renouvellements simultanés fermeraient la session) ; le client relit d'abord ses compteurs par
+  le relais ordinaire (qui renouvelle ou renvoie à la connexion), puis rouvre le flux.
+- **Compteurs liés au temps** (paiement « ancien » après 30 min, échéance dépassée,
+  rapprochement) : aucun événement ne les signale ; relecture passive chaque minute (onglet
+  visible) et au retour sur l'onglet. Délai : immédiat pour les sources signalées, ≤ 1 min pour
+  les autres.
+- **Garanties** : les compteurs viennent toujours de PostgreSQL (jamais du signal) ; un signal
+  perdu est rattrapé à la reconnexion (`ready`) et par la relecture périodique ; rien ne peut
+  être compté deux fois ni disparaître hors traitement réel.
+
+## D-117 — Tournois : colonne « Gain » du classement et remerciement 10 s après la fin
+
+**Contexte.** Le classement officiel n'affichait pas le gain de chaque participant ; aucun
+message ne remerciait les joueurs à la fin d'un tournoi.
+
+**Décision.**
+
+- **Colonne « Gain »** : dernière colonne du classement officiel (`TournamentResultsScreens`),
+  après les colonnes existantes, inchangées. Source : `prizeAmount` de chaque ligne de
+  `GET /api/tournaments/:id/results`, c'est-à-dire le montant RÉEL figé dans
+  `tournament_results` avec le classement (D-106, D-112), jamais recalculé par le mobile. Sans
+  gain : `0 FCFA` (`formatFcfa`). Gain attribué mais pas encore crédité (`paid = false`) :
+  suffixe ⏳ et « versement en cours » pour les lecteurs d'écran ; jamais présenté comme versé.
+  Largeur fixe et `adjustsFontSizeToFit`, comme les autres colonnes numériques. Aucun calcul de
+  classement, de commission ni de versement n'est modifié.
+- **Instant de référence** : la fin EFFECTIVE du tournoi est la publication du classement
+  officiel (`resultsAt`, horloge du serveur) : toutes les parties commencées sont terminées et
+  réglées, et les résultats sont consultables. `endsAt` (fin prévue) ne convient pas : à cet
+  instant les résultats peuvent ne pas exister (clôture qui attend les parties, D-106).
+- **Remerciement** : nouvelle notification `TOURNAMENT_THANK_YOU` (migration 0048), écrite dans
+  la MÊME transaction que le classement (une par participant classé, clé `thanks:<tournamentId>`,
+  unicité `(user_id, dedupe_key)`), avec `notifications.available_at = resultsAt + 10 s`
+  (`TOURNAMENT_THANKS_DELAY_MS`). L'API ne renvoie une notification qu'à partir de son
+  `available_at` (horloge du serveur), datée de cet instant, et refuse de la marquer lue avant.
+  Les autres notifications (`available_at` NULL) sont inchangées.
+- **Livraison** : signal temps réel `TOURNAMENT_THANK_YOU` émis 10 s après le COMMIT (minuteur
+  sans garantie, annulé à l'arrêt) ; la source reste PostgreSQL : le message apparaît aussi au
+  retour sur l'écran, au retour au premier plan, après un redémarrage ou une reconnexion.
+  Mobile : `TournamentThanksNotice` (accueil, liste et fiche des tournois), « Voir les résultats
+  du tournoi » → route existante `/tournament/results/<tournamentId>` ; « Voir » et « Fermer »
+  la marquent lue (statut lu/non lu existant) : elle ne revient plus. Le message n'est pas
+  monté sur les écrans de résultats (le joueur y est déjà).
+- **Tournois déjà publiés avant la migration** : aucun remerciement rétroactif.
+
+**Limite connue.** Sans connexion temps réel (le mobile n'en ouvre une que pendant une partie
+ou un chat), un joueur resté immobile sur l'accueil voit le message à la prochaine relecture
+(retour sur l'écran ou au premier plan), pas exactement à 10 s.
+
+## D-118 — Victoire instantanée : réintroduction de « Composition de 7 » (7 + 7 + 4 + 3)
+
+- **Date** : 2026-10-18 · **Statut** : validée par le propriétaire du projet · **Modifie** :
+  D-035 sur ce seul point (R-04, jusqu'ici ÉCARTÉ) ; les autres décisions de D-035 restent
+  inchangées.
+- **Règle** : « Composition de 7 » (`COMPOSITION_OF_SEVEN`) est une main spéciale gagnante :
+  parmi les 5 cartes initialement distribuées, au moins deux cartes de valeur 7, une de
+  valeur 4 et une de valeur 3. Les familles sont indifférentes ; la 5ᵉ carte est libre
+  (ex. 3♠ 4♥ 8♥ 7♣ 7★). Ce n'est pas un Full : le Full du Ter reste « Trois + deux »
+  (rang 5, inchangé).
+- **Rang** : 6, juste avant « Trois 3 », qui passe au rang 7. Les rangs 1 à 5 ne changent
+  pas. Une main qui satisfait plusieurs combinaisons garde la meilleure (ex. trois 7 + 4 + 3
+  → « Trois 7 », rang 1). Mêmes mécanismes que les autres mains (D-035) : détection par le
+  serveur, déclaration facultative si une seule main gagnante, victoire automatique au
+  meilleur rang unique, égalité de rang → reprise immédiate ; toujours une victoire SIMPLE,
+  règlement inchangé.
+- **Affichage** : panneau de fin existant (`GameOverPanel`) : « Main spéciale », « Vous avez
+  gagné ! », « Main spéciale : », « Composition de 7 » pour le gagnant ; la ligne habituelle
+  « Victoire par main spéciale : Composition de 7 » pour les autres joueurs. Le mobile
+  n'évalue jamais les cartes : il affiche la combinaison retenue par le serveur.
+- **Parties déjà terminées** : leur résultat garde sa combinaison enregistrée ; seul le
+  numéro de rang de « Trois 3 » diffère (6 avant, 7 après).
+

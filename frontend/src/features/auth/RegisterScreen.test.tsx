@@ -2,9 +2,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
+import * as SafeArea from 'react-native-safe-area-context';
 
 import RegisterScreen from '../../../app/(auth)/register';
 import { ApiError } from '../../lib/api-client';
+import { formPaneWidth } from './AuthScreen';
 import { authApi } from '../../services/auth-api';
 import { storeSession } from './session';
 
@@ -254,12 +256,34 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     expect(screen.getByRole('alert')).toBeTruthy();
   });
 
+  it('paysage : le partage final s’affiche dès le premier rendu, la mesure ne le déplace pas', async () => {
+    // Fenêtre ET vue racine en paysage (le mock de `useSafeAreaFrame` lit la fenêtre).
+    jest
+      .spyOn(ReactNative.Dimensions, 'get')
+      .mockReturnValue({ width: 800, height: 400, scale: 2, fontScale: 1 });
+    jest
+      .spyOn(SafeArea, 'useSafeAreaInsets')
+      .mockReturnValue({ top: 0, bottom: 0, left: 40, right: 40 });
+    await renderScreen();
+    const pane = screen.getByTestId('auth-form-pane');
+    const first = ReactNative.StyleSheet.flatten(pane.props.style).width;
+    expect(first).toBe(formPaneWidth(720));
+    await fireEvent(pane.parent!, 'layout', {
+      persist: () => {},
+      nativeEvent: { layout: { x: 0, y: 0, width: 720, height: 400 } },
+    });
+    expect(
+      ReactNative.StyleSheet.flatten(screen.getByTestId('auth-form-pane').props.style).width,
+    ).toBe(first);
+  });
+
   it('petit écran (paysage, 360 dp) : formulaire resserré, toujours complet', async () => {
     jest
       .spyOn(ReactNative, 'useWindowDimensions')
       .mockReturnValue({ width: 740, height: 360, scale: 2, fontScale: 1 });
     await renderScreen();
-    for (const label of ['Prénom', 'Nom', 'Pseudo']) expect(screen.getByLabelText(label)).toBeTruthy();
+    for (const label of ['Prénom', 'Nom', 'Pseudo'])
+      expect(screen.getByLabelText(label)).toBeTruthy();
     expect(screen.getByText('Continuer →')).toBeTruthy();
     expect(screen.getByText('Se connecter')).toBeTruthy();
   });

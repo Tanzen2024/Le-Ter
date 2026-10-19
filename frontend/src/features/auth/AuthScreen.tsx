@@ -8,6 +8,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { useSafeAreaFrame, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Screen } from '../../components/Screen';
 import {
@@ -101,9 +102,15 @@ export function AuthScreen({
   const dense = useDenseAuthLayout();
   const window = useWindowDimensions();
   const fonts = useTableFonts();
-  const [rowWidth, setRowWidth] = useState(0);
-  // Paysage mesuré : présentation ≈ 35 %, formulaire ≈ 65 %. Sinon (portrait, avant la
-  // mesure) : partage flex d'origine.
+  const frame = useSafeAreaFrame();
+  const insets = useSafeAreaInsets();
+  const [measuredRowWidth, setRowWidth] = useState<number | null>(null);
+  // La rangée occupe la vue racine moins les marges latérales de `Screen` : sa largeur est
+  // connue dès le premier rendu, le partage final s'affiche donc sans second calage. La
+  // mesure (`onLayout`) ne corrige que si la valeur réelle diffère.
+  const rowWidth = measuredRowWidth ?? Math.max(0, frame.width - insets.left - insets.right);
+  // Paysage : présentation ≈ 35 %, formulaire ≈ 65 %. Sinon (portrait) : partage flex
+  // d'origine.
   const formWidth =
     window.width > window.height && rowWidth > 0 ? formPaneWidth(rowWidth) : undefined;
   const m = sideMetrics(
@@ -205,6 +212,7 @@ export function AuthScreen({
             <CardFan fontFamily={fonts.title} />
           </View>
           <ScrollView
+            testID="auth-form-pane"
             style={
               formWidth !== undefined
                 ? [styles.formPaneFixed, { width: formWidth }]

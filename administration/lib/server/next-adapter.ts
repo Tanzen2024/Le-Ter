@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { COOKIE_NAMES } from './session-cookies';
-import type { GatewayRequest, GatewayResponse } from './gateway';
+import type { GatewayRequest, GatewayStreamResponse } from './gateway';
 
 /** Requête Next.js → entrée de la passerelle (cookies de session lus côté serveur). */
 export async function gatewayRequestOf(request: NextRequest): Promise<GatewayRequest> {
@@ -22,7 +22,7 @@ export async function gatewayRequestOf(request: NextRequest): Promise<GatewayReq
 }
 
 /** Réponse de la passerelle → réponse Next.js (cookies posés ou effacés, jamais en cache). */
-export function nextResponseOf(result: GatewayResponse): NextResponse {
+export function nextResponseOf(result: GatewayStreamResponse): NextResponse {
   const response = new NextResponse(result.body, {
     status: result.status,
     headers: result.headers,

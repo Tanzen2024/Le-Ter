@@ -1,4 +1,5 @@
 import { createApp } from './app';
+import { AdminEventStreams } from './controllers/admin-events.controller';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { loadEnvFile, readEnv } from './config/env';
 import { readAssistantEnv, readSupportLimits } from './config/assistant-env';
@@ -48,6 +49,7 @@ import { PostgresAdminAuditRepository } from './repositories/postgres-admin-audi
 import type { WalletService } from './services/wallet/wallet.service';
 import { createLogger } from './utils/logger';
 import { attachRealtimeGateway, type RealtimeGateway } from './websocket/realtime-gateway';
+import type { AdminEventBus } from './websocket/admin-event-bus';
 import type { UserEventBus } from './websocket/user-event-bus';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -104,6 +106,7 @@ async function main(): Promise<void> {
   let tournamentScheduler: TournamentScheduler | undefined;
   let notifications: NotificationService | undefined;
   let userEvents: UserEventBus | undefined;
+  let adminEvents: AdminEventBus | undefined;
   if (sql && auth) {
     ({
       games,
@@ -119,6 +122,7 @@ async function main(): Promise<void> {
       tournamentScheduler,
       notifications,
       userEvents,
+      adminEvents,
     } = createGameService({
       sql,
       redis,
@@ -265,12 +269,15 @@ async function main(): Promise<void> {
       : undefined;
 
   // Plateforme d'administration (D-061) : session admin bornée, lectures, audit.
+  // Flux SSE des points d'attention (D-116), fermés à l'arrêt du serveur.
+  const adminStreams = new AdminEventStreams();
   const adminServices =
     sql && auth
       ? createAdminServices({ sql, auth, logger, payments, redis: redis?.client })
       : undefined;
   const admin = adminServices && {
     ...adminServices,
+    ...(adminEvents && { events: adminEvents, eventStream: { streams: adminStreams } }),
     system: {
       nodeEnv: env.nodeEnv,
       cinetpay: env.cinetpay
@@ -391,7 +398,9 @@ async function main(): Promise<void> {
     timers?.cancelAll();
     games?.cancelStartTimers();
     sessionTimers?.cancelAll();
+    tournaments?.cancelTimers();
     void realtime?.close();
+    adminStreams.closeAll();
     server.closeIdleConnections();
     server.close(() => {
       // Les commandes système en cours (timeout, départ automatique) se terminent avant la

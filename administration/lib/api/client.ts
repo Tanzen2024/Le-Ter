@@ -88,9 +88,17 @@ async function request<T>(
   return body as T;
 }
 
+/**
+ * Lecture PASSIVE (D-116) : requête automatique de l'interface (points d'attention), contrôlée
+ * par le backend sans compter comme une activité : elle ne prolonge jamais la session.
+ */
+const PASSIVE_HEADERS = { 'x-admin-passive': '1' };
+
 export const api = {
-  get: <T>(path: string, query?: Query) =>
-    request<T>('GET', withQuery(`/api/admin/${path}`, query)),
+  get: <T>(path: string, query?: Query, options: { passive?: boolean } = {}) =>
+    request<T>('GET', withQuery(`/api/admin/${path}`, query), {
+      ...(options.passive && { headers: PASSIVE_HEADERS }),
+    }),
   post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
     request<T>('POST', `/api/admin/${path}`, { body: body ?? {}, headers }),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', `/api/admin/${path}`, { body }),

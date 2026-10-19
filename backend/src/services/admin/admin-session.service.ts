@@ -121,9 +121,11 @@ export class AdminSessionService {
 
   /**
    * Garde de toute requête /api/admin/* (après requireAuth et requireRole) : session
-   * d'administration ouverte, non expirée ; l'activité est enregistrée.
+   * d'administration ouverte, non expirée ; l'activité est enregistrée, sauf pour une lecture
+   * PASSIVE (`touch: false`, D-116 : rafraîchissement automatique des points d'attention), qui
+   * est contrôlée de la même façon mais ne repousse jamais l'expiration d'inactivité.
    */
-  async assertActive(auth: AuthContext): Promise<AdminSession> {
+  async assertActive(auth: AuthContext, options: { touch?: boolean } = {}): Promise<AdminSession> {
     const session = await this.deps.sessions.find(auth.sessionId);
     if (!session || session.userId !== auth.userId) {
       throw new AdminSessionRequiredError('no_admin_session');
@@ -152,6 +154,7 @@ export class AdminSessionService {
       });
       throw new AdminSessionExpiredError(expiry);
     }
+    if (options.touch === false) return session;
     await this.deps.sessions.touch(
       session.sessionId,
       now,

@@ -6,6 +6,7 @@ import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { useTournamentDetail } from './hooks';
 import { TournamentDetailPanel } from './TournamentDetailPanel';
 import { TournamentFrame } from './TournamentScreen';
+import { TournamentThanksNotice } from './TournamentThanksNotice';
 import { useTournamentMessages } from './tournament-messages';
 
 /**
@@ -17,7 +18,7 @@ export function TournamentDetailScreen() {
   const { tournamentId } = useLocalSearchParams<{ tournamentId: string }>();
   const back = () => (router.canGoBack() ? router.back() : router.replace('/tournament'));
   return (
-    <TournamentFrame onBack={back}>
+    <TournamentFrame onBack={back} overlay={<TournamentThanksNotice />}>
       {() => (
         <Detail
           tournamentId={typeof tournamentId === 'string' ? tournamentId : undefined}

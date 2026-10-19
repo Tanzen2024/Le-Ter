@@ -32,6 +32,12 @@ Règles : rôle `admin` vérifié AVANT l'ouverture d'une session ; refresh toke
 
 `GET /dashboard?from&to` → `{ period, generatedAt, definitions, players { total, newInPeriod, active, admins }, games { waiting, inProgress, createdInPeriod, finishedInPeriod, byStatusInPeriod }, tournaments[{status,count}], payments[{status,count,amount}], platformRevenue, alerts { newDetectionAlerts, pendingTournamentApprovals, stalePendingPayments, overdueTurns }, reconciliationAnomalies, series[{day,newPlayers,activePlayers,gamesStarted,paymentsSucceeded,paymentsAmount,platformRevenue}], recentAdminActivity }`
 
+### 2.1 Points d'attention en temps réel (D-116)
+
+- `GET /attention` → `{ generatedAt, alerts { newDetectionAlerts, pendingTournamentApprovals, stalePendingPayments, overdueTurns }, reconciliationAnomalies }` (mêmes calculs que `/dashboard`).
+- `GET /events` → flux `text/event-stream` : `ready {}`, `attention { source: DETECTION_ALERT | TOURNAMENT_APPROVAL }`, `end { code }` (jeton expiré, session close, `SERVER_SHUTDOWN`). Aucune donnée métier. Sans bus de signaux : 503 `REALTIME_UNAVAILABLE`.
+- En-tête `X-Admin-Passive: 1` sur un `GET` : session contrôlée sans enregistrer d'activité (relectures automatiques). Côté Next.js : `/api/admin/events` est une route dédiée (`app/api/admin/events/route.ts`) qui ne renouvelle jamais le jeton.
+
 ## 3. Joueurs
 
 | Méthode | Chemin | Paramètres | Réponse | Audit |

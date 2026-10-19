@@ -7,10 +7,11 @@ import { Toaster } from 'sonner';
 import { ApiError } from '@/lib/api/errors';
 
 /**
- * Cache des données de l'administration. AUCUNE requête automatique en arrière-plan
- * (`refetchInterval`, retour sur l'onglet) : chaque requête /api/admin/* compte comme une
+ * Cache des données de l'administration. AUCUNE requête automatique en arrière-plan par
+ * défaut (`refetchInterval`, retour sur l'onglet) : chaque requête /api/admin/* compte comme une
  * activité côté serveur ; seules les actions de l'administrateur doivent prolonger sa
- * session (expiration après 30 minutes d'inactivité).
+ * session (expiration après 30 minutes d'inactivité). Seule exception : les points d'attention
+ * (`features/attention`, D-116), relus en lecture PASSIVE, qui ne comptent pas comme activité.
  */
 function createQueryClient() {
   return new QueryClient({

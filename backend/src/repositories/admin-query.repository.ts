@@ -338,12 +338,15 @@ export interface DashboardFacts {
   tournaments: { status: TournamentStatus; count: number }[];
   payments: StatusAmount[];
   platformRevenue: number;
-  alerts: {
-    newDetectionAlerts: number;
-    pendingTournamentApprovals: number;
-    stalePendingPayments: number;
-    overdueTurns: number;
-  };
+  alerts: AttentionCounts;
+}
+
+/** Points d'attention de l'administration (cloche, tableau de bord), calculés à `now`. */
+export interface AttentionCounts {
+  newDetectionAlerts: number;
+  pendingTournamentApprovals: number;
+  stalePendingPayments: number;
+  overdueTurns: number;
 }
 
 export interface DailyPoint {
@@ -397,6 +400,7 @@ export interface AdminQueryRepository {
   orphanDeposits(limit: number): Promise<OrphanDepositRow[]>;
   tournamentLedgerFacts(): Promise<TournamentLedgerFacts[]>;
   dashboard(period: Period, now: Date): Promise<DashboardFacts>;
+  attention(now: Date): Promise<AttentionCounts>;
   daily(period: Period, timezone: string): Promise<DailyPoint[]>;
   tournamentsInPeriod(period: Period): Promise<TournamentReportRow[]>;
 }

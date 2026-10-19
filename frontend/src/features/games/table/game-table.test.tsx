@@ -18,6 +18,8 @@ import {
   CardBack,
   CardFace,
   FACE_CORNER,
+  faceLayout,
+  FACE_MIN_GAP,
   HiddenHand,
   PublicRow,
   ROW_STEP,
@@ -711,18 +713,22 @@ describe('style des cartes (référence)', () => {
 
   it('face : grand chiffre et symbole dans le coin haut gauche, couleur de la famille', async () => {
     await render(<CardFace cardId="PIQUE-8" width={90} />);
-    // Fond blanc uni (aucun dégradé décoratif), contour gris clair, coins arrondis.
+    // Fond gris-blanc très clair à fine texture de losanges (dessin vectoriel, aucune image),
+    // contour gris clair, coins arrondis.
     expect(screen.getByLabelText('8 ♠')).toHaveStyle({
       width: 90,
       height: 135,
-      backgroundColor: '#FDFDFC',
-      borderColor: '#C7C9CC',
+      backgroundColor: '#F4F5F6',
+      borderColor: '#C3C6CB',
       borderRadius: 90 * 0.08,
     });
     expect(screen.getByLabelText('8 ♠')).not.toHaveStyle({
       experimental_backgroundImage: expect.anything(),
     });
-    expect(screen.getByText('8')).toHaveStyle({ fontSize: 90 * FACE_CORNER.value, color: '#141414' });
+    const texture = JSON.stringify(screen.toJSON());
+    expect(texture).toContain('"brushRef":"faceFill"');
+    expect(texture).toContain('"brushRef":"faceLozenges"');
+    expect(screen.getByText('8')).toHaveStyle({ fontSize: 90 * FACE_CORNER.value, color: '#1E2125' });
     expect(screen.getByText('♠')).toHaveStyle({ fontSize: 90 * FACE_CORNER.pip });
     expect(screen.getByTestId('card-corner')).toHaveStyle({
       top: 90 * FACE_CORNER.top,
@@ -740,25 +746,28 @@ describe('style des cartes (référence)', () => {
     expect(screen.getAllByText('8', hidden)).toHaveLength(1);
     const pips = screen.getAllByText('♠', hidden);
     expect(pips).toHaveLength(2);
-    expect(pips[1]).toHaveStyle({ fontSize: 90 * FACE_CORNER.center, color: '#141414' });
+    // Symboles du pique : noir foncé (valeur anthracite).
+    expect(pips[1]).toHaveStyle({ fontSize: 90 * FACE_CORNER.center, color: '#08090B' });
     await cleanup();
     await render(<CardFace cardId="COEUR-3" width={90} />);
     expect(screen.getByText('3')).toHaveStyle({ color: '#D3202A' });
     expect(screen.getByText('♥')).toHaveStyle({ color: '#D3202A' });
   });
 
-  it('quatre familles : pique et trèfle noir très foncé, cœur et étoile rouges (référence)', async () => {
+  it('quatre familles : valeurs pique et trèfle anthracite (symboles noir foncé / noir léger), cœur et étoile rouges', async () => {
     const hidden = { includeHiddenElements: true };
-    for (const [cardId, symbol, color] of [
-      ['PIQUE-9', '♠', '#141414'],
-      ['TREFLE-5', '♣', '#141414'],
-      ['COEUR-6', '♥', '#D3202A'],
-      ['ETOILE-8', '★', '#D3202A'],
+    for (const [cardId, symbol, color, pipColor] of [
+      ['PIQUE-9', '♠', '#1E2125', '#08090B'],
+      ['TREFLE-5', '♣', '#1E2125', '#6A7079'],
+      ['COEUR-6', '♥', '#D3202A', '#D3202A'],
+      ['ETOILE-8', '★', '#D3202A', '#D3202A'],
     ] as const) {
       await render(<CardFace cardId={cardId} width={80} />);
       const value = cardId.split('-')[1]!;
       expect(screen.getByText(value)).toHaveStyle({ color, fontSize: 80 * FACE_CORNER.value });
-      for (const pip of screen.getAllByText(symbol, hidden)) expect(pip).toHaveStyle({ color });
+      for (const pip of screen.getAllByText(symbol, hidden)) {
+        expect(pip).toHaveStyle({ color: pipColor });
+      }
       await cleanup();
     }
     // Valeur à deux chiffres : réduite pour tenir dans le coin, jamais coupée.
@@ -769,11 +778,13 @@ describe('style des cartes (référence)', () => {
   it('le grand symbole tient dans la carte, sous le coin, pour toutes les tailles', () => {
     for (const width of [24, 48, 72, 92]) {
       const height = width * CARD_RATIO;
-      const centerBox = width * FACE_CORNER.center * 1.05;
-      const centerTop = height - width * FACE_CORNER.centerBottom - centerBox;
-      // Dans la carte (jamais coupé par le bord bas) et sous la valeur du coin.
+      const { centerTop, cornerBottom, gap } = faceLayout(width);
+      // Dans la carte (jamais coupé par le bord bas) et sous TOUT le coin (valeur et petit
+      // symbole), avec un espace net entre les deux symboles.
       expect(centerTop).toBeGreaterThan(0);
-      expect(centerTop).toBeGreaterThan(width * (FACE_CORNER.top + FACE_CORNER.value * 1.04));
+      expect(centerTop).toBeGreaterThan(cornerBottom);
+      expect(gap).toBeGreaterThanOrEqual(width * FACE_MIN_GAP - 1e-9);
+      expect(height).toBeGreaterThan(centerTop);
       // Centré : sa largeur (≈ 0,8 em) reste dans la carte.
       expect(width * FACE_CORNER.center * 0.8).toBeLessThan(width);
     }

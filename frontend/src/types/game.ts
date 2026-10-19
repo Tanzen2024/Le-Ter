@@ -53,6 +53,8 @@ export type InstantWinCombination =
   | 'FIVE_SAME_SUIT'
   | 'FOUR_OF_A_VALUE'
   | 'THREE_AND_TWO'
+  /** « Composition de 7 » : deux 7, un 4, un 3 (D-118). */
+  | 'COMPOSITION_OF_SEVEN'
   | 'THREE_THREES';
 
 /** `OPPONENT_FLED` : partie à 2, l'adversaire s'est couché, victoire simple (D-086). */

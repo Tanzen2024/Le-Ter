@@ -21,7 +21,12 @@ export class NotificationService {
   ) {}
 
   async list(userId: UserId): Promise<{ notifications: AppNotification[]; unread: number }> {
-    const notifications = await this.repository.listNotifications(userId, NOTIFICATIONS_LIMIT);
+    // Notifications différées (D-117) : seulement celles déjà visibles sur l'horloge du serveur.
+    const notifications = await this.repository.listNotifications(
+      userId,
+      NOTIFICATIONS_LIMIT,
+      this.clock(),
+    );
     return { notifications, unread: notifications.filter((n) => !n.readAt).length };
   }
 

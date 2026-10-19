@@ -25,6 +25,7 @@ import {
 import { BackgroundTasks } from '../../utils/background-tasks';
 import { KeyedSerialQueue } from '../../utils/keyed-serial-queue';
 import type { Logger } from '../../utils/logger';
+import { announceToAdmin, type AdminEventPublisher } from '../../websocket/admin-event-bus';
 import type { DetectionGlobalSwitch } from './detection-settings.service';
 
 /** Ce qu'une analyse reçoit : UNE partie, jamais l'état d'une autre. */
@@ -59,6 +60,11 @@ export interface DetectionServiceDependencies {
    * l'étape 4). Désactivé, seuls les signaux sont enregistrés.
    */
   scoringEnabled?: boolean;
+  /**
+   * Temps réel de l'administration (D-116) : signal après l'enregistrement d'une nouvelle
+   * alerte. Facultatif et sans garantie : l'alerte est dans PostgreSQL.
+   */
+  adminEvents?: AdminEventPublisher;
 }
 
 /** Issue d'un enregistrement : `skipped` quand la détection est désactivée pour la partie. */
@@ -211,6 +217,8 @@ export class DetectionService {
       );
     const alerts = scores.flatMap((score) => alertFor(score, randomUUID()) ?? []);
     const alertsCreated = await this.deps.repository.saveScoring(gameId, scores, alerts, now);
+    if (alertsCreated > 0)
+      announceToAdmin(this.deps.adminEvents, 'DETECTION_ALERT', this.deps.logger);
     return { scores, alertsCreated };
   }
 

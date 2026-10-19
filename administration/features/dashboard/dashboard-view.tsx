@@ -23,6 +23,7 @@ import { StatusBadge } from '@/components/data/status-badge';
 import { ErrorState, EmptyState, LoadingRows } from '@/components/feedback/states';
 import { PageHeader } from '@/components/layout/page-header';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
+import { attentionQuery } from '@/features/attention/api';
 import { AuditEventLine } from '@/features/audit/audit-event-line';
 import { isPeriod, PeriodSelect, PERIODS } from '@/features/shared/period';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -37,7 +38,9 @@ function paymentsBy(data: Dashboard, status: string) {
   return data.payments.find((p) => p.status === status) ?? { count: 0, amount: 0 };
 }
 
-function Alerts({ data }: { data: Dashboard }) {
+type AlertsData = Pick<Dashboard, 'alerts' | 'reconciliationAnomalies' | 'generatedAt'>;
+
+function Alerts({ data }: { data: AlertsData }) {
   const items = [
     {
       count: data.alerts.newDetectionAlerts,
@@ -99,12 +102,17 @@ export function DashboardView() {
   const { filters, setFilter } = useListState(['periode'] as const);
   const period = isPeriod(filters.periode) ? filters.periode : '30';
   const query = useQuery(dashboardQuery(Number(period)));
+  // Points d'attention relus automatiquement (D-116) : le plus récent des deux calculs.
+  const attention = useQuery(attentionQuery());
   // Le serveur rend toujours sans données (squelettes). La même requête peut déjà être résolue
   // par la Topbar, hydratée avant le segment de la page : jusqu'à la fin de l'hydratation, on
   // rend donc le même état que le serveur ; les valeurs réelles arrivent au rendu suivant.
   const hydrated = useHydrated();
   const data = hydrated ? query.data : undefined;
   const error = hydrated ? query.error : null;
+  const live = hydrated ? attention.data : undefined;
+  const alerts: AlertsData | undefined =
+    live && (!data || live.generatedAt >= data.generatedAt) ? live : data;
   const periodLabel = PERIODS.find((p) => p.value === period)?.label.toLowerCase();
 
   return (
@@ -243,7 +251,7 @@ export function DashboardView() {
                 title="Alertes"
                 description="Points à traiter, calculés par le serveur."
               />
-              <CardBody>{data ? <Alerts data={data} /> : <LoadingRows rows={3} />}</CardBody>
+              <CardBody>{alerts ? <Alerts data={alerts} /> : <LoadingRows rows={3} />}</CardBody>
             </Card>
             <Card>
               <CardHeader

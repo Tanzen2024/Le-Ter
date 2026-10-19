@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { memo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { colors } from '../../constants/theme';
+import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
 import { ApiError } from '../../lib/api-client';
 import type {
   MyTournamentResult,
@@ -31,13 +33,64 @@ import { TournamentFrame } from './TournamentScreen';
 import { useTournamentMessages, type TournamentMessages } from './tournament-messages';
 import { formatFcfa, formatTournamentPeriod, rewardMedal } from './tournament-state';
 
-/** Ordre des colonnes du classement : rang, médaille, joueur, parties, jetons, score. */
-const COLUMNS = ['rank', 'medal', 'player', 'games', 'tokens', 'score'] as const;
+/**
+ * Ordre des colonnes du classement : rang, médaille, joueur, parties, jetons, score, puis le
+ * gain (récompense réelle attribuée par le classement officiel, D-112), toujours en dernier.
+ */
+const COLUMNS = ['rank', 'medal', 'player', 'games', 'tokens', 'score', 'prize'] as const;
+/** « Votre résultat » : grille de 5 colonnes alignées (5 cartes en haut, 3 + 2 en bas). */
+const FACT_COLUMNS = 5;
 /** Hauteur FIXE d'une ligne : un classement de centaines de joueurs défile sans à-coups. */
 const ROW_HEIGHT = 40;
 /** Élément de tête de la liste, épinglé en haut pendant le défilement. */
 const COLUMN_HEAD = 'column-head' as const;
 type RankingItem = TournamentResultView | typeof COLUMN_HEAD;
+
+type NumericColumn = Exclude<(typeof COLUMNS)[number], 'player'>;
+/** Largeurs de référence des colonnes autour du nom (écran large). */
+const BASE_WIDTHS: Record<NumericColumn, number> = {
+  rank: 44,
+  medal: 30,
+  games: 56,
+  tokens: 84,
+  score: 68,
+  prize: 96,
+};
+/** La médaille (emoji) et le rang ne se réduisent pas en dessous de ces largeurs. */
+const MIN_WIDTHS: Partial<Record<NumericColumn, number>> = { rank: 28, medal: 24 };
+const BASE_TOTAL = Object.values(BASE_WIDTHS).reduce((sum, w) => sum + w, 0);
+/** En dessous de cette largeur de tableau, l'espacement entre colonnes est réduit. */
+const COMPACT_TABLE = 560;
+
+export interface RankingLayout {
+  gap: number;
+  widths: Record<NumericColumn, number>;
+}
+
+/**
+ * Largeurs des colonnes déduites de la largeur MESURÉE du tableau : le nom du joueur garde
+ * toujours au moins ~30 % de la ligne (96 dp minimum), les colonnes chiffrées se resserrent
+ * proportionnellement sur les petits écrans (leurs nombres sont réduits, jamais coupés).
+ * Avant la mesure (largeur 0) : largeurs de référence.
+ */
+export function rankingLayout(tableWidth: number, paddingHorizontal: number): RankingLayout {
+  if (tableWidth <= 0) return { gap: 8, widths: BASE_WIDTHS };
+  const gap = tableWidth < COMPACT_TABLE ? 4 : 8;
+  const inner = tableWidth - paddingHorizontal * 2 - gap * (COLUMNS.length - 1);
+  const playerMin = Math.max(96, inner * 0.3);
+  const scale = Math.max(0.5, Math.min(1, (inner - playerMin) / BASE_TOTAL));
+  const widths = Object.fromEntries(
+    Object.entries(BASE_WIDTHS).map(([key, w]) => [
+      key,
+      Math.max(MIN_WIDTHS[key as NumericColumn] ?? 0, Math.floor(w * scale)),
+    ]),
+  ) as Record<NumericColumn, number>;
+  return { gap, widths };
+}
+
+/** Style d'une cellule : largeur calculée pour les nombres, le reste de la ligne pour le nom. */
+const columnStyle = (key: (typeof COLUMNS)[number], layout: RankingLayout) =>
+  key === 'player' ? cellStyle.player : [cellStyle[key], { width: layout.widths[key] }];
 
 const back = (fallback: string) => () =>
   router.canGoBack() ? router.back() : router.replace(fallback as never);
@@ -58,7 +111,8 @@ function HistoryList() {
   const fonts = useTableFonts();
   useTournamentSignals();
   const query = useTournamentResultsHistory();
-  const { data, isPending, isError, refetch, isRefetching, hasNextPage, fetchNextPage } = query;
+  const { data, isPending, isError, refetch, hasNextPage, fetchNextPage } = query;
+  const pull = usePullToRefresh(refetch);
   const items = data?.pages.flatMap((p) => p.tournaments) ?? [];
   const text = [styles.text, fontOf(fonts.button), { fontSize: m.bodySize }];
 
@@ -77,8 +131,8 @@ function HistoryList() {
       }}
       refreshControl={
         <RefreshControl
-          refreshing={isRefetching}
-          onRefresh={() => void refetch()}
+          refreshing={pull.refreshing}
+          onRefresh={pull.onRefresh}
           tintColor={tablePalette.gold}
         />
       }
@@ -160,21 +214,36 @@ export function TournamentOfficialResultsScreen() {
   const { tournamentId } = useLocalSearchParams<{ tournamentId: string }>();
   return (
     <TournamentFrame onBack={back('/tournament/results')}>
-      {() => (
+      {(area) => (
         <OfficialResults
           tournamentId={typeof tournamentId === 'string' ? tournamentId : undefined}
+          initialWidth={area.width}
         />
       )}
     </TournamentFrame>
   );
 }
 
-export function OfficialResults({ tournamentId }: { tournamentId: string | undefined }) {
+export function OfficialResults({
+  tournamentId,
+  initialWidth = 0,
+}: {
+  tournamentId: string | undefined;
+  /** Largeur de la zone de contenu, connue dès le premier rendu (aucun recalage des colonnes). */
+  initialWidth?: number;
+}) {
   const m = useLobbyMetrics();
+  // Colonnes calculées d'emblée sur la largeur de la zone ; la mesure ne corrige que si elle
+  // diffère (sinon les colonnes partaient de leur largeur de base puis se recalaient).
+  const [measuredWidth, setTableWidth] = useState<number | null>(null);
+  const tableWidth = measuredWidth ?? initialWidth;
+  const tablePadding = Math.round(m.gap * 0.6);
+  const layout = useMemo(() => rankingLayout(tableWidth, tablePadding), [tableWidth, tablePadding]);
   const t = useTournamentMessages();
   const fonts = useTableFonts();
   useTournamentSignals();
-  const { data, isPending, error, refetch, isRefetching } = useTournamentResults(tournamentId);
+  const { data, isPending, error, refetch } = useTournamentResults(tournamentId);
+  const pull = usePullToRefresh(refetch);
 
   if (isPending) return <Loading />;
   if (isResultsPending(error)) {
@@ -212,18 +281,25 @@ export function OfficialResults({ tournamentId }: { tournamentId: string | undef
       maxToRenderPerBatch={20}
       windowSize={7}
       contentContainerStyle={{ paddingBottom: m.gap * 2 }}
+      onLayout={(e) => setTableWidth(e.nativeEvent.layout.width)}
       refreshControl={
         <RefreshControl
-          refreshing={isRefetching}
-          onRefresh={() => void refetch()}
+          refreshing={pull.refreshing}
+          onRefresh={pull.onRefresh}
           tintColor={tablePalette.gold}
         />
       }
       ListHeaderComponent={<ResultsHeader results={data} />}
       // Réclamation sur ce classement ou sa récompense (D-114) ; accès vérifié par le serveur.
-      ListFooterComponent={<ReportProblemLink tournamentId={tournamentId} category="TOURNAMENT_REWARD" />}
+      ListFooterComponent={
+        <ReportProblemLink tournamentId={tournamentId} category="TOURNAMENT_REWARD" />
+      }
       renderItem={({ item }) =>
-        item === COLUMN_HEAD ? <ColumnHead /> : <RankingRow row={item} />
+        item === COLUMN_HEAD ? (
+          <ColumnHead layout={layout} />
+        ) : (
+          <RankingRow row={item} layout={layout} />
+        )
       }
     />
   );
@@ -274,14 +350,14 @@ function ResultsHeader({ results }: { results: OfficialTournamentResults }) {
   );
 }
 
-function ColumnHead() {
+function ColumnHead({ layout }: { layout: RankingLayout }) {
   const m = useLobbyMetrics();
   const t = useTournamentMessages();
   const fonts = useTableFonts();
   return (
     <View
       testID="tournament-results-columns"
-      style={[styles.tableHead, { paddingHorizontal: Math.round(m.gap * 0.6) }]}
+      style={[styles.tableHead, { paddingHorizontal: Math.round(m.gap * 0.6), gap: layout.gap }]}
     >
       {COLUMNS.map((key) => (
         <Text
@@ -289,7 +365,7 @@ function ColumnHead() {
           numberOfLines={1}
           style={[
             styles.headCell,
-            cellStyle[key],
+            columnStyle(key, layout),
             fontOf(fonts.button),
             { fontSize: m.smallSize - 1 },
           ]}
@@ -325,17 +401,39 @@ function MyResultCard({
   const label = [styles.factLabel, fontOf(fonts.button), { fontSize: m.smallSize - 1 }];
   const value = [styles.factValue, fontOf(fonts.button), { fontSize: m.bodySize + 1 }];
   const line = [styles.meta, fontOf(fonts.button), { fontSize: m.smallSize }];
-  const facts: [string, string][] = [
-    [t.results.mine.rank, [rewardMedal(me), `${me.rank} / ${participants}`].filter(Boolean).join(' ')],
-    [t.results.mine.score, me.score !== undefined ? number(t.locale, me.score) : '—'],
-    [t.results.mine.capital, number(t.locale, me.initialTokens, 0)],
-    [t.results.mine.remaining, number(t.locale, me.remainingTokens, 0)],
-    [t.results.mine.games, String(me.gamesPlayed)],
+  // [libellé, valeur, nombre de colonnes occupées] : 5 petites cartes en haut, puis
+  // « Pondérations » sur la largeur des 3 premières et « Gain » sur celle des 2 dernières.
+  const facts: [string, string, number][] = [
+    [
+      t.results.mine.rank,
+      [rewardMedal(me), `${me.rank} / ${participants}`].filter(Boolean).join(' '),
+      1,
+    ],
+    [t.results.mine.score, me.score !== undefined ? number(t.locale, me.score) : '—', 1],
+    [t.results.mine.capital, number(t.locale, me.initialTokens, 0), 1],
+    [t.results.mine.remaining, number(t.locale, me.remainingTokens, 0), 1],
+    [t.results.mine.games, String(me.gamesPlayed), 1],
     [
       t.results.mine.weights,
       t.results.mine.weightsValue(rules.tokensWeightPercent, rules.gamesWeightPercent),
+      3,
     ],
+    // Récompense RÉELLE du classement officiel (FCFA) ; 0 sans récompense.
+    [t.results.mine.gain, formatFcfa(me.prizeAmount), 2],
   ];
+  // Grille de FACT_COLUMNS colonnes de même largeur, déduite de la largeur mesurée : les bords
+  // des cartes du bas tombent exactement sur ceux des cartes du haut.
+  const gridGap = Math.round(m.gap * 0.5);
+  const [gridWidth, setGridWidth] = useState(0);
+  const column =
+    gridWidth > 0
+      ? Math.floor((gridWidth - gridGap * (FACT_COLUMNS - 1)) / FACT_COLUMNS)
+      : undefined;
+  const widthOf = (span: number) =>
+    column !== undefined
+      ? { width: column * span + gridGap * (span - 1) }
+      : // Avant la mesure (un instant) : proportions approchées.
+        { width: `${span * 18}%` as const };
   return (
     <View
       testID="tournament-my-result"
@@ -344,13 +442,30 @@ function MyResultCard({
       <Text style={[styles.mineTitle, fontOf(fonts.button), { fontSize: m.bodySize }]}>
         {t.results.mine.title}
       </Text>
-      <View style={[styles.facts, { gap: Math.round(m.gap * 0.5) }]}>
-        {facts.map(([k, v]) => (
-          <View key={k} style={[styles.fact, { paddingVertical: 4, paddingHorizontal: 8 }]}>
-            <Text style={label}>{k}</Text>
-            <Text style={value}>{v}</Text>
-          </View>
-        ))}
+      <View
+        testID="tournament-my-facts"
+        style={[styles.facts, { gap: gridGap }]}
+        onLayout={(e) => setGridWidth(e.nativeEvent.layout.width)}
+      >
+        {facts.map(([k, v, span]) => {
+          // La carte « Gain » (récompense réelle) est mise en évidence en vert clair.
+          const gain = k === t.results.mine.gain;
+          return (
+            <View
+              key={k}
+              testID={gain ? 'tournament-my-gain' : undefined}
+              style={[
+                styles.fact,
+                widthOf(span),
+                { paddingVertical: 4, paddingHorizontal: 8 },
+                gain && styles.factGain,
+              ]}
+            >
+              <Text style={[label, gain && styles.factGainLabel]}>{k}</Text>
+              <Text style={[value, gain && styles.factGainValue]}>{v}</Text>
+            </View>
+          );
+        })}
       </View>
       <Text style={line}>{t.results.mine.fictionalTokens}</Text>
       <Text style={line}>
@@ -364,7 +479,9 @@ function MyResultCard({
       </Text>
       {me.tieBreak ? <Text style={line}>{`⚖️ ${t.results.tieBreakA11y[me.tieBreak]}`}</Text> : null}
       {me.payout ? (
-        <Text testID="tournament-my-payout" style={line}>
+        // Récompense RÉELLE (compte de jeu) : tout en bas de la carte, sous « Parties jouées »,
+        // surlignée en vert clair, distincte des jetons fictifs.
+        <Text testID="tournament-my-payout" style={[...line, styles.payout]}>
           {me.payout.status === 'CREDITED'
             ? t.results.mine.payoutCredited(formatFcfa(me.payout.amount))
             : t.results.mine.payoutPending(formatFcfa(me.payout.amount))}
@@ -377,27 +494,38 @@ function MyResultCard({
 }
 
 /**
- * Ligne du classement : hauteur fixe, colonnes de largeur fixe autour du nom (seul à se
- * tronquer) et nombres réduits plutôt que coupés, pour que rien ne se décale. La médaille ne
+ * Ligne du classement : hauteur fixe, colonnes chiffrées de même largeur sur toutes les lignes
+ * (calculée d'après la largeur du tableau, `rankingLayout`) autour du nom (seul à se tronquer) et nombres réduits plutôt que coupés, pour que rien ne se décale. La médaille ne
  * dépend que de la récompense attribuée, la mise en évidence de ma ligne que de `isViewer`.
  */
-const RankingRow = memo(function RankingRow({ row }: { row: TournamentResultView }) {
+const RankingRow = memo(function RankingRow({
+  row,
+  layout,
+}: {
+  row: TournamentResultView;
+  layout: RankingLayout;
+}) {
   const m = useLobbyMetrics();
   const t = useTournamentMessages();
   const fonts = useTableFonts();
   const cell = (key: keyof typeof cellStyle) => [
     styles.cell,
-    cellStyle[key],
+    columnStyle(key, layout),
     fontOf(fonts.button),
     { fontSize: m.smallSize + 1 },
   ];
   const medal = rewardMedal(row);
+  // Montant officiel figé avec le classement ; tant qu'il n'est pas crédité, il est signalé
+  // « en cours de versement » (jamais présenté comme versé, D-112).
+  const prizePending = row.prizeAmount > 0 && !row.paid;
   const a11y = [
     `${t.results.columns.rank} ${row.rank}`,
     row.isViewer ? t.results.you : row.username,
     `${t.results.columns.games} ${row.gamesPlayed}`,
     `${t.results.columns.tokens} ${row.remainingTokens}`,
     row.score !== undefined ? `${t.results.columns.score} ${number(t.locale, row.score)}` : '',
+    `${t.results.columns.prize} ${formatFcfa(row.prizeAmount)}`,
+    prizePending ? t.results.prizePending : '',
     row.tieBreak ? t.results.tieBreakA11y[row.tieBreak] : '',
   ]
     .filter(Boolean)
@@ -410,7 +538,7 @@ const RankingRow = memo(function RankingRow({ row }: { row: TournamentResultView
       accessibilityLabel={a11y}
       style={[
         styles.tableRow,
-        { paddingHorizontal: Math.round(m.gap * 0.6), height: ROW_HEIGHT },
+        { paddingHorizontal: Math.round(m.gap * 0.6), height: ROW_HEIGHT, gap: layout.gap },
         medal !== undefined && styles.rewardedRow,
         row.isViewer && styles.meRow,
       ]}
@@ -444,6 +572,9 @@ const RankingRow = memo(function RankingRow({ row }: { row: TournamentResultView
       </Text>
       <Text {...fit} style={cell('score')}>
         {row.score !== undefined ? number(t.locale, row.score) : '—'}
+      </Text>
+      <Text {...fit} testID={`tournament-results-prize-${row.rank}`} style={cell('prize')}>
+        {prizePending ? `${formatFcfa(row.prizeAmount)} ⏳` : formatFcfa(row.prizeAmount)}
       </Text>
     </View>
   );
@@ -483,15 +614,27 @@ function Failure({ message, onRetry }: { message: string; onRetry?: () => void }
 }
 
 const cellStyle = StyleSheet.create({
-  rank: { width: 44, textAlign: 'center' },
-  medal: { width: 30, textAlign: 'center' },
+  rank: { textAlign: 'center' },
+  medal: { textAlign: 'center' },
   player: { flex: 1, minWidth: 0, textAlign: 'left' },
-  games: { width: 56, textAlign: 'right' },
-  tokens: { width: 84, textAlign: 'right' },
-  score: { width: 68, textAlign: 'right' },
+  games: { textAlign: 'right' },
+  tokens: { textAlign: 'right' },
+  score: { textAlign: 'right' },
+  prize: { textAlign: 'right' },
 });
 
 const styles = StyleSheet.create({
+  payout: {
+    // Pleine largeur : le texte se replie dans la carte (Android tronquait un texte
+    // « flex-start » arrondi et masqué au débordement).
+    alignSelf: 'stretch',
+    color: colors.success,
+    backgroundColor: colors.successBg,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    overflow: 'hidden',
+  },
   center: {
     flex: 1,
     alignItems: 'center',
@@ -539,8 +682,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.22)',
     alignItems: 'center',
   },
-  factLabel: { color: tablePalette.cream, opacity: 0.72 },
-  factValue: { color: tablePalette.cream },
+  factLabel: { color: tablePalette.cream, opacity: 0.72, textAlign: 'center' },
+  factValue: { color: tablePalette.cream, textAlign: 'center' },
+  factGain: { backgroundColor: '#D4F7DC', borderWidth: 1, borderColor: '#7FD99A' },
+  factGainLabel: { color: '#1B5E34', opacity: 1 },
+  factGainValue: { color: '#14532D', fontWeight: '700' },
   tableHead: {
     flexDirection: 'row',
     // Opaque : les lignes défilent SOUS l'en-tête épinglé.

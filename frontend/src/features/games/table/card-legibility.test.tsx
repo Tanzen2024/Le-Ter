@@ -82,6 +82,9 @@ describe('boutons « Main spéciale » et « Se coucher » : opaques dans tous l
     ({
       gameId: 'g-1',
       viewerId: 'me',
+      // Boutons visibles seulement pendant MON tour.
+      status: 'in_progress',
+      activePlayerId: 'me',
       players: [],
       myActions: { canPlayCard: false, playableCardIds: [], canFlee, canDeclareInstantWin },
     }) as unknown as GameView;

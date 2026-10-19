@@ -167,7 +167,10 @@ const fr = {
       score: 'Score',
       tokens: 'Jetons',
       games: 'Parties',
+      prize: 'Gain',
     },
+    /** Gain attribué, pas encore crédité (D-112). */
+    prizePending: 'versement en cours',
     you: 'Vous',
     tieBreak: 'Départagé',
     tieBreakA11y: {
@@ -182,9 +185,9 @@ const fr = {
       capital: 'Capital initial',
       remaining: 'Jetons restants',
       games: 'Parties jouées',
+      gain: 'Gain',
       weights: 'Pondérations',
-      weightsValue: (tokens: number, games: number) => `${tokens} % jetons · ${games} % parties`,
-      tokensCriterion: (ratio: string, points: string) =>
+      weightsValue: (tokens: number, games: number) => `${tokens} % jetons · ${games} % parties`,      tokensCriterion: (ratio: string, points: string) =>
         `Jetons conservés : ${ratio} du capital → ${points} pts`,
       gamesCriterion: (played: number, points: string) =>
         `Parties jouées : ${played} → ${points} pts`,
@@ -238,9 +241,19 @@ const fr = {
         return `${name} : gain de ${formatFcfa(n.payload.amount ?? 0)} crédité.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name} : le tournoi est terminé, plus de nouvelle partie à cette table.`;
+      case 'TOURNAMENT_THANK_YOU':
+        return `${name} : merci pour votre participation !`;
       case 'MODERATION_WARNING':
         return `Avertissement : ${n.payload.message ?? ''}`;
     }
+  },
+  /** Remerciement de fin de tournoi (D-117), 10 s après la publication des résultats. */
+  thanks: {
+    title: 'Merci pour votre participation !',
+    message: (date: string) =>
+      `Le tournoi du ${date} est terminé. Merci d’avoir participé à cette compétition avec Le Ter !`,
+    viewResults: 'Voir les résultats du tournoi',
+    close: 'Fermer',
   },
   locale: 'fr-FR',
 };
@@ -382,7 +395,9 @@ const en: TournamentMessages = {
       score: 'Score',
       tokens: 'Tokens',
       games: 'Games',
+      prize: 'Prize',
     },
+    prizePending: 'being credited',
     you: 'You',
     tieBreak: 'Tie-break',
     tieBreakA11y: {
@@ -397,9 +412,9 @@ const en: TournamentMessages = {
       capital: 'Starting capital',
       remaining: 'Tokens left',
       games: 'Games played',
+      gain: 'Prize',
       weights: 'Weights',
-      weightsValue: (tokens, games) => `${tokens}% tokens · ${games}% games`,
-      tokensCriterion: (ratio, points) => `Tokens kept: ${ratio} of capital → ${points} pts`,
+      weightsValue: (tokens, games) => `${tokens}% tokens · ${games}% games`,      tokensCriterion: (ratio, points) => `Tokens kept: ${ratio} of capital → ${points} pts`,
       gamesCriterion: (played, points) => `Games played: ${played} → ${points} pts`,
       notParticipant: 'You did not take part in this tournament: public ranking only.',
       prize: (amount) => `Prize: ${amount}`,
@@ -447,9 +462,18 @@ const en: TournamentMessages = {
         return `${name}: prize of ${formatFcfa(n.payload.amount ?? 0)} credited.`;
       case 'TOURNAMENT_TABLE_CLOSED':
         return `${name}: the tournament is over, no new game at this table.`;
+      case 'TOURNAMENT_THANK_YOU':
+        return `${name}: thank you for taking part!`;
       case 'MODERATION_WARNING':
         return `Warning: ${n.payload.message ?? ''}`;
     }
+  },
+  thanks: {
+    title: 'Thank you for taking part!',
+    message: (date) =>
+      `The tournament on ${date} is over. Thank you for taking part in this competition with Le Ter!`,
+    viewResults: 'View the tournament results',
+    close: 'Close',
   },
   locale: 'en-GB',
 };

@@ -1,58 +1,187 @@
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Pattern, Rect, Stop } from 'react-native-svg';
 
 import { fontOf, useTableFonts } from '../../../components/table/TableDecor';
 import { cardLabel } from '../format';
 
 /**
- * Cartes du Ter dessinées (le projet n'a pas d'images de cartes), au modèle de la capture de
- * référence : face blanche unie, grand chiffre en haut à gauche, symbole de la famille dessous,
- * grand symbole centré dans le bas ; dos bleu texturé, cadre blanc, monogramme de Le Ter.
+ * Cartes du Ter dessinées (le projet n'a pas d'images de cartes), au modèle de la planche de
+ * référence : face gris-blanc très clair à fine texture de losanges, coins arrondis, double
+ * contour clair en léger relief, valeur en haut à gauche, petit symbole de la famille dessous,
+ * puis — après un espace net — grand symbole centré dans le bas ; dos bleu texturé, inchangé.
  *
- * Couleurs classiques d'un jeu de cartes : pique et trèfle noir très foncé, cœur rouge.
- * L'étoile (★), quatrième famille du Ter, tient la place du carreau de la référence : même
- * rouge, son symbole reste l'étoile (identité de la carte inchangée). La famille d'une carte
- * se lit à son symbole ; la couleur n'est qu'un repère visuel.
+ * Couleurs : pique et trèfle anthracite, cœur rouge. L'étoile (★), quatrième famille du Ter,
+ * tient la place du carreau de la référence : même rouge, son symbole reste l'étoile (identité
+ * de la carte inchangée). La famille d'une carte se lit à son symbole ; la couleur n'est qu'un
+ * repère visuel.
  */
 const RED = '#D3202A';
-const BLACK = '#141414';
-const SUITS: Record<string, { symbol: string; color: string }> = {
+const ANTHRACITE = '#1E2125';
+
+/** Style de chaque famille, en un seul endroit (symbole et couleur). */
+export const SUIT_STYLES: Record<string, { symbol: string; color: string }> = {
   COEUR: { symbol: '♥', color: RED },
-  PIQUE: { symbol: '♠', color: BLACK },
-  TREFLE: { symbol: '♣', color: BLACK },
+  PIQUE: { symbol: '♠', color: ANTHRACITE },
+  TREFLE: { symbol: '♣', color: ANTHRACITE },
   ETOILE: { symbol: '★', color: RED },
 };
+
+/**
+ * Agrandissement du dessin du symbole, par famille : le glyphe ★ est dessiné nettement plus
+ * petit que ♥ ♠ ♣ à taille de police égale. Seule l'étoile est agrandie, sans rien changer à
+ * la mise en page de la face (tailles, positions, espace entre coin et grand symbole).
+ */
+export const SUIT_GLYPH_SCALE: Record<string, number> = { ETOILE: 1.35 };
+
+/**
+ * Couleur des SYMBOLES seuls (petit symbole du coin et grand symbole) quand elle diffère de
+ * celle de la famille : pique et trèfle sont noirs tous les deux ; le pique a des symboles noir
+ * FONCÉ, le trèfle noir LÉGER, pour les distinguer d'un coup d'œil. La valeur, le fond et le
+ * reste de la carte ne changent pas.
+ */
+export const SUIT_PIP_COLORS: Record<string, string> = { PIQUE: '#08090B', TREFLE: '#6A7079' };
+
+/**
+ * Point fixe de l'agrandissement du GRAND symbole : le bas de sa boîte (centré en largeur). Son
+ * dessin grandit vers le haut, avec la même taille, et ne touche jamais le bord bas.
+ */
+export const CENTER_GLYPH_ORIGIN = 'center bottom';
 
 /** Proportions des cartes de la référence (largeur × 1,5). */
 export const CARD_RATIO = 1.5;
 
 /**
- * Coin d'une face, en fractions de la largeur : grand chiffre en haut à gauche, symbole de la
- * famille juste dessous. Le coin tient dans le pas de la main chevauchée (valeur toujours lisible).
+ * Mise en page d'une face, en fractions de la LARGEUR (donc identique à toutes les tailles) :
+ * coin (valeur puis petit symbole) en haut à gauche, grand symbole centré en bas, avec un
+ * espace vertical net entre les deux (`faceLayout`). Le coin tient dans le pas de la main
+ * chevauchée : la valeur reste toujours lisible.
  */
 export const FACE_CORNER = {
-  value: 0.44,
+  value: 0.36,
   /** Valeur à deux chiffres (« 10 ») : un peu réduite pour rester dans le coin. */
-  valueLong: 0.34,
-  pip: 0.36,
-  top: 0.03,
-  left: 0.06,
-  /** Grand symbole centré dans le bas de la face (gros ♦ du 8 de la référence). */
-  center: 0.62,
-  /** Marge du grand symbole au-dessus du bord bas. */
-  centerBottom: 0.06,
+  valueLong: 0.3,
+  pip: 0.25,
+  top: 0.05,
+  left: 0.07,
+  /**
+   * Grand symbole centré dans le bas de la face : il occupe la moitié basse de la carte, comme
+   * sur la référence (le dessin d'un symbole ne fait qu'environ 70 % de sa taille de police).
+   */
+  center: 0.74,
+  /** Marge du grand symbole au-dessus du bord bas (l'espace sous le dessin suffit). */
+  centerBottom: 0,
 } as const;
 
-function parse(cardId: string) {
-  const [suit = '', value = ''] = cardId.split('-');
-  return { value, ...(SUITS[suit] ?? { symbol: suit, color: '#141414' }) };
+/**
+ * Espace minimal entre les BOÎTES de texte du petit symbole du coin et du grand symbole
+ * (fraction de la largeur) : jamais de chevauchement. L'espace VISIBLE entre les deux dessins
+ * est plus grand (environ 0,2 × largeur, comme la référence), les symboles ne remplissant pas
+ * leur boîte.
+ */
+export const FACE_MIN_GAP = 0.04;
+
+/** Hauteur de ligne des textes de la face (en fraction de leur taille). */
+const VALUE_LINE = 1.0;
+const PIP_LINE = 1.05;
+
+/**
+ * Hauteur de ligne RÉELLE du grand symbole sur Android (fraction de sa taille). Android rogne le
+ * haut du dessin d'un texte à la hauteur de sa ligne : avec 1,05, la place au-dessus de la ligne
+ * de base (≈ 0,87 em) aplatissait le rond supérieur du ♣ (et la pointe du ♠). Avec 1,4, le
+ * dessin a la place d'environ 1 em au-dessus de la ligne de base : jamais rogné.
+ */
+export const CENTER_PIP_DRAW_LINE = 1.4;
+
+/**
+ * Texte du grand symbole : hauteur de ligne et décalage vers le bas de sa boîte. Android répartit
+ * la hauteur ajoutée moitié au-dessus, moitié en dessous du texte : la boîte descend de cette
+ * moitié pour que le DESSIN reste exactement au même endroit, à la même taille (seule la place
+ * libre au-dessus grandit ; l'espace ajouté sous la carte est masqué par la face). Ailleurs
+ * (iOS, web), rien ne change.
+ */
+export function centerPipText(centerSize: number, os: string = Platform.OS) {
+  const layoutLine = centerSize * PIP_LINE;
+  if (os !== 'android') return { lineHeight: layoutLine, shift: 0 };
+  const lineHeight = centerSize * CENTER_PIP_DRAW_LINE;
+  return { lineHeight, shift: (lineHeight - layoutLine) / 2 };
 }
 
 /**
- * Face visible, modèle de la référence : fond blanc uni, contour fin gris clair, coins arrondis,
- * ombre légère, grand chiffre gras en haut à gauche, symbole de la famille dessous et grand
- * symbole centré dans le bas. Dans une main chevauchée, seul le coin reste visible (comme sur
- * la référence) ; la dernière carte montre aussi son grand symbole.
+ * Géométrie d'une face (en points) : bas du coin, haut du grand symbole et espace entre les
+ * deux. Proportionnelle à la largeur : l'espace reste visible sur tous les écrans.
+ */
+export function faceLayout(width: number, longValue = false) {
+  const height = width * CARD_RATIO;
+  const valueSize = Math.max(10, width * (longValue ? FACE_CORNER.valueLong : FACE_CORNER.value));
+  const pipSize = Math.max(8, width * FACE_CORNER.pip);
+  const cornerBottom = width * FACE_CORNER.top + valueSize * VALUE_LINE + pipSize * PIP_LINE;
+  // Grand symbole : taille de la référence, réduite si nécessaire (petites cartes, où les
+  // tailles minimales du coin l'agrandissent) pour garder TOUJOURS l'espace net sous le coin.
+  const room = height - width * FACE_CORNER.centerBottom - cornerBottom - width * FACE_MIN_GAP;
+  const centerSize = Math.min(width * FACE_CORNER.center, room / PIP_LINE);
+  const centerTop = height - width * FACE_CORNER.centerBottom - centerSize * PIP_LINE;
+  return {
+    height,
+    valueSize,
+    pipSize,
+    centerSize,
+    cornerBottom,
+    centerTop,
+    gap: centerTop - cornerBottom,
+  };
+}
+
+function parse(cardId: string) {
+  const [suit = '', value = ''] = cardId.split('-');
+  return { value, ...(SUIT_STYLES[suit] ?? { symbol: suit, color: ANTHRACITE }) };
+}
+
+/**
+ * Fond de la face (repère 100 × 150) : dégradé gris-blanc très clair, fine texture de losanges
+ * discrète, double contour clair (relief). Un seul petit dessin vectoriel par carte, sans image.
+ */
+function FaceBackground({ width, height }: { width: number; height: number }) {
+  return (
+    <Svg
+      width={width}
+      height={height}
+      viewBox="0 0 100 150"
+      preserveAspectRatio="none"
+      style={StyleSheet.absoluteFill}
+      testID="card-face-texture"
+    >
+      <Defs>
+        <LinearGradient id="faceFill" x1="0" y1="0" x2="0.4" y2="1">
+          <Stop offset="0" stopColor="#FBFBFC" />
+          <Stop offset="1" stopColor="#ECEDEF" />
+        </LinearGradient>
+        <Pattern id="faceLozenges" width="7" height="7" patternUnits="userSpaceOnUse">
+          <Path d="M3.5 0 L7 3.5 L3.5 7 L0 3.5 Z" fill="none" stroke="#D3D6DB" strokeWidth="0.45" />
+        </Pattern>
+      </Defs>
+      <Rect x="0" y="0" width="100" height="150" fill="url(#faceFill)" />
+      <Rect x="0" y="0" width="100" height="150" fill="url(#faceLozenges)" opacity="0.55" />
+      {/* Second contour intérieur blanc : léger relief, comme la planche de référence. */}
+      <Rect
+        x="2.2"
+        y="2.2"
+        width="95.6"
+        height="145.6"
+        rx="6"
+        fill="none"
+        stroke="#FFFFFF"
+        strokeWidth="1.6"
+        opacity="0.95"
+      />
+    </Svg>
+  );
+}
+
+/**
+ * Face visible, modèle de la planche de référence. Les dimensions viennent de l'appelant
+ * (`width`, hauteur = largeur × 1,5) ; positions, rotations, éventails et animations restent
+ * ceux des composants appelants. Dans une main chevauchée, seul le coin reste visible ; la
+ * dernière carte montre aussi son grand symbole.
  */
 export function CardFace({
   cardId,
@@ -64,15 +193,23 @@ export function CardFace({
   style?: StyleProp<ViewStyle>;
 }) {
   const { value, symbol, color } = parse(cardId);
+  const pipColor = SUIT_PIP_COLORS[cardId.split('-')[0] ?? ''] ?? color;
+  const glyphScale = SUIT_GLYPH_SCALE[cardId.split('-')[0] ?? ''] ?? 1;
+  // Agrandi sans changer la boîte du texte, donc la mise en page : le petit symbole du coin
+  // autour de son centre ; le GRAND symbole depuis le bas de sa boîte, pour que son dessin
+  // grandisse vers le haut. Agrandi autour du centre, le bas de l'étoile descendait jusqu'au
+  // bord de la carte et sa pointe était coupée (`overflow: 'hidden'` de la face). Proportionnel
+  // à la taille de la boîte : même marge sous le dessin à toutes les tailles de carte.
+  const glyph = glyphScale === 1 ? undefined : { transform: [{ scale: glyphScale }] };
+  const centerGlyph = glyph && { ...glyph, transformOrigin: CENTER_GLYPH_ORIGIN };
   // Chiffres gras et étroits, proches de la référence : Rajdhani 700, police du projet déjà
   // chargée par la table (police système grasse tant qu'elle charge).
   const fonts = useTableFonts();
-  const valueSize = Math.max(
-    10,
-    width * (value.length > 1 ? FACE_CORNER.valueLong : FACE_CORNER.value),
-  );
-  const pipSize = Math.max(8, width * FACE_CORNER.pip);
-  const centerSize = width * FACE_CORNER.center;
+  const { height, valueSize, pipSize, centerSize } = faceLayout(width, value.length > 1);
+  const centerText = centerPipText(centerSize);
+  // Petit symbole du coin : même correctif Android que le grand (rond supérieur du ♣ rogné à
+  // 1,05). Les marges négatives rendent la place ajoutée : le coin garde exactement sa hauteur.
+  const cornerText = centerPipText(pipSize);
   return (
     <View
       accessible
@@ -82,17 +219,18 @@ export function CardFace({
         styles.face,
         {
           width,
-          height: width * CARD_RATIO,
+          height,
           borderRadius: width * 0.08,
-          borderWidth: Math.max(1, width * 0.015),
+          borderWidth: Math.max(1, width * 0.012),
         },
         style,
       ]}
     >
+      <FaceBackground width={width} height={height} />
       <View
         testID="card-corner"
         style={[styles.corner, { top: width * FACE_CORNER.top, left: width * FACE_CORNER.left }]}
-        >
+      >
         <Text
           allowFontScaling={false}
           style={[
@@ -101,7 +239,7 @@ export function CardFace({
             {
               color,
               fontSize: valueSize,
-              lineHeight: valueSize * 1.04,
+              lineHeight: valueSize * VALUE_LINE,
               letterSpacing: value.length > 1 ? -valueSize * 0.08 : 0,
             },
           ]}
@@ -110,22 +248,35 @@ export function CardFace({
         </Text>
         <Text
           allowFontScaling={false}
-          style={[styles.pip, { color, fontSize: pipSize, lineHeight: pipSize * 1.05 }]}
+          style={[
+            styles.pip,
+            {
+              color: pipColor,
+              fontSize: pipSize,
+              lineHeight: cornerText.lineHeight,
+              marginVertical: -cornerText.shift,
+            },
+            glyph,
+          ]}
         >
           {symbol}
         </Text>
       </View>
-      {/* Grand symbole centré dans le bas, dessiné dans la carte (jamais coupé par les bords).
-          Décoratif : la carte est déjà annoncée par son libellé. */}
+      {/* Grand symbole centré dans le bas, séparé du coin par un espace net (`faceLayout`),
+          dessiné dans la carte (jamais coupé). Décoratif : la carte est annoncée par son libellé. */}
       <View
         testID="card-center-pip"
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
-        style={[styles.center, { bottom: width * FACE_CORNER.centerBottom }]}
+        style={[styles.center, { bottom: width * FACE_CORNER.centerBottom - centerText.shift }]}
       >
         <Text
           allowFontScaling={false}
-          style={[styles.pip, { color, fontSize: centerSize, lineHeight: centerSize * 1.05 }]}
+          style={[
+            styles.pip,
+            { color: pipColor, fontSize: centerSize, lineHeight: centerText.lineHeight },
+            centerGlyph,
+          ]}
         >
           {symbol}
         </Text>
@@ -245,12 +396,15 @@ export function PublicRow({
   width,
   step = ROW_STEP,
   reverse = false,
+  upsideDown = false,
   style,
 }: {
   cardIds: string[];
   width: number;
   step?: number;
   reverse?: boolean;
+  /** Joueur d'en face : chaque carte renversée sur place, les premières au-dessus (coin visible). */
+  upsideDown?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const count = cardIds.length;
@@ -277,6 +431,7 @@ export function PublicRow({
               ? // Vers la gauche : les premières cartes restent au-dessus, coin visible.
                 { left: (count - 1 - i) * width * step, zIndex: count - i }
               : { left: i * width * step },
+            upsideDown && { zIndex: count - i, transform: [{ rotate: '180deg' }] },
           ]}
         />
       ))}
@@ -288,11 +443,12 @@ const styles = StyleSheet.create({
   absolute: { position: 'absolute' },
   face: {
     overflow: 'hidden',
-    // Blanc uni très légèrement cassé, sans dégradé (absent de la référence).
-    backgroundColor: '#FDFDFC',
-    borderColor: '#C7C9CC',
-    // Ombre légère : effet de carte physique posée sur le feutre.
-    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
+    // Gris-blanc très clair (couleur de repli sous le dégradé texturé de FaceBackground).
+    backgroundColor: '#F4F5F6',
+    // Contour fin gris clair ; le contour intérieur blanc du fond donne le léger relief.
+    borderColor: '#C3C6CB',
+    // Ombre légère : carte légèrement surélevée, posée sur le feutre.
+    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.28)',
   },
   back: { overflow: 'hidden', boxShadow: '0 2px 5px rgba(0, 0, 0, 0.4)' },
   corner: { position: 'absolute', alignItems: 'center' },

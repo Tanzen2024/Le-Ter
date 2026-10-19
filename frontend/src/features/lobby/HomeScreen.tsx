@@ -15,6 +15,7 @@ import { useMessages } from '../../lib/i18n';
 import { ComplaintNotice } from '../complaints/ComplaintNotice';
 import { playSound } from '../../services/audio-service';
 import { HomeTournamentSummary } from '../tournaments/HomeTournamentSummary';
+import { TournamentThanksNotice } from '../tournaments/TournamentThanksNotice';
 import { useLobbyMetrics, type LobbyMetrics } from './lobby-metrics';
 import { LobbyShell, useLobbyPanels } from './LobbyShell';
 import { ModerationNotice } from './ModerationNotice';
@@ -33,6 +34,7 @@ export function HomeScreen() {
     <LobbyShell decor={<HomeDecor />}>
       <ModeSelect />
       <ComplaintNotice />
+      <TournamentThanksNotice />
       <ModerationNotice />
     </LobbyShell>
   );
@@ -147,15 +149,9 @@ function ModeSelect() {
             top: layout.cardsTop,
             height: layout.cardsBottom - layout.cardsTop,
             gap: layout.cardsGap,
+            // Fondu seul, comme les tournois : les cartes apparaissent à leur place finale,
+            // sans glissement concurrent de la transition de navigation.
             opacity: appear,
-            transform: [
-              {
-                translateY: appear.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [12, 0],
-                }),
-              },
-            ],
           },
         ]}
       >

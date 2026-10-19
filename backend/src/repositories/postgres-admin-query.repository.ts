@@ -16,6 +16,7 @@ import type {
   AdminUserRow,
   AdminWalletTransaction,
   DailyPoint,
+  AttentionCounts,
   DashboardFacts,
   FinanceOverview,
   GameListQuery,
@@ -981,26 +982,8 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
        WHERE created_at >= $1 AND created_at < $2`,
       params,
     );
-    const alerts = await this.db.query<{
-      new_alerts: number;
-      pending_approvals: number;
-      stale_payments: number;
-      overdue_turns: number;
-    }>(
-      `SELECT
-         (SELECT count(*) FROM detection_alerts WHERE status = 'NEW')::int AS new_alerts,
-         (SELECT count(*) FROM tournaments WHERE status = 'PENDING_APPROVAL')::int
-           AS pending_approvals,
-         (SELECT count(*) FROM payments WHERE status = 'PENDING'
-            AND created_at < $1::timestamptz - make_interval(mins => $2))::int AS stale_payments,
-         (SELECT count(*) FROM games WHERE status = 'in_progress'
-            AND turn_deadline_at < $1::timestamptz - make_interval(secs => $3))::int
-           AS overdue_turns`,
-      [iso(now), ADMIN_THRESHOLDS.stalePendingPaymentMinutes, ADMIN_THRESHOLDS.overdueTurnSeconds],
-    );
     const p = players.rows[0];
     const lv = live.rows[0];
-    const a = alerts.rows[0];
     return {
       players: {
         total: n(p?.total),
@@ -1022,12 +1005,34 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
         amount: n(r.amount),
       })),
       platformRevenue: n(revenue.rows[0]?.amount),
-      alerts: {
-        newDetectionAlerts: n(a?.new_alerts),
-        pendingTournamentApprovals: n(a?.pending_approvals),
-        stalePendingPayments: n(a?.stale_payments),
-        overdueTurns: n(a?.overdue_turns),
-      },
+      alerts: await this.attention(now),
+    };
+  }
+
+  async attention(now: Date): Promise<AttentionCounts> {
+    const alerts = await this.db.query<{
+      new_alerts: number;
+      pending_approvals: number;
+      stale_payments: number;
+      overdue_turns: number;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM detection_alerts WHERE status = 'NEW')::int AS new_alerts,
+         (SELECT count(*) FROM tournaments WHERE status = 'PENDING_APPROVAL')::int
+           AS pending_approvals,
+         (SELECT count(*) FROM payments WHERE status = 'PENDING'
+            AND created_at < $1::timestamptz - make_interval(mins => $2))::int AS stale_payments,
+         (SELECT count(*) FROM games WHERE status = 'in_progress'
+            AND turn_deadline_at < $1::timestamptz - make_interval(secs => $3))::int
+           AS overdue_turns`,
+      [iso(now), ADMIN_THRESHOLDS.stalePendingPaymentMinutes, ADMIN_THRESHOLDS.overdueTurnSeconds],
+    );
+    const a = alerts.rows[0];
+    return {
+      newDetectionAlerts: n(a?.new_alerts),
+      pendingTournamentApprovals: n(a?.pending_approvals),
+      stalePendingPayments: n(a?.stale_payments),
+      overdueTurns: n(a?.overdue_turns),
     };
   }
 

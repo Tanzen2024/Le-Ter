@@ -465,6 +465,13 @@ export const START_FAILURE_ALERT_THRESHOLD = 3;
 export const RESULTS_GRACE_MS = 10 * 60 * 1000;
 export const CLOSING_ALERT_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * Message de remerciement (D-117) : visible 10 s après la fin effective du tournoi, c'est-à-dire
+ * la publication du classement officiel (`resultsAt`, horloge du serveur). Les résultats sont
+ * donc toujours consultables quand il apparaît.
+ */
+export const TOURNAMENT_THANKS_DELAY_MS = 10_000;
+
 // --- Validation -----------------------------------------------------------------------------
 
 /** Paramètres d'un tournoi. Ni nom ni description : supprimés (D-060). */

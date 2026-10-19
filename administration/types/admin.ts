@@ -133,15 +133,25 @@ export interface Dashboard {
   tournaments: { status: TournamentStatus; count: number }[];
   payments: StatusAmount[];
   platformRevenue: number;
-  alerts: {
-    newDetectionAlerts: number;
-    pendingTournamentApprovals: number;
-    stalePendingPayments: number;
-    overdueTurns: number;
-  };
+  alerts: AttentionCounts;
   reconciliationAnomalies: AnomalySummary;
   series: DailyPoint[];
   recentAdminActivity: AuditEvent[];
+}
+
+/** Points d'attention (cloche, bloc « Alertes »), calculés par le serveur. */
+export interface AttentionCounts {
+  newDetectionAlerts: number;
+  pendingTournamentApprovals: number;
+  stalePendingPayments: number;
+  overdueTurns: number;
+}
+
+/** `GET /api/admin/attention` (D-116) : points d'attention seuls, relus automatiquement. */
+export interface Attention {
+  generatedAt: string;
+  alerts: AttentionCounts;
+  reconciliationAnomalies: AnomalySummary;
 }
 
 // --- Joueurs ---------------------------------------------------------------------------------

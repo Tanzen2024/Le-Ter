@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { StatCard } from '@/components/data/stat-card';
+import { attentionQuery } from '@/features/attention/api';
 import { dashboardQuery } from '@/features/dashboard/api';
 import { DashboardView } from '@/features/dashboard/dashboard-view';
 import { ApiError } from '@/lib/api/errors';
@@ -103,6 +104,12 @@ describe('Tableau de bord : hydratation', () => {
 
     const queryClient = client();
     queryClient.setQueryData(dashboardQuery().queryKey, DASHBOARD);
+    // Points d'attention (D-116), déjà lus par la Topbar comme le tableau de bord.
+    queryClient.setQueryData(attentionQuery().queryKey, {
+      generatedAt: DASHBOARD.generatedAt,
+      alerts: DASHBOARD.alerts,
+      reconciliationAnomalies: DASHBOARD.reconciliationAnomalies,
+    });
     const { recoverable } = await hydrate(html, queryClient);
 
     expect(recoverable).toEqual([]);

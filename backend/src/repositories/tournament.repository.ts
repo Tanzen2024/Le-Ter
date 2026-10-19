@@ -52,6 +52,8 @@ export type NotificationType =
   | 'TOURNAMENT_RESULTS_AVAILABLE'
   | 'TOURNAMENT_PRIZE_CREDITED'
   | 'TOURNAMENT_TABLE_CLOSED'
+  // Remerciement de fin de tournoi (D-117), visible 10 s après la publication des résultats.
+  | 'TOURNAMENT_THANK_YOU'
   // Avertissement de l'administration (D-079) : `payload.message` est le texte visible.
   | 'MODERATION_WARNING';
 
@@ -61,6 +63,8 @@ export interface NotificationDraft {
   payload: Record<string, unknown>;
   /** Unicité (joueur, clé) : un même événement n'est notifié qu'une fois. */
   dedupeKey: string;
+  /** Visible à partir de cet instant (D-117) ; absent : dès l'écriture. */
+  availableAt?: Date;
 }
 
 export interface AppNotification {
@@ -364,7 +368,8 @@ export interface TournamentRepository {
 
   readSettings(): Promise<TournamentSettings>;
 
-  listNotifications(userId: UserId, limit: number): Promise<AppNotification[]>;
+  /** Notifications déjà visibles à `now` (D-117), la plus récente d'abord. */
+  listNotifications(userId: UserId, limit: number, now: Date): Promise<AppNotification[]>;
   markNotificationRead(userId: UserId, notificationId: string, now: Date): Promise<boolean>;
 }
 

@@ -237,6 +237,8 @@ export type AppNotificationType =
   | 'TOURNAMENT_RESULTS_AVAILABLE'
   | 'TOURNAMENT_PRIZE_CREDITED'
   | 'TOURNAMENT_TABLE_CLOSED'
+  /** Remerciement de fin de tournoi (D-117), visible 10 s après la publication des résultats. */
+  | 'TOURNAMENT_THANK_YOU'
   /** Avertissement de l'administration (D-079) : `payload.message` est le texte à afficher. */
   | 'MODERATION_WARNING';
 

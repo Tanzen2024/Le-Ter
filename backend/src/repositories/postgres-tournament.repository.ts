@@ -1028,10 +1028,18 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
   async notify(notifications: NotificationDraft[], now: Date): Promise<void> {
     for (const n of notifications) {
       await this.tx.query(
-        `INSERT INTO notifications (id, user_id, type, payload, dedupe_key, created_at)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        `INSERT INTO notifications (id, user_id, type, payload, dedupe_key, created_at, available_at)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
          ON CONFLICT ON CONSTRAINT notifications_once DO NOTHING`,
-        [randomUUID(), n.userId, n.type, JSON.stringify(n.payload), n.dedupeKey, now.toISOString()],
+        [
+          randomUUID(),
+          n.userId,
+          n.type,
+          JSON.stringify(n.payload),
+          n.dedupeKey,
+          now.toISOString(),
+          n.availableAt?.toISOString() ?? null,
+        ],
       );
     }
   }
@@ -1415,7 +1423,8 @@ export class PostgresTournamentRepository implements TournamentRepository {
     return readSettings(this.db);
   }
 
-  async listNotifications(userId: UserId, limit: number): Promise<AppNotification[]> {
+  async listNotifications(userId: UserId, limit: number, now: Date): Promise<AppNotification[]> {
+    // Notification différée (D-117) : invisible avant `available_at`, puis datée de cet instant.
     const { rows } = await this.db.query<{
       id: string;
       type: AppNotification['type'];
@@ -1423,9 +1432,11 @@ export class PostgresTournamentRepository implements TournamentRepository {
       created_at: Date;
       read_at: Date | null;
     }>(
-      `SELECT id, type, payload, created_at, read_at FROM notifications WHERE user_id = $1
-       ORDER BY created_at DESC, id LIMIT $2`,
-      [userId, limit],
+      `SELECT id, type, payload, COALESCE(available_at, created_at) AS created_at, read_at
+         FROM notifications
+        WHERE user_id = $1 AND (available_at IS NULL OR available_at <= $3)
+        ORDER BY COALESCE(available_at, created_at) DESC, id LIMIT $2`,
+      [userId, limit, now.toISOString()],
     );
     return rows.map((r) => ({
       id: r.id,
@@ -1438,7 +1449,8 @@ export class PostgresTournamentRepository implements TournamentRepository {
 
   async markNotificationRead(userId: UserId, notificationId: string, now: Date): Promise<boolean> {
     const { rowCount } = await this.db.query(
-      `UPDATE notifications SET read_at = COALESCE(read_at, $3) WHERE id = $1 AND user_id = $2`,
+      `UPDATE notifications SET read_at = COALESCE(read_at, $3)
+        WHERE id = $1 AND user_id = $2 AND (available_at IS NULL OR available_at <= $3)`,
       [notificationId, userId, now.toISOString()],
     );
     return rowCount > 0;

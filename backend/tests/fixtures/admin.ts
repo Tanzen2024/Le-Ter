@@ -6,6 +6,7 @@ import request from 'supertest';
 import { createApp, type AppDependencies } from '../../src/app';
 import type { SqlClient } from '../../src/database/sql-client';
 import type { AdminLoginLimits } from '../../src/domain/admin/admin';
+import type { AdminRouterDependencies } from '../../src/routes/admin.routes';
 import { PostgresPaymentRepository } from '../../src/repositories/postgres-payment.repository';
 import { createAdminServices } from '../../src/services/admin/create-admin-services';
 import type { AuthService } from '../../src/services/auth/auth.service';
@@ -57,6 +58,9 @@ export function createAdminTestApp(
     cinetpay?: boolean;
     extra?: Partial<AppDependencies>;
     logger?: Logger;
+    /** Flux SSE de l'administration (D-116). */
+    events?: AdminRouterDependencies['events'];
+    eventStream?: AdminRouterDependencies['eventStream'];
   } = {},
 ): AdminTestContext {
   let current = new Date('2026-10-09T08:00:00Z');
@@ -91,6 +95,8 @@ export function createAdminTestApp(
       ...admin,
       loginLimits: options.loginLimits ?? NO_ADMIN_LOGIN_LIMITS,
       system: { nodeEnv: 'test', cinetpay: options.cinetpay === false ? null : 'sandbox' },
+      ...(options.events && { events: options.events }),
+      ...(options.eventStream && { eventStream: options.eventStream }),
     },
     ...options.extra,
   });

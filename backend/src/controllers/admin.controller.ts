@@ -78,6 +78,10 @@ export function createAdminController(deps: {
       res.json(await queries.dashboard(parsePeriod(q(req), queries.now())));
     },
 
+    async attention(_req: Request, res: Response): Promise<void> {
+      res.json(await queries.attention());
+    },
+
     async users(req: Request, res: Response): Promise<void> {
       res.json(await queries.listUsers(parseUserListQuery(q(req))));
     },

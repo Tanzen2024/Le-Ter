@@ -49,11 +49,11 @@ Pour les trois derniers statuts, rien n'est codé en dur.
 | Victoire instantanée | D-035 | Analyse SERVEUR des 5 cartes initiales de chaque joueur dès la distribution. Une seule main gagnante : bouton « Gagner instantanément » (facultatif). Plusieurs, meilleur rang unique : victoire automatique. Même meilleur rang : égalité, reprise immédiate. Toujours une victoire SIMPLE | TRANCHÉ (R-07, R-31) | `startGame`, `declareWin`, `resolveInstantWins` |
 | Main non gagnante | Séquence | Message, la partie continue | CONFIRMÉ | `NotAWinningHandError`, état inchangé |
 | Moment de la déclaration | D-035 | Tour 1, avant la première carte du joueur ; droit perdu ensuite | TRANCHÉ (R-07) | `declareBeforeFirstCard` |
-| Rang 6 : trois 3 | D-035 | 3 cartes de valeur 3 | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
+| Rang 7 : trois 3 | D-035, D-118 | 3 cartes de valeur 3 (rang 6 avant D-118) | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
 | Rang 4 : quatre de même valeur | D-035 | 4 cartes de même valeur | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
 | Rang 3 : cinq de même famille | D-035 | 5 cartes de la même famille | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
 | Rang 2 : somme | D-035 | Somme des 5 cartes initiales ≤ 21 (la lecture « ≥ 30 » est écartée) | TRANCHÉ (R-01) | `INSTANT_WIN_CONDITIONS` |
-| 7 + 7 + 4 + 3 | D-035 | Ne fait pas partie des six combinaisons du socle | ÉCARTÉ (R-04) | Supprimé |
+| Rang 6 : « Composition de 7 » (7 + 7 + 4 + 3) | D-118 (modifie D-035) | Deux 7, un 4 et un 3 parmi les 5 cartes initiales, familles indifférentes, 5ᵉ carte libre | TRANCHÉ (R-04, réintroduit) | `COMPOSITION_OF_SEVEN` |
 | Rang 5 : trois + deux | D-035 | 3 cartes d'une valeur + 2 d'une autre | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
 | Rang 1 : trois 7 | D-035 | 3 cartes de valeur 7, quelle que soit la famille | TRANCHÉ | `INSTANT_WIN_CONDITIONS` |
 | Plusieurs combinaisons dans une main | D-035 | Le meilleur rang (le plus petit) est retenu | TRANCHÉ (R-31) | `bestInstantWin` |

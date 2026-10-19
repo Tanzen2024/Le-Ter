@@ -13,6 +13,7 @@ import { PostgresDetectionRepository } from '../../../src/repositories/postgres-
 import { insertGameRows } from '../../../src/repositories/postgres-game.repository';
 import { DetectionService } from '../../../src/services/detection/detection.service';
 import { createLogger } from '../../../src/utils/logger';
+import type { AdminEvent, AdminEventPublisher } from '../../../src/websocket/admin-event-bus';
 import { finishedGame } from '../../fixtures/detection-history';
 import {
   createMigratedDatabase,
@@ -67,12 +68,19 @@ async function game(enabled: boolean, players: PlayerId[]): Promise<GameId> {
   return g.id;
 }
 
-const detection = (options: { clock?: () => Date; repository?: DetectionRepository } = {}) =>
+const detection = (
+  options: {
+    clock?: () => Date;
+    repository?: DetectionRepository;
+    adminEvents?: AdminEventPublisher;
+  } = {},
+) =>
   new DetectionService({
     globalSwitch: GLOBAL_DETECTION_ON,
     repository: options.repository ?? new PostgresDetectionRepository(database.sql),
     logger: createLogger({}, () => undefined),
     clock: options.clock ?? (() => NOW),
+    ...(options.adminEvents && { adminEvents: options.adminEvents }),
   });
 
 const C3 = GEOLOCATION_CONFIG.contributions;
@@ -204,6 +212,32 @@ describe('Score et alertes', () => {
       ...veryHighExtra([A, B]).map((d) => ({ ...d, contribution: 100 })),
     ]);
     expect((await detection().listScores(gameId))[0]).toMatchObject({ score: 100 });
+  });
+});
+
+describe('Temps réel de l’administration (D-116)', () => {
+  it('signal DETECTION_ALERT après une NOUVELLE alerte seulement ; un signal en échec ne casse rien', async () => {
+    const events: AdminEvent[] = [];
+    const service = detection({ adminEvents: { publish: (e) => events.push(e) } });
+    const gameId = await game(true, [A, B]);
+    await service.recordSignals(gameId, [draft('CONNECTION_PATTERN', [A, B], 10)]);
+    expect(events).toEqual([]); // score LOW : aucune alerte
+    await service.recordSignals(gameId, highPair([A, B]));
+    expect(events).toEqual([{ type: 'attention', source: 'DETECTION_ALERT' }]);
+    await service.recordSignals(gameId, highPair([A, B])); // doublon : aucune nouvelle alerte
+    expect(events).toHaveLength(1);
+
+    const failing = detection({
+      adminEvents: {
+        publish: () => {
+          throw new Error('Redis indisponible');
+        },
+      },
+    });
+    const other = await game(true, [A, C]);
+    await expect(failing.recordSignals(other, highPair([A, C]))).resolves.toMatchObject({
+      alertsCreated: 1,
+    });
   });
 });
 

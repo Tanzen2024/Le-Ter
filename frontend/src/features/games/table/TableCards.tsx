@@ -126,12 +126,22 @@ export function publicRowBox(row: PublicRowZone, count: number, cardWidth = row.
 export const PLAYED_ZONE_PAD = 0.08;
 
 /**
- * Cadre de la zone « cartes jouées » d'un siège (référence annotée, zones 1 à 4) : exactement
- * la place réservée aux 5 cartes possibles. Toujours de la même taille, même vide : il ne
+ * Cadre de la zone « cartes jouées » d'un siège (référence annotée, zones 1 à 4) : ajusté aux
+ * 5 cartes possibles TELLES QU'ELLES SONT DESSINÉES (`playedRowIn`), avec la même fine marge
+ * tout autour. Un peu moins large que la place réservée (qui suppose des cartes pleine taille),
+ * même hauteur, collé au même bord (côté table). Toujours de la même taille, même vide : il ne
  * bouge jamais au fil des tours et ne déborde jamais sur ses voisins.
  */
 export function playedZoneRect(row: PublicRowZone): Rect {
-  return publicRowBox(row, MAX_HAND_CARDS);
+  const inner = playedRowIn(row);
+  const pad = inner.top - row.top;
+  const cards = publicRowBox(inner, MAX_HAND_CARDS);
+  return {
+    left: cards.left - pad,
+    top: row.top,
+    width: cards.width + pad * 2,
+    height: row.cardWidth * CARD_RATIO,
+  };
 }
 
 /**
@@ -215,6 +225,7 @@ export function PlayedCardsZone({ zone, label }: { zone: PlayedZone; label: stri
           width={row.cardWidth}
           step={row.step}
           reverse={row.reverse}
+          upsideDown={zone.side === 'top'}
           style={(({ left, top }) => ({ left, top }))(publicRowBox(row, cardIds.length))}
         />
       ) : null}
@@ -739,7 +750,8 @@ export function PlayedCardSpotlight({
             {
               rotate: move.interpolate({
                 inputRange: [0, 1],
-                outputRange: [`${angle}deg`, '0deg'],
+                // Joueur d'en face : sa carte reste renversée dans sa rangée (`PublicRow`).
+                outputRange: [`${angle}deg`, angle === SPOT_ANGLE.top ? `${angle}deg` : '0deg'],
               }),
             },
           ],

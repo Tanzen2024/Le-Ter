@@ -185,13 +185,31 @@ describe('zones des cartes jouées', () => {
     expect(zonesOf(game).flatMap((z) => z.cardIds)).not.toContain('ETOILE-3');
   });
 
-  it('cadre = place réservée aux 5 cartes ; cartes dessinées dedans, légèrement réduites', () => {
+  it('cadre ajusté aux 5 cartes dessinées (même marge partout), un peu moins large que la place réservée', () => {
     const L = computeGameTableLayout(m, { topSeat: true });
     for (const side of ['bottom', 'right', 'top', 'left'] as const) {
       const reserved = seatZones(side, L, m).publicRow;
       const frame = playedZoneRect(reserved);
       const inner = publicRowBox(playedRowIn(reserved), MAX_HAND_CARDS);
-      expect(frame).toEqual(publicRowBox(reserved, MAX_HAND_CARDS));
+      const place = publicRowBox(reserved, MAX_HAND_CARDS);
+      // Légèrement moins large, même hauteur, dans la place réservée (aucun débordement).
+      expect(frame.width).toBeLessThan(place.width);
+      expect(frame.width).toBeGreaterThan(place.width * 0.85);
+      expect(frame.height).toBeCloseTo(place.height);
+      expect(frame.top).toBe(place.top);
+      expect(frame.left).toBeGreaterThanOrEqual(place.left - 1e-9);
+      expect(frame.left + frame.width).toBeLessThanOrEqual(place.left + place.width + 1e-9);
+      // Collé au bord côté table : à gauche, ou à droite pour une rangée inversée.
+      if (reserved.reverse) {
+        expect(frame.left + frame.width).toBeCloseTo(place.left + place.width);
+      } else {
+        expect(frame.left).toBeCloseTo(place.left);
+      }
+      // Même marge à gauche, à droite, en haut et en bas des cartes dessinées.
+      const pad = inner.top - frame.top;
+      expect(inner.left - frame.left).toBeCloseTo(pad);
+      expect(frame.left + frame.width - (inner.left + inner.width)).toBeCloseTo(pad);
+      expect(frame.top + frame.height - (inner.top + inner.height)).toBeCloseTo(pad);
       expect(inner.left).toBeGreaterThan(frame.left);
       expect(inner.top).toBeGreaterThan(frame.top);
       expect(inner.left + inner.width).toBeLessThan(frame.left + frame.width);

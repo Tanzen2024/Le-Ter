@@ -19,11 +19,13 @@ import {
   tablePalette,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
 import type { TournamentView } from '../../types/tournament';
 import { useLobbyMetrics, type LobbyMetrics } from '../lobby/lobby-metrics';
 import { LobbyShell } from '../lobby/LobbyShell';
 import { useMyTournaments, useTournamentList } from './hooks';
 import { StatusChip } from './TournamentDetailPanel';
+import { TournamentThanksNotice } from './TournamentThanksNotice';
 import { groupTournaments } from './tournament-groups';
 import { useTournamentMessages } from './tournament-messages';
 import {
@@ -52,6 +54,7 @@ export function TournamentScreen() {
           <ProposeLink />
         </View>
       }
+      overlay={<TournamentThanksNotice />}
     >
       {(area) => <TournamentList area={area} />}
     </TournamentFrame>
@@ -85,16 +88,20 @@ function computeFrame(m: LobbyMetrics) {
 export function TournamentFrame({
   onBack,
   action,
+  overlay,
   children,
 }: {
   onBack: () => void;
   /** Lien facultatif sous le bandeau, aligné à droite (ex. « Proposer un tournoi »). */
   action?: ReactNode;
+  /** Message affiché par-dessus tout l'écran (ex. remerciement de fin de tournoi, D-117). */
+  overlay?: ReactNode;
   children: (area: TournamentArea) => ReactNode;
 }) {
   return (
     <LobbyShell decor={<TournamentDecor />} onBack={onBack}>
       <FrameContent action={action}>{children}</FrameContent>
+      {overlay}
     </LobbyShell>
   );
 }
@@ -224,7 +231,8 @@ function TournamentList({ area }: { area: TournamentArea }) {
   const m = useLobbyMetrics();
   const t = useTournamentMessages();
   const fonts = useTableFonts();
-  const { data, isPending, isError, refetch, isRefetching } = useTournamentList();
+  const { data, isPending, isError, refetch } = useTournamentList();
+  const pull = usePullToRefresh(refetch);
   // Mes propositions (GET /api/tournaments/mine : créateur = identité du jeton, côté serveur).
   // Un simple inscrit n'y figure pas ; la liste publique n'expose jamais le créateur.
   const myProposals = useMyTournaments();
@@ -272,8 +280,8 @@ function TournamentList({ area }: { area: TournamentArea }) {
       }}
       refreshControl={
         <RefreshControl
-          refreshing={isRefetching}
-          onRefresh={() => void refetch()}
+          refreshing={pull.refreshing}
+          onRefresh={pull.onRefresh}
           tintColor={tablePalette.gold}
         />
       }

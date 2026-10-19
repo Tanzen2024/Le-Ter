@@ -20,7 +20,7 @@
 | Contrôle à chaque requête `/api/admin/*` | `requireAdminSession` | durée absolue (8 h) et inactivité (30 min) vérifiées par le serveur ; activité enregistrée (au plus toutes les 15 s) |
 | Expiration | `AdminSessionRepository.end` | session terminée, **refresh tokens révoqués**, audit `ADMIN_SESSION_EXPIRED`, 401 |
 | Borne du refresh token | `refresh_tokens.session_expires_at` | aucune rotation (même par `/api/auth/refresh`) ne prolonge un jeton admin au-delà de 8 h ; sessions des joueurs : `NULL`, inchangées |
-| Pas de rafraîchissement automatique | `app/providers.tsx` | aucune requête de fond ne maintient artificiellement la session |
+| Pas de rafraîchissement automatique qui prolonge la session | `app/providers.tsx`, `X-Admin-Passive` (D-116) | seules les relectures **passives** des points d'attention et le flux `/api/admin/events` tournent en fond ; contrôlées comme les autres, elles n'enregistrent jamais d'activité : la session expire toujours après 30 min sans action |
 | Jeton mobile d'un compte admin | `requireAdminSession` | 401 `ADMIN_SESSION_REQUIRED` |
 
 **Incompatibilité assumée** : les écrans `frontend/app/admin/**` du mobile utilisent une

@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../src/components/ui/Button';
@@ -255,11 +255,15 @@ export default function RegisterScreen() {
 
 /**
  * Changement d'étape : léger fondu avec un glissement de quelques points (180 ms), rien si
- * l'utilisateur a demandé de réduire les animations.
+ * l'utilisateur a demandé de réduire les animations. Jamais à l'ouverture de l'écran : le
+ * formulaire, déjà affiché, disparaissait puis glissait (l'écran semblait trembler en arrivant).
  */
 function useStepTransition(step: 1 | 2) {
   const [value] = useState(() => new Animated.Value(1));
+  const shownStep = useRef(step);
   useEffect(() => {
+    if (shownStep.current === step) return;
+    shownStep.current = step;
     let cancelled = false;
     let animation: Animated.CompositeAnimation | undefined;
     void AccessibilityInfo.isReduceMotionEnabled()

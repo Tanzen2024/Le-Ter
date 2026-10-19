@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
+import type { TournamentId } from '../../../src/domain/tournaments/tournament';
 import type { UserId } from '../../../src/domain/users/user';
+import { PostgresTournamentRepository } from '../../../src/repositories/postgres-tournament.repository';
 import { InsufficientBalanceError } from '../../../src/domain/wallet/wallet';
 import { PostgresWalletRepository } from '../../../src/repositories/postgres-wallet.repository';
 import {
@@ -155,22 +157,91 @@ describe('capture', () => {
 });
 
 describe('gain de tournoi', () => {
+  // D-112 / migration 0045 : un gain `tournament_prize` n'existe que comme preuve de crédit
+  // d'une ligne CREDITED du plan de versement (même joueur, montant, référence), écrite dans
+  // la MÊME transaction — exactement ce que fait TournamentService.distributeOne.
+  const prizeKey = () => `tournament-prize:${tournamentId}:1`;
+
+  /** Classement officiel (rang 1) et sa ligne du plan de versement, en attente. */
+  async function seedPayout(amount: number) {
+    await database.sql.query(
+      `INSERT INTO tournament_results (tournament_id, rank, player_id, initial_tokens,
+         remaining_tokens, games_played, games_won, prize_share_bps, prize_amount, created_at)
+       VALUES ($1, 1, $2, 1000, 1000, 0, 0, 10000, $3, now())`,
+      [tournamentId, player, amount],
+    );
+    await database.sql.query(
+      `INSERT INTO tournament_payouts (tournament_id, rank, player_id, amount, idempotency_key,
+         status, created_at)
+       VALUES ($1, 1, $2, $3, $4, 'PENDING', now())`,
+      [tournamentId, player, amount, prizeKey()],
+    );
+  }
+
+  /** Versement par le flux métier : crédit du compte de jeu + versement CREDITED, ensemble. */
+  const payPrize = (amount: number) =>
+    new PostgresTournamentRepository(database.sql).transaction(async (uow) => {
+      const now = new Date();
+      const credit = await uow.creditPrize({
+        userId: player!,
+        amount,
+        idempotencyKey: prizeKey(),
+        now,
+      });
+      await uow.markPayoutCredited(tournamentId as TournamentId, 1, credit.transactionId, now);
+      return credit;
+    });
+
+  /** Reprise du seul crédit (même clé), comme après une panne entre deux tentatives. */
+  const creditAgain = (amount: number) =>
+    database.sql.transaction((tx) =>
+      creditTournamentPrize(tx, {
+        userId: player!,
+        amount,
+        idempotencyKey: prizeKey(),
+        now: new Date(),
+      }),
+    );
+
+  const payout = async () =>
+    (
+      await database.sql.query<{ status: string; wallet_transaction_id: string | null }>(
+        'SELECT status, wallet_transaction_id FROM tournament_payouts WHERE tournament_id = $1',
+        [tournamentId],
+      )
+    ).rows[0];
+
   it('crédité une seule fois par clé d’idempotence', async () => {
-    const credit = () =>
-      database.sql.transaction((tx) =>
-        creditTournamentPrize(tx, {
-          userId: player!,
-          amount: 45_000,
-          idempotencyKey: `tournament-prize:${tournamentId}:1`,
-          now: new Date(),
-        }),
-      );
-    const first = await credit();
-    const again = await credit();
+    await seedPayout(45_000);
+    const first = await payPrize(45_000);
+    const again = await creditAgain(45_000);
     expect(first.credited).toBe(true);
     expect(again).toEqual({ transactionId: first.transactionId, credited: false });
     expect(await transactions('tournament_prize')).toEqual([45_000]);
     expect((await balances(database.sql, player!)).balance).toBe(50_000);
+    // Plan et compte de jeu cohérents : le versement pointe sur l'unique crédit.
+    expect(await payout()).toEqual({
+      status: 'CREDITED',
+      wallet_transaction_id: first.transactionId,
+    });
+    // Un second versement du même rang est refusé et n'écrit rien.
+    await expect(payPrize(45_000)).rejects.toThrow(/déjà crédité/);
+    expect(await transactions('tournament_prize')).toEqual([45_000]);
+    expect((await balances(database.sql, player!)).balance).toBe(50_000);
+  });
+
+  it('refuse un gain sans ligne du plan de versement (trigger 0045) et n’écrit rien', async () => {
+    await expect(creditAgain(45_000)).rejects.toThrow(/sans ligne créditée du plan de versement/);
+    expect(await transactions('tournament_prize')).toEqual([]);
+    expect((await balances(database.sql, player!)).balance).toBe(5000);
+  });
+
+  it('refuse un crédit dont le montant diffère du plan et laisse le versement en attente', async () => {
+    await seedPayout(45_000);
+    await expect(payPrize(50_000)).rejects.toThrow(/crédit incohérent avec le plan/);
+    expect(await transactions('tournament_prize')).toEqual([]);
+    expect((await balances(database.sql, player!)).balance).toBe(5000);
+    expect(await payout()).toEqual({ status: 'PENDING', wallet_transaction_id: null });
   });
 
   it('un achat après une réservation augmente le disponible', async () => {

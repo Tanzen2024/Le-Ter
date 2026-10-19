@@ -28,6 +28,7 @@ continuité des numéros.
 | 0025_tournament_weighted_ranking | **non** | **Tournois** : classement pondéré (D-062) | 0021, 0024 |
 | 0026_tournament_table_auto_start | **non** | **Tournois** : démarrage des tables à 20 s (D-065) ; ajout de 2 colonnes à `games`, aucune donnée modifiée | 0001 |
 | 0043_tournament_closure_results | oui (cette session) | **Tournois** : rattachement explicite `games.tournament_id`, méthode de classement figée au démarrage, audit et immuabilité du classement, clôture sans annulation forcée (D-106) ; ajouts et triggers, parties existantes rattachées | 0021, 0025, 0026 |
+| 0048_tournament_thank_you_notification | oui (cette session) | **Tournois** : remerciement de fin de tournoi (D-117) ; colonne `notifications.available_at` (NULL = visible dès la création) et type `TOURNAMENT_THANK_YOU` ; aucune donnée modifiée | 0021, 0047 |
 
 Constats :
 

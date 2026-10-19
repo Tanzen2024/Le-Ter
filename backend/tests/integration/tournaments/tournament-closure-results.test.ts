@@ -517,6 +517,122 @@ describe('classement officiel et consultation des résultats', () => {
   });
 });
 
+describe('remerciement 10 s après la fin effective du tournoi (D-117)', () => {
+  const thanksOf = async (p: Player) =>
+    (await get(p, '/api/notifications').expect(200)).body.notifications.filter(
+      (n: { type: string }) => n.type === 'TOURNAMENT_THANK_YOU',
+    ) as { id: string; payload: Record<string, unknown>; createdAt: string; readAt?: string }[];
+  const storedThanks = async (tournamentId: string) =>
+    (
+      await database.sql.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM notifications
+          WHERE type = 'TOURNAMENT_THANK_YOU' AND payload->>'tournamentId' = $1`,
+        [tournamentId],
+      )
+    ).rows[0]!.n;
+
+  async function completedTournament(): Promise<Tournament> {
+    const t = await startedTournament();
+    const { gameId } = await startTable(t);
+    await playOut(gameId);
+    stack.clock.set(t.endsAt);
+    const done = await stack.tournaments.advance(t.id);
+    expect(done.status).toBe('COMPLETED');
+    return done;
+  }
+
+  it('invisible avant 10 s, puis une fois par participant, sur le bon tournoi, résultats consultables', async () => {
+    const t = await completedTournament();
+    const resultsAt = t.resultsAt!.getTime();
+    // Fin effective = publication du classement : jamais avant les 10 s qui la suivent.
+    expect(await thanksOf(ana)).toEqual([]);
+    stack.clock.set(new Date(resultsAt + 9_999));
+    expect(await thanksOf(ana)).toEqual([]);
+    expect(signals.some((e) => e.notificationType === 'TOURNAMENT_THANK_YOU')).toBe(false);
+
+    stack.clock.set(new Date(resultsAt + 10_000));
+    const [thanks, ...others] = await thanksOf(ana);
+    expect(others).toEqual([]);
+    expect(thanks!.payload).toEqual({ tournamentId: t.id, startsAt: t.startsAt.toISOString() });
+    // Daté de l'instant où il devient visible (horloge du serveur).
+    expect(Date.parse(thanks!.createdAt)).toBe(resultsAt + 10_000);
+    expect(thanks!.readAt).toBeUndefined();
+    // Le lien mène à un classement déjà publié.
+    await get(ana, `/api/tournaments/${t.id}/results`).expect(200);
+    expect(await thanksOf(ben)).toHaveLength(1);
+    expect(await storedThanks(t.id)).toBe(20);
+  });
+
+  it('absent puis de retour, redémarrage, relance de la clôture, consultations : jamais de doublon', async () => {
+    const t = await completedTournament();
+    // Joueur absent : rien ne dépend d'un minuteur, la notification attend dans PostgreSQL.
+    const clock = stack.clock;
+    await stack.stop();
+    stack = newStack(clock);
+    ana = { ...ana, token: (await login(stack.app, ana.email, ana.password)).accessToken };
+    stack.clock.set(new Date(t.resultsAt!.getTime() + 3 * HOUR));
+    expect(await thanksOf(ana)).toHaveLength(1);
+    // Relance du traitement serveur et consultations répétées : rien de nouveau.
+    await stack.tournaments.advance(t.id);
+    await stack.scheduler.tick();
+    for (let i = 0; i < 3; i++) {
+      await get(ana, `/api/tournaments/${t.id}/results`).expect(200);
+      await get(ana, '/api/notifications').expect(200);
+    }
+    expect(await storedThanks(t.id)).toBe(20);
+
+    // Lu/non lu existant : marquée lue une fois pour toutes, sans doublon.
+    const [thanks] = await thanksOf(ana);
+    await request(stack.app)
+      .post(`/api/notifications/${thanks!.id}/read`)
+      .set('Authorization', `Bearer ${ana.token}`)
+      .expect(200);
+    const after = await thanksOf(ana);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.readAt).toBeDefined();
+  });
+
+  it('avant son heure, une notification ne peut pas être marquée lue', async () => {
+    const t = await completedTournament();
+    const { rows } = await database.sql.query<{ id: string }>(
+      `SELECT id FROM notifications WHERE type = 'TOURNAMENT_THANK_YOU' AND user_id = $1`,
+      [ana.id],
+    );
+    expect(await stack.notifications.markRead(ana.id, rows[0]!.id)).toBe(false);
+    stack.clock.set(new Date(t.resultsAt!.getTime() + 10_000));
+    expect(await stack.notifications.markRead(ana.id, rows[0]!.id)).toBe(true);
+  });
+
+  it('signal temps réel émis 10 s après la publication, à chaque participant', async () => {
+    // Minuteur observé, jamais attendu : seul le délai de 10 s est capturé puis déclenché.
+    const delayed: { run: () => void; ms: number }[] = [];
+    const realSetTimeout = global.setTimeout;
+    const spy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      run: () => void,
+      ms?: number,
+    ) => {
+      // Seul le minuteur du remerciement est capturé ; les autres (bibliothèques) passent.
+      if (ms === 10_000 && String(run).includes('TOURNAMENT_THANK_YOU')) {
+        delayed.push({ run, ms });
+        return { unref: () => undefined } as unknown as NodeJS.Timeout;
+      }
+      return realSetTimeout(run, ms);
+    }) as typeof setTimeout);
+    try {
+      const t = await completedTournament();
+      expect(signals.filter((e) => e.notificationType === 'TOURNAMENT_THANK_YOU')).toEqual([]);
+      expect(delayed).toHaveLength(1);
+      delayed[0]!.run();
+      const thanks = signals.filter((e) => e.notificationType === 'TOURNAMENT_THANK_YOU');
+      expect(thanks).toHaveLength(20);
+      expect(new Set(thanks.map((e) => e.userId)).size).toBe(20);
+      expect(thanks.every((e) => e.tournamentId === t.id)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('contexte du tournoi pendant le jeu et tournoi suivant', () => {
   it('HUD : jetons et parties de CE tournoi, rang provisoire, jamais le compte de jeu', async () => {
     const t = await startedTournament();

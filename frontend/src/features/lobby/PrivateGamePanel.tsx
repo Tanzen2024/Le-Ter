@@ -437,8 +437,10 @@ function tableColumns(m: LobbyMetrics, width: number) {
     lock: { width: Math.round(font * 1.6) },
     shield: { width: Math.round(font * 1.6) },
     name: { flexGrow: 38, flexBasis: 0, minWidth: 0 },
-    stake: { flexGrow: 16, flexBasis: 0, minWidth: Math.round(font * 3.9) },
-    players: { flexGrow: 20, flexBasis: 0, minWidth: Math.round(font * 4.6) },
+    // Minimums mesurés dans la police des cellules (Rajdhani Bold) : « 12366 » + jeton ≈ 3,76 ×,
+    // « Joueurs » ≈ 3,36 × la taille ; le reste va au Nom, lisible sur smartphone.
+    stake: { flexGrow: 16, flexBasis: 0, minWidth: Math.round(font * 3.8) },
+    players: { flexGrow: 20, flexBasis: 0, minWidth: Math.round(font * 3.4) },
     action: { width: join },
   };
 }
@@ -510,7 +512,13 @@ function GameRow({
           <ShieldIndicator enabled={guarded} size={Math.round(c.font * 0.95)} fontSize={c.font} />
         </View>
       ) : null}
-      <Text numberOfLines={1} ellipsizeMode="tail" style={[cell, styles.left, c.name]}>
+      <Text
+        numberOfLines={2}
+        ellipsizeMode="tail"
+        adjustsFontSizeToFit
+        minimumFontScale={0.8}
+        style={[cell, styles.left, c.name]}
+      >
         {mine ? '⭐ ' : ''}
         {name}
       </Text>

@@ -45,5 +45,6 @@ export const INSTANT_WIN_LABELS: Record<string, string> = {
   FIVE_SAME_SUIT: 'Cinq cartes de la même famille',
   FOUR_OF_A_VALUE: 'Quatre cartes de même valeur',
   THREE_AND_TWO: 'Trois + deux',
+  COMPOSITION_OF_SEVEN: 'Composition de 7',
   THREE_THREES: 'Trois 3',
 };
