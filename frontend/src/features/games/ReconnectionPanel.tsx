@@ -1,6 +1,7 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { PanelButton } from '../lobby/LobbyUi';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 
@@ -35,19 +36,13 @@ export function ReconnectionPanel({
   const failed = state === 'failed';
   const width = Math.min(m.availableWidth - 32, 420);
   return (
-    <View
-      style={[
-        styles.veil,
-        {
-          paddingTop: insets.top + 16,
-          paddingBottom: insets.bottom + 16,
-          paddingLeft: insets.left + 16,
-          paddingRight: insets.right + 16,
-        },
-      ]}
-      // Le voile reçoit tous les appuis : la table en dessous reste inaccessible.
-      onStartShouldSetResponder={() => true}
-      accessibilityViewIsModal
+    <ExclusiveOverlay
+      style={{
+        paddingTop: insets.top + 16,
+        paddingBottom: insets.bottom + 16,
+        paddingLeft: insets.left + 16,
+        paddingRight: insets.right + 16,
+      }}
       testID="reconnection-panel"
     >
       <View
@@ -72,19 +67,11 @@ export function ReconnectionPanel({
           <ActivityIndicator color={tablePalette.cream} accessibilityLabel="Reconnexion en cours" />
         )}
       </View>
-    </View>
+    </ExclusiveOverlay>
   );
 }
 
 const styles = StyleSheet.create({
-  veil: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
-    zIndex: 100,
-    elevation: 100,
-  },
   panel: {
     maxWidth: '100%',
     alignItems: 'center',

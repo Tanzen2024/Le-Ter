@@ -15,6 +15,7 @@ import { CinetPayError } from '../services/payments/cinetpay/cinetpay-client';
 import { unavailableMessageOf } from '../services/payments/payment-failure';
 import { DepositOutcomeUnknownError } from '../services/wallet/mobile-money.gateway';
 import { STATUS_CODES } from 'node:http';
+import { GARAM_VARIANT_REQUIRED } from '../domain/garam/garam-rules';
 
 import { toAdminApiError } from './admin-errors';
 import { toPlatformFinanceApiError } from './platform-finance-errors';
@@ -52,6 +53,9 @@ import {
   CardNotInHandError,
   CardNotPlayableError,
   FleeNotAllowedError,
+  ActionNotAvailableForGameError,
+  GaramActionNotAllowedError,
+  StakeVoteInProgressError,
   GameAccessDeniedError,
   FirstPlayerNotInGameError,
   GameAlreadyStartedError,
@@ -67,6 +71,7 @@ import {
   GameVersionConflictError,
   IdempotencyKeyReuseError,
   InvalidStatusTransitionError,
+  InvalidGaramVariantError,
   InvalidPlayerCountError,
   NotAWinningHandError,
   NotYourTurnError,
@@ -104,6 +109,8 @@ import {
   AuthenticationRequiredError,
   CONFLICT_MESSAGES,
   CurrentPasswordIncorrectError,
+  RecoveryFailedError,
+  ResetGrantInvalidError,
   InvalidCredentialsError,
   InvalidRefreshTokenError,
   RegistrationConflictError,
@@ -170,6 +177,17 @@ const RULE_VIOLATIONS: readonly [abstract new (...args: never[]) => Error, strin
     'Vous ne pouvez pas déclarer une main gagnante maintenant.',
   ],
   [FleeNotAllowedError, 'FLEE_NOT_ALLOWED', 'Vous ne pouvez pas fuir maintenant.'],
+  [GaramActionNotAllowedError, 'GARAM_ACTION_NOT_ALLOWED', 'Action impossible à ce moment de la manche.'],
+  [
+    ActionNotAvailableForGameError,
+    'ACTION_NOT_AVAILABLE_FOR_GAME',
+    "Cette action n'existe pas dans ce jeu.",
+  ],
+  [
+    StakeVoteInProgressError,
+    'STAKE_VOTE_IN_PROGRESS',
+    'La proposition de doubler la mise est en cours.',
+  ],
   [GameNotInProgressError, 'GAME_NOT_IN_PROGRESS', "La partie n'a pas encore commencé."],
   [
     GameNotEnoughPlayersError,
@@ -441,6 +459,13 @@ export function toApiError(err: unknown): ApiError | undefined {
       fields: { currentPassword: err.message },
     });
   }
+  // Récupération par code (D-135) : un seul message, quelle que soit la raison.
+  if (err instanceof RecoveryFailedError) {
+    return apiError(400, 'RECOVERY_FAILED', err.message);
+  }
+  if (err instanceof ResetGrantInvalidError) {
+    return apiError(400, 'RESET_GRANT_INVALID', err.message);
+  }
   if (err instanceof InvalidRefreshTokenError) {
     return apiError(401, 'INVALID_REFRESH_TOKEN', err.message);
   }
@@ -539,6 +564,11 @@ export function toApiError(err: unknown): ApiError | undefined {
   if (err instanceof InvalidGameIdError) {
     return apiError(400, 'VALIDATION_ERROR', 'Identifiant de partie invalide.', {
       fields: { gameId: 'Identifiant de partie invalide.' },
+    });
+  }
+  if (err instanceof InvalidGaramVariantError) {
+    return apiError(400, 'VALIDATION_ERROR', GARAM_VARIANT_REQUIRED, {
+      fields: { garamVariant: GARAM_VARIANT_REQUIRED },
     });
   }
   if (err instanceof InvalidPlayerCountError) {

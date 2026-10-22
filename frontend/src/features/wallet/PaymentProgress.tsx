@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
@@ -18,17 +19,26 @@ export function PaymentProgress({
   initial,
   doneLabel,
   onDone,
+  onFinal,
 }: {
   paymentId: string;
   /** Paiement renvoyé à la création (affiché en attendant la première lecture). */
   initial?: PaymentView;
   doneLabel: string;
   onDone: () => void;
+  /** Statut final relu sur le serveur (une fois par paiement et par statut). */
+  onFinal?: (payment: PaymentView) => void;
 }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const query = usePayment(paymentId);
   const payment = query.data ?? initial;
+  const finalStatus = payment && payment.status !== 'PENDING' ? payment.status : undefined;
+  useEffect(() => {
+    if (finalStatus && payment) onFinal?.(payment);
+    // Une seule fois par statut final de CE paiement (pas à chaque relecture identique).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentId, finalStatus]);
   const small = [styles.small, { fontSize: m.smallSize }];
 
   if (!payment) {

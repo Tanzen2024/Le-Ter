@@ -132,3 +132,47 @@ export function toE164(code: CountryCode, national: string): string | undefined 
   const parsed = parsePhoneNumberFromString(sanitizeNationalInput(national), code);
   return parsed && parsed.isValid() && parsed.country === code ? parsed.number : undefined;
 }
+
+/**
+ * Pays présélectionné à la connexion et à l'inscription (choix du propriétaire, D-139) : le
+ * joueur tape directement son numéro national, sans l'indicatif, et peut changer de pays.
+ */
+export const DEFAULT_PHONE_COUNTRY = 'CM';
+
+/**
+ * Filigrane du numéro : exemple choisi pour le pays présélectionné, exemple de libphonenumber
+ * sinon. Jamais une valeur saisie ni une donnée de joueur.
+ */
+export function phonePlaceholder(code: string): string | undefined {
+  if (code === DEFAULT_PHONE_COUNTRY) return '695 122 301';
+  const known = findPhoneCountry(code);
+  return known ? nationalExample(known.code) : undefined;
+}
+
+/**
+ * Numéro saisi au format international (« +237 6… » ou « 00237 6… ») → pays et numéro national,
+ * pour le transmettre comme les autres (le serveur reconstruit lui-même le E.164).
+ * `undefined` : numéro invalide ou pays inconnu de la liste.
+ */
+export function splitInternationalNumber(
+  value: string,
+): { code: CountryCode; national: string } | undefined {
+  const compact = value.replace(/[\s.()-]/g, '');
+  const parsed = parsePhoneNumberFromString(
+    compact.startsWith('00') ? `+${compact.slice(2)}` : compact,
+  );
+  if (!parsed || !parsed.isValid() || !parsed.country || !findPhoneCountry(parsed.country)) {
+    return undefined;
+  }
+  return { code: parsed.country, national: parsed.nationalNumber };
+}
+
+/**
+ * Drapeau emoji d'un code ISO (« CM » → 🇨🇲), pour l'indicatif affiché DANS le champ de la
+ * connexion et de l'inscription. Jamais dans la liste des pays (D-070 : noms seuls).
+ */
+export function flagEmoji(code: string): string {
+  return /^[A-Z]{2}$/.test(code)
+    ? String.fromCodePoint(...Array.from(code, (c) => 0x1f1e6 + c.charCodeAt(0) - 65))
+    : '';
+}

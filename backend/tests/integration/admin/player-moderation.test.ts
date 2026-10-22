@@ -7,6 +7,7 @@ import { PostgresAdminAuditRepository } from '../../../src/repositories/postgres
 import { PostgresModerationRepository } from '../../../src/repositories/postgres-moderation.repository';
 import { PostgresTournamentRepository } from '../../../src/repositories/postgres-tournament.repository';
 import { PlayerModerationService } from '../../../src/services/admin/player-moderation.service';
+import { PasswordService } from '../../../src/services/auth/password.service';
 import { NotificationService } from '../../../src/services/notifications/notification.service';
 import { createLogger } from '../../../src/utils/logger';
 import {
@@ -186,6 +187,7 @@ describe('Activation et désactivation du compte', () => {
       repository: new PostgresModerationRepository(database.sql),
       audit: new PostgresAdminAuditRepository(database.sql),
       logger: createLogger({}, () => undefined),
+      passwords: new PasswordService(4),
       clock: () => ctx.now(),
     });
     // Chacun désactive l'autre au même moment : l'une passe, l'autre est refusée.
@@ -503,5 +505,49 @@ describe('Avertissements, restriction du chat, notes et journal', () => {
     expect(log.body.items[0].actor).toEqual({ id: admin.userId, username: expect.any(String) });
     const withViews = await api.get(`${user(player.userId)}/moderation-log?includeViews=true`);
     expect(withViews.body.total).toBe(3);
+  });
+});
+
+describe('Récupération du compte par l’assistance (D-135)', () => {
+  it('motif obligatoire ; nouveau code renvoyé une fois, ancien invalidé ; audit sans le code', async () => {
+    const player = await registerAndLogin(ctx.app, { email: '' });
+    expect((await api.post(`${user(player.userId)}/recovery`, {})).status).toBe(400);
+
+    const res = await api.post(`${user(player.userId)}/recovery`, {
+      reason: 'Code de récupération perdu',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.recoveryCode).toMatch(/^LT(-[0-9A-HJKMNP-TV-Z]{4}){3}$/);
+
+    const { rows: phone } = await database.sql.query<{ phone: string }>(
+      'SELECT phone FROM users WHERE id = $1',
+      [player.userId],
+    );
+    const national = phone[0]!.phone.replace('+237', '');
+    const verify = (code: string) =>
+      request(ctx.app)
+        .post('/api/auth/recovery/verify')
+        .send({ country: 'CM', phone: national, code });
+    await verify(res.body.recoveryCode).expect(200);
+
+    const audit = await auditRows('PLAYER_ACCOUNT_RECOVERY');
+    expect(audit).toEqual([
+      {
+        actor_id: admin.userId,
+        target_id: player.userId,
+        outcome: 'SUCCESS',
+        details: { reason: 'Code de récupération perdu' },
+      },
+    ]);
+    expect(JSON.stringify(audit)).not.toContain(res.body.recoveryCode);
+  });
+
+  it('refusée sur son propre compte (refus audité) et sur un administrateur', async () => {
+    const self = await api.post(`${user(admin.userId)}/recovery`, { reason: 'Test' });
+    expect(self.status).toBe(403);
+    expect(await auditRows('PLAYER_ACCOUNT_RECOVERY')).toMatchObject([{ outcome: 'FAILURE' }]);
+    const other = await createAdmin(ctx.app, database.sql);
+    const res = await api.post(`${user(other.userId)}/recovery`, { reason: 'Test' });
+    expect(res.status).toBe(409);
   });
 });

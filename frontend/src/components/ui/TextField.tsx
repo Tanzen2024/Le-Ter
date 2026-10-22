@@ -1,5 +1,6 @@
-import { forwardRef, useState } from 'react';
+import { forwardRef, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
+import Svg, { Circle, Path } from 'react-native-svg';
 
 import { colors, radius, spacing } from '../../constants/theme';
 
@@ -16,10 +17,19 @@ interface TextFieldProps extends TextInputProps {
    * pas affiché (il sert de placeholder et reste annoncé par `accessibilityLabel`) et l'erreur
    * n'apparaît que par la bordure : l'écran affiche lui-même un message unique.
    * `soft` : champ clair et arrondi (inscription), halo vert au focus, fond teinté en erreur.
+   * `login` : champ sombre aux coins arrondis de l'écran de connexion, halo doré au focus,
+   * œil pour afficher le mot de passe ; libellé et erreur gérés comme pour `table`.
    */
-  appearance?: 'default' | 'table' | 'soft';
-  /** Hauteur du champ en apparence `table` (44 minimum). */
+  appearance?: 'default' | 'table' | 'soft' | 'login';
+  /** Hauteur du champ en apparence `table` ou `login` (44 minimum). */
   controlHeight?: number;
+  /** Élément interactif posé avant la saisie, dans le cadre du champ (apparence `login`). */
+  leading?: ReactNode;
+  /**
+   * Apparence `login` : erreur sous le champ, et aide tant qu'il a le focus (inscription).
+   * Sans lui, l'écran affiche lui-même un message unique (connexion).
+   */
+  messages?: boolean;
   /**
    * Préfixe fixe affiché DANS le champ, avant la saisie (ex. indicatif « +237 ») : un élément
    * distinct du `TextInput`, que l'utilisateur ne peut ni modifier ni supprimer.
@@ -42,6 +52,8 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
     controlHeight = TABLE_MIN_HEIGHT,
     prefix,
     prefixAccessibilityLabel,
+    leading,
+    messages = false,
     style,
     onFocus,
     onBlur,
@@ -54,30 +66,48 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
   const [revealed, setRevealed] = useState(false);
   const table = appearance === 'table';
   const soft = appearance === 'soft';
+  const login = appearance === 'login';
+  // Sans libellé visible ni message sous le champ : l'écran affiche un message unique.
+  const bare = table || login;
   const tableHeight = Math.max(controlHeight, TABLE_MIN_HEIGHT);
 
   return (
-    <View style={table ? null : [styles.container, dense && styles.containerDense]}>
-      {table ? null : <Text style={[styles.label, soft && styles.softLabel]}>{label}</Text>}
+    <View
+      style={
+        bare
+          ? messages
+            ? styles.loginContainer
+            : null
+          : [styles.container, dense && styles.containerDense]
+      }
+    >
+      {bare ? null : <Text style={[styles.label, soft && styles.softLabel]}>{label}</Text>}
       <View
         style={
-          table
+          login
             ? [
-                styles.tableRow,
-                { height: tableHeight, borderRadius: tableHeight / 2 },
-                focused && styles.tableRowFocused,
-                error ? styles.tableRowError : null,
+                styles.loginRow,
+                { height: tableHeight },
+                focused && styles.loginRowFocused,
+                error ? styles.loginRowError : null,
               ]
-            : [
-                styles.inputRow,
-                dense && styles.inputRowDense,
-                soft && styles.softRow,
-                focused && styles.inputRowFocused,
-                soft && focused && styles.softRowFocused,
-                error ? styles.inputRowError : null,
-                soft && error ? styles.softRowError : null,
-                inputProps.editable === false && styles.rowDisabled,
-              ]
+            : table
+              ? [
+                  styles.tableRow,
+                  { height: tableHeight, borderRadius: tableHeight / 2 },
+                  focused && styles.tableRowFocused,
+                  error ? styles.tableRowError : null,
+                ]
+              : [
+                  styles.inputRow,
+                  dense && styles.inputRowDense,
+                  soft && styles.softRow,
+                  focused && styles.inputRowFocused,
+                  soft && focused && styles.softRowFocused,
+                  error ? styles.inputRowError : null,
+                  soft && error ? styles.softRowError : null,
+                  inputProps.editable === false && styles.rowDisabled,
+                ]
         }
       >
         {prefix ? (
@@ -90,15 +120,20 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
             <Text style={styles.prefixText}>{prefix}</Text>
           </View>
         ) : null}
+        {leading}
         <TextInput
           ref={ref}
           style={[
-            table ? [styles.tableInput, { paddingHorizontal: tableHeight / 2 }] : styles.input,
-            !table && dense && styles.inputDense,
+            login
+              ? styles.loginInput
+              : table
+                ? [styles.tableInput, { paddingHorizontal: tableHeight / 2 }]
+                : styles.input,
+            !bare && dense && styles.inputDense,
             style,
           ]}
           placeholder={table ? (placeholder ?? label) : placeholder}
-          placeholderTextColor={table ? TABLE_PLACEHOLDER : colors.textMuted}
+          placeholderTextColor={bare ? TABLE_PLACEHOLDER : colors.textMuted}
           secureTextEntry={secret && !revealed}
           autoCorrect={false}
           accessibilityLabel={label}
@@ -119,15 +154,31 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
             accessibilityRole="button"
             accessibilityLabel={revealed ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
             hitSlop={8}
-            style={[styles.toggle, table && { paddingRight: tableHeight / 2 }]}
+            style={[
+              styles.toggle,
+              table && { paddingRight: tableHeight / 2 },
+              login && [styles.loginToggle, { width: tableHeight }],
+            ]}
           >
-            <Text style={[styles.toggleText, table && styles.tableToggleText]}>
-              {revealed ? 'Masquer' : 'Afficher'}
-            </Text>
+            {login ? (
+              <EyeIcon crossed={!revealed} />
+            ) : (
+              <Text style={[styles.toggleText, table && styles.tableToggleText]}>
+                {revealed ? 'Masquer' : 'Afficher'}
+              </Text>
+            )}
           </Pressable>
         ) : null}
       </View>
-      {table ? null : error ? (
+      {login && messages ? (
+        error ? (
+          <Text style={[styles.loginMessage, styles.loginError]} accessibilityLiveRegion="polite">
+            {error}
+          </Text>
+        ) : hint && focused ? (
+          <Text style={styles.loginMessage}>{hint}</Text>
+        ) : null
+      ) : bare ? null : error ? (
         <Text style={[styles.error, soft && styles.softMessage]} accessibilityLiveRegion="polite">
           {error}
         </Text>
@@ -138,7 +189,26 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
   );
 });
 
+/** Œil (barré tant que le mot de passe est masqué), purement décoratif : le bouton est libellé. */
+function EyeIcon({ crossed }: { crossed: boolean }) {
+  return (
+    <Svg
+      width={22}
+      height={22}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={LOGIN_ICON}
+      strokeWidth={1.8}
+    >
+      <Path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" strokeLinejoin="round" />
+      <Circle cx={12} cy={12} r={3} />
+      {crossed ? <Path d="M4 4l16 16" strokeLinecap="round" /> : null}
+    </Svg>
+  );
+}
+
 const TABLE_PLACEHOLDER = 'rgba(247, 241, 225, 0.55)';
+const LOGIN_ICON = 'rgba(247, 241, 225, 0.75)';
 
 const styles = StyleSheet.create({
   container: { marginBottom: spacing.md },
@@ -189,6 +259,38 @@ const styles = StyleSheet.create({
   },
   tableToggleText: { color: '#F2C451' },
   hint: { color: colors.textMuted, fontSize: 13, marginTop: spacing.xs },
+  loginRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(242, 196, 81, 0.32)',
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+  },
+  loginRowFocused: {
+    borderColor: '#F2C451',
+    boxShadow: '0 0 0 3px rgba(242, 196, 81, 0.18)',
+  },
+  loginRowError: { borderColor: '#FF8A7A' },
+  loginInput: {
+    flex: 1,
+    alignSelf: 'stretch',
+    minWidth: 0,
+    paddingVertical: 0,
+    paddingHorizontal: 14,
+    fontSize: 16,
+    color: '#F7F1E1',
+  },
+  loginContainer: { gap: 4 },
+  loginMessage: { color: 'rgba(247, 241, 225, 0.7)', fontSize: 12.5, lineHeight: 17 },
+  loginError: { color: '#FFB3A6', fontWeight: '600' },
+  loginToggle: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
   softLabel: { fontSize: 13, color: '#2B3A33', letterSpacing: 0.2 },
   softRow: {
     borderWidth: 1.5,

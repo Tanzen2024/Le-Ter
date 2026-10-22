@@ -7,22 +7,26 @@ import {
   fontOf,
   PillButton,
   tablePalette,
-  TatamiCard,
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
 import { useMessages } from '../../lib/i18n';
 import { ComplaintNotice } from '../complaints/ComplaintNotice';
 import { playSound } from '../../services/audio-service';
-import { HomeTournamentSummary } from '../tournaments/HomeTournamentSummary';
+import type { GameType } from '../../types/session';
+import { useOpenTableCount } from '../sessions/hooks';
+import { HomeTournamentSummary, useHomeTournament } from '../tournaments/HomeTournamentSummary';
 import { TournamentThanksNotice } from '../tournaments/TournamentThanksNotice';
-import { useLobbyMetrics, type LobbyMetrics } from './lobby-metrics';
+import { GameIdentityIcon, TournamentEmblem } from './GameIdentity';
+import { computeHomeLayout, type HomeLayout } from './home-layout';
+import { useLobbyMetrics } from './lobby-metrics';
 import { LobbyShell, useLobbyPanels } from './LobbyShell';
 import { ModerationNotice } from './ModerationNotice';
 
 /**
- * Accueil connecté (paysage, D-028) : « Choisis ton mode ! » et deux modes.
- * - Parties → Rejoindre : panneau Partie privée (créer / rechercher une session).
+ * Accueil connecté (paysage, D-028) : « Choisis ton mode ! » et trois panneaux.
+ * - Fap-Fap → Rejoindre : panneau Partie privée (créer / rechercher une session).
+ * - Garam Tia → Rejoindre : le même panneau, pour les parties de GARAM TIA (D-119).
  * - Tournois → Rejoindre : écran Tournois (route /tournament).
  * - Tournois → « + Proposer un tournoi » : parcours de proposition existant
  *   (route /tournament/propose) ; au centre du panneau, en filigrane, le résumé compact du
@@ -40,48 +44,21 @@ export function HomeScreen() {
   );
 }
 
-interface HomeLayout {
-  titleTop: number;
-  titleSize: number;
-  cardsTop: number;
-  cardsBottom: number;
-  cardWidth: number;
-  cardHeight: number;
-  cardsGap: number;
-  /** Largeur libre entre le bord de l'écran et le premier panneau de mode. */
-  sideSpace: number;
-}
-
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-function computeHomeLayout(m: LobbyMetrics): HomeLayout {
-  const titleSize = Math.round(clamp(m.height * 0.062, 20, 46));
-  const titleTop = m.safe.top + m.hudBoxHeight + m.gap * 0.5;
-  // Les petites cartes posées sur les panneaux débordent au-dessus : on leur laisse la place.
-  const cardsTop = titleTop + titleSize * 1.4 + m.gap * 1.6;
-  let cardsBottom = m.height - m.safe.bottom;
-  const fitHeight = (bottom: number) => bottom - cardsTop;
-  let cardWidth = Math.round(Math.min(m.availableWidth * 0.27, fitHeight(cardsBottom) / 1.36, 340));
-  let cardsGap = Math.round(cardWidth * 0.18);
-  let sideSpace = (m.width - cardWidth * 2 - cardsGap) / 2;
-  // Les boutons Profil / Réglages ne doivent jamais passer sous un panneau de mode.
-  const buttonsRight = m.safe.left + m.iconButton * 2 + m.gap * 2;
-  if (buttonsRight > sideSpace) {
-    cardsBottom -= m.iconButton + m.gap;
-    cardWidth = Math.round(Math.min(cardWidth, fitHeight(cardsBottom) / 1.36));
-    cardsGap = Math.round(cardWidth * 0.18);
-    sideSpace = (m.width - cardWidth * 2 - cardsGap) / 2;
-  }
-  const cardHeight = Math.round(Math.min(cardWidth * 1.36, fitHeight(cardsBottom)));
+/** Mesures internes d'un panneau de mode. */
+function modeCardMetrics(w: number, screenHeight: number) {
+  const pad = Math.round(w * 0.07);
   return {
-    titleTop,
-    titleSize,
-    cardsTop,
-    cardsBottom,
-    cardWidth,
-    cardHeight,
-    cardsGap,
-    sideSpace,
+    pad,
+    gap: pad * 0.5,
+    titleSize: Math.round(w * 0.13),
+    /** Espace de part et d'autre du résumé du tournoi (resserré sur les écrans bas). */
+    bodySpacing: Math.round(pad * (screenHeight < 400 ? 0.25 : 0.5)),
+    // « Rejoindre » compact : 34 dp minimum (téléphones), zone d'appui élargie de 8 dp en haut
+    // et en bas (50 dp au doigt) ; tablette et ordinateur inchangés.
+    joinHeight: Math.max(34, Math.round(w * 0.15)),
+    joinFontSize: Math.round(clamp(w * 0.08, 14, 24)),
   };
 }
 
@@ -101,9 +78,11 @@ function HomeDecor() {
 function ModeSelect() {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
-  const { openPanel } = useLobbyPanels();
+  // Panneau ouvert (Profil, Réglages…) : il est seul au premier plan, le titre s'efface.
+  const { openPanel, panel: openedPanel } = useLobbyPanels();
   const t = useMessages();
   const layout = computeHomeLayout(m);
+  const homeTournament = useHomeTournament();
   const [appear] = useState(() => new Animated.Value(0));
   const { panel } = useLocalSearchParams<{ panel?: string }>();
 
@@ -125,23 +104,25 @@ function ModeSelect() {
 
   return (
     <>
-      <Text
-        accessibilityRole="header"
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        style={[
-          styles.title,
-          fontOf(fonts.title),
-          {
-            top: layout.titleTop,
-            fontSize: layout.titleSize,
-            left: m.width * 0.25,
-            right: m.width * 0.25,
-          },
-        ]}
-      >
-        {t.home.chooseMode}
-      </Text>
+      {openedPanel ? null : (
+        <Text
+          accessibilityRole="header"
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          style={[
+            styles.title,
+            fontOf(fonts.title),
+            {
+              top: layout.titleTop,
+              fontSize: layout.titleSize,
+              left: m.width * 0.25,
+              right: m.width * 0.25,
+            },
+          ]}
+        >
+          {t.home.chooseMode}
+        </Text>
+      )}
       <Animated.View
         style={[
           styles.cards,
@@ -157,20 +138,27 @@ function ModeSelect() {
       >
         <ModeCard
           title={t.home.private}
-          icon={(size) => <PadlocksIcon size={size} />}
-          accent="left"
+          emblem={<GameIdentityIcon gameType="TER" />}
           layout={layout}
           onJoin={() => openPanel('private')}
+          footer={<OpenGamesCount gameType="TER" width={layout.cardWidth} />}
         />
         <ModeCard
           title={t.home.tournaments}
-          icon="🏆"
-          accent="right"
+          emblem={<TournamentEmblem />}
           layout={layout}
           onJoin={() => router.push('/tournament')}
           action={<ProposeTournamentButton width={layout.cardWidth} />}
-          // Pendant le chargement, sans tournoi ou en erreur : rien (illustration seule).
-          overlay={<HomeTournamentSummary width={layout.cardWidth} />}
+          // Pendant le chargement, sans tournoi ou en erreur : l'emblème seul. Avec un tournoi,
+          // son résumé porte l'emblème de SON jeu (`gameType`, TournamentGameMarker).
+          body={homeTournament ? <HomeTournamentSummary width={layout.cardWidth} /> : undefined}
+        />
+        <ModeCard
+          title={t.home.garam}
+          emblem={<GameIdentityIcon gameType="GARAM" />}
+          layout={layout}
+          onJoin={() => openPanel('garam')}
+          footer={<OpenGamesCount gameType="GARAM" width={layout.cardWidth} />}
         />
       </Animated.View>
     </>
@@ -178,54 +166,34 @@ function ModeSelect() {
 }
 
 /**
- * Icône du panneau Parties : un cadenas ouvert et un cadenas fermé côte à côte, dans la même
- * emprise `size × size` que l'icône précédente (la mise en page du panneau ne bouge pas).
- */
-function PadlocksIcon({ size }: { size: number }) {
-  const fontSize = Math.round(size * 0.5);
-  return (
-    <View style={[styles.padlocks, { width: size, height: size }]}>
-      <Text allowFontScaling={false} style={{ fontSize }}>
-        🔓
-      </Text>
-      <Text allowFontScaling={false} style={{ fontSize }}>
-        🔒
-      </Text>
-    </View>
-  );
-}
-
-/**
- * Panneau de mode : titre gravé, icône, carte T inclinée, bouton « Rejoindre ». `action`
- * (sous le titre) et `overlay` (centré PAR-DESSUS l'illustration, en filigrane) sont
- * facultatifs : sans eux, le panneau est exactement celui d'origine. L'overlay ne déplace
- * rien : titre, bouton « Proposer » et « Rejoindre » restent à leur place et utilisables.
+ * Panneau de mode : titre gravé, emblème, bouton « Rejoindre ». Facultatifs :
+ * `action` (sous le titre), `body` (bloc qui PREND LA PLACE de l'emblème, dans le flux :
+ * rien ne le chevauche) et `footer` (juste au-dessus de « Rejoindre »). Les trois panneaux
+ * ont toujours la même hauteur (`layout.cardHeight`).
  */
 function ModeCard({
   title,
-  icon,
-  accent,
+  emblem,
   layout,
   onJoin,
   action,
-  overlay,
+  body,
+  footer,
 }: {
   title: string;
-  /** Emoji, ou rendu d'icône à la taille de l'illustration. */
-  icon: string | ((size: number) => ReactNode);
-  /** Côté de la petite carte qui déborde en haut du panneau. */
-  accent: 'left' | 'right';
+  /** Emblème permanent du panneau (GameIdentity), qui remplit sa zone. */
+  emblem: ReactNode;
   layout: HomeLayout;
   onJoin: () => void;
   action?: ReactNode;
-  overlay?: ReactNode;
+  body?: ReactNode;
+  footer?: ReactNode;
 }) {
   const fonts = useTableFonts();
   const t = useMessages();
+  const m = useLobbyMetrics();
   const { cardWidth: w, cardHeight: h } = layout;
-  const pad = Math.round(w * 0.07);
-  const floating = Math.round(w * 0.3);
-  const inner = Math.round(w * 0.32);
+  const c = modeCardMetrics(w, m.height);
   return (
     <View
       style={[
@@ -234,59 +202,79 @@ function ModeCard({
           width: w,
           height: h,
           borderRadius: w * 0.08,
-          padding: pad,
-          gap: pad * 0.5,
+          padding: c.pad,
+          // Panneau à résumé (Tournois) : espacements internes resserrés pour que tout le
+          // résumé tienne entre « Proposer » et « Rejoindre ». Mêmes marges en haut et en bas
+          // que les autres panneaux : titres et boutons « Rejoindre » restent alignés.
+          gap: body ? Math.round(c.gap * 0.4) : c.gap,
         },
       ]}
     >
-      <TatamiCard
-        width={floating}
-        fontFamily={fonts.title}
-        style={[
-          { top: -floating * 0.55 },
-          accent === 'left'
-            ? { left: w * 0.05, transform: [{ rotate: '-14deg' }] }
-            : { right: w * 0.05, transform: [{ rotate: '14deg' }] },
-        ]}
-      />
       <Text
         accessibilityRole="header"
         numberOfLines={1}
         adjustsFontSizeToFit
-        style={[styles.modeTitle, fontOf(fonts.title), { fontSize: Math.round(w * 0.13) }]}
+        style={[styles.modeTitle, fontOf(fonts.title), { fontSize: c.titleSize }]}
       >
         {title}
       </Text>
       {action}
-      <View style={styles.illustration}>
-        {typeof icon === 'string' ? (
-          <Text allowFontScaling={false} style={{ fontSize: Math.round(w * 0.27) }}>
-            {icon}
-          </Text>
-        ) : (
-          icon(Math.round(w * 0.27))
-        )}
-        <View style={{ width: inner, height: inner * 1.36, marginLeft: w * 0.08 }}>
-          <TatamiCard
-            width={inner}
-            fontFamily={fonts.title}
-            style={{ top: 0, left: 0, transform: [{ rotate: '-12deg' }] }}
-          />
+      {body ? (
+        <View style={[styles.body, { marginVertical: Math.round(c.bodySpacing * 0.5) }]}>
+          {body}
         </View>
-        {overlay ? (
-          <View style={styles.overlay} pointerEvents="box-none">
-            {overlay}
-          </View>
-        ) : null}
-      </View>
+      ) : (
+        <View
+          style={styles.illustration}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
+          {/* Carré centré : toute la hauteur libre, jamais plus large que le panneau. */}
+          <View style={[styles.emblem, { maxHeight: Math.round(w * 0.62) }]}>{emblem}</View>
+        </View>
+      )}
+      {footer}
       <PillButton
         title={t.home.join}
         accessibilityLabel={t.home.joinA11y(title)}
         onPress={onJoin}
-        height={Math.max(44, Math.round(w * 0.2))}
-        fontSize={Math.round(clamp(w * 0.095, 16, 30))}
+        // Compact : la place gagnée revient au contenu ; appui confortable grâce au hitSlop.
+        height={c.joinHeight}
+        fontSize={c.joinFontSize}
         fontFamily={fonts.button}
+        hitSlop={{ top: 8, bottom: 8 }}
+        style={styles.join}
       />
+    </View>
+  );
+}
+
+/**
+ * Nombre de parties à rejoindre du jeu du panneau (Fap-Fap → TER, Garam Tia → GARAM) : la
+ * liste « Rechercher une partie » du serveur, même filtre. Affiché aussi à 0 ; rien tant
+ * que la réponse n'est pas arrivée ou en erreur (jamais un chiffre inventé).
+ */
+function OpenGamesCount({ gameType, width: w }: { gameType: GameType; width: number }) {
+  const fonts = useTableFonts();
+  const t = useMessages();
+  const { data: count } = useOpenTableCount(gameType);
+  if (count === undefined) return null;
+  const fontSize = Math.round(clamp(w * 0.068, 11, 16));
+  return (
+    <View
+      testID={`open-games-${gameType}`}
+      style={[
+        styles.openGames,
+        {
+          paddingHorizontal: fontSize * 0.7,
+          paddingVertical: 2,
+          borderRadius: fontSize,
+        },
+      ]}
+    >
+      <Text numberOfLines={1} style={[styles.openGamesText, fontOf(fonts.button), { fontSize }]}>
+        {`🃏 ${t.home.openGames(count)}`}
+      </Text>
     </View>
   );
 }
@@ -337,6 +325,8 @@ function ProposeTournamentButton({ width: w }: { width: number }) {
 const styles = StyleSheet.create({
   title: {
     position: 'absolute',
+    // Au-dessus des petites cartes qui débordent en haut des panneaux (Tournois).
+    zIndex: 1,
     color: '#FFFFFF',
     textAlign: 'center',
     letterSpacing: 1.5,
@@ -367,15 +357,11 @@ const styles = StyleSheet.create({
   },
   illustration: {
     flex: 1,
-    flexDirection: 'row',
+    minHeight: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  padlocks: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  emblem: { height: '100%', aspectRatio: 1, maxWidth: '100%' },
   propose: {
     alignSelf: 'center',
     flexDirection: 'row',
@@ -387,14 +373,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#06170D',
   },
   proposeText: { color: tablePalette.gold, fontWeight: '700' },
-  pressed: { opacity: 0.85, transform: [{ scale: 0.96 }] },
-  overlay: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
+  openGames: {
+    alignSelf: 'center',
+    maxWidth: '100%',
+    // Fond sombre : lisible même si la carte T inclinée de l'illustration déborde dessous.
+    backgroundColor: 'rgba(6, 23, 13, 0.85)',
   },
+  openGamesText: { color: tablePalette.cream },
+  pressed: { opacity: 0.85, transform: [{ scale: 0.96 }] },
+  // Zone BORNÉE entre « Proposer » et « Rejoindre » : son contenu ne la fait jamais grandir
+  // (le résumé s'y ajuste), le bouton reste au bas du panneau.
+  body: { flex: 1, minHeight: 0, alignItems: 'stretch' },
+  join: { width: '88%', alignSelf: 'center' },
 });

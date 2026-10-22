@@ -10,6 +10,7 @@ import {
   type SuspicionScore,
 } from '../domain/detection/detection';
 import type { RiskLevel, SignalSeverity, SignalType } from '../domain/detection/detection-config';
+import type { GameType } from '../domain/game/game';
 import type { GameId, PlayerId } from '../domain/game/game-id';
 import {
   DetectionDisabledError,
@@ -184,16 +185,26 @@ export class PostgresDetectionRepository implements DetectionRepository {
     return rows.map(toSignal);
   }
 
+  async gameTypeOfGame(gameId: GameId): Promise<GameType> {
+    const { rows } = await this.db.query<{ game_type: GameType }>(
+      'SELECT game_type FROM games WHERE id = $1',
+      [gameId],
+    );
+    return rows[0]?.game_type ?? 'TER';
+  }
+
   async listSubjectSignals(
     subjectKeys: readonly string[],
     since: Date,
+    gameType: GameType,
   ): Promise<DetectionSignal[]> {
     if (subjectKeys.length === 0) return [];
     const { rows } = await this.db.query<SignalRow>(
       `SELECT ${SIGNAL_COLUMNS} FROM detection_signals
        WHERE subject_key = ANY($1::text[]) AND created_at >= $2
+         AND game_id IN (SELECT g.id FROM games g WHERE g.game_type = $3)
        ORDER BY created_at, id`,
-      [[...subjectKeys], since.toISOString()],
+      [[...subjectKeys], since.toISOString(), gameType],
     );
     return rows.map(toSignal);
   }
@@ -206,6 +217,8 @@ export class PostgresDetectionRepository implements DetectionRepository {
     const { rows } = await this.db.query<{ subject_key: string; score: number }>(
       `SELECT DISTINCT ON (subject_key) subject_key, score FROM detection_scores
        WHERE subject_key = ANY($1::text[]) AND game_id <> $2
+         AND game_id IN (SELECT g.id FROM games g
+                         WHERE g.game_type = (SELECT o.game_type FROM games o WHERE o.id = $2))
        ORDER BY subject_key, computed_at DESC, game_id`,
       [[...subjectKeys], gameId],
     );
@@ -263,7 +276,9 @@ export class PostgresDetectionRepository implements DetectionRepository {
              WHERE NOT ($6 = 'high' AND EXISTS (
                SELECT 1 FROM detection_alerts x
                WHERE x.subject_key = $4 AND x.type = $3 AND x.score_algorithm_version = $9
-                 AND x.period_start = $11 AND x.level = 'very_high'))
+                 AND x.period_start = $11 AND x.level = 'very_high'
+                 AND (SELECT g.game_type FROM games g WHERE g.id = x.game_id)
+                     = (SELECT o.game_type FROM games o WHERE o.id = $2)))
              ON CONFLICT (dedupe_key) DO NOTHING`,
             [
               a.id,

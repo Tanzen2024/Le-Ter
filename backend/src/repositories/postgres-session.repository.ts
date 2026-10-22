@@ -5,11 +5,12 @@ import {
   type SqlExecutor,
 } from '../database/sql-client';
 import type { GameStakeLedger } from './game-stake-ledger';
-import type { Game } from '../domain/game/game';
+import type { Game, GameType } from '../domain/game/game';
 import {
   TournamentTableAvailableError,
   TournamentTableRefusedError,
 } from '../domain/tournaments/tournament';
+import { isGaramVariant } from '../domain/garam/garam-rules';
 import { AUTOMATIC_TRICK_NUMBER } from '../domain/rules/rule-set';
 import type { GameId, PlayerId } from '../domain/game/game-id';
 import {
@@ -58,6 +59,8 @@ interface SessionRow {
   name: string | null;
   password_hash: string | null;
   suspicion_detection_enabled: boolean;
+  game_type: GameType;
+  garam_variant: number | null;
   created_at: Date;
   updated_at: Date;
   closed_at: Date | null;
@@ -102,8 +105,9 @@ export class PostgresSessionRepository implements SessionRepository {
         }
         await tx.query(
           `INSERT INTO sessions (id, version, status, creator_id, max_players, created_at,
-             updated_at, closed_at, name, password_hash, suspicion_detection_enabled)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+             updated_at, closed_at, name, password_hash, suspicion_detection_enabled, game_type,
+             garam_variant)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
             session.id,
             session.version,
@@ -116,6 +120,8 @@ export class PostgresSessionRepository implements SessionRepository {
             session.name ?? null,
             session.passwordHash ?? null,
             session.suspicionDetectionEnabled,
+            session.gameType ?? 'TER',
+            session.garamVariant ?? null,
           ],
         );
         await writePlayers(tx, session);
@@ -159,7 +165,11 @@ export class PostgresSessionRepository implements SessionRepository {
     return sessions.filter((s): s is Session => s !== null);
   }
 
-  async findOpenTables(viewerId: PlayerId, limit: number): Promise<OpenTableSummary[]> {
+  async findOpenTables(
+    viewerId: PlayerId,
+    limit: number,
+    gameType: GameType = 'TER',
+  ): Promise<OpenTableSummary[]> {
     const { rows } = await this.db.query<{
       session_id: SessionId;
       game_id: string;
@@ -172,10 +182,11 @@ export class PostgresSessionRepository implements SessionRepository {
       max_players: number;
       player_count: number;
       created_at: Date;
+      garam_variant: number | null;
     }>(
       `SELECT s.id AS session_id, g.id AS game_id, s.name, u.username AS creator_name,
          g.stake_amount, s.password_hash IS NOT NULL AS has_password,
-         s.suspicion_detection_enabled, s.max_players,
+         s.suspicion_detection_enabled, s.max_players, s.garam_variant,
          EXISTS (SELECT 1 FROM session_players sp
            WHERE sp.session_id = s.id AND sp.player_id = $1 AND sp.active) AS mine,
          (SELECT count(*)::int FROM game_players gp WHERE gp.game_id = g.id) AS player_count,
@@ -188,9 +199,13 @@ export class PostgresSessionRepository implements SessionRepository {
               WHERE sp.session_id = s.id AND sp.active) < s.max_players
          -- Les tables de tournoi ne se rejoignent que par le tournoi (D-051).
          AND NOT EXISTS (SELECT 1 FROM tournament_sessions ts WHERE ts.session_id = s.id)
+         -- Un jeu par liste (D-119) : une table GARAM n'apparaît jamais dans celle du Ter.
+         AND s.game_type = $3
+         -- Manche GARAM qui attend la réponse à « doubler la mise » : fermée aux arrivées.
+         AND NOT (g.state ? 'garamStakeVote')
        ORDER BY g.created_at DESC, g.id
        LIMIT $2`,
-      [viewerId, limit],
+      [viewerId, limit, gameType],
     );
     return rows.map((r) => ({
       sessionId: r.session_id,
@@ -204,6 +219,8 @@ export class PostgresSessionRepository implements SessionRepository {
       maxPlayers: Number(r.max_players),
       playerCount: Number(r.player_count),
       createdAt: r.created_at,
+      ...(gameType === 'GARAM' && { gameType }),
+      ...(isGaramVariant(r.garam_variant) && { garamVariant: r.garam_variant }),
     }));
   }
 
@@ -365,7 +382,7 @@ export class PostgresSessionRepository implements SessionRepository {
          ORDER BY g.created_at DESC, g.id DESC LIMIT 1
        ) last
        WHERE s.status = 'open' AND last.status = 'finished'
-         AND last.end_reason <> 'INSTANT_WIN_TIE'
+         AND last.end_reason NOT IN ('INSTANT_WIN_TIE', 'GARAM_TIE')
          AND NOT EXISTS (SELECT 1 FROM session_decision_rounds r WHERE r.game_id = last.id)`,
     );
     return rows.map((r) => r.id);
@@ -378,7 +395,7 @@ export class PostgresSessionRepository implements SessionRepository {
          SELECT g.end_reason FROM games g WHERE g.session_id = s.id
          ORDER BY g.created_at DESC, g.id DESC LIMIT 1
        ) last
-       WHERE s.status = 'open' AND last.end_reason = 'INSTANT_WIN_TIE'`,
+       WHERE s.status = 'open' AND last.end_reason IN ('INSTANT_WIN_TIE', 'GARAM_TIE')`,
     );
     return rows.map((r) => r.id);
   }
@@ -459,16 +476,20 @@ async function loadLastGame(db: SqlExecutor, sessionId: SessionId): Promise<Last
     creator_id: PlayerId;
     winner_id: PlayerId | null;
     winner_seat: number | null;
+    first_player_seat: number | null;
     player_ids: PlayerId[] | null;
     last_trick_cards: number | null;
+    game_type: GameType;
   }>(
     `SELECT g.id, g.status, g.finished_at, g.end_reason, g.first_player_id, g.creator_id,
-       g.winner_id,
+       g.winner_id, g.game_type,
        (SELECT jsonb_array_length(t -> 'plays')
         FROM jsonb_array_elements(COALESCE(g.state -> 'play' -> 'completedTricks', '[]'::jsonb)) t
         WHERE (t ->> 'number')::int = $2) AS last_trick_cards,
        (SELECT p.table_position FROM game_players p
         WHERE p.game_id = g.id AND p.player_id = g.winner_id) AS winner_seat,
+       (SELECT p.table_position FROM game_players p
+        WHERE p.game_id = g.id AND p.player_id = g.first_player_id) AS first_player_seat,
        (SELECT array_agg(p.player_id ORDER BY p.seat) FROM game_players p
         WHERE p.game_id = g.id) AS player_ids
      FROM games g WHERE g.session_id = $1
@@ -488,8 +509,10 @@ async function loadLastGame(db: SqlExecutor, sessionId: SessionId): Promise<Last
     creatorId: row.creator_id,
     ...(row.winner_id !== null && { winnerId: row.winner_id }),
     ...(row.winner_seat !== null && { winnerSeat: row.winner_seat }),
+    ...(row.first_player_seat !== null && { firstPlayerSeat: row.first_player_seat }),
     playerIds: row.player_ids ?? [],
     ...(row.last_trick_cards !== null && { lastTrickCards: Number(row.last_trick_cards) }),
+    ...(row.game_type === 'GARAM' && { gameType: 'GARAM' as const }),
   };
 }
 
@@ -514,6 +537,8 @@ async function loadSession(
   const round = await loadRound(db, sessionId);
   return {
     id: row.id as SessionId,
+    ...(row.game_type === 'GARAM' && { gameType: 'GARAM' as const }),
+    ...(isGaramVariant(row.garam_variant) && { garamVariant: row.garam_variant }),
     version: row.version,
     status: row.status,
     creatorId: row.creator_id as PlayerId,

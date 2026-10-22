@@ -60,6 +60,7 @@ export interface AdminRouterDependencies {
  *   POST /users/:userId/suspension                        { reason, comment?, endsAt? }
  *   POST /users/:userId/suspension/lift                   { reason }
  *   POST /users/:userId/sessions/revoke                   { reason? }
+ *   POST /users/:userId/recovery                          { reason } → { recoveryCode } (D-135)
  *   POST /users/:userId/chat-restriction                  { reason, comment?, endsAt? }
  *   POST /users/:userId/chat-restriction/lift             { reason }
  *   POST /users/:userId/warnings     Idempotency-Key      { reason, playerMessage?, comment? }
@@ -148,6 +149,7 @@ export function createAdminRouter(deps: AdminRouterDependencies): Router {
   router.post('/users/:userId/suspension', players.suspend);
   router.post('/users/:userId/suspension/lift', players.liftSuspension);
   router.post('/users/:userId/sessions/revoke', players.revokeSessions);
+  router.post('/users/:userId/recovery', players.recoverAccount);
   router.post('/users/:userId/chat-restriction', players.restrictChat);
   router.post('/users/:userId/chat-restriction/lift', players.liftChatRestriction);
   router.post('/users/:userId/warnings', players.warn);

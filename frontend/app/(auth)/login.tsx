@@ -1,124 +1,169 @@
 import { router } from 'expo-router';
 import { useRef, useState, type RefObject } from 'react';
-import { Alert, StyleSheet, TextInput, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { TextField } from '../../src/components/ui/TextField';
+import { AFTER_ICON, FieldIcon, LockIcon, LoginIcon } from '../../src/features/auth/AuthIcons';
 import { useLogin } from '../../src/features/auth/hooks';
+import { IdentifierField } from '../../src/features/auth/IdentifierField';
 import {
-  LoginTable,
-  TableButton,
-  TableFooter,
-  TableLink,
-  TableMessage,
-  TableTitle,
-  useLoginTableMetrics,
-} from '../../src/features/auth/LoginTable';
+  LoginButton,
+  LoginFooter,
+  LoginLayout,
+  LoginLink,
+  LoginMessage,
+  useLoginMetrics,
+} from '../../src/features/auth/LoginLayout';
+import { resolveLoginIdentifier } from '../../src/features/auth/validation';
 import { ApiError } from '../../src/lib/api-client';
+import { DEFAULT_PHONE_COUNTRY } from '../../src/lib/phone-countries';
 
-type Field = 'email' | 'password';
+type Field = 'identifier' | 'password';
 
+const UNEXPECTED_FAILURE = 'Connexion impossible pour le moment. Réessayez.';
+
+/**
+ * Connexion (D-135, D-139) : UN champ « téléphone ou e-mail » (pays présélectionné : Cameroun,
+ * modifiable), le mot de passe, puis « Se connecter ». Le mode n'est jamais choisi par le
+ * joueur : un « @ » ou une lettre en fait une adresse e-mail, sinon un numéro national.
+ */
 export default function LoginScreen() {
-  const [email, setEmail] = useState('');
+  const [country, setCountry] = useState(DEFAULT_PHONE_COUNTRY);
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const passwordRef = useRef<TextInput>(null);
+  // Verrou synchrone : deux appuis dans la même image n'envoient qu'une connexion.
+  const sending = useRef(false);
   const login = useLogin();
 
+  const ready = identifier.trim() !== '' && password !== '';
+
   const submit = () => {
+    if (sending.current) return;
+    const resolved = resolveLoginIdentifier(country, identifier);
     const next: Partial<Record<Field, string>> = {};
-    if (!email.trim()) next.email = 'Saisissez votre email.';
+    if ('error' in resolved) next.identifier = resolved.error;
     if (!password) next.password = 'Saisissez votre mot de passe.';
     setErrors(next);
-    if (Object.keys(next).length === 0) {
-      login.mutate({ email: email.trim(), password });
-    }
+    if ('error' in resolved || next.password) return;
+    sending.current = true;
+    login.mutate(
+      { ...resolved.credentials, password },
+      {
+        onSettled: () => {
+          sending.current = false;
+        },
+      },
+    );
   };
 
-  // Message générique du serveur (« Email ou mot de passe incorrect. ») : il ne
-  // révèle pas si le compte existe.
-  const failure = login.error instanceof ApiError ? login.error.message : undefined;
+  const edit = (field: Field) => {
+    setErrors((e) => ({ ...e, [field]: undefined }));
+    if (login.isError) login.reset();
+  };
+
+  // Message générique du serveur (« … ou mot de passe incorrect. ») : il ne révèle pas si le
+  // compte existe. Réseau coupé : message lisible d'`ApiError`. Jamais d'erreur technique brute.
+  const failure = login.isError
+    ? login.error instanceof ApiError
+      ? login.error.message
+      : UNEXPECTED_FAILURE
+    : undefined;
 
   return (
-    <LoginTable>
-      <TableTitle>Connexion</TableTitle>
+    <LoginLayout title="CONNEXION" decorated>
       <LoginFields
-        email={email}
+        country={country}
+        identifier={identifier}
         password={password}
         errors={errors}
         passwordRef={passwordRef}
-        onEmailChange={(v) => {
-          setEmail(v);
-          setErrors((e) => ({ ...e, email: undefined }));
+        onCountryChange={(code) => {
+          setCountry(code);
+          edit('identifier');
         }}
-        onPasswordChange={(v) => {
-          setPassword(v);
-          setErrors((e) => ({ ...e, password: undefined }));
+        onIdentifierChange={(value) => {
+          setIdentifier(value);
+          edit('identifier');
+        }}
+        onPasswordChange={(value) => {
+          setPassword(value);
+          edit('password');
         }}
         onSubmit={submit}
       />
-      {/* R-35 (docs/TODO.md) : aucun flux de réinitialisation n'est défini, seul le point d'entrée existe. */}
-      <TableLink
-        title="Mot de passe oublié ?"
-        style={styles.forgot}
-        onPress={() =>
-          Alert.alert(
-            'Mot de passe oublié',
-            'La réinitialisation du mot de passe sera bientôt disponible.',
-          )
-        }
+      <View style={styles.forgot}>
+        <LoginLink title="Mot de passe oublié ?" onPress={() => router.push('/forgot-password')} />
+      </View>
+      <LoginMessage message={errors.identifier ?? errors.password ?? failure} />
+      <LoginButton
+        title="Se connecter"
+        busyTitle="Connexion…"
+        icon={<LoginIcon />}
+        onPress={submit}
+        loading={login.isPending}
+        disabled={!ready}
       />
-      <TableMessage message={errors.email ?? errors.password ?? failure} />
-      <TableButton title="Se connecter" onPress={submit} loading={login.isPending} />
       {/* L'inscription est un écran distinct de la pile (auth) : jamais affichée ici. */}
-      <TableFooter
+      <LoginFooter
         prompt="Vous n'avez pas de compte ?"
         linkTitle="S'inscrire"
         disabled={login.isPending}
         onPress={() => router.push('/register')}
       />
-    </LoginTable>
+    </LoginLayout>
   );
 }
 
-/** Champs Email et Mot de passe, à la hauteur du bouton (lue dans le gabarit de la table). */
+/** Identifiant (indicatif + téléphone, ou e-mail) et mot de passe, à la hauteur du bouton. */
 function LoginFields({
-  email,
+  country,
+  identifier,
   password,
   errors,
   passwordRef,
-  onEmailChange,
+  onCountryChange,
+  onIdentifierChange,
   onPasswordChange,
   onSubmit,
 }: {
-  email: string;
+  country: string;
+  identifier: string;
   password: string;
   errors: Partial<Record<Field, string>>;
   passwordRef: RefObject<TextInput | null>;
-  onEmailChange: (value: string) => void;
+  onCountryChange: (code: string) => void;
+  onIdentifierChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onSubmit: () => void;
 }) {
-  const { controlHeight, inputFontSize, gap } = useLoginTableMetrics();
-  const field = { appearance: 'table', controlHeight, style: { fontSize: inputFontSize } } as const;
+  const { controlHeight, inputFontSize, gap } = useLoginMetrics();
+  const field = {
+    appearance: 'login',
+    controlHeight,
+    style: { fontSize: inputFontSize, ...AFTER_ICON },
+  } as const;
   return (
     <View style={{ gap }}>
-      <TextField
-        {...field}
-        label="Email"
-        value={email}
-        onChangeText={onEmailChange}
-        error={errors.email}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoComplete="email"
-        textContentType="emailAddress"
-        returnKeyType="next"
+      <IdentifierField
+        country={country}
+        value={identifier}
+        error={errors.identifier}
+        onCountryChange={onCountryChange}
+        onChangeText={onIdentifierChange}
         onSubmitEditing={() => passwordRef.current?.focus()}
       />
       <TextField
         {...field}
         ref={passwordRef}
         label="Mot de passe"
+        placeholder="Mot de passe"
+        leading={
+          <FieldIcon>
+            <LockIcon />
+          </FieldIcon>
+        }
         value={password}
         onChangeText={onPasswordChange}
         error={errors.password}
@@ -134,5 +179,5 @@ function LoginFields({
 }
 
 const styles = StyleSheet.create({
-  forgot: { alignSelf: 'center', marginTop: 2, marginBottom: 4 },
+  forgot: { alignItems: 'flex-end', marginTop: 2, marginBottom: 4 },
 });

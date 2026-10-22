@@ -213,15 +213,19 @@ export interface GameSettlementPlan {
   loserIds: PlayerId[];
   /** Perte de chaque perdant : M (simple) ou 2M (Kora). Le gagnant ne perd rien. */
   unitAmount: number;
-  /** Somme des mises des perdants : M × (N − 1) ou 2M × (N − 1). */
+  /** Somme des mises des perdants : M × (N − 1) ou 2M × (N − 1) (pénalités GARAM à part). */
   grossAmount: number;
   /** Taux de la tranche, figé au démarrage. */
   commissionBps: number;
   /** Taux réellement appliqué : celui de la tranche, quel que soit le type de victoire. */
   appliedCommissionBps: number;
   commissionAmount: number;
-  /** Crédit du gagnant : brut − commission. */
+  /** Crédit du gagnant : brut + pénalités − commission. */
   netGain: number;
+  /** GARAM TIA : pénalités Koraté, soumises à la commission (0 au Ter). */
+  penaltyAmount: number;
+  /** Perte débitée à chaque perdant. */
+  lossOf: Record<string, number>;
 }
 
 /**
@@ -279,5 +283,42 @@ export function planGameSettlement(input: {
     appliedCommissionBps: commissionBps,
     commissionAmount,
     netGain,
+    penaltyAmount: 0,
+    lossOf: Object.fromEntries(loserIds.map((id) => [id, unitAmount])),
+  };
+}
+
+/**
+ * Règlement d'une manche de GARAM TIA (D-119) : même barème de commission que Le Ter
+ * (paramètres de l'administration, taux figé au démarrage). Chaque perdant paie M. Koraté
+ * (§1.5, D-127, D-130, X = la variante 15/16/17/18) : chaque perdant listé dans
+ * `belowThresholdIds` paie M de plus (M = la mise de la manche), pour le gagnant. UNE seule
+ * commission, sur toutes les pertes (mises + pénalités : propriétaire, D-130, la pénalité n'en
+ * est plus exemptée). Perte maximale 2M = l'engagement pris au
+ * démarrage (2 × M). Exemple : M = 250, 2 joueurs, 10 %, perdant Koraté → il perd 500,
+ * commission 50, le gagnant reçoit 450.
+ */
+export function planGaramSettlement(input: {
+  stake: number;
+  commissionBps: number;
+  winnerId: PlayerId;
+  participants: readonly PlayerId[];
+  belowThresholdIds: readonly PlayerId[];
+}): GameSettlementPlan {
+  const base = planGameSettlement({ ...input, victoryType: 'SIMPLE' });
+  const penalized = base.loserIds.filter((id) => input.belowThresholdIds.includes(id));
+  const penaltyAmount = input.stake * penalized.length;
+  // `grossAmount` reste les mises seules (contrainte de `game_settlements`, migration 0049) :
+  // mises + pénalités = commission + gain net.
+  const losses = base.grossAmount + penaltyAmount;
+  const commissionAmount = commissionOf(losses, input.commissionBps);
+  return {
+    ...base,
+    commissionAmount,
+    penaltyAmount,
+    netGain: losses - commissionAmount,
+    lossOf: Object.fromEntries(
+      base.loserIds.map((id) => [id, input.stake * (penalized.includes(id) ? 2 : 1)]),
+    ),
   };
 }

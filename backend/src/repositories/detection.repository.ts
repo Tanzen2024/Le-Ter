@@ -3,6 +3,7 @@ import type {
   DetectionSignal,
   SuspicionScore,
 } from '../domain/detection/detection';
+import type { GameType } from '../domain/game/game';
 import type { GameId, PlayerId } from '../domain/game/game-id';
 
 /** Alerte prête à être enregistrée (statut NEW, date fixée par l'enregistrement). */
@@ -25,6 +26,9 @@ export interface DetectionRepository {
   /** Joueurs de la partie (pour rejeter tout signal citant un joueur étranger). */
   playersOfGame(gameId: GameId): Promise<PlayerId[]>;
 
+  /** Jeu de la partie (D-119) ; partie inconnue : Le Ter. */
+  gameTypeOfGame(gameId: GameId): Promise<GameType>;
+
   /**
    * Enregistre des signaux de la partie, en UNE transaction. Un signal déjà présent (même
    * partie, type, joueurs, version) est ignoré (idempotence, migration 0015). Renvoie le
@@ -36,17 +40,28 @@ export interface DetectionRepository {
   /** Signaux de la partie, du plus ancien au plus récent. */
   listSignals(gameId: GameId): Promise<DetectionSignal[]>;
 
-  /** Signaux de ces sujets créés depuis `since`, toutes parties surveillées : UNE requête. */
-  listSubjectSignals(subjectKeys: readonly string[], since: Date): Promise<DetectionSignal[]>;
+  /**
+   * Signaux de ces sujets créés depuis `since`, parties surveillées du jeu `gameType`
+   * seulement (D-125 : un score Fap-Fap ne compte jamais un signal GARAM, et inversement) :
+   * UNE requête.
+   */
+  listSubjectSignals(
+    subjectKeys: readonly string[],
+    since: Date,
+    gameType: GameType,
+  ): Promise<DetectionSignal[]>;
 
-  /** Dernier score de chaque sujet calculé lors d'une AUTRE partie que `gameId`. */
+  /**
+   * Dernier score de chaque sujet calculé lors d'une AUTRE partie que `gameId`, du même jeu
+   * que `gameId` (D-125).
+   */
   previousScores(subjectKeys: readonly string[], gameId: GameId): Promise<Map<string, number>>;
 
   /**
    * Enregistre, en UNE transaction, les instantanés de score de la partie (un par sujet,
    * mis à jour seulement s'il change) et les alertes (ignorées si leur clé de
    * déduplication existe, ou si une alerte de niveau supérieur existe pour la même
-   * période). Renvoie le nombre d'alertes créées.
+   * période et le même jeu que `gameId`). Renvoie le nombre d'alertes créées.
    */
   saveScoring(
     gameId: GameId,

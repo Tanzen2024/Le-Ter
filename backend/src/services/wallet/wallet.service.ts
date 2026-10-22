@@ -193,6 +193,8 @@ export class WalletService {
    *    (`DirectPaymentUnavailableError` : rien créé, ou paiement clos sans crédit), sous une clé
    *    d'idempotence dérivée : un rejeu retrouve la même page, jamais un second paiement ;
    * 3. issue incertaine du direct (paiement en attente) : renvoyée telle quelle, aucun repli ;
+   *    direct accepté puis clos SANS débit (FAILED, EXPIRED relus chez CinetPay) : une nouvelle
+   *    demande du même achat (même clé) passe par la page CinetPay (D-134) ;
    * 4. service indisponible : erreur, aucun repli (même fournisseur), rien crédité.
    * `requested` (opérateur envoyé par l'application) est refusé s'il diffère du compte.
    */
@@ -223,9 +225,28 @@ export class WalletService {
       return this.request('deposit', userId, tokens, idempotencyKey, { pageOperator: operator });
     }
     try {
-      return await this.request('deposit', userId, tokens, idempotencyKey, {
+      const direct = await this.request('deposit', userId, tokens, idempotencyKey, {
         directOperator: operator,
       });
+      // Direct ACCEPTÉ puis clos par CinetPay sans débit (FAILED, EXPIRED : statut final relu
+      // chez le fournisseur, achat échoué, rien crédité) : le même achat (même clé) passe
+      // automatiquement par la page CinetPay (D-134). Jamais pour un direct encore en attente :
+      // il peut toujours être confirmé sur le téléphone (aucun double paiement).
+      if (
+        direct.payment?.mode === 'DIRECT' &&
+        (direct.payment.status === 'FAILED' || direct.payment.status === 'EXPIRED') &&
+        direct.transaction.status === 'failed'
+      ) {
+        this.deps.logger.info('direct payment closed without debit: hosted page fallback', {
+          userId,
+          operator,
+          paymentStatus: direct.payment.status,
+        });
+        return this.request('deposit', userId, tokens, `${idempotencyKey}${PAGE_FALLBACK_SUFFIX}`, {
+          pageOperator: operator,
+        });
+      }
+      return direct;
     } catch (err) {
       if (!(err instanceof DirectPaymentUnavailableError)) throw err;
       this.deps.logger.info('direct payment refused: hosted page fallback', {

@@ -37,7 +37,7 @@ const PLAYER: PlayerDetail = {
   chatRestriction: null,
   phoneVerified: false,
   updatedAt: '2026-10-01T08:00:00Z',
-  gamesWon: 1,
+  gamesWon: { fapFap: 1, garamTia: 0 },
   activeGameId: null,
   activeSessionId: null,
   tournamentRegistrations: 0,
@@ -113,6 +113,43 @@ describe('Gestion des joueurs (D-079)', () => {
     expect(screen.getByRole('button', { name: /Suspendre le joueur/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Déconnecter tous les appareils/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Envoyer un avertissement/ })).toBeEnabled();
+  });
+
+  it('réinitialiser l’accès (D-135) : motif obligatoire, code affiché une fois puis effacé', async () => {
+    post.mockResolvedValue({ recoveryCode: 'LT-7K4P-92XM-0A1B' });
+    wrap(<ModerationActionsCard player={{ ...PLAYER, email: null }} moderation={MODERATION} />);
+    fireEvent.click(screen.getByRole('button', { name: /Réinitialiser l’accès/ }));
+    await screen.findByLabelText('Motif');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Réinitialiser l’accès' }).at(-1)!);
+    expect(await screen.findByText('Motif obligatoire.')).toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Motif'), {
+      target: { value: 'Code de récupération perdu' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Réinitialiser l’accès' }).at(-1)!);
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        `users/${PLAYER.id}/recovery`,
+        { reason: 'Code de récupération perdu' },
+        undefined,
+      ),
+    );
+    expect(await screen.findByTestId('admin-recovery-code')).toHaveTextContent(
+      'LT-7K4P-92XM-0A1B',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Code transmis' }));
+    expect(screen.queryByTestId('admin-recovery-code')).not.toBeInTheDocument();
+  });
+
+  it('réinitialiser l’accès : interdit sur sa propre fiche et sur un administrateur', () => {
+    const { unmount } = wrap(
+      <ModerationActionsCard player={PLAYER} moderation={{ ...MODERATION, isSelf: true }} />,
+    );
+    expect(screen.getByRole('button', { name: /Réinitialiser l’accès/ })).toBeDisabled();
+    unmount();
+    wrap(<ModerationActionsCard player={{ ...PLAYER, role: 'admin' }} moderation={MODERATION} />);
+    expect(screen.getByRole('button', { name: /Réinitialiser l’accès/ })).toBeDisabled();
   });
 
   it('suspension en cours : seule la levée est proposée', () => {

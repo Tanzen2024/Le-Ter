@@ -27,6 +27,7 @@ const at = (iso: string) => new Date(iso);
 
 function input(overrides: Partial<TournamentInput> = {}): TournamentInput {
   return {
+    gameType: 'TER',
     startsAt: at('2026-10-12T18:00:00Z'),
     endsAt: at('2026-10-12T20:00:00Z'),
     entryFee: 1000,

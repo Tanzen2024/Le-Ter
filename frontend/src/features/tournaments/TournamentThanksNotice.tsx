@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { tablePalette } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { useMarkNotificationRead, useNotifications, useTournamentSignals } from './hooks';
 import { useTournamentMessages } from './tournament-messages';
 import { formatTournamentPeriod } from './tournament-state';
@@ -29,7 +30,7 @@ export function TournamentThanksNotice() {
     ? formatTournamentPeriod({ startsAt, endsAt: startsAt }, t.locale).date
     : undefined;
   return (
-    <View testID="tournament-thanks" style={styles.backdrop} accessibilityViewIsModal>
+    <ExclusiveOverlay testID="tournament-thanks" style={styles.backdrop}>
       <View style={styles.card} accessibilityRole="alert">
         <Text style={styles.title}>🏆 {t.thanks.title}</Text>
         <Text style={styles.message}>{t.thanks.message(date ?? '')}</Text>
@@ -57,19 +58,12 @@ export function TournamentThanksNotice() {
           ) : null}
         </View>
       </View>
-    </View>
+    </ExclusiveOverlay>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    padding: 16,
-    zIndex: 50,
-  },
+  backdrop: { padding: 16 },
   card: {
     maxWidth: 480,
     width: '100%',

@@ -208,7 +208,7 @@ export class CinetPayGateway implements MobileMoneyGateway {
         currency: PAYMENT_CURRENCY,
         lang: this.options.lang ?? 'fr',
         designation: `Achat de ${request.tokens} jetons Le Ter`,
-        clientEmail: request.customer.email,
+        ...(request.customer.email && { clientEmail: request.customer.email }),
         clientFirstName: request.customer.firstName.trim(),
         clientLastName: request.customer.lastName.trim(),
         successUrl: returnUrl,

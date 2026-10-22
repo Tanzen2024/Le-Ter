@@ -10,11 +10,27 @@ const mockChangePassword = jest.fn((_payload: unknown, options: { onSuccess: () 
   options.onSuccess(),
 );
 
+// Nouveau code de récupération (D-135) : réponse du serveur simulée.
+const mockRegenerate = jest.fn();
+let mockRegenerated: { recoveryCode: string } | undefined;
+
 jest.mock('../auth/hooks', () => ({
   useCurrentUser: jest.fn(),
   useLogout: () => ({ isPending: false, mutate: jest.fn() }),
   useChangePassword: () => ({ isPending: false, mutate: mockChangePassword }),
+  useRegenerateRecoveryCode: () => ({
+    isPending: false,
+    mutate: mockRegenerate,
+    reset: jest.fn(),
+    data: mockRegenerated,
+  }),
 }));
+jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => true) }));
+
+beforeEach(() => {
+  mockRegenerate.mockReset();
+  mockRegenerated = undefined;
+});
 
 const USER: PublicUser = {
   id: 'u-1',
@@ -35,6 +51,19 @@ const serve = (user: PublicUser) =>
   });
 
 describe('ProfilePanel : informations en lecture seule, seul le mot de passe se modifie', () => {
+  it('le bouton X ferme le panneau ; il est déclaré après le contenu (au premier plan)', async () => {
+    serve(USER);
+    const onClose = jest.fn();
+    await render(<ProfilePanel onClose={onClose} />);
+    const close = screen.getByRole('button', { name: 'Fermer' });
+    await fireEvent.press(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Dernier enfant du panneau : rien de défilant ne passe devant lui (toucher Android).
+    const panel = close.parent?.parent;
+    const siblings = panel?.children ?? [];
+    expect(siblings[siblings.length - 1]).toBe(close.parent);
+  });
+
   it('affiche pays lisible et téléphone national, sans indicatif ni drapeau', async () => {
     serve(USER);
     await render(<ProfilePanel onClose={jest.fn()} />);
@@ -116,5 +145,35 @@ describe('ProfilePanel : informations en lecture seule, seul le mot de passe se 
     expect(screen.getByText('+33612345678')).toBeTruthy();
     expect(screen.queryByText('Cameroun')).toBeNull();
     expect(screen.getByText('—')).toBeTruthy();
+  });
+});
+
+describe('ProfilePanel : code de récupération (D-135)', () => {
+  it('joueur sans email : « — » ; ancien compte sans code : « Créer un code »', async () => {
+    serve({ ...USER, email: null, hasRecoveryCode: false });
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Créer un code de récupération')).toBeTruthy();
+  });
+
+  it('mot de passe actuel exigé avant tout appel ; puis envoyé au serveur', async () => {
+    serve({ ...USER, hasRecoveryCode: true });
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    await fireEvent.press(screen.getByLabelText('Générer un nouveau code de récupération'));
+    await fireEvent.press(screen.getByText('Afficher le code'));
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(screen.getByText('Saisissez votre mot de passe actuel.')).toBeTruthy();
+    await fireEvent.changeText(screen.getByLabelText('Mot de passe actuel'), 'Secret123');
+    await fireEvent.press(screen.getByText('Afficher le code'));
+    expect(mockRegenerate).toHaveBeenCalledWith('Secret123', expect.any(Object));
+  });
+
+  it('code reçu : affiché une fois, avec « Copier le code »', async () => {
+    mockRegenerated = { recoveryCode: 'LT-7K4P-92XM-0A1B' };
+    serve({ ...USER, hasRecoveryCode: true });
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    expect(screen.getByTestId('recovery-code')).toHaveTextContent('LT-7K4P-92XM-0A1B');
+    await fireEvent.press(screen.getByText('Copier le code'));
+    expect(await screen.findByText('Code copié.')).toBeTruthy();
   });
 });

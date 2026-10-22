@@ -49,6 +49,16 @@ const DASHBOARD: Dashboard = {
   reconciliationAnomalies: { total: 0, critical: 0 } as Dashboard['reconciliationAnomalies'],
   series: [],
   recentAdminActivity: [],
+  commissions: {
+    total: 0,
+    entries: 0,
+    bySource: [
+      { source: 'FAP_FAP', count: 0, amount: 0 },
+      { source: 'TOURNAMENT', count: 0, amount: 0 },
+      { source: 'GARAM_TIA', count: 0, amount: 0 },
+    ],
+  },
+  platformAccountBalance: 0,
 };
 
 const client = () =>

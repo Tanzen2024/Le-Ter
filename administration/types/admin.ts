@@ -121,7 +121,7 @@ export interface DailyPoint {
 export interface Dashboard {
   period: { from: string; to: string; timezone: string };
   generatedAt: string;
-  definitions: { activePlayer: string; platformRevenue: string };
+  definitions: { activePlayer: string; platformRevenue: string; commissions?: string };
   players: { total: number; newInPeriod: number; active: number; admins: number };
   games: {
     waiting: number;
@@ -133,6 +133,10 @@ export interface Dashboard {
   tournaments: { status: TournamentStatus; count: number }[];
   payments: StatusAmount[];
   platformRevenue: number;
+  /** Recettes de la période par origine (D-120) ; `source` : filtre appliqué. */
+  commissions: { source?: LedgerSource; total: number; entries: number; bySource: SourceAmount[] };
+  /** Solde comptable de la caisse UNIQUE (tout l'historique, indépendant de la période). */
+  platformAccountBalance: number;
   alerts: AttentionCounts;
   reconciliationAnomalies: AnomalySummary;
   series: DailyPoint[];
@@ -161,7 +165,8 @@ export interface PlayerRow {
   username: string;
   firstName: string;
   lastName: string;
-  email: string;
+  /** Facultatif pour un joueur (D-135). */
+  email: string | null;
   phone: string;
   role: 'user' | 'admin';
   status: 'active' | 'disabled';
@@ -179,7 +184,8 @@ export interface PlayerRow {
 export interface PlayerDetail extends PlayerRow {
   phoneVerified: boolean;
   updatedAt: string;
-  gamesWon: number;
+  /** Victoires par jeu, jamais additionnées entre Fap-Fap et Garam Tia (D-126). */
+  gamesWon: { fapFap: number; garamTia: number };
   activeGameId: string | null;
   activeSessionId: string | null;
   tournamentRegistrations: number;
@@ -246,6 +252,10 @@ export type GameAnomaly = 'STALE_WAITING' | 'LONG_RUNNING' | 'OVERDUE_TURN';
 
 export interface GameRow {
   id: string;
+  /** Jeu de la partie (D-126) : 'TER' (Fap-Fap) ou 'GARAM' (Garam Tia). */
+  gameType: 'TER' | 'GARAM';
+  /** GARAM TIA : variante 15, 16, 17 ou 18 (D-127) ; null pour Fap-Fap. */
+  garamVariant?: number | null;
   status: GameStatus;
   sessionId: string;
   tournament: { id: string; name: string | null } | null;
@@ -291,7 +301,13 @@ export interface GameDetail extends GameRow {
 
 // --- Finances --------------------------------------------------------------------------------
 
-export type WalletKind = 'deposit' | 'withdrawal' | 'tournament_entry' | 'tournament_prize';
+export type WalletKind =
+  | 'deposit'
+  | 'withdrawal'
+  | 'tournament_entry'
+  | 'tournament_prize'
+  | 'game_stake'
+  | 'game_winnings';
 export type WalletStatus = 'pending' | 'succeeded' | 'failed';
 export type ReservationStatus = 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
 export type PaymentStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED';
@@ -409,6 +425,8 @@ export interface PlatformAccount {
   currency: 'XAF';
   computedBalance: { amount: number; label: string };
   byKind: { kind: string; count: number; amount: number; description: string }[];
+  /** Mêmes écritures par origine (D-120) : leur somme est le solde calculé. */
+  bySource: SourceAmount[];
   entries: number;
   firstEntryAt: string | null;
   lastEntryAt: string | null;
@@ -418,15 +436,26 @@ export interface PlatformAccount {
   reconciliation: { tournamentAnomalies: number; status: 'BALANCED' | 'ANOMALIES' };
 }
 
+/** Origine d'une recette de la caisse unique (D-120). */
+export type LedgerSource = 'FAP_FAP' | 'TOURNAMENT' | 'GARAM_TIA';
+
+/** Recettes par source sur une période (les trois sources, montants à 0 compris). */
+export interface SourceAmount {
+  source: LedgerSource;
+  count: number;
+  amount: number;
+}
+
 export interface LedgerEntry {
   id: string;
   kind: 'TOURNAMENT_PLATFORM_FEE' | 'UNALLOCATED_PRIZE' | 'GAME_COMMISSION';
+  source: LedgerSource;
   amount: number;
   currency: string;
   feeBps: number | null;
   createdAt: string;
   /** Tournoi (commission, part non attribuée) ou partie ordinaire (commission, D-074). */
-  origin: { type: 'TOURNAMENT' | 'GAME'; id: string; name: string };
+  origin: { type: 'TOURNAMENT' | 'GAME'; id: string; name: string; sessionId?: string | null };
   participants: number | null;
   grossPool: number | null;
 }
@@ -493,6 +522,10 @@ export interface TournamentSummary {
   tournamentId: string;
   status: TournamentStatus;
   creatorType: 'ADMIN' | 'PLAYER';
+  /** Jeu du tournoi (D-124) : 'TER' (Fap-Fap) ou 'GARAM' (GARAM TIA). */
+  gameType: 'TER' | 'GARAM';
+  /** GARAM TIA : variante des parties du tournoi (D-127). */
+  garamVariant?: number;
   timezone: string;
   startsAt: string;
   endsAt: string;

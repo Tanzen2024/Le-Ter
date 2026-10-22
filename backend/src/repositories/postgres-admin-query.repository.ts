@@ -1,5 +1,7 @@
+import { LEDGER_SOURCES, type LedgerSource } from '../domain/platform-finance/platform-finance';
 import type { SqlClient, SqlExecutor } from '../database/sql-client';
 import { ADMIN_THRESHOLDS } from '../domain/admin/admin';
+import type { GameType } from '../domain/game/game';
 import type { PaymentStatus } from '../domain/payments/payment';
 import { STARTED_STATUSES, type TournamentStatus } from '../domain/tournaments/tournament';
 import type { UserRole, UserStatus } from '../domain/users/user';
@@ -24,6 +26,7 @@ import type {
   LedgerKind,
   LedgerQuery,
   LedgerSummary,
+  CommissionBreakdown,
   OrphanDepositRow,
   PaymentQuery,
   PaymentReconciliationRow,
@@ -73,6 +76,16 @@ const dOrNull = (value: unknown): Date | null =>
 const iso = (value: Date) => value.toISOString();
 
 /** Motif LIKE littéral : `%`, `_` et `\` de la saisie ne sont pas des jokers. */
+/** Les trois sources dans un ordre fixe, à 0 si aucune écriture (D-120). */
+function allSources(
+  rows: readonly { source: LedgerSource; count: number; amount: unknown }[],
+): { source: LedgerSource; count: number; amount: number }[] {
+  return LEDGER_SOURCES.map((source) => {
+    const row = rows.find((r) => r.source === source);
+    return { source, count: row?.count ?? 0, amount: n(row?.amount ?? 0) };
+  });
+}
+
 function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
@@ -144,7 +157,7 @@ function userOf(row: UserRow, restrictions: Restrictions = new Map()): AdminUser
 
 // Colonnes en liste blanche : `g.state` (mains, paquet, plis) n'est JAMAIS lu.
 const GAME_COLUMNS = `
-  g.id, g.status, g.session_id, g.max_players, g.stake_amount, g.created_at, g.started_at,
+  g.id, g.game_type, g.garam_variant, g.status, g.session_id, g.max_players, g.stake_amount, g.created_at, g.started_at,
   g.finished_at, g.turn_deadline_at, g.turn_timed_out_at, g.end_reason, g.winner_id,
   g.replay_of_game_id,
   (SELECT r.id FROM games r WHERE r.replay_of_game_id = g.id) AS replayed_by_game_id,
@@ -163,6 +176,8 @@ const GAME_FROM = `
 
 type GameRow = {
   id: string;
+  game_type: GameType;
+  garam_variant: number | null;
   status: AdminGameStatus;
   session_id: string;
   max_players: number;
@@ -204,6 +219,8 @@ function playersOf(value: unknown): AdminGamePlayer[] {
 function gameOf(row: GameRow): AdminGameRow {
   return {
     id: row.id,
+    gameType: row.game_type,
+    garamVariant: row.garam_variant === null ? null : n(row.garam_variant),
     status: row.status,
     sessionId: row.session_id,
     tournamentId: row.tournament_id,
@@ -446,7 +463,8 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
   async findUser(id: string, now: Date): Promise<AdminUserDetail | null> {
     const { rows } = await this.db.query<
       UserRow & {
-        games_won: number;
+        games_won_ter: number;
+        games_won_garam: number;
         active_game_id: string | null;
         active_session_id: string | null;
         registrations: number;
@@ -457,7 +475,10 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       }
     >(
       `SELECT ${USER_COLUMNS},
-         (SELECT count(*) FROM games g WHERE g.winner_id = u.id)::int AS games_won,
+         (SELECT count(*) FROM games g WHERE g.winner_id = u.id AND g.game_type = 'TER')::int
+           AS games_won_ter,
+         (SELECT count(*) FROM games g WHERE g.winner_id = u.id AND g.game_type = 'GARAM')::int
+           AS games_won_garam,
          (SELECT gp.game_id FROM game_players gp WHERE gp.player_id = u.id AND gp.active
            LIMIT 1) AS active_game_id,
          (SELECT sp.session_id FROM session_players sp JOIN sessions s ON s.id = sp.session_id
@@ -485,7 +506,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
     return {
       ...userOf(row, await this.restrictionsOf([row.id], now)),
       updatedAt: d(row.updated_at),
-      gamesWon: n(row.games_won),
+      gamesWon: { fapFap: n(row.games_won_ter), garamTia: n(row.games_won_garam) },
       activeGameId: row.active_game_id,
       activeSessionId: row.active_session_id,
       tournamentRegistrations: n(row.registrations),
@@ -508,6 +529,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
     if (query.gameId) where.add('g.id = ?', query.gameId);
     if (query.sessionId) where.add('g.session_id = ?', query.sessionId);
     if (query.tournamentId) where.add('ts.tournament_id = ?', query.tournamentId);
+    if (query.gameType) where.add('g.game_type = ?', query.gameType);
     if (query.playerId) {
       where.add(
         'EXISTS (SELECT 1 FROM game_players gp WHERE gp.game_id = g.id AND gp.player_id = ?)',
@@ -800,9 +822,15 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       `SELECT min(created_at) AS first, max(created_at) AS last FROM platform_ledger ${where.clause}`,
       where.params,
     );
+    const bySource = await this.db.query<{ source: LedgerSource; count: number; amount: unknown }>(
+      `SELECT source, count(*)::int AS count, COALESCE(sum(amount), 0) AS amount
+       FROM platform_ledger ${where.clause} GROUP BY source`,
+      where.params,
+    );
     const kinds = byKind.rows.map((r) => ({ kind: r.kind, count: r.count, amount: n(r.amount) }));
     return {
       byKind: kinds,
+      bySource: allSources(bySource.rows),
       total: kinds.reduce((sum, k) => sum + k.amount, 0),
       entries: kinds.reduce((sum, k) => sum + k.count, 0),
       firstEntryAt: dOrNull(bounds.rows[0]?.first),
@@ -814,7 +842,22 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
   async listLedger(query: LedgerQuery) {
     const where = new Where();
     if (query.kind) where.add('l.kind = ?', query.kind);
+    if (query.source) where.add('l.source = ?', query.source);
     if (query.tournamentId) where.add('l.tournament_id = ?', query.tournamentId);
+    if (query.q) {
+      // Référence (préfixe d'identifiant) de l'écriture, de la partie, de sa session ou du
+      // tournoi ; ou nom du tournoi.
+      const prefix = `${likePattern(query.q.toLowerCase()).replace(/^%|%$/g, '')}%`;
+      where.add(
+        `(l.id::text LIKE ? OR l.game_id::text LIKE ? OR g.session_id::text LIKE ?
+          OR l.tournament_id::text LIKE ? OR ${TOURNAMENT_LABEL} ILIKE ?)`,
+        prefix,
+        prefix,
+        prefix,
+        prefix,
+        likePattern(query.q),
+      );
+    }
     if (query.from) where.add('l.created_at >= ?', iso(query.from));
     if (query.to) where.add('l.created_at < ?', iso(query.to));
     const { total, rows } = await this.page<{
@@ -822,7 +865,9 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       tournament_id: string | null;
       name: string | null;
       game_id: string | null;
+      session_id: string | null;
       kind: LedgerKind;
+      source: LedgerSource;
       amount: unknown;
       fee_bps: number | null;
       currency: string;
@@ -831,12 +876,13 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       gross_pool: unknown;
     }>(
       `l.id, l.tournament_id, CASE WHEN t.id IS NULL THEN NULL ELSE ${TOURNAMENT_LABEL} END AS name,
-       l.game_id, l.kind, l.amount, l.fee_bps, l.currency, l.created_at,
+       l.game_id, g.session_id, l.kind, l.source, l.amount, l.fee_bps, l.currency, l.created_at,
        COALESCE(t.participants, gs.participants) AS participants,
        COALESCE(t.gross_pool, gs.gross_amount) AS gross_pool`,
       `FROM platform_ledger l
        LEFT JOIN tournaments t ON t.id = l.tournament_id
-       LEFT JOIN game_settlements gs ON gs.game_id = l.game_id`,
+       LEFT JOIN game_settlements gs ON gs.game_id = l.game_id
+       LEFT JOIN games g ON g.id = l.game_id`,
       where,
       'l.created_at DESC, l.id DESC',
       query,
@@ -848,7 +894,9 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
         tournamentId: row.tournament_id,
         tournamentName: row.name,
         gameId: row.game_id,
+        sessionId: row.session_id,
         kind: row.kind,
+        source: row.source,
         amount: n(row.amount),
         feeBps: nOrNull(row.fee_bps),
         currency: row.currency,
@@ -938,6 +986,23 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
   }
 
   // --- Tableau de bord et rapports ------------------------------------------------------------
+
+  async commissionsBySource(period: Period, source?: LedgerSource): Promise<CommissionBreakdown> {
+    const where = new Where();
+    where.add('created_at >= ? AND created_at < ?', iso(period.from), iso(period.to));
+    if (source) where.add('source = ?', source);
+    const { rows } = await this.db.query<{ source: LedgerSource; count: number; amount: unknown }>(
+      `SELECT source, count(*)::int AS count, COALESCE(sum(amount), 0) AS amount
+       FROM platform_ledger ${where.clause} GROUP BY source`,
+      where.params,
+    );
+    const bySource = allSources(rows);
+    return {
+      total: bySource.reduce((sum, s) => sum + s.amount, 0),
+      entries: bySource.reduce((sum, s) => sum + s.count, 0),
+      bySource,
+    };
+  }
 
   async dashboard(period: Period, now: Date): Promise<DashboardFacts> {
     const params = [iso(period.from), iso(period.to)];

@@ -760,6 +760,36 @@ export function TurnActions({
   );
 }
 
+/**
+ * Bouton rond « Main spéciale » seul (même badge et même pictogramme que celui de Fap-Fap),
+ * pour GARAM TIA (D-129). Le serveur décide toujours si la main est spéciale.
+ */
+export function SpecialHandButton({
+  accessibilityLabel,
+  size,
+  pending,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  size: number;
+  pending: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <RoundActionButton
+      label="Main spéciale"
+      accessibilityLabel={accessibilityLabel}
+      tone="teal"
+      size={size}
+      pending={pending}
+      allowed
+      onPress={onPress}
+    >
+      <SpecialHandArt />
+    </RoundActionButton>
+  );
+}
+
 /** Durée de la main d'au revoir affichée après « Se coucher », avant le panneau de fin. */
 export const FAREWELL_MS = 3000;
 

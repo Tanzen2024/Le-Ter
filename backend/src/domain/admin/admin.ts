@@ -98,6 +98,8 @@ export const AUDIT_ACTIONS = [
   'COMPLAINT_ASSIGNED',
   'COMPLAINT_STATUS_CHANGED',
   'COMPLAINT_PRIORITY_CHANGED',
+  // Récupération d'un compte joueur par l'assistance (D-135, migration 0054).
+  'PLAYER_ACCOUNT_RECOVERY',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

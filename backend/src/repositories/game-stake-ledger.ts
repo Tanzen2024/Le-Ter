@@ -8,6 +8,7 @@ import {
   DEFAULT_GAME_COMMISSION_SCHEDULE,
   isValidCommissionSchedule,
   planGameSettlement,
+  planGaramSettlement,
   type GameCommissionTier,
   reservedPerPlayer,
   settledParticipants,
@@ -17,6 +18,7 @@ import {
 import { isValidGameStake, StakeNotCoveredAtStartError } from '../domain/rules/stake';
 import type { UserId } from '../domain/users/user';
 import type { Logger } from '../utils/logger';
+import { gameLedgerSource } from '../domain/platform-finance/platform-finance';
 import { lockWalletBalances } from './wallet-reservations';
 
 /**
@@ -201,16 +203,27 @@ export class PostgresGameStakeLedger implements GameStakeLedger {
         throw new Error(`Réservation absente pour ${id} (partie ${game.id})`);
       }
     }
-    const plan = planGameSettlement({
-      stake,
-      commissionBps: settlement.commission_bps,
-      winnerId,
-      participants,
-      victoryType,
-    });
+    // GARAM TIA (D-119, D-130) : même barème de commission, pris aussi sur les pénalités Koraté.
+    const plan =
+      game.gameType === 'GARAM'
+        ? planGaramSettlement({
+            stake,
+            commissionBps: settlement.commission_bps,
+            winnerId,
+            participants,
+            belowThresholdIds: game.result?.belowThresholdIds ?? [],
+          })
+        : planGameSettlement({
+            stake,
+            commissionBps: settlement.commission_bps,
+            winnerId,
+            participants,
+            victoryType,
+          });
     for (const r of reservations) {
-      if (plan.loserIds.includes(r.wallet_id as string as PlayerId)) {
-        await this.capture(tx, game, r, plan.unitAmount, now);
+      const loss = plan.lossOf[r.wallet_id as string];
+      if (loss !== undefined) {
+        await this.capture(tx, game, r, loss, now);
       } else {
         await this.release(tx, r, now); // gagnant (garde sa mise) ou fuyard (R-05) : aucun débit
       }
@@ -218,16 +231,25 @@ export class PostgresGameStakeLedger implements GameStakeLedger {
     await this.creditWinner(tx, game, plan, now);
     if (plan.commissionAmount > 0) {
       await tx.query(
-        `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at)
-         VALUES ($1, $2, 'GAME_COMMISSION', $3, $4, 'XAF', $5)`,
-        [randomUUID(), game.id, plan.commissionAmount, plan.appliedCommissionBps, iso(now)],
+        `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at,
+           source)
+         VALUES ($1, $2, 'GAME_COMMISSION', $3, $4, 'XAF', $5, $6)`,
+        [
+          randomUUID(),
+          game.id,
+          plan.commissionAmount,
+          plan.appliedCommissionBps,
+          iso(now),
+          // Caisse unique : la source ne trace que l'origine (D-120).
+          gameLedgerSource(game.gameType),
+        ],
       );
     }
     await tx.query(
       `UPDATE game_settlements
        SET status = 'SETTLED', outcome = $2, winner_id = $3, participants = $4,
            unit_amount = $5, gross_amount = $6, commission_amount = $7, net_gain = $8,
-           applied_commission_bps = $9, settled_at = $10
+           applied_commission_bps = $9, settled_at = $10, penalty_amount = $11
        WHERE game_id = $1`,
       [
         game.id,
@@ -240,6 +262,7 @@ export class PostgresGameStakeLedger implements GameStakeLedger {
         plan.netGain,
         plan.appliedCommissionBps,
         iso(now),
+        plan.penaltyAmount,
       ],
     );
     this.options.logger?.info('GAME_SETTLED', {
@@ -253,6 +276,7 @@ export class PostgresGameStakeLedger implements GameStakeLedger {
       appliedCommissionBps: plan.appliedCommissionBps,
       commissionAmount: plan.commissionAmount,
       netGain: plan.netGain,
+      penaltyAmount: plan.penaltyAmount,
     });
   }
 

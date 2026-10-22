@@ -1,4 +1,5 @@
 import type { CardId } from '../cards/card';
+import type { GaramCardId } from '../garam/garam-cards';
 import type { GameId, PlayerId } from './game-id';
 
 export class GameNotFoundError extends Error {
@@ -186,7 +187,7 @@ export class NotYourTurnError extends GameRuleViolationError {
 }
 
 export class CardNotInHandError extends GameRuleViolationError {
-  constructor(gameId: GameId, cardId: CardId) {
+  constructor(gameId: GameId, cardId: CardId | GaramCardId) {
     super(gameId, `La carte ${cardId} n'est pas dans la main du joueur`);
     this.name = 'CardNotInHandError';
   }
@@ -194,7 +195,7 @@ export class CardNotInHandError extends GameRuleViolationError {
 
 /** « Carte non jouable » (scénario §5). */
 export class CardNotPlayableError extends GameRuleViolationError {
-  constructor(gameId: GameId, cardId: CardId) {
+  constructor(gameId: GameId, cardId: CardId | GaramCardId) {
     super(gameId, `Carte non jouable : ${cardId}`);
     this.name = 'CardNotPlayableError';
   }
@@ -230,6 +231,45 @@ export class DealInProgressError extends GameRuleViolationError {
   constructor(gameId: GameId) {
     super(gameId, `La distribution de la partie ${gameId} n'est pas terminée`);
     this.name = 'DealInProgressError';
+  }
+}
+
+/**
+ * Action qui n'existe pas dans le JEU de la partie (D-126) : déclarer une main gagnante ou fuir
+ * dans une manche GARAM TIA, tirer ou voter la mise dans une partie de Fap-Fap. Refusée avant
+ * tout appel à un moteur : un jeu n'exécute jamais la logique de l'autre.
+ */
+export class ActionNotAvailableForGameError extends GameRuleViolationError {
+  constructor(gameId: GameId, action: string, gameType: string) {
+    super(gameId, `Action ${action} inexistante dans le jeu ${gameType} (partie ${gameId})`);
+    this.name = 'ActionNotAvailableForGameError';
+  }
+}
+
+/**
+ * GARAM TIA (D-127) : variante absente ou invalide (15, 16, 17 ou 18 seulement), ou variante
+ * fournie pour un autre jeu. Jamais remplacée par une valeur par défaut.
+ */
+export class InvalidGaramVariantError extends Error {
+  constructor(readonly value: unknown) {
+    super(`Variante GARAM TIA invalide : ${String(value)}`);
+    this.name = 'InvalidGaramVariantError';
+  }
+}
+
+/** GARAM TIA : action qui n'existe pas dans la phase en cours (ex. tirer au premier tour). */
+export class GaramActionNotAllowedError extends GameRuleViolationError {
+  constructor(gameId: GameId, reason: string) {
+    super(gameId, `Action GARAM TIA refusée : ${reason}`);
+    this.name = 'GaramActionNotAllowedError';
+  }
+}
+
+/** GARAM TIA : la proposition de doubler la mise est en cours (§3.15), la manche attend. */
+export class StakeVoteInProgressError extends GameRuleViolationError {
+  constructor(gameId: GameId) {
+    super(gameId, `La proposition de doubler la mise de la partie ${gameId} est en cours`);
+    this.name = 'StakeVoteInProgressError';
   }
 }
 

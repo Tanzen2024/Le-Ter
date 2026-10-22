@@ -227,6 +227,82 @@ describe('parties', () => {
   });
 });
 
+describe('séparation Fap-Fap / Garam Tia (D-126)', () => {
+  /** Partie terminée d'un jeu donné, gagnée par `winnerId` (vraies tables du jeu). */
+  async function finishedGame(
+    gameType: 'TER' | 'GARAM',
+    winnerId: string,
+    loserId: string,
+  ): Promise<string> {
+    const sessionId = randomUUID();
+    const gameId = randomUUID();
+    const at = '2026-10-09T07:30:00Z';
+    await database.sql.query(
+      `INSERT INTO sessions (id, version, status, creator_id, created_at, updated_at,
+         max_players, game_type, garam_variant)
+       VALUES ($1, 1, 'open', $2, $3, $3, 2, $4, CASE WHEN $4::text = 'GARAM' THEN 15 END)`,
+      [sessionId, winnerId, at, gameType],
+    );
+    await database.sql.query(
+      `INSERT INTO games (id, version, status, creator_id, max_players, state, created_at,
+         updated_at, started_at, finished_at, session_id, first_player_id, end_reason,
+         winner_id, game_type, garam_variant)
+       VALUES ($1, 1, 'finished', $2, 2, '{}', $3, $3, $3, $3, $4, $2, $5, $2, $6,
+         CASE WHEN $6::text = 'GARAM' THEN 15 END)`,
+      [
+        gameId,
+        winnerId,
+        at,
+        sessionId,
+        gameType === 'GARAM' ? 'GARAM_BEST_SCORE' : 'CONTROL_AFTER_LAST_TRICK',
+        gameType,
+      ],
+    );
+    for (const [seat, playerId] of [winnerId, loserId].entries()) {
+      await database.sql.query(
+        `INSERT INTO game_players (game_id, player_id, seat, joined_at, active, table_position)
+         VALUES ($1, $2, $3, $4, false, $5)`,
+        [gameId, playerId, seat, at, seat],
+      );
+    }
+    return gameId;
+  }
+
+  it('fiche joueur : victoires Fap-Fap et Garam Tia comptées séparément', async () => {
+    const a = await registerAndLogin(ctx.app);
+    const b = await registerAndLogin(ctx.app);
+    await finishedGame('TER', a.userId, b.userId);
+    await finishedGame('GARAM', a.userId, b.userId);
+    await finishedGame('GARAM', a.userId, b.userId);
+    await finishedGame('GARAM', b.userId, a.userId);
+    const res = await api.get(`/api/admin/users/${a.userId}`).expect(200);
+    expect(res.body.user.gamesWon).toEqual({ fapFap: 1, garamTia: 2 });
+    const other = await api.get(`/api/admin/users/${b.userId}`).expect(200);
+    expect(other.body.user.gamesWon).toEqual({ fapFap: 0, garamTia: 1 });
+  });
+
+  it('parties : jeu affiché dans la liste et le détail, filtre par jeu', async () => {
+    const a = await registerAndLogin(ctx.app);
+    const b = await registerAndLogin(ctx.app);
+    const ter = await finishedGame('TER', a.userId, b.userId);
+    const garam = await finishedGame('GARAM', a.userId, b.userId);
+
+    const all = await api.get('/api/admin/games').expect(200);
+    const types = new Map(
+      all.body.items.map((g: { id: string; gameType: string }) => [g.id, g.gameType]),
+    );
+    expect(types.get(ter)).toBe('TER');
+    expect(types.get(garam)).toBe('GARAM');
+    const onlyGaram = await api.get('/api/admin/games?gameType=GARAM').expect(200);
+    expect(onlyGaram.body.items.map((g: { id: string }) => g.id)).toEqual([garam]);
+    const onlyTer = await api.get('/api/admin/games?gameType=TER').expect(200);
+    expect(onlyTer.body.items.map((g: { id: string }) => g.id)).toEqual([ter]);
+    const detail = await api.get(`/api/admin/games/${garam}`).expect(200);
+    expect(detail.body.game.gameType).toBe('GARAM');
+    await api.get('/api/admin/games?gameType=AUTRE').expect(400);
+  });
+});
+
 describe('paiements CinetPay', () => {
   it('liste filtrée par statut ; détail audité PAYMENT_VIEWED', async () => {
     const player = await registerAndLogin(ctx.app);
@@ -380,11 +456,11 @@ describe('rapprochement et compte financier de la plateforme', () => {
   it('commission de tournoi : écriture du journal comparée à la formule du serveur', async () => {
     const tournamentId = randomUUID();
     await database.sql.query(
-      `INSERT INTO tournaments (id, starts_at, ends_at, created_at, updated_at, status,
+      `INSERT INTO tournaments (game_type, id, starts_at, ends_at, created_at, updated_at, status,
          entry_fee, platform_fee_bps, participants, gross_pool, platform_fee, prize_pool,
          published_at, blocked_until, registration_closes_at, started_at, ranking_method,
          settlement_rule)
-       VALUES ($1, '2026-10-08T10:00:00Z', '2026-10-08T11:00:00Z',
+       VALUES ('TER', $1, '2026-10-08T10:00:00Z', '2026-10-08T11:00:00Z',
                '2026-10-01T10:00:00Z', '2026-10-08T10:00:00Z', 'IN_PROGRESS',
                1000, 1000, 20, 20000, 2000, 18000,
                '2026-10-01T10:00:00Z', '2026-10-08T11:00:00Z', '2026-10-08T10:00:00Z',
@@ -392,8 +468,10 @@ describe('rapprochement et compte financier de la plateforme', () => {
       [tournamentId],
     );
     await database.sql.query(
-      `INSERT INTO platform_ledger (id, tournament_id, kind, amount, fee_bps, currency, created_at)
-       VALUES ($1, $2, 'TOURNAMENT_PLATFORM_FEE', 1500, 1000, 'XAF', '2026-10-08T10:00:00Z')`,
+      `INSERT INTO platform_ledger (id, tournament_id, kind, amount, fee_bps, currency, created_at,
+         source)
+       VALUES ($1, $2, 'TOURNAMENT_PLATFORM_FEE', 1500, 1000, 'XAF', '2026-10-08T10:00:00Z',
+         'TOURNAMENT')`,
       [randomUUID(), tournamentId],
     );
     const res = await api.get('/api/admin/reconciliation/anomalies').expect(200);

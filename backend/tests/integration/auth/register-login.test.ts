@@ -51,15 +51,19 @@ describe('POST /api/auth/register (R-15)', () => {
 
     expect(res.body.user).toEqual({
       id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      playerNumber: expect.any(Number),
       firstName: 'Awa',
       lastName: 'Ndiaye',
       email: 'awa.test@example.com',
       username: body.username,
       phone: '+237699001122',
       phoneVerified: false,
+      hasRecoveryCode: true,
       role: 'user',
       createdAt: expect.any(String),
     });
+    // Code de récupération (D-135) : renvoyé une fois, dans cette réponse seulement.
+    expect(res.body.recoveryCode).toMatch(/^LT(-[0-9A-HJKMNP-TV-Z]{4}){3}$/);
     expect(JSON.stringify(res.body)).not.toMatch(/password|hash|Secret123/i);
   });
 
@@ -77,7 +81,7 @@ describe('POST /api/auth/register (R-15)', () => {
   it('refuse les champs manquants avec un message par champ', async () => {
     const res = await register({}).expect(400);
     expect(res.body.code).toBe('VALIDATION_ERROR');
-    expect(Object.keys(res.body.fields)).toHaveLength(8); // 7 champs + pays
+    expect(Object.keys(res.body.fields)).toHaveLength(7); // 6 champs + pays (email facultatif)
   });
 
   it.each([
@@ -143,6 +147,44 @@ describe('POST /api/auth/register (R-15)', () => {
     ).expect(201);
     expect(res.body.user).toMatchObject({ role: 'user', phoneVerified: false });
     expect(res.body.user.id).not.toBe(forcedId);
+  });
+
+  it('numéro d’ordre (D-133) : attribué par la base dans l’ordre des inscriptions, unique', async () => {
+    const first = await register(validRegistration()).expect(201);
+    const second = await register(validRegistration()).expect(201);
+    const a = first.body.user.playerNumber;
+    const b = second.body.user.playerNumber;
+    expect(Number.isSafeInteger(a) && a > 0).toBe(true);
+    expect(b).toBeGreaterThan(a);
+    const { rows } = await database.sql.query<{ player_number: string }>(
+      'SELECT player_number FROM users WHERE id = $1',
+      [first.body.user.id],
+    );
+    expect(Number(rows[0]?.player_number)).toBe(a);
+  });
+
+  it('numéro d’ordre : jamais choisi par le client, immuable en base', async () => {
+    const res = await register(validRegistration({ playerNumber: 1, player_number: 1 })).expect(
+      201,
+    );
+    const other = await register(validRegistration()).expect(201);
+    // Le numéro envoyé est ignoré : deux comptes n'ont jamais le même numéro.
+    expect(res.body.user.playerNumber).not.toBe(other.body.user.playerNumber);
+    await expect(
+      database.sql.query('UPDATE users SET player_number = player_number + 1000 WHERE id = $1', [
+        res.body.user.id,
+      ]),
+    ).rejects.toThrow(/immuable/);
+  });
+
+  it('numéro d’ordre : deux inscriptions simultanées reçoivent deux numéros distincts', async () => {
+    const results = await Promise.all([
+      register(validRegistration()),
+      register(validRegistration()),
+    ]);
+    expect(results.map((r) => r.status)).toEqual([201, 201]);
+    const numbers = results.map((r) => r.body.user.playerNumber);
+    expect(new Set(numbers).size).toBe(2);
   });
 
   it('ne journalise jamais le mot de passe', async () => {

@@ -609,7 +609,11 @@ describe("Distances indisponibles et mises à jour", () => {
     await act(async () => {
       await jest.advanceTimersByTimeAsync(INTERVAL);
     });
-    expect(screen.getByTestId("p2").props.children).toBe("1,2 km");
+    // Permission système refusée : la fenêtre de consentement est ouverte et, seule visible
+    // (D-126), masque la table aux lecteurs d'écran ; la distance y est pourtant à jour.
+    expect(
+      screen.getByTestId("p2", { includeHiddenElements: true }).props.children,
+    ).toBe("1,2 km");
     expect(sendPosition).not.toHaveBeenCalled();
     // Sortie de la partie : plus aucune relecture, état GPS local oublié.
     const calls = status.mock.calls.length;

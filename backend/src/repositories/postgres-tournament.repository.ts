@@ -6,6 +6,8 @@ import {
   type SqlClient,
   type SqlExecutor,
 } from '../database/sql-client';
+import { isGaramVariant } from '../domain/garam/garam-rules';
+import type { GameType } from '../domain/game/game';
 import type { GameId, PlayerId } from '../domain/game/game-id';
 import type { SessionId } from '../domain/sessions/session';
 import {
@@ -86,6 +88,8 @@ interface TournamentRow {
   status: TournamentStatus;
   creator_type: 'ADMIN' | 'PLAYER';
   creator_id: UserId | null;
+  game_type: GameType;
+  garam_variant: number | null;
   timezone: string;
   starts_at: Date;
   ends_at: Date;
@@ -135,6 +139,8 @@ function toTournament(row: TournamentRow): Tournament {
     status: row.status,
     creatorType: row.creator_type,
     ...(row.creator_id && { creatorId: row.creator_id }),
+    gameType: row.game_type,
+    ...(isGaramVariant(row.garam_variant) && { garamVariant: row.garam_variant }),
     timezone: row.timezone,
     startsAt: new Date(row.starts_at),
     endsAt: new Date(row.ends_at),
@@ -459,9 +465,9 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
            registration_closes_at, blocked_until, entry_fee, currency, minimum_players,
            maximum_players, platform_fee_bps, initial_tournament_tokens, stake_per_game,
            published_at, approved_by, created_at, updated_at, ranking_tokens_weight_bps,
-           ranking_games_weight_bps)
+           ranking_games_weight_bps, game_type, garam_variant)
          VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'XAF', $12, $13, $14,
-           $15, $16, $17, $18, $19, $19, $20, $21)`,
+           $15, $16, $17, $18, $19, $19, $20, $21, $22, $23)`,
         [
           t.id,
           t.status,
@@ -484,6 +490,8 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
           t.createdAt.toISOString(),
           t.rankingWeights?.tokensBps ?? null,
           t.rankingWeights?.gamesBps ?? null,
+          t.gameType,
+          t.garamVariant ?? null,
         ],
       );
     } catch (err) {
@@ -730,8 +738,9 @@ class PostgresTournamentUnitOfWork implements TournamentUnitOfWork {
     now: Date;
   }): Promise<void> {
     await this.tx.query(
-      `INSERT INTO platform_ledger (id, tournament_id, kind, amount, fee_bps, currency, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'XAF', $6)
+      `INSERT INTO platform_ledger (id, tournament_id, kind, amount, fee_bps, currency, created_at,
+         source)
+       VALUES ($1, $2, $3, $4, $5, 'XAF', $6, 'TOURNAMENT')
        ON CONFLICT ON CONSTRAINT platform_ledger_once DO NOTHING`,
       [
         randomUUID(),

@@ -2,11 +2,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
-import * as SafeArea from 'react-native-safe-area-context';
 
 import RegisterScreen from '../../../app/(auth)/register';
 import { ApiError } from '../../lib/api-client';
-import { formPaneWidth } from './AuthScreen';
 import { authApi } from '../../services/auth-api';
 import { storeSession } from './session';
 
@@ -45,7 +43,7 @@ async function fillIdentity() {
   await type('Prénom', 'Hugues');
   await type('Nom', 'Nwameh');
   await type('Pseudo', 'Roly_237');
-  await fireEvent.press(screen.getByText('Continuer →'));
+  await fireEvent.press(screen.getByText('Continuer'));
 }
 
 /** Ouvre le menu Pays, cherche par nom puis choisit l'option. */
@@ -56,8 +54,8 @@ async function selectCountry(name: string, query = name) {
 }
 
 async function fillCredentials() {
+  // Cameroun présélectionné (D-139) : le numéro national suffit.
   await type('Email', ' roly@example.com ');
-  await selectCountry('Cameroun');
   await type('Téléphone', '6 99 99 99 99');
   await type('Mot de passe', 'secret123');
   await type('Confirmer le mot de passe', 'secret123');
@@ -74,7 +72,7 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
   it('étape 1 : champs obligatoires, messages par champ, on reste à l’étape 1', async () => {
     await renderScreen();
     expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
-    await fireEvent.press(screen.getByText('Continuer →'));
+    await fireEvent.press(screen.getByText('Continuer'));
     expect(screen.getAllByText('Ce champ est obligatoire.')).toHaveLength(3);
     expect(screen.queryByLabelText('Email')).toBeNull();
   });
@@ -84,7 +82,7 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     await type('Prénom', 'Hugues');
     await type('Nom', 'Nwameh');
     await type('Pseudo', 'ab');
-    await fireEvent.press(screen.getByText('Continuer →'));
+    await fireEvent.press(screen.getByText('Continuer'));
     expect(screen.queryByLabelText('Email')).toBeNull();
     expect(api.register).not.toHaveBeenCalled();
   });
@@ -99,8 +97,8 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     expect(api.register).not.toHaveBeenCalled();
   });
 
-  it('crée le compte (téléphone normalisé, email nettoyé) puis connecte', async () => {
-    api.register.mockResolvedValue({ user: {} } as never);
+  it('crée le compte (téléphone normalisé, email nettoyé), montre le code, puis connecte', async () => {
+    api.register.mockResolvedValue({ user: {}, recoveryCode: 'LT-7K4P-92XM-0A1B' } as never);
     api.login.mockResolvedValue({ user: {}, accessToken: 'a', refreshToken: 'r' } as never);
     await renderScreen();
     await fillIdentity();
@@ -116,36 +114,49 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
       password: 'secret123',
       confirmPassword: 'secret123',
     });
-    expect(await screen.findByText('Compte créé ! Connexion en cours…')).toBeTruthy();
-    expect(api.login).toHaveBeenCalledWith({ email: 'roly@example.com', password: 'secret123' });
+    // Code de récupération (D-135) affiché avant toute connexion.
+    expect(await screen.findByTestId('recovery-code')).toHaveTextContent('LT-7K4P-92XM-0A1B');
+    expect(screen.getByText('Ce code ne sera plus affiché après cette étape.')).toBeTruthy();
+    expect(api.login).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByText('J’ai enregistré mon code'));
+    expect(api.login).toHaveBeenCalledWith({
+      country: 'CM',
+      phone: '699999999',
+      password: 'secret123',
+    });
+    await screen.findByTestId('recovery-code');
     expect(storeSession).toHaveBeenCalledWith({ accessToken: 'a', refreshToken: 'r' });
   });
 
-  describe('pays puis téléphone', () => {
+  it('sans email (D-135) : accepté, email vide envoyé, aucune erreur sur l’email', async () => {
+    api.register.mockResolvedValue({ user: {}, recoveryCode: 'LT-7K4P-92XM-0A1B' } as never);
+    await renderScreen();
+    await fillIdentity();
+    await fillCredentials();
+    await type('Email', '');
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    expect(api.register).toHaveBeenCalledWith(expect.objectContaining({ email: '' }));
+    expect(await screen.findByTestId('recovery-code-card')).toBeTruthy();
+  });
+
+  describe('téléphone au modèle de la connexion (D-139)', () => {
     const phoneInput = () => screen.getByLabelText('Téléphone');
-    const prefix = () => screen.queryByTestId('text-field-prefix');
 
-    it('le champ Pays précède le Téléphone, désactivé tant qu’aucun pays n’est choisi', async () => {
+    it('Cameroun présélectionné : +237 dans le champ, filigrane seulement, numéro national seul', async () => {
       await renderScreen();
       await fillIdentity();
-      expect(screen.getAllByText(/^(Pays|Téléphone)$/).map((n) => n.props.children)).toEqual([
-        'Pays',
-        'Téléphone',
-      ]);
-      expect(phoneInput().props.editable).toBe(false);
-      expect(phoneInput().props.placeholder).toBe("Sélectionnez d'abord votre pays");
-      expect(prefix()).toBeNull();
-    });
-
-    it('sans pays : erreur sur le pays, aucun appel au serveur', async () => {
-      await renderScreen();
-      await fillIdentity();
-      await type('Email', 'roly@example.com');
-      await type('Mot de passe', 'secret123');
-      await type('Confirmer le mot de passe', 'secret123');
-      await fireEvent.press(screen.getByText('Créer mon compte'));
-      expect(screen.getByText('Ce champ est obligatoire.')).toBeTruthy();
-      expect(api.register).not.toHaveBeenCalled();
+      expect(screen.getByText('+237')).toBeTruthy();
+      expect(screen.getByTestId('country-flag-CM', { includeHiddenElements: true })).toBeTruthy();
+      expect(screen.getByTestId('country-select').props.accessibilityValue).toEqual({
+        text: 'Cameroun +237',
+      });
+      expect(phoneInput().props.editable).not.toBe(false);
+      expect(phoneInput().props.value).toBe('');
+      expect(phoneInput().props.placeholder).toBe('695 122 301');
+      // Un « + » ou un indicatif tapé ne remplace pas l'indicatif affiché.
+      await type('Téléphone', '+33 6a92');
+      expect(phoneInput().props.value).toBe('33 692');
+      expect(screen.getByText('+237')).toBeTruthy();
     });
 
     it('les options n’affichent que des noms de pays (ni drapeau, ni indicatif, ni devise)', async () => {
@@ -165,36 +176,20 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
       await renderScreen();
       await fillIdentity();
       await selectCountry("Côte d'Ivoire", "cote d'ivoire");
-      expect(prefix()).toBeTruthy();
-      expect(within(prefix()!).getByText('+225')).toBeTruthy();
-    });
-
-    it('Cameroun : +237 dans une zone distincte et non modifiable ; seul le numéro national est saisi', async () => {
-      await renderScreen();
-      await fillIdentity();
-      await selectCountry('Cameroun', 'CAMER');
-      expect(within(prefix()!).getByText('+237')).toBeTruthy();
-      expect(prefix()!.props.accessibilityLabel).toBe('Indicatif +237, non modifiable');
-      expect(phoneInput().props.editable).toBe(true);
-      expect(phoneInput().props.placeholder).toBe('6 71 23 45 67');
-      // Un « + » ou un indicatif tapé ne remplace pas la zone fixe.
-      await type('Téléphone', '+33 6a92');
-      expect(phoneInput().props.value).toBe('33 692');
-      expect(within(prefix()!).getByText('+237')).toBeTruthy();
+      expect(screen.getByText('+225')).toBeTruthy();
     });
 
     it('changement de pays : indicatif remplacé, ancien numéro effacé (jamais validé à tort)', async () => {
       await renderScreen();
       await fillIdentity();
-      await selectCountry('Cameroun');
       await type('Téléphone', '692130271');
       await selectCountry('France');
-      expect(within(prefix()!).getByText('+33')).toBeTruthy();
+      expect(screen.getByText('+33')).toBeTruthy();
       expect(screen.queryByText('+237')).toBeNull();
       expect(phoneInput().props.value).toBe('');
     });
 
-    it('numéro invalide pour le pays choisi : message, aucun appel au serveur', async () => {
+    it('numéro invalide pour le pays choisi : message sous le champ, aucun appel au serveur', async () => {
       await renderScreen();
       await fillIdentity();
       await fillCredentials();
@@ -211,9 +206,8 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
       await type('Téléphone', '77 123 45 67');
       await fireEvent.press(screen.getByText('← Retour'));
       expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
-      await fireEvent.press(screen.getByText('Continuer →'));
-      expect(screen.getByText('Sénégal')).toBeTruthy();
-      expect(within(prefix()!).getByText('+221')).toBeTruthy();
+      await fireEvent.press(screen.getByText('Continuer'));
+      expect(screen.getByText('+221')).toBeTruthy();
       expect(phoneInput().props.value).toBe('77 123 45 67');
     });
 
@@ -256,27 +250,6 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     expect(screen.getByRole('alert')).toBeTruthy();
   });
 
-  it('paysage : le partage final s’affiche dès le premier rendu, la mesure ne le déplace pas', async () => {
-    // Fenêtre ET vue racine en paysage (le mock de `useSafeAreaFrame` lit la fenêtre).
-    jest
-      .spyOn(ReactNative.Dimensions, 'get')
-      .mockReturnValue({ width: 800, height: 400, scale: 2, fontScale: 1 });
-    jest
-      .spyOn(SafeArea, 'useSafeAreaInsets')
-      .mockReturnValue({ top: 0, bottom: 0, left: 40, right: 40 });
-    await renderScreen();
-    const pane = screen.getByTestId('auth-form-pane');
-    const first = ReactNative.StyleSheet.flatten(pane.props.style).width;
-    expect(first).toBe(formPaneWidth(720));
-    await fireEvent(pane.parent!, 'layout', {
-      persist: () => {},
-      nativeEvent: { layout: { x: 0, y: 0, width: 720, height: 400 } },
-    });
-    expect(
-      ReactNative.StyleSheet.flatten(screen.getByTestId('auth-form-pane').props.style).width,
-    ).toBe(first);
-  });
-
   it('petit écran (paysage, 360 dp) : formulaire resserré, toujours complet', async () => {
     jest
       .spyOn(ReactNative, 'useWindowDimensions')
@@ -284,7 +257,7 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     await renderScreen();
     for (const label of ['Prénom', 'Nom', 'Pseudo'])
       expect(screen.getByLabelText(label)).toBeTruthy();
-    expect(screen.getByText('Continuer →')).toBeTruthy();
+    expect(screen.getByText('Continuer')).toBeTruthy();
     expect(screen.getByText('Se connecter')).toBeTruthy();
   });
 });

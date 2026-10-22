@@ -6,7 +6,7 @@ import { ArrowLeft, Minus, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Controller, useFieldArray, useForm } from 'react-hook-form';
+import { Controller, useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { toast } from 'sonner';
 
 import { ConfirmDialog } from '@/components/feedback/confirm-dialog';
@@ -19,7 +19,9 @@ import { TimePicker } from '@/components/ui/time-picker';
 import { api } from '@/lib/api/client';
 import { ApiError, messageOf } from '@/lib/api/errors';
 import {
+  GARAM_VARIANTS,
   toTournamentPayload,
+  TOURNAMENT_GAMES,
   tournamentFormSchema,
   type TournamentFormInput,
   type TournamentFormValues,
@@ -31,6 +33,8 @@ import { creationRulesText } from './creation-rules';
 
 /** Champs serveur → champs du formulaire, pour afficher les erreurs à leur place. */
 const SERVER_FIELDS: Record<string, keyof TournamentFormInput> = {
+  gameType: 'gameType',
+  garamVariant: 'garamVariant',
   startsAt: 'date',
   endsAt: 'durationMinutes',
   entryFee: 'entryFee',
@@ -53,10 +57,13 @@ export function TournamentForm() {
     formState: { errors },
   } = useForm<TournamentFormInput, unknown, TournamentFormValues>({
     resolver: zodResolver(tournamentFormSchema),
+    // Jeu du tournoi (D-124) : volontairement absent, aucune option cochée au chargement.
     defaultValues: {
       date: '',
       time: '20:00',
       durationMinutes: '60',
+      // Variante GARAM TIA (D-127, amendement du 2026-10-21) : 15 présélectionnée, modifiable.
+      garamVariant: '15',
       entryFee: '1000',
       minimumPlayers: '20',
       maximumPlayers: '',
@@ -64,6 +71,7 @@ export function TournamentForm() {
     },
   });
   const rules = useFieldArray({ control, name: 'prizeRules' });
+  const gameType = useWatch({ control, name: 'gameType' });
   // Paramètres des tournois (D-103, D-104) : valeurs par défaut ajustées dès leur lecture,
   // sans toucher un champ déjà modifié ; le serveur reste juge des bornes.
   const settings = useQuery(tournamentSettingsQuery()).data?.settings;
@@ -126,6 +134,59 @@ export function TournamentForm() {
           copiés depuis les paramètres à la publication. Heures exprimées dans le fuseau
           Africa/Douala.
         </InfoNote>
+        <Card>
+          <CardHeader title="Jeu du tournoi *" />
+          <CardBody>
+            <fieldset aria-describedby={errors.gameType ? 'gameType-error' : undefined}>
+              <legend className="sr-only">Jeu du tournoi</legend>
+              <div className="flex flex-wrap gap-3">
+                {TOURNAMENT_GAMES.map((game) => (
+                  <label
+                    key={game.value}
+                    className="border-line-strong has-[:checked]:border-primary has-[:checked]:bg-primary-soft flex min-h-11 cursor-pointer items-center gap-2 rounded-md border px-4 text-sm font-semibold"
+                  >
+                    <input
+                      type="radio"
+                      value={game.value}
+                      {...register('gameType')}
+                    />
+                    {game.label}
+                  </label>
+                ))}
+              </div>
+              {errors.gameType && (
+                <p id="gameType-error" role="alert" className="text-danger mt-2 text-xs">
+                  {errors.gameType.message}
+                </p>
+              )}
+            </fieldset>
+            {gameType === 'GARAM' && (
+              // Variante GARAM TIA (D-127) : 15 présélectionnée, choix obligatoire.
+              <fieldset
+                className="mt-4"
+                aria-describedby={errors.garamVariant ? 'garamVariant-error' : undefined}
+              >
+                <legend className="mb-2 text-sm font-semibold">Variante *</legend>
+                <div className="flex flex-wrap gap-3">
+                  {GARAM_VARIANTS.map((variant) => (
+                    <label
+                      key={variant}
+                      className="border-line-strong has-[:checked]:border-primary has-[:checked]:bg-primary-soft flex min-h-11 cursor-pointer items-center gap-2 rounded-md border px-4 text-sm font-semibold"
+                    >
+                      <input type="radio" value={variant} {...register('garamVariant')} />
+                      {`GARAM ${variant}`}
+                    </label>
+                  ))}
+                </div>
+                {errors.garamVariant && (
+                  <p id="garamVariant-error" role="alert" className="text-danger mt-2 text-xs">
+                    {errors.garamVariant.message}
+                  </p>
+                )}
+              </fieldset>
+            )}
+          </CardBody>
+        </Card>
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <Card>
             <CardHeader title="Calendrier" />

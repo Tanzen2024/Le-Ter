@@ -159,6 +159,45 @@ describe('synthèses des cartes de détail', () => {
     expect(totals.debit.tokens).not.toBe(3_000 + 2_000);
   });
 
+  it('mises et gains de partie : comptés en débit et crédit ; nature inconnue isolée, sans planter', () => {
+    const o = overview({
+      walletMovements: [
+        { kind: 'game_stake', status: 'succeeded', withoutPayment: false, count: 2, tokens: 400 },
+        {
+          kind: 'game_winnings',
+          status: 'succeeded',
+          withoutPayment: false,
+          count: 1,
+          tokens: 360,
+        },
+        {
+          kind: 'mystery' as never,
+          status: 'succeeded',
+          withoutPayment: false,
+          count: 1,
+          tokens: 50,
+        },
+      ],
+    });
+    const totals = movementTotals(o);
+    expect(totals.debit).toEqual({ count: 2, tokens: 400 });
+    expect(totals.credit).toEqual({ count: 1, tokens: 360 });
+    expect(totals.unknown).toEqual({ count: 1, tokens: 50 });
+    // Nature homonyme d'une propriété héritée d'Object : jamais prise pour un groupe.
+    const proto = overview({
+      walletMovements: [
+        {
+          kind: 'toString' as never,
+          status: 'succeeded',
+          withoutPayment: false,
+          count: 1,
+          tokens: 5,
+        },
+      ],
+    });
+    expect(movementTotals(proto).unknown).toEqual({ count: 1, tokens: 5 });
+  });
+
   it('écart de statut paiement / achat : signalé, jamais corrigé', () => {
     const o = overview({
       purchases: { label: '', byStatus: [{ status: 'SUCCESS', count: 1, amount: 1_000 }] },

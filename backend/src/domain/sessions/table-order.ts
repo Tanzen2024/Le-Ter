@@ -132,3 +132,16 @@ export function determineFirstPlayer<T>(ctx: FirstPlayerContext<T>): FirstPlayer
   const next = nextOccupiedSeat(ctx.seatCount, winnerSeat, ctx.occupantOf);
   return next === undefined ? { kind: 'none' } : { kind: 'first', playerId: next };
 }
+
+/**
+ * GARAM TIA (§3.17, D-119) : le dégagement tourne dans le sens trigonométrique (antihoraire) ;
+ * les sortants sont ignorés. Le dégageur de la manche suivante est le premier siège OCCUPÉ
+ * après celui du dégageur précédent (tour complet ; s'il est seul présent, lui-même).
+ */
+export function nextDealer<T>(
+  seatCount: number,
+  previousDealerSeat: number,
+  occupantOf: (seat: number) => T | undefined,
+): T | undefined {
+  return nextOccupiedSeat(seatCount, previousDealerSeat, occupantOf);
+}

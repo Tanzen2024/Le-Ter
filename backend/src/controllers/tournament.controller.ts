@@ -292,6 +292,8 @@ export function toTournamentSummary(t: Tournament) {
     tournamentId: t.id,
     status: t.status,
     creatorType: t.creatorType,
+    gameType: t.gameType,
+    ...(t.garamVariant !== undefined && { garamVariant: t.garamVariant }),
     timezone: t.timezone,
     startsAt: t.startsAt,
     endsAt: t.endsAt,

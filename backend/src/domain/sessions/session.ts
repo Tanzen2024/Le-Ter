@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { ALLOWED_MAX_PLAYERS } from '../game/game';
 import { InvalidPlayerCountError } from '../game/game-errors';
-import type { GameEndReason } from '../game/game';
+import { isReplayEndReason, type GameEndReason, type GameType } from '../game/game';
+import type { GaramVariant } from '../garam/garam-rules';
 import type { GameId, PlayerId } from '../game/game-id';
 import type { SessionEventDraft } from './session-events';
 import { getNextPlayer } from './table-order';
@@ -101,6 +102,13 @@ export interface DecisionRound {
 
 export interface Session {
   id: SessionId;
+  /** Jeu de la table (D-119), immuable ; absent : Le Ter. */
+  gameType?: GameType;
+  /**
+   * GARAM TIA : variante choisie à la création (15, 16, 17 ou 18, D-127), immuable, recopiée
+   * sur chaque manche. Toujours présente pour GARAM, jamais pour Le Ter.
+   */
+  garamVariant?: GaramVariant;
   /** Incrémentée à chaque changement : ordre des événements de la session. */
   version: number;
   status: SessionStatus;
@@ -139,10 +147,14 @@ export interface LastGameInfo {
   winnerId?: PlayerId;
   /** Siège du gagnant dans cette partie (copie figée de son siège de session). */
   winnerSeat?: number;
+  /** Siège de J1 (le dégageur en GARAM TIA) dans cette partie, pour la rotation (§3.17). */
+  firstPlayerSeat?: number;
   /** Joueurs de la partie (ceux qui ont reçu des cartes, ou attendent le démarrage). */
   playerIds: PlayerId[];
   /** Cartes jouées automatiquement au 5e tour (0 ou absent : pas de 5e tour, D-041). */
   lastTrickCards?: number;
+  /** Jeu de la partie (D-119) ; absent : Le Ter. */
+  gameType?: GameType;
 }
 
 /** Résumé d'une partie de la session (historique), sans aucune carte. */
@@ -180,11 +192,21 @@ export function newSession(
   creatorId: PlayerId,
   maxPlayers: number,
   now: Date,
-  details: { name?: string; passwordHash?: string; suspicionDetectionEnabled?: boolean } = {},
+  details: {
+    name?: string;
+    passwordHash?: string;
+    suspicionDetectionEnabled?: boolean;
+    gameType?: GameType;
+    garamVariant?: GaramVariant;
+  } = {},
 ): Session {
   assertAllowedMaxPlayers(maxPlayers);
   return {
     id: newSessionId(),
+    ...(details.gameType === 'GARAM' && {
+      gameType: 'GARAM' as const,
+      garamVariant: details.garamVariant,
+    }),
     version: 1,
     status: 'open',
     creatorId,
@@ -314,8 +336,9 @@ export function syncDecisionRound(
     current.status === 'open' &&
     lastGame?.status === 'finished' &&
     lastGame.finishedAt &&
-    // Égalité de priorité : reprise immédiate, SANS Poursuivre/Quitter (décision 17).
-    lastGame.endReason !== 'INSTANT_WIN_TIE' &&
+    // Égalité de priorité (Ter) ou manche nulle (GARAM) : reprise immédiate, SANS
+    // Poursuivre/Quitter (décision 17, D-119).
+    !isReplayEndReason(lastGame.endReason) &&
     current.round?.gameId !== lastGame.gameId
   ) {
     const openedAt = lastGame.finishedAt;

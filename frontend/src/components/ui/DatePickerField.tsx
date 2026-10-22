@@ -64,8 +64,11 @@ export function DatePickerField({
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<Month>(() => selected ?? minDate ?? todayOf());
   const { height } = useWindowDimensions();
-  // Paysage : 6 semaines + titre + jours + actions doivent tenir dans la hauteur de l'écran.
-  const cell = Math.max(28, Math.min(40, Math.floor((height - 170) / 7)));
+  // Paysage : en-tête + 6 semaines (7 rangées) doivent tenir avec le titre, les jours et les
+  // actions (~150 dp en tout) ; au-delà, la fenêtre défile (jamais une rangée coupée).
+  const cell = Math.max(28, Math.min(40, Math.floor((height - 150) / 7)));
+  // Flèches plus étroites qu'un jour : le mois et l'année tiennent sur UNE ligne entre elles.
+  const navWidth = Math.round(cell * 0.8);
 
   const show = () => {
     setShown(selected ?? minDate ?? todayOf());
@@ -99,7 +102,7 @@ export function DatePickerField({
       hitSlop={4}
       style={({ pressed }) => [
         styles.nav,
-        { width: cell, height: cell },
+        { width: navWidth, height: cell },
         !canShow(addMonths(shown, delta)) && styles.disabled,
         pressed && styles.pressed,
       ]}
@@ -126,83 +129,96 @@ export function DatePickerField({
         visible={open}
         title={label}
         onClose={() => setOpen(false)}
+        scroll
         actions={<PickerAction title={t.cancel} onPress={() => setOpen(false)} />}
       >
-        <View style={styles.header}>
-          {nav('«', t.previousYear, -12)}
-          {nav('‹', t.previousMonth, -1)}
-          <Text
-            accessibilityLiveRegion="polite"
-            style={[styles.month, { minWidth: cell * 3 }]}
-            testID="date-picker-month"
-          >
-            {formatMonthTitle(shown.year, shown.month, locale)}
-          </Text>
-          {nav('›', t.nextMonth, 1)}
-          {nav('»', t.nextYear, 12)}
-        </View>
-        <View style={styles.week}>
-          {weekdayLabels(locale, firstWeekday).map((day, i) => (
+        {/* Une seule colonne de 7 jours, sans espace entre les rangées : rien ne déborde. */}
+        <View style={{ width: cell * 7 }}>
+          <View style={styles.header}>
+            {nav('«', t.previousYear, -12)}
+            {nav('‹', t.previousMonth, -1)}
             <Text
-              key={i}
-              style={[styles.weekday, { width: cell }]}
-              accessibilityElementsHidden
-              importantForAccessibility="no"
+              accessibilityLiveRegion="polite"
+              // Toujours sur une ligne : sur un petit écran, le texte rétrécit au lieu d'être coupé.
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.6}
+              style={styles.month}
+              testID="date-picker-month"
             >
-              {day}
+              {formatMonthTitle(shown.year, shown.month, locale)}
             </Text>
-          ))}
-        </View>
-        {monthGrid(shown.year, shown.month, firstWeekday).map((week, w) => (
-          <View key={w} style={styles.week}>
-            {week.map((day, i) => {
-              if (day === null) return <View key={i} style={{ width: cell, height: cell }} />;
-              const date = { ...shown, day };
-              const disabled = outOfRange(date);
-              const isSelected = selected !== undefined && compareDates(date, selected) === 0;
-              const isToday = compareDates(date, today) === 0;
-              const long = formatLongDate(date, locale);
-              return (
-                <Pressable
-                  key={i}
-                  accessibilityRole="button"
-                  accessibilityLabel={disabled ? t.unavailableDay(long) : long}
-                  accessibilityState={{ disabled, selected: isSelected }}
-                  disabled={disabled}
-                  onPress={() => pick(date)}
-                  style={({ pressed }) => [
-                    styles.day,
-                    { width: cell, height: cell, borderRadius: cell / 2 },
-                    isToday && styles.today,
-                    isSelected && styles.selected,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.dayText,
-                      disabled && styles.dayDisabled,
-                      isSelected && styles.selectedText,
+            {nav('›', t.nextMonth, 1)}
+            {nav('»', t.nextYear, 12)}
+          </View>
+          <View style={styles.week}>
+            {weekdayLabels(locale, firstWeekday).map((day, i) => (
+              <Text
+                key={i}
+                style={[styles.weekday, { width: cell }]}
+                accessibilityElementsHidden
+                importantForAccessibility="no"
+              >
+                {day}
+              </Text>
+            ))}
+          </View>
+          {monthGrid(shown.year, shown.month, firstWeekday).map((week, w) => (
+            <View key={w} style={styles.week}>
+              {week.map((day, i) => {
+                if (day === null) return <View key={i} style={{ width: cell, height: cell }} />;
+                const date = { ...shown, day };
+                const disabled = outOfRange(date);
+                const isSelected = selected !== undefined && compareDates(date, selected) === 0;
+                const isToday = compareDates(date, today) === 0;
+                const long = formatLongDate(date, locale);
+                return (
+                  <Pressable
+                    key={i}
+                    accessibilityRole="button"
+                    accessibilityLabel={disabled ? t.unavailableDay(long) : long}
+                    accessibilityState={{ disabled, selected: isSelected }}
+                    disabled={disabled}
+                    onPress={() => pick(date)}
+                    style={({ pressed }) => [
+                      styles.day,
+                      { width: cell, height: cell, borderRadius: cell / 2 },
+                      isToday && styles.today,
+                      isSelected && styles.selected,
+                      pressed && styles.pressed,
                     ]}
                   >
-                    {day}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ))}
+                    <Text
+                      style={[
+                        styles.dayText,
+                        disabled && styles.dayDisabled,
+                        isSelected && styles.selectedText,
+                      ]}
+                    >
+                      {day}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ))}
+        </View>
       </PickerModal>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   nav: { alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
   navGlyph: { color: pickerColors.selected, fontSize: 20, fontWeight: '700' },
   month: {
     flex: 1,
+    minWidth: 0,
     color: pickerColors.text,
     fontSize: 15,
     fontWeight: '700',
@@ -219,7 +235,10 @@ const styles = StyleSheet.create({
   },
   day: { alignItems: 'center', justifyContent: 'center' },
   dayText: { color: pickerColors.text, fontSize: 14, fontWeight: '600' },
-  dayDisabled: { color: pickerColors.muted, textDecorationLine: 'line-through' },
+  dayDisabled: {
+    color: pickerColors.muted,
+    textDecorationLine: 'line-through',
+  },
   today: { borderWidth: 1, borderColor: pickerColors.today },
   selected: { backgroundColor: pickerColors.selected },
   selectedText: { color: pickerColors.selectedText },

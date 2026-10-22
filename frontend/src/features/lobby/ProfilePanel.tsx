@@ -7,8 +7,9 @@ import { countryOfPhone, toNationalPhone } from '../../lib/country';
 import { useCurrentUser, useLogout } from '../auth/hooks';
 import { useComplaintMessages } from '../complaints/complaint-messages';
 import { useLobbyMetrics } from './lobby-metrics';
-import { InnerFrame, LobbyPanel, PanelButton } from './LobbyUi';
+import { LobbyPanel, PanelButton } from './LobbyUi';
 import { PasswordChangeForm } from './PasswordChangeForm';
+import { RecoveryCodeSection } from './RecoveryCodeSection';
 
 /** Profil : données du compte renvoyées par /api/auth/me, et déconnexion. */
 export function ProfilePanel({ onClose }: { onClose: () => void }) {
@@ -32,12 +33,15 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
     ['Nom', user?.lastName],
     ['Pays', user ? (country?.name.fr ?? '—') : undefined],
     ['Téléphone', user ? toNationalPhone(user.phone) : undefined],
-    ['Email', user?.email],
+    // Email facultatif (D-135) : « — » si le joueur n'en a pas.
+    ['Email', user ? (user.email ?? '—') : undefined],
   ];
 
   return (
     <LobbyPanel title="Profil" onClose={onClose} width={Math.max(340, m.width * 0.4)}>
-      <InnerFrame style={{ gap: m.gap * 0.5 }}>
+      {/* Contenu posé directement sur la plaque du panneau : un seul fond, un seul cadre
+          (pas de second cadre intérieur qui ferait croire à deux fenêtres). */}
+      <View style={{ gap: m.gap * 0.5, paddingHorizontal: m.gap * 0.5 }}>
         {isPending ? <ActivityIndicator color={palette.gold} /> : null}
         <Text
           numberOfLines={1}
@@ -80,6 +84,12 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
             }}
           />
         ) : null}
+        {user ? (
+          <View style={{ gap: m.gap * 0.4 }}>
+            <Text style={label}>Code de récupération</Text>
+            <RecoveryCodeSection hasCode={user.hasRecoveryCode ?? false} />
+          </View>
+        ) : null}
         {passwordChanged ? (
           <Text
             style={[styles.success, { fontSize: m.smallSize }]}
@@ -99,7 +109,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
             onPress={() => logout.mutate()}
           />
         </View>
-      </InnerFrame>
+      </View>
     </LobbyPanel>
   );
 }

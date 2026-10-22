@@ -4015,3 +4015,814 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Parties déjà terminées** : leur résultat garde sa combinaison enregistrée ; seul le
   numéro de rang de « Trois 3 » diffère (6 avant, 7 après).
 
+
+## D-119 — GARAM TIA, deuxième jeu de la plateforme
+
+- **Date** : 2026-10-20 · **Statut** : validée par le propriétaire du projet · **Source des
+  règles** : `docs/garam/` (cahier des charges maître consolidé, mises à jour du 09/09/2026).
+  Seules les règles de jeu y sont reprises ; Godot, Katika, profils et finances hors partie
+  ne sont pas concernés.
+- **Identification** : un seul mécanisme, `game_type` (`'TER'` | `'GARAM'`) sur `sessions` et
+  `games` (migration 0049), immuable, recopié de la session sur chaque partie (garde-fou en
+  base). Tout ce qui existait est `'TER'` (valeur par défaut) et se comporte exactement comme
+  avant. API : `gameType` facultatif à la création (`POST /api/sessions`), `?gameType=` sur
+  `GET /api/sessions/open` (absent : Le Ter ; un ancien client ne voit jamais de table GARAM),
+  `gameType` dans les vues de partie et de session quand il vaut `'GARAM'`.
+- **Correspondance** : une PARTIE GARAM = une session (table, sièges fixes, sens
+  trigonométrique = antihoraire, Continuer/Sortir) ; une MANCHE = une `Game`. Moteur pur
+  `domain/garam/garam-engine.ts`, état `games.state.garam`, mutations par `GameService` seul
+  (D-011). Actions : `PLAY_CARD` (premier tour), `DRAW_CARD`, `STAKE_VOTE` sur
+  `POST /api/games/:id/actions`.
+- **Règles implémentées** : 35 cartes (pique sans As, As = 11) ; 3 cartes par joueur, terre
+  de 3/4/5 cartes ; conditions spéciales dans l'ordre (trois identiques, somme ≤ 10, terre
+  de même signe ; pluralité → manche nulle ; « terre ≤ 21 » supprimée) ; dégagement par le
+  créateur, même signe obligatoire ; contrôle = plus grande carte du signe dégagé ; deux As
+  après le premier tour → victoire ; tirage à la tête, obligatoire tant que 21 n'est pas
+  dépassé, « Impossible » sinon (carte laissée au terre, le suivant reprend) ; terre vide :
+  rien ; gagnant = plus grand total ≤ 21, première carte exclue ; 10 s par tour (D-098 :
+  13 s serveur dont 10 affichées) puis action automatique (carte légale au hasard, ou tirage
+  automatique).
+- **Tranché par le propriétaire (documents muets)** :
+  1. le TIRAGE commence par le contrôleur, puis sens antihoraire, un passage par joueur ;
+  2. « moins de 15 » ne s'applique qu'à la fin normale (pas aux victoires automatiques) ;
+  3. manche nulle (pluralité ou égalité de total) : même dégageur, rejouée aussitôt sans
+     Continuer/Sortir (même mécanisme que l'égalité de priorité du Ter) ;
+  4. doubler la mise : vote sur la manche qui rejoue une égalité de TOTAL ; doublée si tous
+     disent oui ; un joueur dont le solde ne couvre plus 2 × la mise retenue est retiré de la
+     table (§3.16) ;
+  5. commission : le barème des paramètres de l'administration, comme Le Ter (et non 10 %
+     fixe) ; les sommes « moins de 15 » sont versées au gagnant sans commission
+     (`game_settlements.penalty_amount`).
+- **Choix techniques (sans règle nouvelle)** : démarrage de la première manche par le
+  créateur dès 2 joueurs (mécanisme existant) ; un tour de tirage sans carte prenable se clôt
+  aussitôt (le joueur n'a aucun choix) ; vote : 13 s (10 affichées), une absence de réponse
+  n'est pas un oui, la première réponse est définitive ; dégageur retiré faute de solde →
+  le joueur restant suivant ; pas de détection anti-collusion ni de tournoi pour GARAM
+  (détection anti-collusion : remplacé par D-125).
+- **Non implémenté (reste à faire)** : spectateur d'une manche en cours (§8.3 : le joueur
+  arrivé attend la manche suivante, comme au Ter, sans voir la manche en cours) ; unicité du
+  nom de partie parmi les parties actives (§6.9), absente aussi au Ter.
+
+## D-120 — Caisse unique : source des recettes (Fap-Fap, Tournois, GARAM TIA)
+
+- **Date** : 2026-10-20 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-060 (compte financier de la plateforme), D-074 (commissions des parties), D-119.
+- **Caisse** : `platform_ledger` reste LA SEULE caisse de la plateforme. Aucune caisse,
+  aucun portefeuille ni aucun solde par jeu : la source trace seulement l'origine d'une
+  recette ; le solde reste la somme de toutes les écritures.
+- **Source** (`platform_ledger.source`, migration 0050, obligatoire) : `FAP_FAP` (commission
+  d'une partie de Le Ter), `GARAM_TIA` (commission d'une manche de GARAM TIA), `TOURNAMENT`
+  (commission d'un tournoi et part des rangs payés non occupés). Garde-fous en base : une
+  écriture de tournoi est `TOURNAMENT` et réciproquement ; une commission de partie porte la
+  source du jeu de sa partie (trigger `platform_ledger_source_guard`).
+- **Historique** : source déduite par jointure, sans supposition (chaque écriture porte son
+  tournoi ou sa partie ; les parties antérieures à GARAM sont du Ter). Aucune ligne `UNKNOWN`.
+- **Commissions GARAM TIA** : déjà prélevées par le mécanisme central (règlement dans la
+  transaction de fin, barème de l'administration figé au démarrage, D-119). Une commission
+  nulle n'est pas un oubli : `floor(mise × taux)` < 1 (ex. 96 FCFA à 1 %), comme pour
+  Fap-Fap. Aucun taux ni barème modifié.
+- **Idempotence** (inchangée, commune aux trois sources) : `UNIQUE (game_id, kind)`,
+  `UNIQUE (tournament_id, kind)`, règlement seulement depuis `RESERVED` (ligne verrouillée),
+  clés d'idempotence des transactions des joueurs ; débit, gain, commission et règlement dans
+  la transaction qui termine la partie.
+- **Administration** : liste des écritures avec la source et des filtres combinables (source,
+  type, période : aujourd'hui / 7 / 30 / 90 jours / 12 mois / personnalisée, recherche par
+  référence d'écriture, de partie, de session ou de tournoi) ; tableau de bord : « Caisse
+  plateforme » (solde global, tout l'historique) distincte des « Commissions sur la période »
+  et de leur répartition par source (barre empilée + tableau, parts arrondies au plus fort
+  reste : 100,0 % exactement), filtrable par période et par source. Agrégats calculés en SQL
+  (`GROUP BY source`), une requête par vue.
+
+## D-121 — GARAM TIA : mise en conformité aux règles officielles
+
+- **Date** : 2026-10-20 · **Statut** : validée · **Chrono et pose du terre remplacés par
+  D-122** (choix du propriétaire du projet).
+- **Vérifié conforme** (moteur, serveur, tests HTTP `garam-rules-http.test.ts`) : paquet de
+  35 cartes (pas d'As de pique, pas de 2 ni de figures, As = 11), 2 à 4 joueurs, mise entière
+  > 0 et solde ≥ 2 × mise sans débit à l'entrée, 3 cartes par joueur sans doublon, mains
+  adverses jamais transmises, terre 3/4/5 en rang (tête = `terre[0]`), créateur premier, sens
+  antihoraire, signe obligatoire contrôlé par le serveur, contrôle par la plus forte carte du
+  signe dégagé, tirage à la tête une carte à la fois jusqu'à 21, carte refusée laissée au
+  terre et reprise par le suivant, terre épuisé sans boucle, action automatique légale par
+  les mêmes fonctions du moteur que les joueurs.
+- **Affichage** : repères « Tête » / « Queue » sous le terre ; compte à rebours du joueur
+  attendu visible par tous, devant sa plaque.
+
+## D-122 — GARAM TIA : temps de tour du Ter et distribution carte par carte
+
+- **Date** : 2026-10-20 · **Statut** : retenue par le propriétaire du projet · **Remplace** :
+  le chrono de 5 s et la pose du terre à 1 s de D-121.
+- **Temps de tour** : celui du Ter (`TURN_DURATION_MS`, 13 s côté serveur dont 10 affichées,
+  D-098), même échéance persistée, même action automatique à l'échéance.
+- **Distribution** (remplacée par D-123) (`garam-deal.ts` frontend, `garamDealPhaseMs` backend, même calendrier) :
+  une carte à la fois en 3 passages (1re carte de chaque joueur, puis 2e, puis 3e), une
+  carte toutes les 550 ms, 700 ms avant le 3e passage ; puis le terre, 850 ms après la
+  dernière carte des mains, une carte toutes les 750 ms. Phase persistée (`dealEndsAt`) :
+  aucune action ni temps de décision avant sa confirmation (COMPLETE_DEAL).
+
+## D-123 — GARAM TIA : distribution par paquets de 2 cartes, puis la 3e, puis le terre
+
+- **Date** : 2026-10-20 · **Statut** : validée par le propriétaire du projet · **Remplace** :
+  le calendrier de distribution de D-122 (le temps de tour du Ter reste celui de D-122).
+- **Séquence** (`garamDealSequence`, ordre de la table depuis le dégageur, `tableOrder`, sens
+  antihoraire) : passage 1, un lot de 2 cartes par joueur ; passage 2, la 3e carte de chacun ;
+  puis le terre (3/4/5 cartes) une par une. Un lot = un seul vol (`DealFlight`) : les 2
+  cartes partent et arrivent ensemble.
+- **Tempo** (d'un départ au suivant) : 600 ms entre deux joueurs, 600 ms avant le passage 2,
+  700 ms avant la 1re carte du terre, puis 700 ms entre deux cartes. Mêmes valeurs côté
+  téléphone (`garam-deal.ts`) et serveur (`garamDealPhaseMs`, `garam-rules.ts`).
+- **Serveur** : aucun délai bloquant ; l'état officiel (mains, terre) est fixé au démarrage.
+  La phase de distribution persistée (`dealEndsAt`) = fin de l'animation + pose (510 ms) +
+  marge de réception (500 ms) : 5 160 / 7 060 / 8 960 ms pour 2 / 3 / 4 joueurs. Le tour du
+  dégageur, avec le timer, la durée, la marge et l'action automatique existants du Ter,
+  ne commence qu'à sa confirmation (COMPLETE_DEAL).
+
+## D-124 — Jeu d'un tournoi : choix explicite obligatoire
+
+- **Date** : 2026-10-20 · **Statut** : validée par le propriétaire du projet · **Complète** :
+  D-054 (tournois), D-119 (GARAM TIA).
+- **Règle** : tout nouveau tournoi porte un jeu, choisi EXPLICITEMENT à la création (mobile,
+  administration, outil `tournament:create --game`) : FAP-FAP ou GARAM TIA. Aucune valeur
+  n'est présélectionnée ni déduite ; sans choix, la création est refusée (« Veuillez
+  sélectionner le jeu du tournoi. »).
+- **Valeur** : le `game_type` existant des sessions et des parties, `TER` (Fap-Fap) ou `GARAM`
+  (GARAM TIA), sans second système de noms. L'API refuse un jeu absent, `null`, vide ou
+  inconnu (400, champ `gameType`), jamais remplacé par `TER`.
+- **Base** : `tournaments.game_type` (migration 0051), `NOT NULL`, contrôlé, SANS valeur par
+  défaut ; les tournois antérieurs, tous du Ter, sont renseignés `TER` par la migration sans
+  réécriture de ligne. Immuable après la création (déclencheur) ; une modification qui renvoie
+  le même jeu est acceptée.
+- **GARAM TIA** : D-119 exclut les tournois GARAM (tables, classement et règlement non
+  définis). Un tournoi GARAM est donc refusé à la création par `501 RULE_NOT_DEFINED`
+  (`ruleRef` D-119) tant que ces règles ne sont pas définies ; le choix reste proposé et le
+  refus est affiché sur le champ.
+- **Modification** : il n'existe pas d'écran de modification de tournoi ; le détail d'un
+  tournoi (administration) affiche son jeu enregistré.
+
+## D-125 — GARAM TIA : détection anti-collusion commune avec Fap-Fap
+
+- **Date** : 2026-10-20 · **Statut** : demandée par le propriétaire du projet · **Remplace** :
+  l'exclusion de la détection anti-collusion pour GARAM de D-119 (le reste de D-119, dont
+  l'absence de tournoi GARAM, est inchangé) · **Complète** : D-043 à D-053, D-081, D-095.
+- **Un seul système** : les manches GARAM sont analysées par le `DetectionService` existant
+  (mêmes analyseurs, signaux, versions d'algorithme, score `SUSPICION_SCORE_V2`, niveaux,
+  alertes, administration, audit). Aucun moteur, table, réglage ni écran propre à GARAM.
+- **Configuration** : la configuration est GLOBALE, donc commune aux deux jeux : interrupteur
+  `system_settings.detection_enabled` (administration, Paramètres → Détection anti-collusion),
+  seuils de `detection-config.ts`, option de table 🛡️ `suspicionDetectionEnabled` choisie à la
+  création (désormais proposée aussi pour une table GARAM). Aucune configuration par jeu.
+- **Branchement** : création d'une table GARAM (`SessionService.createSession`) avec la même
+  règle que Fap-Fap (option demandée ET interrupteur global ON) ; consentement à la
+  géolocalisation avant le démarrage (D-095, même écran `GameTableScreen`) ; analyse de fin
+  de manche par `GameService.onGameFinished` → `DetectionService.observeFinishedGame`, en
+  arrière-plan. Une MANCHE GARAM (= une `Game`) est l'unité analysée, comme une partie du Ter.
+- **Historique par jeu** : les analyses longitudinales (FREQUENT_COPLAY, CARD_CHOICE_ANOMALY,
+  CORRELATED_WINS, CONNECTION_PATTERN, REPEATED_PROXIMITY) ne lisent que des parties du MÊME
+  `game_type` que la partie observée. Les manches GARAM n'alimentent donc jamais l'analyse
+  d'une partie de Fap-Fap (comportement de Fap-Fap inchangé), et réciproquement.
+- **Score et alertes par jeu** : même formule `SUSPICION_SCORE_V2`, mêmes contributions,
+  plafonds, niveaux et règles d'alerte, mais calculés sur les seuls signaux du jeu de la
+  partie analysée (`listSubjectSignals` filtré par `games.game_type`). Le score précédent
+  (`previous_score`) est le dernier score du sujet dans le MÊME jeu. Clé de déduplication
+  d'une alerte : inchangée pour Fap-Fap (`SUSPICION_LEVEL|sujet|niveau|v2|période`),
+  suffixée `|GARAM` pour GARAM ; une alerte très élevée ne masque une alerte élevée que dans
+  le même jeu. Une activité GARAM ne modifie donc jamais un score ni une alerte de Fap-Fap,
+  et inversement. Le sujet reste identifié par les mêmes `playerId` (= `userId`) dans les
+  deux jeux ; aucune migration, les clés existantes restent valides.
+- **Spécificité GARAM** : CARD_CHOICE_ANOMALY repose sur les décisions de prise de contrôle
+  des 5 tours du Ter ; aucune décision équivalente n'est définie pour GARAM, qui n'en produit
+  donc aucune (aucune règle inventée). Les autres analyses s'appliquent telles quelles.
+- **Tournois** : non concerné. Il n'existe pas de tournoi GARAM (D-119, D-124 : 501
+  `RULE_NOT_DEFINED`) et les tables de tournoi ne sont pas surveillées (Fap-Fap compris) ;
+  rien n'est modifié dans le système de tournoi.
+
+
+## D-126 — Application mobile : composant secondaire exclusif
+
+- **Date** : 2026-10-20 · **Statut** : demandée par le propriétaire du projet.
+- **Règle** : un composant secondaire ouvert (panneau Profil, Réglages, Boutique, Partie
+  privée, GARAM, dépôt, sélecteur de date/heure, confirmation d'inscription à un tournoi,
+  consentement à la géolocalisation, reconnexion, avertissement de modération, remerciement
+  de fin de tournoi…) est SEUL visible et SEUL interactif jusqu'à sa fermeture. Aucun élément
+  de l'écran précédent (FAP-FAP, GARAM TIA, cartes décoratives, HUD, table de jeu…) ne reste
+  visible derrière lui ni touchable.
+- **Mise en œuvre** : un seul composant, `frontend/src/components/ui/ExclusiveOverlay.tsx` :
+  fond plein écran OPAQUE (le fond de table, sans aucun élément d'interface), qui capte tous
+  les appuis et masque l'écran du dessous aux lecteurs d'écran (`accessibilityViewIsModal`).
+  Tout nouveau composant secondaire passe par lui ; plus aucun voile semi-transparent.
+  `LobbyShell` rend en plus sa couche écran inerte (`pointerEvents: none`, masquée à
+  l'accessibilité) tant qu'un panneau est ouvert. L'écran du dessous reste monté (aucun
+  rechargement, état conservé) et réapparaît à la fermeture.
+- **Hors champ** : les éléments qui font partie de la table de jeu elle-même (bilan de fin de
+  partie au centre, vote de mise GARAM, chat latéral de la partie) ne sont pas des composants
+  secondaires exclusifs : les masquer cacherait la table pendant le tour (minuteur de 20 s,
+  D-064).
+
+## D-126 — Fap-Fap et GARAM TIA : jeux indépendants, configurations de plateforme communes
+
+- **Date** : 2026-10-20 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-119, D-120, D-125.
+- **Principe** : deux jeux totalement indépendants (règles, moteurs, validations, calculs,
+  historiques, statistiques, données de jeu) qui utilisent les MÊMES configurations globales
+  de la plateforme. Aucun paramètre ni système dupliqué pour GARAM.
+- **Configurations globales (`system_settings`, toutes communes)** : `detection_enabled`
+  (détection anti-collusion, D-053, D-125), `game_commission_schedule` (barème de commission
+  des parties, figé au démarrage, D-074, D-119), `withdrawal_limit_count` /
+  `withdrawal_limit_period` (retraits), paramètres des tournois (`tournament_*`,
+  `initial_tournament_tokens`, `default_tournament_stake`,
+  `maximum_pending_tournaments_per_player`). Aucun paramètre d'administration n'est propre à
+  un jeu ; les règles de chaque jeu sont des constantes de son moteur (`official-rules.ts`,
+  `ter-engine.ts` ; `garam-rules.ts`, `garam-engine.ts`). Le temps de tour et les délais de la
+  distribution restent partagés par décision (D-122, D-123).
+- **Finances** : une seule caisse (`platform_ledger`), source de chaque recette (`FAP_FAP`,
+  `GARAM_TIA`, `TOURNAMENT`, D-120).
+- **Statistiques** : les victoires d'un joueur (administration, fiche joueur) sont comptées
+  par jeu (`games.game_type`), jamais additionnées : `gamesWon: { fapFap, garamTia }`.
+- **Historique** : chaque partie expose son jeu (`gameType`) dans la liste et le détail de
+  l'administration, avec un filtre `?gameType=TER|GARAM` (400 sinon).
+- **Moteurs** : le cycle de vie commun (conditions de démarrage R-23, ordre de la table,
+  phase de distribution, échéance du tour) vit dans `domain/game/game-lifecycle.ts`, utilisé
+  par les deux moteurs ; le moteur GARAM n'importe plus rien du moteur ni des règles du Ter.
+  Comportement inchangé (déplacement de code).
+- **Actions** : une action propre à un jeu est refusée explicitement dans l'autre, avant tout
+  moteur : `DECLARE_WIN` et `FLEE` (Fap-Fap) dans une manche GARAM, `DRAW_CARD` et
+  `STAKE_VOTE` (GARAM) dans une partie de Fap-Fap → 422 `ACTION_NOT_AVAILABLE_FOR_GAME`
+  (auparavant refusées par 422 `GAME_NOT_IN_PROGRESS`, « La partie n'a pas encore commencé. », message trompeur). Aucune règle modifiée.
+- **Non modifié** : compteurs d'activité du tableau de bord (toutes parties confondues :
+  mesure de la plateforme, pas une statistique de jeu).
+
+## D-127 — GARAM TIA : variantes 15/16/17/18, 15 s par décision, Katika déterministe, tournois GARAM
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet (prompt maître
+  GARAM TIA) · **Remplace** : pour GARAM seulement, le temps de tour du Ter (D-122) ; la carte
+  automatique « au hasard » et le tirage automatique en une fois (D-119) ; le compte à rebours
+  visible par tous devant la plaque (D-121) ; le refus des tournois GARAM (D-119, D-124 :
+  501 `RULE_NOT_DEFINED`) · **Ne change pas** : Fap-Fap (règles, moteur, 13 s / 10 s affichées),
+  règles GARAM de D-119 et D-121, distribution D-123, détection D-125, caisse D-120.
+- **Variante** (`GaramVariant` = 15 | 16 | 17 | 18, `domain/garam/garam-rules.ts`) : choisie
+  EXPLICITEMENT à la création d'une table GARAM (`POST /api/sessions`, champ `garamVariant`) et
+  d'un tournoi GARAM (API, administration web et mobile, `tournament:create --game GARAM
+  --variant N`). Aucune valeur par défaut nulle part : absente, `null`, chaîne, décimale ou hors
+  liste → 400 `VALIDATION_ERROR` (champ `garamVariant`) ; fournie pour Fap-Fap → 400. Persistée
+  (migration 0052) sur `sessions`, `games` (recopiée de la session, garde-fou) et `tournaments`,
+  immuable, contrainte `(game_type = 'GARAM') = (garam_variant IS NOT NULL)`. Exposée dans les
+  vues de session, de partie, des tables ouvertes, des tournois et de l'administration ;
+  affichée sur la table (« GARAM 17 ») pendant toute la partie et dans la liste des tables.
+  *Amendement du 2026-10-21 (propriétaire du projet)* : les formulaires présélectionnent
+  **15** (modifiable) : « Créer une partie » GARAM (mobile) et création / proposition d'un
+  tournoi GARAM (mobile, administration web). Le serveur et `tournament:create --variant`
+  restent sans valeur par défaut : les formulaires envoient toujours `garamVariant`
+  explicitement.
+- **Sens** : seuil de la pénalité financière « moins de X », total STRICTEMENT inférieur à X
+  (`isBelowGaramThreshold`). Elle ne désigne jamais le gagnant (plus grand total ≤ 21 et
+  conditions spéciales, inchangés) et ne remplace pas la limite de tirage de 21, commune aux
+  quatre variantes. Résultat : `belowThresholdIds` + `penaltyThreshold` (remplacent
+  `belowFifteenIds`).
+- **Données existantes** : avant D-127, la seule règle appliquée était « moins de 15 » : les
+  sessions et manches GARAM existantes sont renseignées 15 par la migration (valeur constatée,
+  aucune ligne supprimée) ; les résultats enregistrés avec `belowFifteenIds` sont relus comme
+  `belowThresholdIds` + `penaltyThreshold: 15`, sans réécriture. Aucun tournoi GARAM n'existait.
+- **Pénalité** : chaque perdant sous le seuil paie une mise de plus (la mise de la manche,
+  `game_settlements.stake`), versée au gagnant SANS commission (`penalty_amount`) ; la
+  commission normale reste celle du barème global (D-074, D-120). En tournoi : même calcul en
+  jetons du tournoi, commission 0, perte bornée aux jetons du joueur. *Remplacé par D-130* :
+  la commission du barème porte aussi sur la pénalité (Koraté).
+- **Temps de décision** : `GARAM_TURN_DURATION_MS` = 15 s affichées + 3 s de marge réseau
+  invisible commune (D-098) = 18 s côté serveur, pour chaque décision (premier tour et chaque
+  tirage). Échéance persistée, `TURN_TIMEOUT` et reprise inchangés. Écrans : chiffres 15 → 0 et
+  roulette SEULEMENT sur le téléphone du joueur attendu ; les adversaires voient seulement la
+  barre de progression dans la plaque du joueur attendu, jamais les secondes (règle D-099,
+  désormais appliquée aussi à GARAM : le badge de secondes visible par tous est retiré).
+- **Katika (action automatique)** : par les mêmes fonctions du moteur que l'action d'un joueur
+  (tour, phase, carte, signe, limite de 21 revérifiés). Premier tour : la carte LÉGALE de plus
+  petite valeur (`garamAutomaticCard`), égalité départagée par l'ordre technique des familles
+  `GARAM_SUITS` (sans valeur de règle) : déterministe, jamais de hasard. Tirage : UNE carte par
+  échéance (jamais plusieurs en une opération), seulement si elle ne fait pas dépasser 21 ; le
+  joueur retrouve un tour complet, et une nouvelle échéance tire la suivante. `commandId`
+  déterministe par tour : aucune double exécution.
+- **Tournois GARAM** : autorisés. La table du tournoi (`openTable`) est une session GARAM avec la
+  variante du tournoi ; ses manches suivent le moteur GARAM ; règlement en jetons par
+  `TournamentService.settleGame` (D-106, D-111), manche nulle = aucun mouvement (`GARAM_TIE`,
+  rejouée). Pas de proposition de doubler la mise en tournoi (la mise par partie du tournoi est
+  fixée par ses règles). Tables de tournoi non surveillées par la détection, comme Fap-Fap.
+- **Erreur cross-game** : inchangée (D-126) : 422 `ACTION_NOT_AVAILABLE_FOR_GAME`, levée avant
+  tout moteur, y compris sur une manche pas encore démarrée (jamais `GAME_NOT_IN_PROGRESS`). Le
+  statut reste 422 : c'est le protocole existant des refus de règles de jeu (`RULE_VIOLATIONS`),
+  le 409 étant réservé aux conflits d'état (version, partie démarrée, distribution…).
+- **Moteur** : les délais de présentation de la distribution communs aux deux jeux vivent dans
+  `domain/game/deal-timing.ts` (réexportés par `rules/rule-set.ts`, aucun changement de valeur) ;
+  le moteur GARAM n'importe plus rien de `rules/` (règles de Fap-Fap).
+- **Audit anti-collusion (score de suspicion)** : inchangé et conforme à D-125 : un seul
+  `DetectionService` ; signaux et score `SUSPICION_SCORE_V2` calculés par sujet ET par jeu
+  (`games.game_type`), historiques longitudinaux filtrés par jeu, clé d'alerte suffixée
+  `|GARAM` ; interrupteur global `detection_enabled` commun. Rien n'a été modifié.
+- **Tests** : `tests/unit/garam/garam-engine.test.ts` (variantes, seuil strict, Katika,
+  15 s), `tests/integration/games/garam-game.test.ts` (création 15/16/17/18, refus, base,
+  pénalité GARAM 18, cross-game), `tests/integration/tournaments/tournament-garam.test.ts`,
+  `tournament-api.test.ts`, `garam-rules-http.test.ts`, `garam-deal-phase.test.ts` ; mobile :
+  `PrivateGamePanel.test.tsx`, `garam-table.test.tsx`, `tournament-form.test.ts`,
+  `AdminTournaments.test.tsx`, `LobbyShell.test.tsx` (Boutique exclusive) ; administration :
+  `validation.test.ts`.
+
+## D-128 — GARAM TIA : table organisée par état des cartes et déroulement visuel d'une manche
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-119, D-123 (distribution, inchangée), D-127 · **Ne change pas** : aucune règle de jeu,
+  aucune action, aucune donnée envoyée aux joueurs (les mains adverses ne quittent toujours le
+  serveur qu'au résultat).
+- **Une zone par état de carte** (`frontend/src/features/games/garam/garam-presentation.ts`,
+  `GaramPlayArea.tsx`) : distribution (vols existants, D-123) ; main cachée (dos chez
+  l'adversaire, ma main en bas) ; cartes du tour (zone pointillée « Cartes du tour » au centre,
+  chaque carte devant son joueur) ; carte classée du 1er tour (cadre neutre « 1er tour » du
+  siège, seul cadre du siège) ; terre (rang en haut de la table, cadre « Terre · tête →
+  queue », places fixes pour la manche, de gauche à droite, la tête (1re carte posée)
+  au-dessus de la suivante, qui n'en cache que 6 % : la valeur de chaque carte, dans son coin,
+  reste lisible ; aucune rotation, chaque joueur voit le terre droit, face à lui). Révisé par le propriétaire du projet : il n'y a PAS de cadre
+  « Terre » par siège ; une carte tirée rejoint la ZONE DE DÉPART de son joueur (là où ses lots
+  sont arrivés à la distribution : dos chez l'adversaire, ma main en bas), après ses cartes
+  cachées, face visible pour tous (fin liseré doré). Zone de départ pleine (2 cachées + 4
+  tirées) : l'éventail se resserre jusqu'au pas des éventails adverses (`FAN_STEP`), coins
+  lisibles ; jusqu'à 5 cartes, ma main garde exactement le pas du Ter. Aucune zone ne recouvre
+  une autre ni ne sort de la table ou de l'écran, vérifié pour 2, 3 et 4 joueurs sur 7 tailles
+  d'écran (`garam-presentation.test.ts`).
+- **Déroulement** : cartes du tour visibles jusqu'à la dernière (2 s, rangement 450 ms, comme le
+  Ter) ; contrôle annoncé SEULEMENT après le rangement (« X prend le contrôle », halo de la
+  plaque, mention « Contrôle ») ; chaque joueur garde alors 2 cartes cachées ; tirage : chaque
+  carte tirée (joueur ou Katika) quitte la tête du terre et vole, face visible, jusqu'à la zone
+  de départ de son joueur, une à la fois, dans l'ordre réel du tirage (520 ms de vol, 380 ms de
+  respiration) ; fin : rien n'est dévoilé avant que la dernière carte tirée soit posée, puis la
+  zone de départ de chaque joueur est dévoilée l'un après l'autre (900 ms) : ses cartes cachées
+  se retournent sur place et le total DU SERVEUR de toutes ses cartes s'affiche (« Total 20 ») ;
+  après une pause (900 ms), le gagnant (2 s) ; ensuite seulement le panneau de fin (Continuer /
+  Sortir). Manche nulle : mains et totaux ensemble, « Égalité · Nouvelle manche » 2,5 s, puis
+  la nouvelle manche. Reconnexion : état final d'emblée, rien n'est rejoué.
+- **Tirage par glisser-déposer** : seul le joueur que le serveur autorise (`canDraw`) peut
+  saisir la tête du terre, une fois le tour rangé et les vols précédents terminés ; cible : sa
+  zone de départ (la main du bas), élargie pour un doigt ;
+  même composant de glisser-déposer que les cartes de la main (fiable au toucher). Lâchée, la
+  carte va à sa place et le serveur valide (tour, tête, limite de 21) ; refusée, elle revient
+  au terre. Le bouton « Tirer » reste l'équivalent sans geste.
+- **Serveur** : la ronde Continuer/Sortir d'une manche GARAM gagnée commence après cette
+  présentation, comme après le 5e tour du Ter (D-041) : `garamRevealPresentationMs(n)` =
+  2 600 ms (dernier tour rangé ou dernière carte posée) + n × 900 + 900 + 2 000 ms (7 300 /
+  8 200 / 9 100 ms pour 2 / 3 / 4 joueurs), mêmes valeurs côté téléphone. Le résultat et le
+  règlement ne sont pas retardés.
+- **Limite connue** : la manche nulle est rejouée aussitôt par le serveur (D-119) ; ses 2,5 s
+  de présentation sont prises sur la distribution de la nouvelle manche (≥ 5,16 s) ou sur le
+  vote de doublement (13 s).
+- **Tests** : `garam-presentation.test.ts` (zones, ordre des tirages, calendrier identique au
+  serveur), `garam-round-flow.test.tsx` (manche complète étape par étape, reconnexion,
+  visibilité, droits de tirage, tirage d'un autre joueur, égalité, manche suivante),
+  `garam-table.test.tsx` ; serveur : `garam-engine.test.ts` (visibilité au tirage et à la
+  fin), `garam-game.test.ts` (ronde après la présentation).
+
+## D-129 — GARAM TIA : « Main spéciale » à déclarer, comme au Fap-Fap
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Remplace** :
+  les victoires AUTOMATIQUES des conditions spéciales de GARAM (D-119 : trois identiques,
+  somme ≤ 10, terre de même signe, deux As) · **Ne change pas** : les conditions elles-mêmes,
+  leur priorité (trois identiques, puis somme ≤ 10, puis terre de même signe ; deux As après le
+  premier tour), la manche nulle quand PLUSIEURS joueurs remplissent la même condition
+  (automatique, comme la pluralité au Fap-Fap), le résultat (`GARAM_AUTOMATIC_WIN`, règlement
+  sans pénalité « moins de X »), la suite de la partie (Continuer / Sortir, D-034).
+- **Règle (modèle Fap-Fap, D-035)** : un SEUL détenteur ne gagne pas automatiquement ; il doit
+  appuyer sur « Main spéciale » (`DECLARE_WIN`, même bouton que Fap-Fap). Le serveur reconnaît
+  la main (analyse à la distribution ou à la fin du premier tour) ; elle reste SECRÈTE, connue
+  de son seul détenteur (`myActions.canDeclareInstantWin`, `garam.mySpecial`).
+  - Trois identiques, somme ≤ 10, terre de même signe (le dégageur) : déclarable dès la fin de
+    la distribution et jusqu'à ce que le détenteur joue sa première carte (même hors de son
+    tour). Carte jouée sans déclarer (par lui ou par le Katika à l'échéance) : droit perdu,
+    la manche se joue normalement ; aucune condition de rang inférieur n'est reprise.
+  - Deux As : à la fin du premier tour, tour de déclaration du détenteur (temps de tour
+    habituel, 15 s affichées). Ses deux As font 22 : il ne peut rien tirer et la déclaration
+    est sa seule action légale ; à l'échéance, le Katika la joue pour lui (`automatic: true`).
+- **Écran** : bouton rond « Main spéciale » en bas à droite (même badge que Fap-Fap), visible
+  pendant mon premier tour tant que je n'ai pas joué (que j'aie ou non une main spéciale, il ne
+  trahit rien) et chaque fois que le serveur me permet de déclarer ; sans main spéciale, un
+  appui affiche seulement un message. Après la déclaration : présentation de fin (D-128),
+  bannière « Main spéciale : … » puis le panneau de fin. Les cadres des cartes jouées ne
+  portent plus le texte « 1er tour ».
+- **API** : `DECLARE_WIN` existe désormais dans les deux jeux (n'est plus refusé par
+  `ACTION_NOT_AVAILABLE_FOR_GAME` en GARAM) ; sans main spéciale : 422 `NOT_A_WINNING_HAND` ;
+  hors fenêtre : 422 `WIN_DECLARATION_NOT_ALLOWED`. `FLEE` reste propre à Fap-Fap.
+- **Tests** : `garam-engine.test.ts` (déclaration, secret, droit perdu, Katika, deux As),
+  `garam-game.test.ts` (HTTP), `garam-special-hand.test.tsx` (bouton).
+
+## D-130 — GARAM TIA : les 5 mains spéciales, arbitrage par priorité, deux As, Koraté
+
+- **Date** : 2026-10-21 · **Statut** : spécification du propriétaire du projet, précisée par
+  lui le même jour (deux As hors mains spéciales, terre supprimée, commission sur la pénalité)
+  · **Remplace** : les conditions spéciales de D-119/D-129 (trois identiques, somme ≤ 10, terre
+  de même signe, deux As déclarés), le refus de la proposition de doubler la mise pour une
+  égalité de mains spéciales (D-119), la pénalité « moins de X » hors commission (D-119,
+  D-127, dossier §1.5 et §6.5), l'absence de variante présélectionnée dans les formulaires
+  (D-127, voir son amendement : partie et tournoi présélectionnent 15) · **Ne change pas** :
+  Fap-Fap, distribution, sens antihoraire, tirage, limite de 21, Katika, timers, sessions,
+  détection, barème global de commission, caisse unique, source `GARAM_TIA`.
+- **Valeurs des cartes** (inchangées, `garam-cards.ts`) : 3 à 10 = valeur faciale, As = 11 ;
+  pas de 2 ni de figure dans le paquet de 35. Les exemples « 2-2-2 » ou « 2-3-5 » de la
+  spécification sont donc impossibles ; « somme = 10 » n'existe que sous la forme 3 + 3 + 4.
+- **Les 5 mains** (`dealtSpecialOf`, `GARAM_SPECIAL_PRIORITY`), toutes sur les 3 cartes
+  reçues, priorité absolue décroissante : 1 trois 7 ; 2 trois cartes de même valeur ≠ 7
+  (familles indifférentes ; trois As compris) ; 3 somme = 10 ; 4 trois cartes de même
+  famille ; 5 somme = 21. Une main qui en remplit plusieurs vaut la meilleure. La « terre de
+  même signe » est supprimée (propriétaire).
+- **Deux As : PAS une main spéciale** (propriétaire, remplace la « priorité 6 » de la
+  spécification) : ni déclaration, ni arbitrage, ni tour réservé. Le joueur qui garde deux As
+  après le premier tour (22) ne peut rien tirer : son tirage est clos aussitôt (« Impossible »),
+  comme tout joueur sans carte prenable. À la fin normale (révélation), il bat tout autre
+  total, 21 compris (`finishRound`, `method: 'GARAM_BEST_SCORE'`, score 22) ; les autres
+  perdants restent soumis au Koraté. Un seul joueur au plus (3 As dans le paquet). Trois As
+  reçus = main n° 2 ; non déclarés, deux As gardés gagnent quand même à la révélation.
+- **Une seule main spéciale** (**remplacé par D-137** : déclarée automatiquement par le serveur) : jamais de victoire automatique. Déclarable par « Main
+  spéciale » de la fin de la distribution jusqu'à la première carte jouée du détenteur (même
+  hors de son tour) ; carte jouée (par lui ou par le Katika à l'échéance) : droit
+  définitivement perdu, la manche continue. Le Katika ne déclare JAMAIS.
+- **Plusieurs mains spéciales** : arbitrage AUTOMATIQUE dès la distribution, sans attendre les
+  tours : la meilleure priorité gagne (`automatic: true`). Meilleure priorité détenue par
+  plusieurs joueurs : manche nulle (`GARAM_TIE`, `kind: 'SPECIAL'`, mains reçues révélées),
+  aucun départage ; la manche rejouée porte la proposition de doubler la mise (même mécanisme
+  que l'égalité de total). Deux joueurs aux trois 7 sont impossibles (4 sept dans le paquet).
+- **Contrôle serveur de la déclaration** : identité (JWT), partie en cours, distribution
+  confirmée, main réellement reçue (`initialHands`), première carte déjà jouée ou non, phase ;
+  sinon 422 `NOT_A_WINNING_HAND` / `WIN_DECLARATION_NOT_ALLOWED`. Bouton affiché seulement
+  quand le serveur le permet (`canDeclareInstantWin`).
+- **Koraté** (= la pénalité « moins de X » de D-127, renommée à l'écran) : en fin normale de
+  manche, un perdant dont la somme des cartes présentées (cartes gardées : main sans la carte
+  du 1er tour + cartes tirées, la somme affichée « Total ») est STRICTEMENT inférieure à X
+  (variante 15/16/17/18 de la partie) paie une mise de plus (250 → 500 au total), pour le
+  gagnant. Pas de Koraté après une victoire par main spéciale (règle de D-119 inchangée).
+- **Commission** (propriétaire) : UNE commission du barème global (`game_commission_schedule`,
+  taux figé au démarrage), sur toutes les pertes, pénalités Koraté comprises
+  (`planGaramSettlement`). Exemple : mise 250, 2 joueurs, 10 %, b Koraté → b perd 500,
+  commission 50 (une écriture `GAME_COMMISSION` source `GARAM_TIA`, caisse unique), a reçoit
+  450 (`game_winnings`). `game_settlements` : `gross_amount` = mises seules, `penalty_amount`
+  = pénalités, `gross_amount + penalty_amount = commission_amount + net_gain` (contrainte de la
+  migration 0049, inchangée : aucune migration). Tournois : commission 0, inchangés.
+- **Écran** : GARAM 15 présélectionnée à la création d'une partie (le serveur exige toujours la
+  variante envoyée) ; libellés « Trois 7 », « Somme des trois cartes = 10 »… ; « Koraté (moins
+  de X) » dans le bilan. Les manches déjà jouées gardent leurs anciennes conditions.
+- **Tests** : `garam-engine.test.ts` (5 mains, priorités, arbitrage, égalités à 2 et 3
+  joueurs, déclaration, droit perdu, Katika, deux As à la révélation, Koraté, commission sur
+  la pénalité), `garam-game.test.ts` (égalité → vote de doublement, Koraté 250 avec commission
+  et caisse), `garam-special-hand.test.tsx`.
+
+## D-131 — Application mobile : une fenêtre ne se ferme jamais par un appui hors d'elle
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-126 (composant secondaire exclusif).
+- **Règle** : un appui hors d'une fenêtre ouverte (panneaux Profil, Réglages, Boutique,
+  Fap-Fap / GARAM TIA, sélecteurs de date et d'heure, et tout composant secondaire) n'a aucun
+  effet. Elle se ferme seulement par son propre bouton (X, Annuler, Valider…) ou par le bouton
+  retour d'Android (inchangé).
+- **Mise en œuvre** : `ExclusiveOverlay` n'offre plus de fermeture au fond (option
+  `onBackdropPress` supprimée) ; le fond capte toujours tous les appuis (rien de l'écran du
+  dessous n'est touchable). Test : `ExclusiveOverlay.test.tsx`.
+
+## D-132 — Application mobile : panneaux et clavier (formulaire « Proposer un tournoi »)
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet (« le scroll ne
+  fonctionne pas bien sur la fenêtre Proposer un tournoi »).
+- **Cause** : le panneau gardait toute la hauteur de l'écran quand le clavier s'ouvrait ; sur
+  Android (affichage bord à bord), le clavier recouvrait le bas du panneau : les derniers champs
+  et les boutons « Enregistrer le brouillon » / « Proposer » passaient dessous, hors de portée
+  du défilement.
+- **Correction** (`LobbyPanel`, tous les panneaux) : `KeyboardAvoidingView` (React Native,
+  recommandé par le guide « Keyboard handling » d'Expo : `padding` sur iOS, `height` sur
+  Android, comme `DepositSheet`) ; le panneau se réduit au-dessus du clavier (`flexShrink`)
+  et son contenu défile jusqu'au dernier champ. Aucune dépendance native ajoutée
+  (`react-native-keyboard-controller` écarté : il exigerait un nouveau build de développement).
+- **Défilement selon l'endroit du geste** (signalé ensuite : « le scroll ne prend pas sur toutes
+  les parties de la fenêtre ») : le fond `ExclusiveOverlay`, PARENT du contenu, réclamait tous
+  les appuis (`onStartShouldSetResponder`) ; un geste commencé sur une partie non cliquable de
+  la fenêtre (libellé, cadre, texte) lui remontait et ne faisait pas défiler, contrairement à
+  un geste commencé sur un bouton ou un champ. Correction : la capture des appuis est une
+  couche SŒUR, derrière le contenu ; elle bloque toujours l'écran du dessous, sans jamais
+  prendre un geste commencé dans la fenêtre (vaut pour toutes les fenêtres). Test :
+  `ExclusiveOverlay.test.tsx`.
+
+## D-134 — Recharge MTN : paiement direct par défaut, repli automatique vers la page CinetPay
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet (« les deux
+  méthodes pour MTN, par défaut la méthode directe ; si elle n'est pas disponible, le paiement
+  se fait automatiquement par la méthode via CinetPay »).
+- **Défaut** : un compte MTN (`MTN_CM`) paie d'abord en paiement DIRECT (demande de
+  confirmation envoyée au téléphone), comme avant. Un refus immédiat du direct déclenchait déjà
+  la page CinetPay (clé `…PAGE_FALLBACK_SUFFIX`).
+- **Nouveau** : un direct ACCEPTÉ puis clos par CinetPay SANS débit (`FAILED` ou `EXPIRED`,
+  transaction `failed`) bascule automatiquement le MÊME achat vers la page CinetPay
+  (opérateur MTN présélectionné) : l'application relance la demande avec la même clé
+  d'idempotence ; le serveur (`WalletService.requestDeposit`) revérifie que le direct est clos
+  sans débit et crée (ou rejoue) une seule page pour cet achat. Un nouveau rejeu renvoie la
+  même page ; aucun crédit avant la notification CinetPay vérifiée.
+- **Jamais de double débit** : un direct encore en attente (`PENDING`, issue inconnue) n'est
+  jamais doublé par une page ; il reste affiché « En attente de confirmation ».
+- **Tests** : `backend/tests/integration/payments/cinetpay-payments.test.ts` (FAILED/EXPIRED →
+  page, rejeu, crédit unique) ; `frontend/src/features/wallet/ShopFlow.test.tsx` (repli
+  automatique, même clé, aucun repli tant que le direct est en attente).
+
+## D-133 — Application mobile : HUD toujours visible et numéro d'ordre du joueur
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-126 (composant secondaire exclusif).
+- **HUD toujours visible** : dans les écrans connectés (`LobbyShell` : accueil, tournois), le
+  pseudo du joueur, son numéro d'ordre (ligne 🧑 sous le pseudo) et le solde restent affichés
+  au premier plan, même quand un panneau, la Boutique ou un avertissement est ouvert. Tout le
+  reste de l'écran précédent reste masqué (D-126). Panneau ouvert, le HUD est affiché mais NON
+  interactif (le « + » de la Boutique est sans effet) : seule la fenêtre ouverte est
+  interactive. Les panneaux sont centrés ENTRE les deux blocs du HUD (emprise mesurée), jamais
+  dessous. Hors de la coquille (table de jeu), rien ne change.
+- **Numéro d'ordre** : rang d'inscription du compte sur la plateforme (n° 1 = premier compte
+  créé). Colonne `users.player_number` (migration 0053) : attribuée par une séquence
+  PostgreSQL à la création du compte, jamais par l'application ni par le client ; unique,
+  positive, immuable (déclencheur) et jamais réutilisée. Une inscription annulée après le
+  tirage laisse un numéro inutilisé : les numéros sont croissants, sans garantie d'absence de
+  trou. Comptes existants : numérotés par `created_at`, puis `id`.
+- **API** : `playerNumber` dans le compte public (`/api/auth/me`, inscription, connexion).
+  Affiché « N° 42 » dans le HUD ; « — » tant qu'il est absent (serveur plus ancien), jamais
+  un numéro inventé.
+
+## D-135 — Authentification : email facultatif des joueurs, connexion par téléphone, code de récupération
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Tranche** :
+  R-35 (mot de passe oublié) · **Modifie** : R-15 (email facultatif pour un joueur ; connexion
+  par téléphone ou email), D-029 · **Ne change pas** : R-10, R-32, la connexion et la
+  récupération de l'administration (email obligatoire), le changement de mot de passe connecté
+  (`POST /api/auth/password`, mot de passe actuel exigé, aucun code).
+- **Comptes** : joueur = téléphone obligatoire (unique, E.164 reconstruit par le serveur),
+  email facultatif (`NULL`, jamais une adresse inventée) ; administrateur = email obligatoire,
+  garanti en base (`users_admin_email_required`, migration 0054). Comptes existants inchangés.
+- **Connexion** : `POST /api/auth/login` accepte `{ email, password }` OU `{ country, phone,
+  password }`. Mobile : téléphone par défaut, lien « Se connecter avec l'email ». Message
+  d'échec identique que le compte existe ou non.
+- **Code de récupération** : `LT-XXXX-XXXX-XXXX`, 12 caractères aléatoires (alphabet de
+  Crockford, 60 bits), créé à l'inscription et renvoyé UNE fois (`201 { user, recoveryCode }`).
+  Seule son empreinte bcrypt est stockée (`users.recovery_code_hash`) ; jamais journalisé,
+  jamais renvoyé par une autre route (`hasRecoveryCode` seulement). Un seul code actif par
+  compte : utilisé ou remplacé, l'ancien ne vaut plus rien.
+- **Mot de passe oublié** (sans SMS ni coût) : téléphone → code (`POST
+  /api/auth/recovery/verify`) → autorisation temporaire (10 min, usage unique, empreinte
+  SHA-256 en base, `password_reset_grants`) → nouveau mot de passe (`POST
+  /api/auth/recovery/reset`) : mot de passe remplacé, ancien code invalidé, toutes les
+  sessions fermées (`password_reset`), NOUVEAU code renvoyé une fois. Le numéro seul ne prouve
+  jamais rien. Numéro inconnu, compte sans code, code faux, compte bloqué : même réponse
+  `400 RECOVERY_FAILED` et même durée (comparaison factice).
+- **Anti-force brute** : 5 codes faux → compte bloqué 15 min (en base, tous serveurs
+  confondus) ; limites par IP (30 / 15 min) et par numéro (10 / 15 min) ; réinitialisations
+  et nouveaux codes : 10 / 15 min.
+- **Nouveau code depuis le Profil** : `POST /api/auth/recovery-code { currentPassword }` ;
+  sert aussi aux comptes créés avant les codes.
+- **Code perdu** : l'assistance (`admin`) fait « Réinitialiser l'accès » sur la fiche du joueur
+  (`POST /api/admin/users/:id/recovery { reason }`) : motif obligatoire, ancien code invalidé,
+  nouveau code affiché une fois à l'administrateur, qui le transmet ; le joueur choisit ensuite
+  son mot de passe. Aucun mot de passe vu ni fixé. Audit `PLAYER_ACCOUNT_RECOVERY` (motif, sans
+  le code), dans la même transaction. Interdit sur soi-même, sur un administrateur, sur un
+  compte inactif.
+- **Paiements** : un joueur sans email paie sans `client_email` envoyé à CinetPay (choix du
+  propriétaire ; à confirmer en sandbox avant la production).
+- **Tests** : `password-recovery.test.ts`, `register-login.test.ts`,
+  `player-moderation.test.ts` (backend) ; `recovery-code.test.ts` ; `LoginScreen.test.tsx`,
+  `ForgotPasswordScreen.test.tsx`, `RegisterScreen.test.tsx`, `ProfilePanel.test.tsx`
+  (mobile) ; `player-moderation.test.tsx` (administration).
+
+## D-136 — GARAM TIA : tirage automatique du terre, plus de bouton « Tirer »
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-119, D-121, D-127 (temps de tour inchangé au premier tour). **Aucune règle modifiée** : le
+  tirage reste obligatoire tant que la tête du terre ne fait pas dépasser 21 (§3.8), « Impossible »
+  sinon (carte laissée au terre), terre vide : rien. Le joueur n'ayant aucun choix, le serveur
+  tire pour lui.
+- **Serveur autoritaire, un seul tirage** : pendant la phase de tirage, l'échéance du tour
+  persistée devient un court délai (`GARAM_AUTO_DRAW_FIRST_MS` avant la 1re carte d'un joueur,
+  `GARAM_AUTO_DRAW_STEP_MS` entre deux cartes, `garam-rules.ts`). À l'échéance, le chemin
+  existant (`TURN_TIMEOUT` → `AUTO_GARAM_ACTION` → `drawGaramCard`) tire UNE carte ; puis le
+  moteur décide seul de la suite (nouvelle échéance, « Impossible », joueur suivant, fin de
+  manche). Aucun second mécanisme, aucune migration.
+- **Doubles tirages impossibles** : file par partie, version optimiste, `turnTimedOutAt` constaté
+  une seule fois, `commandId` déterministe par carte (`auto-garam:…:terre.length:joueur`) ;
+  échéances persistées, timers reconstruits au redémarrage (`DeadlineSupervisor`). Lire la
+  partie (reconnexion) ne déclenche rien.
+- **`DRAW_CARD`** : conservé dans l'API (anciennes versions de l'application, tests) ; mêmes
+  validations (tour, phase, limite de 21). L'application ne l'envoie plus.
+- **Application** : bouton « Tirer » et glisser-déposer du terre supprimés ; chaque carte tirée
+  vole de la tête du terre vers son joueur (animation existante, une à la fois, seulement une
+  fois le premier tour rangé ; transition courte avec « réduire les animations ») ; respiration
+  + vol = 800 ms, le cycle du serveur ; ni chrono ni barre de tour pendant le tirage ; consigne
+  « Tirage automatique… ». Reconnexion : cartes déjà tirées posées d'emblée, aucun vol rejoué.
+- **Tests** : `garam-engine.test.ts` (bloc « tirage automatique (D-136) »),
+  `garam-auto-draw.test.ts` (HTTP, timers réels, concurrence) ; `garam-round-flow.test.tsx`,
+  `garam-table.test.tsx` (mobile).
+
+## D-136 — GARAM TIA : tirage automatique par le serveur, tempo du tirage
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  la phase de tirage de D-119 (tirage par le joueur) · **Ne change pas** : la règle du tirage
+  (§3.8), l'ordre (le contrôleur, puis sens antihoraire), le premier tour et son temps de
+  décision (D-127), la présentation de fin de manche (D-128).
+- **Principe** : le tirage est obligatoire tant que la tête du terre ne fait pas dépasser 21
+  (§3.8) ; le joueur n'a donc aucun choix et c'est le SERVEUR qui tire pour lui. Si la tête
+  ferait dépasser 21 (ou si le terre est vide), « Impossible » : la carte reste au terre, les
+  cartes déjà prises sont gardées, et le tour passe aussitôt au joueur suivant, sans délai
+  (cas du joueur aux deux As, 22, D-130). Le dernier tirage clos termine la manche.
+- **Une carte par échéance** : chaque tour de tirage a une échéance courte, persistée en base
+  comme celle d'un tour normal (reprise par `DeadlineSupervisor` au redémarrage). À
+  l'échéance, `playGaramAutomatically` tire UNE carte par la même opération que le tirage
+  (`drawGaramCard`, mêmes vérifications : phase, tour, limite de 21), jamais plusieurs. Une
+  échéance traitée deux fois (deux timers, deux instances) ne tire qu'une carte. Consulter la
+  partie ne tire rien. Journal : `AUTO_DRAW_DUE` (info), pas `TURN_TIMEOUT` : ce n'est pas une
+  absence du joueur.
+- **Tempo** (`backend/src/domain/garam/garam-rules.ts`) :
+  - avant la toute première carte de la manche, à la fin du premier tour :
+    `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` = 3,5 s. Les écrans montrent d'abord le tour complet
+    (2 s, `TRICK_CLEAR_DELAY_MS`), le rangent chez chaque joueur (450 ms), puis marquent une
+    pause lisible (`GARAM_DRAW_START_PAUSE_MS` = 1 s) ; aucune carte du terre ne part tant
+    que les cartes du premier tour ne sont pas rangées ;
+  - avant la première carte d'un joueur suivant : `GARAM_AUTO_DRAW_FIRST_MS` = 800 ms ;
+  - entre deux cartes d'un même joueur : `GARAM_AUTO_DRAW_STEP_MS` = 800 ms.
+  Les tests peuvent injecter ces délais (`garamAutoDrawMs`).
+- **Application mobile** (`garam-presentation.ts`) : aucun bouton « Tirer », aucune tête du
+  terre à saisir, aucun chrono pendant le tirage. Chaque carte tirée vole de la tête du terre
+  à la zone de départ de son joueur, UNE à la fois : respiration `GARAM_DRAW_BREATH_MS`
+  (280 ms) puis vol `GARAM_DRAW_FLIGHT_MS` (520 ms), soit le même cycle de 800 ms que le
+  serveur. Une carte tirée par un adversaire (ou par le Katika) est présentée de la même
+  façon. En reconnexion, les cartes déjà tirées sont posées d'emblée, sans vol ni pause.
+- **API** : l'action `DRAW_CARD` reste acceptée, avec les mêmes vérifications (refus
+  `NOT_YOUR_TURN` hors de son tour) ; l'application ne l'envoie plus.
+- **Tests** : `garam-engine.test.ts`, `garam-auto-draw.test.ts` (backend, tempo de
+  production) ; `garam-round-flow.test.tsx` (mobile).
+
+## D-137 — GARAM TIA : main spéciale déclarée automatiquement par le serveur, plus de bouton « Main spéciale »
+
+- **Date** : 2026-10-21 · **Statut** : décision du propriétaire du projet (question posée : la
+  déclaration d'une main spéciale unique était un CHOIX du joueur selon D-130 ; réponse :
+  « Nouvelle règle : automatique »). · **Remplace** : pour une main spéciale UNIQUE, la
+  déclaration par le bouton « Main spéciale », le droit perdu à la première carte et « le
+  Katika ne déclare jamais » (D-129, D-130). · **Ne change pas** : les 5 mains et leurs
+  priorités, l'arbitrage automatique de plusieurs mains spéciales et l'égalité de meilleure
+  priorité (D-130), deux As, Koraté (jamais après une victoire par main spéciale), commission,
+  tirage automatique (D-136), Fap-Fap.
+- **Règle** : une main spéciale détenue par un seul joueur gagne TOUJOURS. Le détenteur ne
+  peut plus choisir de jouer la manche (pour le Koraté) à la place.
+- **Déroulement** (serveur autoritaire) : la main est reconnue à la distribution
+  (`specialOutcome`). À la fin de la distribution (`completeGaramDeal`, ou au démarrage sans
+  distribution présentée), le premier tour s'ouvre avec une échéance COURTE,
+  `GARAM_AUTO_DECLARE_MS` = 800 ms, au lieu des 15 s d'un tour. Personne ne peut jouer de
+  carte pendant ce délai (`garamPlayableCards` vide, `PLAY_CARD` refusé). L'échéance
+  persistée déclenche `handleTurnTimeout` → `playGaramAutomatically` →
+  `declareGaramWin(…, automatic: true)`, la MÊME opération que l'ancienne déclaration
+  manuelle (mêmes vérifications). Résultat `GARAM_AUTOMATIC_WIN`, `automatic: true`.
+- **Ordre avec le tirage automatique** (D-136) : une main spéciale n'existe qu'avant la
+  première carte. Elle est donc toujours résolue avant le premier tour et le tirage : la
+  manche se termine sans premier tour, sans tirage, terre intact. Un seul mécanisme
+  d'échéance (celui du tour), jamais deux automatismes concurrents.
+- **Une seule exécution** : file par partie, `turnTimedOutAt`, version optimiste,
+  `commandId` déterministe. Deux échéances traitées en même temps, une commande
+  `DECLARE_WIN` concurrente (encore acceptée du seul détenteur, même résultat) ou une reprise
+  après redémarrage (`DeadlineSupervisor.recover`) ne produisent qu'une victoire et un
+  règlement. Aucune migration : l'échéance du tour existante suffit.
+- **Écran** : bouton « Main spéciale » supprimé (`canDeclareInstantWin` toujours faux en GARAM).
+  Pendant le délai, la vue publique porte `specialPending` (ni détenteur ni nature révélés) :
+  annonce légère « ✨ Main spéciale ! » qui apparaît en douceur (instantanée si « Réduire les
+  animations »), sans chrono ni consigne. Puis la présentation de fin habituelle (D-128)
+  annonce le gagnant et la main. L'écran n'envoie jamais rien : un rerendu ou une
+  reconnexion relit seulement l'état du serveur.
+- **Tests** : `garam-engine.test.ts` (G1, G2, G4/G5, G6, aucune carte avant la déclaration,
+  attente après la distribution), `garam-auto-declare.test.ts` (HTTP + PostgreSQL : annonce,
+  tempo réel, détenteur non-dégageur, G6, concurrence G4/G5, redémarrage G7, terre intact
+  G8), `garam-game.test.ts`, `garam-special-hand.test.tsx` (aucun bouton, annonce pour tous,
+  ni chrono ni consigne, rerendus sans envoi, rien pendant la distribution).
+
+## D-138 — GARAM TIA : proposition de doubler la mise, retour à la mise de création
+
+- **Date** : 2026-10-21 · **Statut** : demandée par le propriétaire du projet · **Précise** :
+  §3.15 (proposition de doubler la mise), D-119, D-127.
+- **Égalité** : la manche nulle (plus grand total ou priorité de mains spéciales) est rejouée
+  et une proposition de doubler la mise est présentée à tous les joueurs de la manche.
+  - **Tous acceptent** : la manche rejouée se joue à 2 × la mise de la manche nulle.
+  - **Un refus, ou un joueur sans réponse à l'échéance** : la manche rejouée repart à la mise
+    définie à la CRÉATION de la table (`games.state.garamBaseStake`, reportée de manche en
+    manche), jamais à une mise déjà doublée. Exemple : table à 100, égalité, doublée à 200,
+    nouvelle égalité, un « non » → 100 (et non 200).
+  - **Délai** : 10 s affichées au joueur ; le serveur clôt la proposition 3 s plus tard
+    (`GARAM_STAKE_VOTE_MS` = 13 s, marge réseau de D-098, comme Continuer/Sortir). Une réponse
+    reçue après la clôture est refusée.
+- **Commission** : appliquée sur le montant réellement joué. L'engagement et le taux du
+  barème sont calculés au démarrage de la manche à partir de sa mise (doublée le cas
+  échéant), comme pour toute manche (D-080).
+- **Joueur qui débute** : après une égalité, la manche rejouée est débutée par le même
+  joueur que la manche nulle (même dégageur, `firstPlayerId` inchangé).
+- **Parties enregistrées avant D-138** : sans mise de création enregistrée, leur mise courante
+  en tient lieu.
+- **Non tranché ici** : la mise de la manche SUIVANTE après une manche doublée terminée par une
+  victoire (Continuer) reste celle de la manche précédente, comme avant D-138.
+
+## D-139 — Connexion, inscription et récupération mobiles : un seul champ « téléphone ou e-mail », Cameroun présélectionné
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  l'écran de connexion de D-135 (lien « Se connecter avec l'email » supprimé) et l'écran
+  d'inscription et de récupération du mot de passe · **Tranche** : R-33 (Cameroun
+  présélectionné, modifiable, sur ces trois écrans)
+  · **Ne change pas** : `POST /api/auth/login` et ses deux formes `{ email, password }` /
+  `{ country, phone, password }`, sessions, jetons, messages d'échec du serveur.
+- **Champ unique** : l'application déduit la forme : un « @ » ou une lettre → e-mail ; sinon
+  numéro NATIONAL avec le pays sélectionné (Cameroun `+237` par défaut, modifiable par la liste
+  existante des pays) ; un numéro tapé avec son indicatif (« +237… », « 00237… ») l'emporte sur
+  le pays sélectionné. Le joueur ne choisit jamais « Téléphone » ou « Email ».
+- **Filigrane** : « 695 122 301 ou votre adresse e-mail » (exemple du pays présélectionné),
+  jamais une valeur préremplie ni une donnée de joueur.
+- **Écran** (`app/(auth)/login.tsx`, `src/features/auth/LoginLayout.tsx`) : fond sombre, un
+  panneau centré, marque « LE TER », titre « Connexion », les 2 champs, « Mot de passe
+  oublié ? », « Se connecter » (désactivé tant qu'un champ est vide, « Connexion… » pendant
+  l'envoi, un seul envoi), « Vous n'avez pas de compte ? S'inscrire ». Cartes décoratives et
+  cercle de feutre retirés de cet écran.
+- **Inscription** (`app/(auth)/register.tsx`), même modèle : même panneau (large, champs par
+  deux), mêmes champs, même téléphone (indicatif `+237` dans le champ, Cameroun présélectionné
+  et modifiable, numéro national seul). Étapes, champs, validation, email facultatif, code de
+  récupération et `POST /api/auth/register` inchangés.
+- **Mot de passe oublié** (`app/(auth)/forgot-password.tsx`), même modèle : même panneau,
+  indicateur d'étapes partagé (`LoginSteps`), même téléphone (Cameroun présélectionné). Les 3
+  étapes (téléphone → code → nouveau mot de passe → nouveau code) et les routes
+  `recovery/verify` / `recovery/reset` sont inchangées.
+- **Tests** : `LoginScreen.test.tsx`, `RegisterScreen.test.tsx`,
+  `ForgotPasswordScreen.test.tsx`, `LoginLayout.test.ts` (mobile).
+
+## D-140 — GARAM TIA : « Je passe » du contrôleur qui ne peut rien tirer
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-136 (« Impossible : le tour passe aussitôt au joueur suivant ») pour le seul CONTRÔLEUR ·
+  **Ne change pas** : la règle du tirage (§3.8, limite de 21, terre vide §3.10), l'ordre du
+  tirage (le contrôleur, puis sens antihoraire), le tempo du tirage des autres joueurs, le
+  résultat de la manche.
+- **Principe** : si le joueur qui a le contrôle ne peut prendre aucune carte du terre (la tête
+  ferait dépasser 21, deux As gardés à 22, ou terre vide), le serveur ne passe plus la main
+  aussitôt : il annonce d'abord « Je passe » à toute la table, puis, à l'échéance de ce tour,
+  clôt son tirage (aucune carte prise, la carte refusée reste au terre) et passe la main au
+  joueur suivant, ou termine la manche. Les autres joueurs sans carte prenable restent clos
+  aussitôt (D-136).
+- **Serveur** (`garam-engine.ts`) : le tour du contrôleur s'ouvre avec `GaramPlay.passing`
+  et l'événement public `game:player_passed` (playerId, cardId éventuel). Son échéance,
+  persistée comme toute échéance de tour (reprise par `DeadlineSupervisor`), vaut
+  `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` + `GARAM_PASS_NOTICE_MS` = 3,5 s + 3,5 s = 7 s depuis
+  la fin du premier tour. À l'échéance, `playGaramAutomatically` clôt le tirage
+  (`game:draw_impossible` avec `passed: true`, `lastRefusal.passed`) ; aucun
+  `game:auto_card_played` (personne ne joue à la place du joueur). Une échéance traitée deux
+  fois ne passe qu'une fois (commande idempotente). Pendant ce tour, `canDraw` est faux et
+  `DRAW_CARD` est refusé.
+- **Vue** : `garam.passingPlayerId` (public) pendant le tour « Je passe ».
+- **Application mobile** (`GaramPlayArea.tsx`) : le premier tour se range (2,45 s), le contrôle
+  est annoncé (1,8 s), puis « Vous : « Je passe » » / « Bob : « Je passe » » s'affiche au
+  centre de la table, en doré et annoncé aux lecteurs d'écran, jusqu'à ce que le serveur passe
+  la main (≈ 2,75 s). La notification « Impossible » n'est pas répétée pour ce joueur.
+- **Tests** : `garam-engine.test.ts`, `garam-game.test.ts`, `garam-auto-draw.test.ts` (tempo
+  de production) ; `garam-round-flow.test.tsx` (mobile).
+
+## D-140 — Connexion et Inscription : décor LETER, drapeau de l'indicatif, icônes des champs
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet (capture de
+  référence) · **Complète** : D-139 (même logique, mêmes champs, mêmes routes) · **Ne change
+  pas** : authentification, API, validation, « Mot de passe oublié » (sans décor).
+- **Décor** (`LoginLayout decorated`, `src/features/auth/LoginDecor.tsx`) : 5 cartes Le Ter
+  L E T E R (une lettre centrée par carte, dos `TatamiCard`) à cheval sur le haut du panneau,
+  titre gravé doré (« CONNEXION », « Inscription » en Cinzel) ; fond : reflet bordeaux, halo
+  doré, étoiles scintillantes (fixes si « réduire les animations »), 3 cartes Le Ter (L) de
+  chaque côté (`DecorativeCards`) seulement s'il reste ≥ 64 dp de chaque côté du panneau.
+- **Champs** : indicatif avec drapeau (🇨🇲 +237 par défaut) DANS le champ ; la liste des pays
+  reste sans drapeau (D-070). Connexion : libellé et filigrane « Téléphone ou email », icône
+  bonhomme ; cadenas sur « Mot de passe » ; icône de connexion devant « Se connecter ».
+  Inscription : drapeau sur l'indicatif du téléphone, bonhomme sur « Pseudo », cadenas sur les
+  deux mots de passe. Icônes décoratives, masquées aux lecteurs d'écran.
+- **Tests** : `LoginScreen.test.tsx`, `RegisterScreen.test.tsx`, `LoginLayout.test.ts`.
+
+## D-141 — Connexion, Inscription, Mot de passe oublié : indicatif en bloc distinct, même décor
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-139, D-140 · **Ne change pas** : API (`recovery/verify` reste pays + numéro), routes,
+  services, validations, étapes de chaque écran.
+- **Indicatif** : `[ 🇨🇲 +237 ▾ ]` est un bloc encadré distinct, à gauche du champ, sur la même
+  ligne (`CountrySelectField appearance="login"`), Cameroun présélectionné. Le drapeau du
+  Cameroun est dessiné (SVG) : Windows n'affiche pas les emojis drapeaux ; les autres pays
+  gardent l'emoji. La liste des pays reste sans drapeau (D-070).
+- **Ligne d'identification** (`src/features/auth/IdentifierField.tsx`, partagée par Connexion
+  et Mot de passe oublié) : `[ 🇨🇲 +237 ▾ ] [ 👤 Téléphone ou email ]`, saisie alignée à gauche.
+  Inscription : même bloc d'indicatif devant le champ Téléphone (bonhomme), champs inchangés.
+- **Mot de passe oublié ?** : même décor que Connexion et Inscription (`LoginLayout decorated` :
+  cartes L E T E R, titre gravé « Mot de passe oublié ? », fond, étoiles, cartes latérales),
+  cadenas sur les deux nouveaux mots de passe. Une adresse e-mail saisie n'est pas envoyée :
+  message « La récupération se fait avec le numéro de téléphone de votre compte… » (la
+  récupération par e-mail demanderait une évolution de l'API, non décidée).
+- **Tests** : `LoginScreen.test.tsx`, `RegisterScreen.test.tsx`, `ForgotPasswordScreen.test.tsx`.
+
+## D-142 — « Mot de passe oublié ? » : récupération par téléphone OU email
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-141 (une adresse e-mail n'était pas envoyée) et `POST /api/auth/recovery/verify` (D-135).
+- **API** : le corps accepte `{ country, phone, code }` (inchangé) OU `{ email, code }` ; le
+  téléphone l'emporte s'il est fourni (même règle que `/login`). Email normalisé (minuscules,
+  espaces retirés). Ni l'un ni l'autre : 400 sur `phone`.
+- **Sécurité inchangée** : l'email seul ne prouve rien, le code reste exigé ; email inconnu,
+  mauvais code, compte sans code ou bloqué → MÊME refus `RECOVERY_FAILED`, même durée. Le
+  compteur `recovery-phone` est indexé sur le téléphone, sinon l'email (ordre du validateur) :
+  ajouter un email inventé ne crée jamais un nouveau compteur pour un même numéro.
+- **Écran** : le champ « Téléphone ou email » est résolu comme à la connexion
+  (`resolveLoginIdentifier`) ; étape 1 renommée « Identifiant ».
+- **Tests** : `password-recovery.test.ts`, `ForgotPasswordScreen.test.tsx`.

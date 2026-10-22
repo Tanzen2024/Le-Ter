@@ -1,4 +1,5 @@
-import type { Game } from '../domain/game/game';
+import type { Game, GameType } from '../domain/game/game';
+import type { GaramVariant } from '../domain/garam/garam-rules';
 import type { PlayerId } from '../domain/game/game-id';
 import type {
   LastGameInfo,
@@ -44,6 +45,10 @@ export interface LeaveWrite extends LeaveTransition {
  */
 export interface OpenTableSummary {
   sessionId: SessionId;
+  /** Jeu de la table (D-119) ; absent : Le Ter. */
+  gameType?: GameType;
+  /** GARAM TIA : variante de la table (D-127). */
+  garamVariant?: GaramVariant;
   gameId: string;
   /** Nom choisi à la création (absent pour les tables antérieures à D-039). */
   name?: string;
@@ -110,7 +115,12 @@ export interface SessionRepository extends SessionSeatLookup {
    * validée sous verrou par `update`), les plus récentes d'abord ; `mine` marque celle où le
    * joueur est déjà présent.
    */
-  findOpenTables(viewerId: PlayerId, limit: number): Promise<OpenTableSummary[]>;
+  /** Tables ouvertes d'UN jeu (D-119) ; par défaut Le Ter. */
+  findOpenTables(
+    viewerId: PlayerId,
+    limit: number,
+    gameType?: GameType,
+  ): Promise<OpenTableSummary[]>;
 
   /** Applique `change` au contexte verrouillé ; enregistre si des événements sont produits. */
   update<R extends SessionTransition>(

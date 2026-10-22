@@ -1,3 +1,5 @@
+import type { GameType } from '../domain/game/game';
+import type { LedgerSource } from '../domain/platform-finance/platform-finance';
 import type { PaymentStatus } from '../domain/payments/payment';
 import type { TournamentStatus } from '../domain/tournaments/tournament';
 import type { UserRole, UserStatus } from '../domain/users/user';
@@ -55,7 +57,8 @@ export interface AdminUserRow {
 
 export interface AdminUserDetail extends AdminUserRow {
   updatedAt: Date;
-  gamesWon: number;
+  /** Victoires par jeu (`games.game_type`), jamais additionnées entre jeux (D-126). */
+  gamesWon: { fapFap: number; garamTia: number };
   activeGameId: string | null;
   activeSessionId: string | null;
   tournamentRegistrations: number;
@@ -78,6 +81,8 @@ export interface GameListQuery extends Page {
   tournamentId?: string;
   gameId?: string;
   anomaly?: GameAnomaly;
+  /** Jeu de la partie (`games.game_type`, D-126). */
+  gameType?: GameType;
 }
 
 export interface AdminGamePlayer {
@@ -90,6 +95,10 @@ export interface AdminGamePlayer {
 
 export interface AdminGameRow {
   id: string;
+  /** Jeu de la partie (`games.game_type`, D-126). */
+  gameType: GameType;
+  /** GARAM TIA : variante de la partie (`games.garam_variant`, D-127) ; null pour Fap-Fap. */
+  garamVariant: number | null;
   status: AdminGameStatus;
   sessionId: string;
   tournamentId: string | null;
@@ -245,6 +254,10 @@ export type LedgerKind = (typeof LEDGER_KINDS)[number];
 
 export interface LedgerQuery extends Page {
   kind?: LedgerKind;
+  /** Origine de l'écriture (D-120) : Fap-Fap, Tournois, GARAM TIA. */
+  source?: LedgerSource;
+  /** Recherche : référence d'écriture, partie, session ou tournoi (préfixe), nom du tournoi. */
+  q?: string;
   from?: Date;
   to?: Date;
   tournamentId?: string;
@@ -256,7 +269,11 @@ export interface LedgerEntry {
   tournamentId: string | null;
   tournamentName: string | null;
   gameId: string | null;
+  /** Session (table) de la partie ; absente pour un tournoi. */
+  sessionId: string | null;
   kind: LedgerKind;
+  /** Origine de la recette (D-120). La caisse reste unique. */
+  source: LedgerSource;
   amount: number;
   feeBps: number | null;
   currency: string;
@@ -265,8 +282,18 @@ export interface LedgerEntry {
   grossPool: number | null;
 }
 
+/** Recettes d'une période par source (D-120) : les trois sources, montants à 0 compris. */
+export interface CommissionBreakdown {
+  /** Somme des sources retenues (une seule si `source` est filtrée). */
+  total: number;
+  entries: number;
+  bySource: { source: LedgerSource; count: number; amount: number }[];
+}
+
 export interface LedgerSummary {
   byKind: { kind: LedgerKind; count: number; amount: number }[];
+  /** Mêmes écritures, par origine (D-120) ; la somme est `total`. */
+  bySource: { source: LedgerSource; count: number; amount: number }[];
   total: number;
   entries: number;
   firstEntryAt: Date | null;
@@ -400,6 +427,8 @@ export interface AdminQueryRepository {
   orphanDeposits(limit: number): Promise<OrphanDepositRow[]>;
   tournamentLedgerFacts(): Promise<TournamentLedgerFacts[]>;
   dashboard(period: Period, now: Date): Promise<DashboardFacts>;
+  /** Recettes de la caisse unique sur la période, par source (agrégat SQL, D-120). */
+  commissionsBySource(period: Period, source?: LedgerSource): Promise<CommissionBreakdown>;
   attention(now: Date): Promise<AttentionCounts>;
   daily(period: Period, timezone: string): Promise<DailyPoint[]>;
   tournamentsInPeriod(period: Period): Promise<TournamentReportRow[]>;

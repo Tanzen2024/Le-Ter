@@ -1,3 +1,5 @@
+import type { GameType, GaramVariant } from './game';
+
 /** Statut d'un tournoi, décidé par le serveur (D-054) ; le client ne le déduit jamais. */
 export type TournamentStatus =
   | 'DRAFT'
@@ -152,6 +154,10 @@ export interface TournamentView {
   tournamentId: string;
   status: TournamentStatus;
   creatorType: 'ADMIN' | 'PLAYER';
+  /** Jeu du tournoi (D-124) : 'TER' (Fap-Fap) ou 'GARAM' (GARAM TIA). */
+  gameType?: GameType;
+  /** GARAM TIA : variante des parties du tournoi (D-127). */
+  garamVariant?: GaramVariant;
   timezone: string;
   /** Instants ISO 8601 (UTC). */
   startsAt: string;
@@ -284,6 +290,10 @@ export type TournamentSummary = Omit<
 
 /** Corps accepté par POST /api/tournaments et POST /api/admin/tournaments. */
 export interface TournamentProposalInput {
+  /** Jeu choisi explicitement (D-124) : obligatoire, aucune valeur par défaut. */
+  gameType: GameType;
+  /** GARAM TIA : variante choisie explicitement, obligatoire (D-127). */
+  garamVariant?: GaramVariant;
   timezone?: string;
   /** ISO 8601 avec fuseau. */
   startsAt: string;

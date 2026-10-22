@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import { PGlite } from '@electric-sql/pglite';
 import request from 'supertest';
 
 import { loadMigrations, pendingMigrations, runMigrations } from '../../../src/database/migrator';
+import { PasswordService } from '../../../src/services/auth/password.service';
 
 import {
   NO_ADMIN_LOGIN_LIMITS,
@@ -222,9 +225,16 @@ describe('schéma de la base et connexion admin (incident : migration 0034 non a
 
       const { app } = createAdminTestApp(sql);
       const account = validRegistration();
-      const registered = await request(app).post('/api/auth/register').send(account).expect(201);
-      const userId: string = registered.body.user.id;
-      await sql.query(`UPDATE users SET role = 'admin' WHERE id = $1`, [userId]);
+      // Compte écrit au schéma de 0033 : l'inscription actuelle écrit des colonnes plus
+      // récentes (code de récupération, D-135) et ne fonctionne qu'une fois la base à jour.
+      const userId = randomUUID();
+      const passwordHash = await new PasswordService(4).hashPassword(account.password);
+      await sql.query(
+        `INSERT INTO users (id, first_name, last_name, email, username, phone, password_hash,
+           role, status, created_at, updated_at)
+         VALUES ($1, 'Awa', 'Ndiaye', $2, $3, '+237670009001', $4, 'admin', 'active', now(), now())`,
+        [userId, account.email, account.username, passwordHash],
+      );
       // Mauvais mot de passe : refusé AVANT la vérification de suspension (d'où 401, pas 500).
       await request(app)
         .post('/api/admin/auth/login')

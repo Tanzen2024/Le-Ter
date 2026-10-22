@@ -4,13 +4,14 @@ import type { Column } from '@/components/data/data-table';
 import { IdText, StatusBadge } from '@/components/data/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { formatDateTime, formatDuration } from '@/lib/format';
-import { GAME_ANOMALY, GAME_STATUS, label } from '@/lib/labels';
+import { GAME_ANOMALY, GAME_STATUS, GAME_TYPE, label } from '@/lib/labels';
 import type { GameRow } from '@/types/admin';
 
 import { GameOutcomeCell } from './game-outcome-cell';
 
 export const gameColumns: Column<GameRow>[] = [
   { key: 'id', header: 'Partie', cell: (g) => <IdText id={g.id} /> },
+  { key: 'gameType', header: 'Jeu', cell: (g) => label(GAME_TYPE, g.gameType) },
   {
     key: 'status',
     header: 'Statut',

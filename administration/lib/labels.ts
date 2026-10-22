@@ -17,6 +17,9 @@ export const END_REASON: Record<string, string> = {
   CONTROL_AFTER_LAST_TRICK: 'Contrôle au dernier pli',
   OPPONENT_FLED: 'Adversaire couché (partie à 2)',
   INSTANT_WIN_TIE: 'Égalité de victoires instantanées (reprise)',
+  GARAM_AUTOMATIC_WIN: 'GARAM TIA : victoire automatique',
+  GARAM_BEST_SCORE: 'GARAM TIA : meilleur total',
+  GARAM_TIE: 'GARAM TIA : manche nulle (reprise)',
   ADMIN_STOP: 'Arrêt d’exploitation',
 };
 
@@ -51,6 +54,8 @@ export const WALLET_KIND: Record<string, string> = {
   withdrawal: 'Retrait',
   tournament_entry: 'Prix d’entrée de tournoi',
   tournament_prize: 'Gain de tournoi',
+  game_stake: 'Mise de partie',
+  game_winnings: 'Gain de partie',
 };
 
 export const ACCOUNT_STATUS: Record<string, Entry> = {
@@ -104,6 +109,24 @@ export const ALERT_STATUS: Record<string, Entry> = {
 export const ALERT_LEVEL: Record<string, Entry> = {
   high: ['Élevé', 'warning'],
   very_high: ['Très élevé', 'danger'],
+};
+
+/**
+ * Origine d'une recette de la caisse UNIQUE (D-120). Ordre fixe = ordre des couleurs des
+ * graphiques ; jamais une caisse par source.
+ */
+export const LEDGER_SOURCES = ['FAP_FAP', 'TOURNAMENT', 'GARAM_TIA'] as const;
+export type LedgerSource = (typeof LEDGER_SOURCES)[number];
+export const LEDGER_SOURCE: Record<string, string> = {
+  FAP_FAP: 'Fap-Fap',
+  TOURNAMENT: 'Tournois',
+  GARAM_TIA: 'Garam Tia',
+};
+
+/** Jeu d'une partie (`games.game_type`, D-119, D-126) : deux jeux indépendants. */
+export const GAME_TYPE: Record<string, string> = {
+  TER: 'Fap-Fap',
+  GARAM: 'Garam Tia',
 };
 
 export const LEDGER_KIND: Record<string, string> = {

@@ -25,7 +25,6 @@ import {
 } from '../rules/rule-set';
 import { bestInstantWin, resolveInstantWins } from '../rules/win-conditions';
 import {
-  MIN_PLAYERS_TO_START,
   activePlayerIds,
   type Game,
   type GameEndMethod,
@@ -39,11 +38,7 @@ import {
   CardNotInHandError,
   CardNotPlayableError,
   DealInProgressError,
-  FirstPlayerNotInGameError,
   FleeNotAllowedError,
-  GameAlreadyStartedError,
-  GameFinishedError,
-  GameNotEnoughPlayersError,
   GameNotInProgressError,
   NotAWinningHandError,
   NotYourTurnError,
@@ -52,6 +47,17 @@ import {
 } from './game-errors';
 import type { GameEventDraft } from './game-events';
 import type { PlayerId } from './game-id';
+import {
+  assertCanStart,
+  beginTurn,
+  clearTurn,
+  isDealing,
+  tableOrder,
+} from './game-lifecycle';
+
+// Cycle de vie commun aux jeux (D-126), défini dans `game-lifecycle.ts` : ré-exporté pour
+// les appelants existants du moteur du Ter.
+export { assertCanStart, beginTurn, clearTurn, isDealing, tableOrder };
 
 export interface EngineContext {
   rules: TerRuleSet;
@@ -77,40 +83,6 @@ export interface StartContext {
 // ---------------------------------------------------------------------------
 // Démarrage et distribution (décisions 18-34)
 // ---------------------------------------------------------------------------
-
-/**
- * Conditions de démarrage (R-23) : partie en attente et AU MOINS 2 joueurs. La capacité
- * maximale (2, 3 ou 4) n'est pas une condition. L'autorisation relève de GameService.
- */
-export function assertCanStart(game: Game): void {
-  if (game.status === 'finished') {
-    throw new GameFinishedError(game.id);
-  }
-  if (game.status !== 'waiting') {
-    throw new GameAlreadyStartedError(game.id);
-  }
-  if (game.players.length < MIN_PLAYERS_TO_START) {
-    throw new GameNotEnoughPlayersError(game.id);
-  }
-  if (game.players.length > game.maxPlayers) {
-    throw new Error(`Invariant violé : plus de joueurs que de places dans ${game.id}`);
-  }
-}
-
-/**
- * Ordre de la partie, sens ANTIHORAIRE (décision 24) : les joueurs dans l'ordre de leur
- * siège fixe de session (`tablePosition`), à partir de J1. Ex. sièges A, B, C, D et
- * J1 = C : C → D → A → B. Les sièges ne bougent jamais (décision 22).
- */
-export function tableOrder(game: Game): PlayerId[] {
-  const byPlace = [...game.players]
-    .sort((a, b) => (a.tablePosition ?? a.seat) - (b.tablePosition ?? b.seat))
-    .map((p) => p.playerId);
-  if (!byPlace.includes(game.firstPlayerId)) {
-    throw new FirstPlayerNotInGameError(game.id, game.firstPlayerId);
-  }
-  return rotateFrom(byPlace, game.firstPlayerId);
-}
 
 /**
  * Démarrage, distribution et analyse des mains, en UNE transition atomique :
@@ -219,18 +191,13 @@ export function startGame(game: Game, ctx: StartContext): GameEventDraft[] {
     started.payload = { ...started.payload, dealEndsAt: game.dealEndsAt.toISOString() };
     return events;
   }
-  beginTurn(game, ctx.now, ctx.turnDurationMs);
+  beginTurn(game, ctx.now, ctx.turnDurationMs ?? TURN_DURATION_MS);
   started.payload = {
     ...started.payload,
     turnStartedAt: game.turnStartedAt?.toISOString(),
     turnDeadlineAt: game.turnDeadlineAt?.toISOString(),
   };
   return events;
-}
-
-/** La partie est-elle encore dans sa phase de distribution non confirmée ? (D-102) */
-export function isDealing(game: Pick<Game, 'status' | 'dealEndsAt'>): boolean {
-  return game.status === 'in_progress' && game.dealEndsAt !== undefined;
 }
 
 /**
@@ -250,7 +217,7 @@ export function completeDeal(game: Game, ctx: EngineContext): GameEventDraft[] |
     throw new Error(`Distribution incomplète pour la partie ${game.id}`);
   }
   game.dealEndsAt = undefined;
-  beginTurn(game, ctx.now, ctx.turnDurationMs);
+  beginTurn(game, ctx.now, ctx.turnDurationMs ?? TURN_DURATION_MS);
   return [
     {
       type: 'game:deal_completed',
@@ -584,7 +551,7 @@ export function flee(game: Game, playerId: PlayerId, ctx: EngineContext): GameEv
     }
     play.control = { playerId: next };
     openTrick(game, play);
-    beginTurn(game, ctx.now, ctx.turnDurationMs);
+    beginTurn(game, ctx.now, ctx.turnDurationMs ?? TURN_DURATION_MS);
     events.push(
       {
         type: 'game:control_changed',
@@ -623,7 +590,7 @@ function advance(game: Game, play: TerPlay, ctx: EngineContext): GameEventDraft[
 
   if (next) {
     play.nextPlayerId = next;
-    beginTurn(game, ctx.now, ctx.turnDurationMs);
+    beginTurn(game, ctx.now, ctx.turnDurationMs ?? TURN_DURATION_MS);
     return [turnChanged(game, play)];
   }
   return completeTrick(game, play, ctx);
@@ -660,7 +627,7 @@ function completeTrick(game: Game, play: TerPlay, ctx: EngineContext): GameEvent
   if (play.trickNumber === AUTOMATIC_TRICK_NUMBER) {
     return [...events, ...playLastTrickAutomatically(game, play, ctx)];
   }
-  beginTurn(game, ctx.now, ctx.turnDurationMs);
+  beginTurn(game, ctx.now, ctx.turnDurationMs ?? TURN_DURATION_MS);
   return [...events, turnChanged(game, play)];
 }
 
@@ -728,22 +695,6 @@ function finish(
 // Utilitaires
 // ---------------------------------------------------------------------------
 
-/**
- * Nouveau tour du joueur attendu (D-034) : il a `durationMs` pour jouer, échéance fixée
- * par le serveur et persistée avec l'état. Le timer en mémoire n'en est qu'une copie.
- */
-function beginTurn(game: Game, now: Date, durationMs: number = TURN_DURATION_MS): void {
-  game.turnStartedAt = now;
-  game.turnDeadlineAt = new Date(now.getTime() + durationMs);
-  game.turnTimedOutAt = undefined;
-}
-
-export function clearTurn(game: Game): void {
-  game.dealEndsAt = undefined;
-  game.turnStartedAt = undefined;
-  game.turnDeadlineAt = undefined;
-  game.turnTimedOutAt = undefined;
-}
 
 function turnChanged(game: Game, play: TerPlay): GameEventDraft {
   return {

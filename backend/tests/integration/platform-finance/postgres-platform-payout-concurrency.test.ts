@@ -170,7 +170,7 @@ describeWithPostgres('Retraits de la plateforme sur PostgreSQL réel', () => {
       [gameId, a, sessionId],
     );
     await sql.query(
-      `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at) VALUES ($1, $2, 'GAME_COMMISSION', 100000, 500, 'XAF', now())`,
+      `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at, source) VALUES ($1, $2, 'GAME_COMMISSION', 100000, 500, 'XAF', now(), 'FAP_FAP')`,
       [randomUUID(), gameId],
     );
     const beneficiaryId = randomUUID();

@@ -162,7 +162,8 @@ export class PostgresGeolocationRepository implements GeolocationRepository {
        JOIN games g ON g.id = d.game_id
        JOIN sessions s ON s.id = g.session_id AND s.suspicion_detection_enabled
        WHERE d.type = 'PROXIMITY' AND d.game_id <> $1 AND d.created_at >= $2
-         AND cardinality(d.player_ids) = 2 AND d.player_ids @> $3::uuid[]`,
+         AND cardinality(d.player_ids) = 2 AND d.player_ids @> $3::uuid[]
+         AND g.game_type = (SELECT o.game_type FROM games o WHERE o.id = $1)`,
       [gameId, since.toISOString(), [...pair]],
     );
     return Number(rows[0]?.n ?? 0);

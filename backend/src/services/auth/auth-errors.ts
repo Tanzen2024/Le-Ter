@@ -6,11 +6,37 @@ import type { UniqueUserField } from '../../repositories/user.repository';
  * précise (`reason`) ne sert qu'aux logs.
  */
 
-/** Email inconnu OU mauvais mot de passe : même erreur, même message. */
+/** Email (ou téléphone) inconnu OU mauvais mot de passe : même erreur, même message. */
 export class InvalidCredentialsError extends Error {
-  constructor() {
-    super('Email ou mot de passe incorrect.');
+  constructor(by: 'email' | 'phone' = 'email') {
+    super(
+      by === 'phone'
+        ? 'Téléphone ou mot de passe incorrect.'
+        : 'Email ou mot de passe incorrect.',
+    );
     this.name = 'InvalidCredentialsError';
+  }
+}
+
+/**
+ * Récupération par code refusée (D-135) : numéro inconnu, compte sans code, code faux,
+ * compte bloqué après trop d'essais. MÊME message dans tous les cas : rien ne révèle si un
+ * compte existe ni lequel des cas s'applique (la raison ne va qu'aux logs).
+ */
+export class RecoveryFailedError extends Error {
+  constructor(readonly reason: string) {
+    super(
+      'Numéro ou code de récupération incorrect. Après plusieurs essais, patientez 15 minutes avant de réessayer.',
+    );
+    this.name = 'RecoveryFailedError';
+  }
+}
+
+/** Autorisation de réinitialisation absente, déjà utilisée ou expirée (D-135). */
+export class ResetGrantInvalidError extends Error {
+  constructor() {
+    super('Cette demande de réinitialisation a expiré. Recommencez la récupération du compte.');
+    this.name = 'ResetGrantInvalidError';
   }
 }
 

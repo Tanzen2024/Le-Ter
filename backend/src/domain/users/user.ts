@@ -47,28 +47,46 @@ export type UserStatus = 'active' | 'disabled';
 /** Compte complet, interne au serveur : `passwordHash` ne sort jamais de l'API. */
 export interface User {
   id: UserId;
+  /**
+   * Numéro d'ordre du joueur sur la plateforme (D-133) : rang d'inscription, attribué par
+   * PostgreSQL à la création du compte, unique et immuable.
+   */
+  playerNumber: number;
   firstName: string;
   lastName: string;
-  email: string;
+  /** Facultatif pour un joueur (D-135) : null, jamais une adresse inventée. Obligatoire pour un admin. */
+  email: string | null;
   username: string;
   phone: string;
   phoneVerified: boolean;
   passwordHash: string;
+  /** Un code de récupération actif existe (D-135) ; le code et son empreinte ne sortent jamais. */
+  hasRecoveryCode: boolean;
   role: UserRole;
   status: UserStatus;
   createdAt: Date;
   updatedAt: Date;
 }
 
+/**
+ * Compte à créer : le numéro d'ordre est attribué par PostgreSQL à l'insertion ; l'empreinte
+ * bcrypt du code de récupération (D-135) est écrite avec le compte.
+ */
+export type NewUser = Omit<User, 'playerNumber' | 'hasRecoveryCode'> & {
+  recoveryCodeHash: string | null;
+};
+
 /** Ce que l'API renvoie d'un compte. */
 export interface PublicUser {
   id: UserId;
+  playerNumber: number;
   firstName: string;
   lastName: string;
-  email: string;
+  email: string | null;
   username: string;
   phone: string;
   phoneVerified: boolean;
+  hasRecoveryCode: boolean;
   role: UserRole;
   createdAt: string;
 }
@@ -77,12 +95,14 @@ export interface PublicUser {
 export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
+    playerNumber: user.playerNumber,
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
     username: user.username,
     phone: user.phone,
     phoneVerified: user.phoneVerified,
+    hasRecoveryCode: user.hasRecoveryCode,
     role: user.role,
     createdAt: user.createdAt.toISOString(),
   };

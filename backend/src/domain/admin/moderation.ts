@@ -90,7 +90,9 @@ export class ModerationConflictError extends Error {
       | 'ALREADY_CHAT_RESTRICTED'
       | 'NOT_SUSPENDED'
       | 'NOT_CHAT_RESTRICTED'
-      | 'NOTE_ALREADY_DELETED',
+      | 'NOTE_ALREADY_DELETED'
+      | 'RECOVERY_PLAYERS_ONLY'
+      | 'ACCOUNT_NOT_ACTIVE',
   ) {
     super(code);
     this.name = 'ModerationConflictError';

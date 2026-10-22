@@ -10,8 +10,10 @@ import {
   type TournamentFormValues,
 } from './tournament-form';
 
+/** Formulaire rempli, jeu CHOISI par l'utilisateur (Fap-Fap) sauf mention contraire. */
 const values = (overrides: Partial<TournamentFormValues> = {}): TournamentFormValues => ({
   ...defaultTournamentForm(new Date(2026, 9, 8, 10, 0)),
+  gameType: 'TER',
   ...overrides,
 });
 
@@ -34,12 +36,63 @@ describe('valeurs par défaut', () => {
   });
 });
 
+describe('jeu du tournoi (D-124)', () => {
+  it('aucun jeu présélectionné à la création', () => {
+    expect(defaultTournamentForm(new Date(2026, 9, 8, 10, 0)).gameType).toBeNull();
+  });
+
+  it('sans choix : refusé avec le message du serveur, rien n’est envoyé', () => {
+    const result = toTournamentPayload(values({ gameType: null }));
+    expect(result).toEqual({
+      ok: false,
+      errors: { gameType: 'Veuillez sélectionner le jeu du tournoi.' },
+    });
+  });
+
+  it.each(['TER', 'GARAM'] as const)('choix %s : envoyé tel quel', (gameType) => {
+    const result = toTournamentPayload(
+      values({ gameType, ...(gameType === 'GARAM' && { garamVariant: 15 as const }) }),
+    );
+    expect(result.ok && result.payload.gameType).toBe(gameType);
+  });
+});
+
+describe('variante d’un tournoi GARAM TIA (D-127)', () => {
+  it('variante 15 présélectionnée', () => {
+    expect(defaultTournamentForm(new Date(2026, 9, 8, 10, 0)).garamVariant).toBe(15);
+  });
+
+  it('GARAM sans variante : refusé, rien n’est envoyé', () => {
+    expect(toTournamentPayload(values({ gameType: 'GARAM', garamVariant: null }))).toEqual({
+      ok: false,
+      errors: { garamVariant: 'Veuillez choisir la variante : GARAM 15, 16, 17 ou 18.' },
+    });
+  });
+
+  it.each([15, 16, 17, 18] as const)('GARAM %i : envoyée telle quelle', (garamVariant) => {
+    const result = toTournamentPayload(values({ gameType: 'GARAM', garamVariant }));
+    expect(result.ok && result.payload).toMatchObject({ gameType: 'GARAM', garamVariant });
+  });
+
+  it('Fap-Fap : la variante n’est jamais envoyée', () => {
+    const result = toTournamentPayload(values({ gameType: 'TER', garamVariant: 17 }));
+    expect(result.ok && result.payload).not.toHaveProperty('garamVariant');
+  });
+
+  it('erreur du serveur sur la variante : posée sur le champ', () => {
+    expect(fieldErrorsFromApi({ garamVariant: 'Veuillez choisir la variante.' })).toEqual({
+      garamVariant: 'Veuillez choisir la variante.',
+    });
+  });
+});
+
 describe('toTournamentPayload (format seulement)', () => {
   it('construit le corps de l’API : instants UTC, fin = début + durée, parts par rang', () => {
     const result = toTournamentPayload(values({ maximumPlayers: '32' }), 'Africa/Douala');
     expect(result).toEqual({
       ok: true,
       payload: {
+        gameType: 'TER',
         timezone: 'Africa/Douala',
         startsAt: new Date(2026, 9, 9, 18, 0).toISOString(),
         endsAt: new Date(2026, 9, 9, 19, 0).toISOString(),

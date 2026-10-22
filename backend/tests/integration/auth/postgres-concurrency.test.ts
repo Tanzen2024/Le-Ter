@@ -66,7 +66,7 @@ describeWithPostgres('Sessions sur PostgreSQL réel (concurrence R-32)', () => {
       phone: `+23769${String(sequence).padStart(7, '0')}`,
       password: 'Secret123',
     };
-    const user = await auth.register(input);
+    const { user } = await auth.register(input);
     return { ...input, userId: user.id };
   }
 

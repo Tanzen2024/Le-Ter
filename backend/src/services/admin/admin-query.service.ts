@@ -1,3 +1,4 @@
+import type { LedgerSource } from '../../domain/platform-finance/platform-finance';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -122,6 +123,8 @@ function gameView(g: AdminGameRow, now: Date) {
   const end = g.finishedAt ?? (g.status === 'in_progress' ? now : null);
   return {
     id: g.id,
+    gameType: g.gameType,
+    garamVariant: g.garamVariant,
     status: g.status,
     sessionId: g.sessionId,
     tournament: g.tournamentId ? { id: g.tournamentId, name: g.tournamentName } : null,
@@ -194,12 +197,19 @@ function ledgerView(e: LedgerEntry) {
   return {
     id: e.id,
     kind: e.kind,
+    // Origine de la recette (D-120) ; la caisse reste unique.
+    source: e.source,
     amount: e.amount,
     currency: e.currency,
     feeBps: e.feeBps,
     createdAt: iso(e.createdAt),
     origin: e.gameId
-      ? { type: 'GAME' as const, id: e.gameId, name: `Partie ${e.gameId.slice(0, 8)}` }
+      ? {
+          type: 'GAME' as const,
+          id: e.gameId,
+          sessionId: e.sessionId,
+          name: `${e.source === 'GARAM_TIA' ? 'Manche GARAM TIA' : 'Partie Fap-Fap'} ${e.gameId.slice(0, 8)}`,
+        }
       : { type: 'TOURNAMENT' as const, id: e.tournamentId, name: e.tournamentName },
     participants: e.participants,
     grossPool: e.grossPool,
@@ -231,13 +241,15 @@ export class AdminQueryService {
 
   // --- Tableau de bord ------------------------------------------------------------------------
 
-  async dashboard(period: Period) {
+  async dashboard(period: Period, source?: LedgerSource) {
     const now = this.clock();
-    const [facts, daily, recent, reconciliation] = await Promise.all([
+    const [facts, daily, recent, reconciliation, commissions, ledger] = await Promise.all([
       this.deps.queries.dashboard(period, now),
       this.deps.queries.daily(period, ADMIN_TIMEZONE),
       this.deps.audit.list({ page: 1, limit: 8 }),
       this.anomalies(),
+      this.deps.queries.commissionsBySource(period, source),
+      this.deps.queries.ledgerSummary(),
     ]);
     return {
       period: { from: iso(period.from), to: iso(period.to), timezone: ADMIN_TIMEZONE },
@@ -247,8 +259,14 @@ export class AdminQueryService {
           'Joueur présent dans au moins une partie créée sur la période et démarrée (en cours ou terminée). Compté une fois.',
         platformRevenue:
           'Somme des écritures du compte financier de la plateforme (platform_ledger).',
+        commissions:
+          'Recettes de la caisse unique sur la période, par origine : Fap-Fap, Tournois, GARAM TIA (D-120). Une seule caisse.',
       },
       ...facts,
+      // Répartition par ORIGINE des recettes de la période, filtrable par source (D-120).
+      commissions: { ...(source && { source }), ...commissions },
+      // Caisse UNIQUE : solde comptable calculé de tout l'historique (comme le compte financier).
+      platformAccountBalance: ledger.total,
       reconciliationAnomalies: reconciliation.summary,
       series: daily,
       recentAdminActivity: recent.items.map((e) => this.auditView(e)),
@@ -497,6 +515,7 @@ export class AdminQueryService {
           'Solde comptable calculé (somme des écritures ; aucune sortie n’est prise en charge)',
       },
       byKind: summary.byKind.map((k) => ({ ...k, description: LEDGER_KIND_DESCRIPTIONS[k.kind] })),
+      bySource: summary.bySource,
       entries: summary.entries,
       firstEntryAt: iso(summary.firstEntryAt),
       lastEntryAt: iso(summary.lastEntryAt),
@@ -720,7 +739,7 @@ const LEDGER_KIND_DESCRIPTIONS = {
     'Commission d’un tournoi : floor(cagnotte brute × taux / 10 000), au démarrage.',
   UNALLOCATED_PRIZE: 'Part des gains des rangs payés non occupés, au calcul des résultats.',
   GAME_COMMISSION:
-    'Commission d’une partie : floor(mises des perdants × taux de la tranche, doublé par la Kora / 10 000), au règlement.',
+    'Commission d’une partie Fap-Fap ou d’une manche GARAM TIA : floor(mises des perdants × taux de la tranche / 10 000), base doublée par la Kora (Fap-Fap), au règlement ; les sommes « moins de 15 » de GARAM TIA n’y entrent pas.',
 } as const;
 
 const REPORT_COLUMNS: Record<ReportName, readonly string[]> = {

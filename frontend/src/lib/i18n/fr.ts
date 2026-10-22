@@ -51,13 +51,20 @@ export const fr = {
       `Solde disponible : ${available} jetons, ${reserved} réservés (tournois), non débités`,
     balanceUnavailable: 'Solde indisponible',
     counterUnavailable: 'Compteur indisponible',
+    /** Numéro d'ordre du joueur sur la plateforme (D-133) : rang d'inscription. */
+    playerNumber: (n: number) => `N° ${n}`,
+    playerNumberA11y: (n: number) => `Joueur numéro ${n} sur la plateforme`,
   },
   home: {
-    chooseMode: 'Choisis ton mode !',
-    private: 'Parties',
+    chooseMode: 'À toi de jouer !',
+    private: 'Fap-Fap',
     tournaments: 'Tournois',
+    /** GARAM TIA, deuxième jeu de la plateforme (D-119). */
+    garam: 'Garam Tia',
     join: 'Rejoindre',
     joinA11y: (mode: string) => `Rejoindre : ${mode}`,
+    /** Parties à rejoindre d'un jeu (liste « Rechercher une partie »), sur son panneau. */
+    openGames: (count: number) => `${count} ${count > 1 ? 'parties' : 'partie'} en cours`,
     proposeTournament: 'Proposer un tournoi',
     /** Prochain tournoi inscrit (D-059) : date, heure de début, heure de fin. */
     nextTournament: 'PROCHAIN TOURNOI',
@@ -111,6 +118,29 @@ export const fr = {
       THREE_THREES: 'Trois 3',
     } as Record<string, string>,
     noChange: 'Aucun gain ni perte',
+    /** GARAM TIA (D-119) : raison de la victoire, manche nulle. */
+    garamConditions: {
+      THREE_SEVENS: 'Trois 7',
+      THREE_OF_A_KIND: 'Trois cartes identiques',
+      SUM_TEN: 'Somme des trois cartes = 10',
+      SAME_SUIT: 'Trois cartes de même famille',
+      SUM_TWENTY_ONE: 'Somme des trois cartes = 21',
+      TWO_ACES: 'Deux As',
+      LOW_SUM: 'Somme des trois cartes ≤ 10',
+      SAME_SUIT_TERRE: 'Terre du même signe',
+    } as Record<string, string>,
+    garamAutomatic: (condition: string) => `Main spéciale : ${condition}`,
+    garamBestScore: (score: number) => `Meilleur total : ${score}`,
+    /** Victoire à 22 points : deux As (11 + 11), seul total gagnant au-dessus de 21 (D-130). */
+    garamTwoAces: 'Victoire avec deux As',
+    /** Même victoire, bandeau de la table sous « 🏆 pseudo ». */
+    garamTwoAcesBanner: 'Gagne avec deux As',
+    garamBelowThreshold: (threshold?: number) =>
+      `Koraté (${threshold ? `moins de ${threshold}` : 'sous le seuil'}) : une mise de plus pour le gagnant`,
+    garamTieTitle: 'Manche nulle',
+    garamTieSpecial: 'Plusieurs joueurs remplissent la même condition : la manche est rejouée.',
+    garamTieScore: (score: number) =>
+      `Égalité à ${score} : nouvelle manche, avec proposition de doubler la mise.`,
     amountA11y: (signed: string) => `${signed} jetons`,
     /** Partie de tournoi (D-111) : le montant vient du compte FICTIF, jamais du solde réel. */
     tournamentAmountA11y: (signed: string) => `${signed} jetons du tournoi (solde fictif)`,

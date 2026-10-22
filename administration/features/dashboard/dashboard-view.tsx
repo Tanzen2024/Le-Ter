@@ -6,6 +6,7 @@ import {
   ArrowLeftRight,
   CheckCircle2,
   Clock,
+  Coins,
   Flag,
   Gamepad2,
   Landmark,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 
+import { SourceBreakdown } from '@/components/charts/source-breakdown';
 import { TimeSeriesChart } from '@/components/charts/time-series-chart';
 import { StatCard } from '@/components/data/stat-card';
 import { StatusBadge } from '@/components/data/status-badge';
@@ -25,12 +27,18 @@ import { PageHeader } from '@/components/layout/page-header';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { attentionQuery } from '@/features/attention/api';
 import { AuditEventLine } from '@/features/audit/audit-event-line';
-import { isPeriod, PeriodSelect, PERIODS } from '@/features/shared/period';
+import {
+  isRangePeriod,
+  RangePeriodFilter,
+  rangeLabel,
+  rangeOf,
+} from '@/features/shared/period-range';
+import { Select } from '@/components/ui/form-controls';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useListState } from '@/hooks/use-list-state';
 import { formatDateTime, formatNumber, formatXaf } from '@/lib/format';
-import { TOURNAMENT_STATUS } from '@/lib/labels';
-import type { Dashboard } from '@/types/admin';
+import { LEDGER_SOURCE, LEDGER_SOURCES, TOURNAMENT_STATUS } from '@/lib/labels';
+import type { Dashboard, LedgerSource } from '@/types/admin';
 
 import { dashboardQuery } from './api';
 
@@ -99,9 +107,18 @@ function Alerts({ data }: { data: AlertsData }) {
 }
 
 export function DashboardView() {
-  const { filters, setFilter } = useListState(['periode'] as const);
-  const period = isPeriod(filters.periode) ? filters.periode : '30';
-  const query = useQuery(dashboardQuery(Number(period)));
+  const { filters, setFilter, setFilters } = useListState([
+    'periode',
+    'du',
+    'au',
+    'source',
+  ] as const);
+  const period = isRangePeriod(filters.periode) ? filters.periode : '30';
+  const source = (LEDGER_SOURCES as readonly string[]).includes(filters.source)
+    ? (filters.source as LedgerSource)
+    : undefined;
+  const range = rangeOf(period, filters.du, filters.au);
+  const query = useQuery(dashboardQuery(range, source));
   // Points d'attention relus automatiquement (D-116) : le plus récent des deux calculs.
   const attention = useQuery(attentionQuery());
   // Le serveur rend toujours sans données (squelettes). La même requête peut déjà être résolue
@@ -113,15 +130,43 @@ export function DashboardView() {
   const live = hydrated ? attention.data : undefined;
   const alerts: AlertsData | undefined =
     live && (!data || live.generatedAt >= data.generatedAt) ? live : data;
-  const periodLabel = PERIODS.find((p) => p.value === period)?.label.toLowerCase();
+  const periodLabel = rangeLabel(period, filters.du, filters.au);
+  const sourceCards = data
+    ? data.commissions.bySource.filter((s) => !source || s.source === source)
+    : [];
 
   return (
     <>
       <PageHeader
         title="Tableau de bord"
         description="Indicateurs calculés par le serveur sur les données réelles de Le Ter."
-        actions={<PeriodSelect value={period} onChange={(v) => setFilter('periode', v)} />}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <RangePeriodFilter
+              period={period}
+              du={filters.du}
+              au={filters.au}
+              onChange={setFilters}
+            />
+            <Select
+              aria-label="Source des recettes"
+              value={source ?? ''}
+              onChange={(e) => setFilter('source', e.target.value)}
+              className="w-auto"
+            >
+              <option value="">Toutes les sources</option>
+              {LEDGER_SOURCES.map((s) => (
+                <option key={s} value={s}>
+                  {LEDGER_SOURCE[s]}
+                </option>
+              ))}
+            </Select>
+          </div>
+        }
       />
+      {!range && (
+        <p className="text-muted mb-4 text-sm">Choisissez les deux dates de la période.</p>
+      )}
       {error ? (
         <Card>
           <ErrorState error={error} onRetry={() => query.refetch()} />
@@ -203,6 +248,64 @@ export function DashboardView() {
                 loading={!data}
               />
             </div>
+          </div>
+
+          {/* Caisse UNIQUE (solde global) et ORIGINE des recettes de la période (D-120) : le
+              graphique montre trois sources d'une même caisse, jamais trois caisses. */}
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            <div className="@container space-y-4">
+              <StatCard
+                label="Caisse plateforme"
+                value={formatXaf(data?.platformAccountBalance)}
+                hint={
+                  <Link href="/compte-plateforme" className="text-info hover:underline">
+                    Solde global de la caisse unique (tout l’historique)
+                  </Link>
+                }
+                icon={Landmark}
+                tone="primary"
+                loading={!data}
+              />
+              <StatCard
+                label={
+                  source
+                    ? `Commissions ${LEDGER_SOURCE[source]} sur la période`
+                    : 'Commissions sur la période'
+                }
+                value={formatXaf(data?.commissions.total)}
+                hint={
+                  data &&
+                  `${formatNumber(data.commissions.entries)} écritures · ${periodLabel}`
+                }
+                icon={Coins}
+                tone="success"
+                loading={!data}
+              />
+              <div className="grid grid-cols-1 gap-4 @sm:grid-cols-3 xl:@sm:grid-cols-1">
+                {sourceCards.map((s) => (
+                  <StatCard
+                    key={s.source}
+                    label={LEDGER_SOURCE[s.source] ?? s.source}
+                    value={formatXaf(s.amount)}
+                    hint={`${formatNumber(s.count)} écritures`}
+                    loading={!data}
+                  />
+                ))}
+              </div>
+            </div>
+            <Card className="xl:col-span-2">
+              <CardHeader
+                title="Répartition des commissions par source"
+                description="Origine des recettes de la caisse unique sur la période : Fap-Fap, Tournois, Garam Tia."
+              />
+              <CardBody>
+                {data ? (
+                  <SourceBreakdown bySource={data.commissions.bySource} />
+                ) : (
+                  <LoadingRows rows={4} />
+                )}
+              </CardBody>
+            </Card>
           </div>
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">

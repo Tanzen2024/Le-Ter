@@ -43,6 +43,8 @@
   /* Teintes des graphiques (validées : bande de luminance, chroma, daltonisme, contraste). */
   --color-chart-1: #159a8f;
   --color-chart-2: #4a6fe0;
+  /* 3e teinte catégorielle (Garam Tia) : validée avec les deux autres (CVD ΔE ≥ 8). */
+  --color-chart-3: #eb6834;
   --color-chart-grid: #e8ecf2;
 
   --radius-sm: 0.375rem;

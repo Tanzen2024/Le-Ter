@@ -26,6 +26,8 @@ import type {
 } from '../../repositories/moderation.repository';
 import type { Logger } from '../../utils/logger';
 import { ValidationError } from '../../validators/validation-error';
+import type { PasswordService } from '../auth/password.service';
+import { generateRecoveryCode, recoveryCodeSecret } from '../auth/recovery-code';
 
 export interface RestrictionInput {
   reason: string;
@@ -103,6 +105,8 @@ export class PlayerModerationService {
       repository: ModerationRepository;
       audit: AdminAuditRepository;
       logger: Logger;
+      /** Hachage du code de récupération (bcrypt, PasswordService), comme à l'inscription. */
+      passwords: PasswordService;
       clock?: () => Date;
     },
   ) {
@@ -221,6 +225,30 @@ export class PlayerModerationService {
         }),
       );
       return { revokedSessions: revoked };
+    });
+  }
+
+  /**
+   * Récupération du compte par l'assistance (D-135), pour un joueur qui a perdu son code :
+   * motif obligatoire, ancien code et autorisations ouvertes invalidés, NOUVEAU code renvoyé
+   * une seule fois à l'administrateur, qui le transmet au joueur ; celui-ci choisit ensuite son
+   * mot de passe par « Mot de passe oublié ? ». Aucun mot de passe n'est vu ni fixé ici. Audité
+   * (PLAYER_ACCOUNT_RECOVERY, sans le code) dans la même transaction. Jamais sur son propre
+   * compte, ni sur un administrateur (accès par email), ni sur un compte inactif.
+   */
+  async recoverAccount(userId: UserId, reason: string, actorId: UserId) {
+    const recoveryCode = generateRecoveryCode();
+    const codeHash = await this.deps.passwords.hashPassword(recoveryCodeSecret(recoveryCode));
+    return this.guarded('PLAYER_ACCOUNT_RECOVERY', userId, actorId, async (tx, now) => {
+      if (userId === actorId) throw new ModerationForbiddenError('SELF_ACTION');
+      const target = await tx.lockUser(userId);
+      if (!target) throw new AdminResourceNotFoundError('USER');
+      if (target.role !== 'user') throw new ModerationConflictError('RECOVERY_PLAYERS_ONLY');
+      if (!(await tx.replaceRecoveryCode(userId, codeHash, now))) {
+        throw new ModerationConflictError('ACCOUNT_NOT_ACTIVE');
+      }
+      await tx.audit(this.entry('PLAYER_ACCOUNT_RECOVERY', userId, actorId, now, { reason }));
+      return { recoveryCode };
     });
   }
 

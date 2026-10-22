@@ -13,6 +13,7 @@ import type { AuthService } from '../../src/services/auth/auth.service';
 import { createAuthService } from '../../src/services/auth/create-auth-service';
 import type { CinetPayPaymentStatus } from '../../src/services/payments/cinetpay/cinetpay-client';
 import { PaymentService } from '../../src/services/payments/payment.service';
+import { PasswordService } from '../../src/services/auth/password.service';
 import { createLogger, type Logger } from '../../src/utils/logger';
 import { NO_RATE_LIMITS, registerAndLogin, TEST_JWT_SECRET } from './auth';
 
@@ -85,7 +86,14 @@ export function createAdminTestApp(
     logger,
     clock,
   });
-  const admin = createAdminServices({ sql, auth, logger, payments, clock });
+  const admin = createAdminServices({
+    sql,
+    auth,
+    logger,
+    payments,
+    clock,
+    passwords: new PasswordService(4),
+  });
   const app = createApp({
     logger,
     auth,

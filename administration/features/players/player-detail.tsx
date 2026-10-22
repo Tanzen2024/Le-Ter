@@ -109,7 +109,7 @@ export function PlayerDetailView({ id }: { id: string }) {
           <StatCard
             label="Parties jouées"
             value={formatNumber(p.gamesPlayed)}
-            hint={`${formatNumber(p.gamesWon)} gagnées`}
+            hint={`Victoires : ${formatNumber(p.gamesWon.fapFap)} Fap-Fap · ${formatNumber(p.gamesWon.garamTia)} Garam Tia`}
             tone="accent"
           />
           <StatCard
@@ -169,7 +169,7 @@ export function PlayerDetailView({ id }: { id: string }) {
                         ],
                         ['Pseudo', p.username],
                         ['Nom', `${p.firstName} ${p.lastName}`],
-                        ['E-mail', p.email],
+                        ['E-mail', p.email ?? '—'],
                         [
                           'Téléphone',
                           <MaskedPhone key="ph" phone={p.phone} verified={p.phoneVerified} />,

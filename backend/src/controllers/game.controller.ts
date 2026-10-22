@@ -86,7 +86,11 @@ export function createGameController(games: GameService, sessions: SessionServic
         ? games.playCard(gameId, playerId, action.cardId, meta)
         : action.type === 'DECLARE_WIN'
           ? games.declareWin(gameId, playerId, meta)
-          : games.flee(gameId, playerId, meta));
+          : action.type === 'DRAW_CARD'
+            ? games.drawCard(gameId, playerId, meta)
+            : action.type === 'STAKE_VOTE'
+              ? games.voteStake(gameId, playerId, action.accept, meta)
+              : games.flee(gameId, playerId, meta));
       res.json({ game: withServerTime(toPlayerView(game, playerId)) });
     },
   };

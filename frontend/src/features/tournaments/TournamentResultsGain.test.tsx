@@ -203,7 +203,7 @@ describe('colonne « Gain » du classement officiel', () => {
     expect(within(grid).getByText('60 % jetons · 40 % parties')).toBeTruthy();
   });
 
-  it('« Récompense réelle » juste sous les cartes, pleine largeur (visible sans défiler)', async () => {
+  it('« Récompense réelle » tout en bas de la carte, sous les explications, pleine largeur', async () => {
     api.results.mockResolvedValue({
       ...official([row(1, { isViewer: true, prizeAmount: 9000, paid: true })]),
       me: {
@@ -235,12 +235,12 @@ describe('colonne « Gain » du classement officiel', () => {
     const payout = within(card).getByTestId('tournament-my-payout');
     expect(payout).toHaveTextContent(/Récompense réelle : 9\s000\sFCFA/);
     expect(StyleSheet.flatten(payout.props.style)).toMatchObject({ alignSelf: 'stretch' });
-    // Ordre dans la carte : grille des cartes, puis la récompense, puis les explications.
+    // Ordre dans la carte : grille des cartes, puis les explications, la récompense en dernier.
     const ids = (card.children as readonly unknown[]).map((c) =>
       typeof c === 'string' ? undefined : (c as { props: { testID?: string } }).props.testID,
     );
-    const grid = ids.indexOf('tournament-my-facts');
-    expect(ids[grid + 1]).toBe('tournament-my-payout');
+    expect(ids.indexOf('tournament-my-facts')).toBeLessThan(ids.indexOf('tournament-my-payout'));
+    expect(ids[ids.length - 1]).toBe('tournament-my-payout');
   });
 
   it('mobile : largeur fixe, montant ajusté plutôt que coupé, ligne de hauteur fixe', async () => {

@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Game } from '../game/game';
+import { isGameType, type Game, type GameType } from '../game/game';
 import type { PlayerId } from '../game/game-id';
 import {
   planGameSettlement,
+  planGaramSettlement,
   settledParticipants,
   victoryTypeOf,
   type GameVictoryType,
 } from '../rules/game-settlement';
+import {
+  GARAM_VARIANT_REQUIRED,
+  isGaramVariant,
+  type GaramVariant,
+} from '../garam/garam-rules';
 import type { UserId } from '../users/user';
 
 /**
@@ -208,6 +214,13 @@ export interface Tournament {
   status: TournamentStatus;
   creatorType: CreatorType;
   creatorId?: UserId;
+  /** Jeu du tournoi (D-124) : choisi explicitement à la création, immuable ensuite. */
+  gameType: GameType;
+  /**
+   * GARAM TIA : variante des parties du tournoi (15, 16, 17 ou 18, D-127), choisie
+   * explicitement à la création avec le jeu, immuable. Absente pour Fap-Fap.
+   */
+  garamVariant?: GaramVariant;
   timezone: string;
   startsAt: Date;
   endsAt: Date;
@@ -476,6 +489,10 @@ export const TOURNAMENT_THANKS_DELAY_MS = 10_000;
 
 /** Paramètres d'un tournoi. Ni nom ni description : supprimés (D-060). */
 export interface TournamentInput {
+  /** Jeu du tournoi (D-124) : obligatoire, jamais déduit ni complété par défaut. */
+  gameType: GameType;
+  /** GARAM TIA : variante obligatoire (D-127) ; interdite pour Fap-Fap. */
+  garamVariant?: GaramVariant;
   timezone?: string;
   startsAt: Date;
   endsAt: Date;
@@ -491,13 +508,25 @@ export interface TournamentInput {
 export type ValidTournamentInput = Required<
   Pick<
     TournamentInput,
-    'timezone' | 'startsAt' | 'endsAt' | 'entryFee' | 'minimumPlayers' | 'prizeRules'
+    | 'gameType'
+    | 'timezone'
+    | 'startsAt'
+    | 'endsAt'
+    | 'entryFee'
+    | 'minimumPlayers'
+    | 'prizeRules'
   >
 > &
-  Pick<TournamentInput, 'maximumPlayers' | 'registrationOpensAt' | 'registrationClosesAt'> &
+  Pick<
+    TournamentInput,
+    'maximumPlayers' | 'registrationOpensAt' | 'registrationClosesAt' | 'garamVariant'
+  > &
   TournamentTokenSetup;
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
+
+/** Message d'un jeu de tournoi absent ou inconnu (D-124), le même partout. */
+export const TOURNAMENT_GAME_REQUIRED = 'Veuillez sélectionner le jeu du tournoi.';
 const validDate = (d: unknown): d is Date => d instanceof Date && !Number.isNaN(d.getTime());
 
 function validTimezone(tz: string): boolean {
@@ -552,6 +581,16 @@ export function validateTournamentInput(
   },
 ): ValidTournamentInput {
   const fields: Record<string, string> = {};
+  // Jeu : choix explicite obligatoire (D-124), jamais remplacé par une valeur par défaut.
+  const gameType: unknown = input.gameType;
+  if (!isGameType(gameType)) fields.gameType = TOURNAMENT_GAME_REQUIRED;
+  // Variante GARAM TIA (D-127) : obligatoire et explicite pour un tournoi GARAM, refusée sinon.
+  const garamVariant: unknown = input.garamVariant;
+  if (gameType === 'GARAM' && !isGaramVariant(garamVariant)) {
+    fields.garamVariant = GARAM_VARIANT_REQUIRED;
+  } else if (gameType !== 'GARAM' && garamVariant !== undefined && garamVariant !== null) {
+    fields.garamVariant = 'La variante ne concerne que GARAM TIA.';
+  }
   const timezone = input.timezone ?? 'Africa/Douala';
   if (typeof timezone !== 'string' || timezone.length > 64 || !validTimezone(timezone)) {
     fields.timezone = 'Fuseau horaire inconnu.';
@@ -654,7 +693,11 @@ export function validateTournamentInput(
   if (Object.keys(fields).length > 0) {
     throw new InvalidTournamentError(fields);
   }
+  // Tournoi GARAM TIA (D-127) : mêmes tables, même classement, même règlement en jetons que
+  // Fap-Fap ; seules les manches suivent le moteur GARAM, avec la variante du tournoi.
   return {
+    gameType: gameType as GameType,
+    ...(gameType === 'GARAM' && isGaramVariant(garamVariant) && { garamVariant }),
     timezone,
     startsAt,
     endsAt,
@@ -1265,20 +1308,32 @@ export function planTournamentGame(input: {
   let plan;
   try {
     if (!victoryType) throw new RangeError('Type de victoire absent');
-    plan = planGameSettlement({
-      stake,
-      commissionBps: 0,
-      winnerId: winnerId as PlayerId,
-      participants: participants as PlayerId[],
-      victoryType,
-    });
+    // GARAM TIA (D-127) : même règlement de la manche qu'une table ordinaire, en jetons et sans
+    // commission : pénalité « moins de X » de la variante comprise, versée au gagnant.
+    plan =
+      game.gameType === 'GARAM'
+        ? planGaramSettlement({
+            stake,
+            commissionBps: 0,
+            winnerId: winnerId as PlayerId,
+            participants: participants as PlayerId[],
+            belowThresholdIds: game.result?.belowThresholdIds ?? [],
+          })
+        : planGameSettlement({
+            stake,
+            commissionBps: 0,
+            winnerId: winnerId as PlayerId,
+            participants: participants as PlayerId[],
+            victoryType,
+          });
   } catch {
     return { status: 'VOID', voidReason: 'INVALID_SETTLEMENT' };
   }
   const transfers: Record<string, number> = {};
   let won = 0;
   for (const loserId of plan.loserIds) {
-    const paid = Math.min(plan.unitAmount, Math.max(0, tokensByPlayer.get(loserId) ?? 0));
+    const due = plan.lossOf[loserId] ?? plan.unitAmount;
+    const paid = Math.min(due, Math.max(0, tokensByPlayer.get(loserId) ?? 0));
     transfers[loserId] = -paid;
     won += paid;
   }

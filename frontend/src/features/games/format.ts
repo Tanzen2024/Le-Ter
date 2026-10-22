@@ -5,12 +5,15 @@ const SUIT_SYMBOLS: Record<string, string> = {
   PIQUE: '♠',
   TREFLE: '♣',
   ETOILE: '⭐',
+  // GARAM TIA (D-119).
+  CARREAU: '♦',
 };
 
 /** « COEUR-7 » → « 7 ♥ ». Affichage seulement : le serveur valide toute carte jouée. */
 export function cardLabel(cardId: string): string {
   const [suit = '', value = ''] = cardId.split('-');
-  return `${value} ${SUIT_SYMBOLS[suit] ?? suit}`;
+  // GARAM TIA : l'As porte la valeur 11.
+  return `${value === '11' ? 'A' : value} ${SUIT_SYMBOLS[suit] ?? suit}`;
 }
 
 /**

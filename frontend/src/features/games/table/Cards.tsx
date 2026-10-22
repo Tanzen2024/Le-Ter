@@ -24,7 +24,12 @@ export const SUIT_STYLES: Record<string, { symbol: string; color: string }> = {
   PIQUE: { symbol: '♠', color: ANTHRACITE },
   TREFLE: { symbol: '♣', color: ANTHRACITE },
   ETOILE: { symbol: '★', color: RED },
+  /** GARAM TIA (D-119) : quatrième famille du paquet de 35 cartes. */
+  CARREAU: { symbol: '♦', color: RED },
 };
+
+/** GARAM TIA : l'As porte la valeur 11 (jamais 1) et s'affiche « A ». */
+const VALUE_LABELS: Record<string, string> = { '11': 'A' };
 
 /**
  * Agrandissement du dessin du symbole, par famille : le glyphe ★ est dessiné nettement plus
@@ -132,7 +137,8 @@ export function faceLayout(width: number, longValue = false) {
 }
 
 function parse(cardId: string) {
-  const [suit = '', value = ''] = cardId.split('-');
+  const [suit = '', raw = ''] = cardId.split('-');
+  const value = VALUE_LABELS[raw] ?? raw;
   return { value, ...(SUIT_STYLES[suit] ?? { symbol: suit, color: ANTHRACITE }) };
 }
 

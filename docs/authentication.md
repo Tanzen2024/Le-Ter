@@ -7,7 +7,8 @@
 | Règle | Contenu |
 |---|---|
 | **R-10** | Le mode invité est **supprimé**. Aucun compte invité, anonyme ou temporaire, aucune session invitée, aucune identité de repli. Toute action de joueur exige un compte authentifié. |
-| **R-15** | Inscription : **Prénom, Nom, Email, Pseudo, Pays, Téléphone, Mot de passe, Confirmation** (Pays : D-070). Le pays et le téléphone sont obligatoires. Connexion : **email + mot de passe**. Le pseudo est le nom visible en jeu, pas un identifiant de connexion. |
+| **R-15** | Inscription : **Prénom, Nom, Pseudo, Pays, Téléphone, Mot de passe, Confirmation**, et **Email facultatif** pour un joueur (D-135 ; Pays : D-070). Le pays et le téléphone sont obligatoires. Connexion : **téléphone + mot de passe** ou **email + mot de passe** (D-135). Le pseudo est le nom visible en jeu, pas un identifiant de connexion. Un administrateur a toujours un email. |
+| **R-35** | Mot de passe oublié : **code de récupération** (D-135), sans SMS. Voir §6 « Récupération ». |
 | **R-32** | **Une seule session active par utilisateur.** Une nouvelle connexion révoque toute session précédente. Cette règle ne limite pas le nombre de parties d'un joueur (R-18 reste ouverte). |
 
 ## 2. Vue d'ensemble
@@ -48,7 +49,7 @@ envoyé dans le corps, l'URL ou un en-tête est ignoré pour décider qui agit (
 |---|---|---|
 | `id` | uuid | PK |
 | `first_name`, `last_name` | text | 1 à 50 caractères |
-| `email` | text | minuscules, ≤ 254, **unique** |
+| `email` | text | minuscules, ≤ 254, **unique** ; **NULL** possible pour un joueur, obligatoire pour un `admin` (migration 0054, D-135) |
 | `username` | text | `^[A-Za-z0-9_]{3,20}$`, **unique sans tenir compte de la casse** (`lower(username)`) |
 | `phone` | text | E.164 `^\+[1-9][0-9]{7,14}$`, **unique** |
 | `phone_verified` | boolean | `false` par défaut |
@@ -56,8 +57,18 @@ envoyé dans le corps, l'URL ou un en-tête est ignoré pour décider qui agit (
 | `role` | text | `'user'` ou `'admin'` (migration 0017 ; `admin` = `SUPER_ADMIN`, D-061) |
 | `status` | text | `'active'` ou `'disabled'` |
 | `created_at`, `updated_at` | timestamptz | |
+| `recovery_code_hash` | text | empreinte bcrypt du code de récupération actif ; NULL : aucun (migration 0054) |
+| `recovery_code_created_at`, `recovery_code_used_at` | timestamptz | création du code actif, dernière utilisation |
+| `recovery_failed_attempts`, `recovery_locked_until` | integer, timestamptz | codes faux consécutifs, blocage temporaire |
 
 Aucune colonne de solde, portefeuille ou tournoi : elles appartiennent aux phases ultérieures.
+
+### `password_reset_grants` (migration 0054)
+
+Autorisation temporaire de réinitialisation, donnée après un code valide : `user_id`,
+`token_hash` (empreinte SHA-256, **unique** ; le jeton n'est jamais stocké), `created_at`,
+`expires_at` (10 min), `used_at` (usage unique ; une nouvelle autorisation annule les
+précédentes du compte).
 
 ### `refresh_tokens` (migration 0002)
 
@@ -94,15 +105,18 @@ Coût : une requête indexée par requête authentifiée.
 ### Inscription — `POST /api/auth/register`
 
 Validation serveur (`validators/auth.validators.ts`), puis contrôle d'unicité, hachage bcrypt
-(coût 12) et insertion. Réponse **201** `{ user }` (DTO public). Aucune session n'est créée :
-le client se connecte ensuite. `confirmPassword` n'est jamais stocké. Les champs `id`, `role`,
-`phoneVerified` envoyés par le client sont ignorés.
+(coût 12) et insertion. Un **code de récupération** est créé avec le compte (D-135). Réponse
+**201** `{ user, recoveryCode }` : le code en clair n'existe QUE dans cette réponse (empreinte
+bcrypt en base). Aucune session n'est créée : le client affiche le code, puis se connecte.
+`confirmPassword` n'est jamais stocké. Les champs `id`, `role`, `phoneVerified` envoyés par le
+client sont ignorés. Email vide ou absent : `NULL` (joueur sans email).
 
 Normalisation : email en minuscules ; téléphone sans espaces, points, tirets ni parenthèses,
 « 00 » initial remplacé par « + », puis numéro E.164 reconstruit par le serveur à partir du
 pays (`country`, ISO alpha-2) et du numéro national (D-070) ; noms sans espaces superflus.
 
-Règles : prénom et nom (lettres, espaces, apostrophes, tirets, 50 max) ; email valide ; pseudo
+Règles : prénom et nom (lettres, espaces, apostrophes, tirets, 50 max) ; email valide s'il est
+fourni ; pseudo
 3 à 20 `[A-Za-z0-9_]` ; pays connu de libphonenumber ; téléphone valide selon les règles de
 ce pays (un indicatif d'un autre pays est refusé) ; mot de passe de 8 caractères
 minimum et 72 octets maximum (limite de bcrypt), avec au moins une lettre et un chiffre ;
@@ -113,10 +127,14 @@ Erreurs : **400** `VALIDATION_ERROR` avec `fields` ; **409** `CONFLICT` avec `fi
 
 ### Connexion — `POST /api/auth/login`
 
-1. Recherche par email. Si l'email est inconnu, une comparaison bcrypt factice est faite pour
-   que la durée de réponse ne révèle pas l'existence du compte.
-2. Échec : **401** `INVALID_CREDENTIALS`, « Email ou mot de passe incorrect. » (identique
-   pour un email inconnu et un mauvais mot de passe).
+Corps `{ email, password }` ou `{ country, phone, password }` (D-135 : pays + numéro national,
+E.164 reconstruit comme à l'inscription).
+
+1. Recherche par email ou par téléphone. Si le compte est inconnu, une comparaison bcrypt
+   factice est faite pour que la durée de réponse ne révèle pas son existence.
+2. Échec : **401** `INVALID_CREDENTIALS`, « Email ou mot de passe incorrect. » ou
+   « Téléphone ou mot de passe incorrect. » (identique pour un compte inconnu et un mauvais
+   mot de passe).
 3. Compte désactivé (mot de passe correct) : **403** `ACCOUNT_DISABLED`.
 4. Transaction : `SELECT … FROM users WHERE id = $1 FOR UPDATE`, révocation de **tous** les
    jetons actifs (`new_login`), création du jeton de la nouvelle session, COMMIT.
@@ -143,6 +161,32 @@ dès la requête suivante.
 mal formé, invalide ou expiré, si la session est révoquée, ou si le compte est inexistant
 ou désactivé.
 
+### Changement du mot de passe — `POST /api/auth/password` (connecté)
+
+`{ currentPassword, newPassword, confirmPassword }` : mot de passe actuel vérifié, nouveau
+selon la même politique, différent de l'actuel ; **204**. Aucun code de récupération n'est
+demandé. La session courante reste ouverte. Mobile : Profil → Mot de passe → « Modifier ».
+
+### Récupération (« Mot de passe oublié ? », D-135, sans SMS)
+
+1. `POST /api/auth/recovery/verify` `{ country, phone, code }` → **200** `{ resetToken,
+   expiresAt }` (autorisation de 10 min, usage unique). Le code est saisi librement (casse,
+   espaces, tirets, O/0 et I/L/1 confondus). Numéro inconnu, compte sans code, administrateur,
+   compte inactif ou bloqué, code faux : **400** `RECOVERY_FAILED`, même message et même durée.
+2. `POST /api/auth/recovery/reset` `{ resetToken, newPassword, confirmPassword }` → **200**
+   `{ recoveryCode }`. En une transaction : mot de passe remplacé, ancien code invalidé et
+   remplacé par un nouveau (renvoyé une fois), autorisation consommée, toutes les sessions
+   fermées (`revoked_reason = 'password_reset'`). Autorisation absente, expirée ou déjà
+   utilisée : **400** `RESET_GRANT_INVALID`.
+3. Nouveau code depuis le Profil : `POST /api/auth/recovery-code` `{ currentPassword }`
+   (connecté) → `{ recoveryCode }` ; l'ancien code cesse de fonctionner.
+4. Code perdu : l'assistance fait « Réinitialiser l'accès » dans l'administration
+   (`POST /api/admin/users/:id/recovery { reason }`) ; nouveau code montré une fois à
+   l'administrateur, audit `PLAYER_ACCOUNT_RECOVERY`. Aucun mot de passe vu ni fixé.
+
+Code : `LT-XXXX-XXXX-XXXX`, 12 caractères aléatoires (alphabet de Crockford, 60 bits).
+Blocage : 5 codes faux → compte bloqué 15 min, compté en base.
+
 ## 7. Concurrence (R-32)
 
 Toutes les opérations qui créent ou révoquent un jeton commencent par verrouiller la ligne
@@ -166,7 +210,8 @@ sans jeton, la réponse est 401.
 ## 9. Sécurité et journalisation
 
 - Jamais journalisés : mot de passe, `password_hash`, access token, refresh token, en-tête
-  `Authorization`, corps de requête.
+  `Authorization`, corps de requête, code de récupération (ni son empreinte), autorisation de
+  réinitialisation.
 - Journalisés (JSON, avec `requestId`) : `register succeeded/rejected`, `login
   succeeded/failed` (avec la raison), `previous session revoked`, `refresh
   succeeded/rejected` (avec la raison : `malformed`, `unknown`, `revoked`, `expired`,
@@ -176,6 +221,9 @@ sans jeton, la réponse est 401.
   - connexion : 10 par 15 min et par couple IP + email, et 100 par 15 min et par IP (valeur
     large, car de nombreux mobiles partagent une IP) ;
   - refresh : 300 par 15 min et par IP ;
+  - récupération (D-135) : 30 par 15 min et par IP, 10 par 15 min et par numéro ;
+    réinitialisations et nouveaux codes : 10 par 15 min ; en plus, blocage du compte EN BASE
+    après 5 codes faux (15 min) ;
   - au-delà, **429** `RATE_LIMITED` avec `Retry-After`.
 - Sans `DATABASE_URL` ou sans `JWT_SECRET`, `/api/auth/*` répond **503** `AUTH_UNAVAILABLE`.
 
@@ -201,30 +249,44 @@ sans jeton, la réponse est 401.
 
 Écrans, en paysage (D-028).
 
-- **Connexion** (`src/features/auth/LoginTable.tsx`) : « table de jeu » (fond rouge/brun
-  éclairé, cercle de feutre vert cerclé d'or, cartes Le Ter décoratives sur les côtés), titre
-  « Connexion », email, mot de passe (afficher/masquer), « Mot de passe oublié ? » (message
-  « bientôt disponible » : aucun flux n'est défini, R-35), « Se connecter », puis « Vous n'avez
-  pas de compte ? S'inscrire ». Tout est dimensionné depuis la surface paysage sûre
-  (`src/hooks/use-landscape-viewport.ts` : grande dimension = largeur, petite = hauteur, marges
-  de sécurité) ; la colonne défile si le clavier la réduit. Un seul message d'erreur
-  (validation ou serveur) s'affiche au-dessus du bouton.
-- **Inscription** : marque et titre à gauche, formulaire défilant à droite, champs par deux
-  (prénom | nom, email | téléphone, mot de passe | confirmation), racine `Screen`,
-  `KeyboardAvoidingView` sur iOS.
+- **Connexion** (`src/features/auth/LoginLayout.tsx`, D-139, décor D-140) : fond sombre décoré
+  (reflet bordeaux, étoiles, 3 cartes Le Ter de chaque côté), un panneau centré (5 cartes
+  L E T E R, titre « CONNEXION »), UN champ « Téléphone ou email » (drapeau, icône) avec
+  l'indicatif (Cameroun `+237` présélectionné, autre pays par la liste existante), mot de passe
+  (masqué, œil pour l'afficher), « Mot de passe oublié ? » (D-135, ouvre
+  `app/(auth)/forgot-password.tsx`), « Se connecter », puis « Vous n'avez pas de compte ?
+  S'inscrire ». Un « @ » ou une lettre → `{ email }`, sinon `{ country, phone }` (numéro
+  national ; « +237… » accepté). Dimensionné depuis la surface paysage sûre
+  (`src/hooks/use-landscape-viewport.ts`) : tout tient sur un petit téléphone en paysage, le
+  panneau défile si le clavier le réduit. Un seul message d'erreur (validation ou serveur)
+  au-dessus du bouton, désactivé tant qu'un champ est vide et verrouillé pendant l'envoi.
+- **Mot de passe oublié** (`app/(auth)/forgot-password.tsx`, D-139) : même modèle que la
+  connexion (`LoginLayout`, indicateur d'étapes `LoginSteps`) ; Téléphone (indicatif dans le
+  champ, Cameroun présélectionné) → Code → Nouveau mot de passe → nouveau code → connexion.
+- **Code de récupération** (`src/features/auth/RecoveryCodeCard.tsx`) : affiché une fois après
+  l'inscription, après une réinitialisation et dans le Profil ; « Copier le code »
+  (`expo-clipboard`), « J'ai enregistré mon code ». Jamais écrit dans un stockage local.
+- **Inscription** (D-139, décor D-140) : même modèle que la connexion (`LoginLayout`, panneau
+  large, décoré) : cartes L E T E R, titre « Inscription », champs sombres par deux (prénom | nom, email |
+  téléphone, mot de passe | confirmation), erreur sous chaque champ et aide tant qu'il a le
+  focus. Téléphone identique à la connexion : indicatif dans le champ (Cameroun `+237`
+  présélectionné, autre pays par la liste existante), numéro national seul ; changer de pays
+  efface le numéro.
 - **Inscription en 2 étapes** :
-  1. Prénom, Nom, Pseudo, puis « Continuer → » ;
+  1. Prénom, Nom, Pseudo, puis « Continuer » ;
   2. Email, Téléphone, Mot de passe, Confirmation, puis « Créer mon compte » ;
   - validation inline ;
   - les erreurs du serveur s'affichent par champ, et l'écran revient à l'étape 1 si le pseudo
     est déjà pris ;
-  - connexion automatique après l'inscription.
+  - email facultatif (D-135) ;
+  - compte créé : le code de récupération s'affiche, puis connexion (par téléphone) quand le
+    joueur confirme l'avoir enregistré.
 
 ## 12. Non implémenté (volontairement)
 
 - Vérification du téléphone par SMS : aucun fournisseur n'est choisi ; `phone_verified` est
   prêt.
-- Réinitialisation du mot de passe : aucun flux n'est défini.
+- Réinitialisation par email ou SMS : non prévue ; la récupération passe par le code (D-135).
 - Session d'administration dédiée (8 h absolues, 30 min d'inactivité) : voir `docs/admin/SECURITY.md`.
 - Détection de réutilisation d'un refresh token avec révocation de toute la session : écartée
   pour l'instant, car un double envoi réseau légitime déconnecterait l'utilisateur. Le second

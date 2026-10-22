@@ -50,6 +50,7 @@ describe('runMigrations', () => {
       'game_settlements',
       'games',
       'notifications',
+      'password_reset_grants',
       'payments',
       'platform_ledger',
       'platform_payout_beneficiaries',

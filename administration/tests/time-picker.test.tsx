@@ -98,6 +98,7 @@ describe('sélecteur « Heure de début »', () => {
 
   it('valeur du sélecteur acceptée par le formulaire et envoyée en Africa/Douala', () => {
     const values = tournamentFormSchema.parse({
+      gameType: 'TER',
       date: '2026-12-31',
       time: '23:30',
       durationMinutes: '60',

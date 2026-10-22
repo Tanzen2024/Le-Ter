@@ -77,6 +77,11 @@ export interface ModerationTx {
   insertNote(note: NewAdminNote): Promise<void>;
   findNote(userId: UserId, noteId: string): Promise<AdminNote | null>;
   deleteNote(noteId: string, deletedBy: UserId, reason: string, now: Date): Promise<void>;
+  /**
+   * Remplace le code de récupération (D-135) : ancien invalidé, blocage levé, autorisations
+   * ouvertes annulées. @returns false si le compte n'est pas actif.
+   */
+  replaceRecoveryCode(userId: UserId, codeHash: string, now: Date): Promise<boolean>;
   audit(entry: AuditEntry): Promise<void>;
 }
 

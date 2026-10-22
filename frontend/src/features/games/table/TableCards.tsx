@@ -49,6 +49,18 @@ export const SPOT_ANGLE: Record<SeatSide, number> = {
 };
 
 /**
+ * Position de la carte jouée sur la table, poussée vers son joueur comme sur la référence
+ * (carte posée à 16 % du diamètre du centre, côté de celui qui l'a jouée). Partagée par les
+ * deux jeux (FAP-FAP, GARAM TIA) : centre = `tableCy`, distances en diamètres de table.
+ */
+export const SPOT_OFFSET: Record<SeatSide, { x: number; y: number }> = {
+  bottom: { x: 0, y: 0.16 },
+  top: { x: 0, y: -0.16 },
+  left: { x: -0.16, y: 0 },
+  right: { x: 0.16, y: 0 },
+};
+
+/**
  * Rangée des cartes déjà jouées par un joueur. `left` : bord gauche de la PREMIÈRE carte ;
  * `step` : pas entre deux cartes, en largeurs de carte (≥ 1 : cartes séparées) ; `reverse` :
  * la rangée s'étend vers la gauche (siège de gauche, pour ne pas mordre sur la table).

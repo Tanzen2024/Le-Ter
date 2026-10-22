@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Game } from '../../../src/domain/game/game';
+import type { Game, GameType } from '../../../src/domain/game/game';
 import type { GameId, PlayerId } from '../../../src/domain/game/game-id';
 import type { SessionId } from '../../../src/domain/sessions/session';
 import type { BehaviorHistoryRepository } from '../../../src/repositories/behavior-history.repository';
@@ -83,14 +83,18 @@ function detectionWith(
 }
 
 /** Table (session) terminée, surveillée ou non ; arrivées des joueurs datées. */
-async function table(enabled: boolean, arrivals: [PlayerId, Date][]): Promise<SessionId> {
+async function table(
+  enabled: boolean,
+  arrivals: [PlayerId, Date][],
+  gameType: GameType = 'TER',
+): Promise<SessionId> {
   const id = randomUUID() as SessionId;
   const first = arrivals[0]![1];
   await database.sql.query(
     `INSERT INTO sessions (id, version, status, creator_id, max_players, created_at, updated_at,
-       suspicion_detection_enabled)
-     VALUES ($1, 1, 'open', $2, 4, $3, $3, $4)`,
-    [id, arrivals[0]![0], first.toISOString(), enabled],
+       suspicion_detection_enabled, game_type, garam_variant)
+     VALUES ($1, 1, 'open', $2, 4, $3, $3, $4, $5, CASE WHEN $5::text = 'GARAM' THEN 15 END)`,
+    [id, arrivals[0]![0], first.toISOString(), enabled, gameType],
   );
   for (const [i, [playerId, joinedAt]] of arrivals.entries()) {
     await database.sql.query(
@@ -129,8 +133,11 @@ async function seedGames(
     winner?: (i: number) => PlayerId;
     tables?: number;
     auto?: boolean;
+    /** Manches GARAM TIA (D-119) : table GARAM, fin au meilleur total. */
+    gameType?: GameType;
   } = {},
 ): Promise<Game[]> {
+  const garam = options.gameType === 'GARAM';
   const tables = options.tables ?? 1;
   const sessions: SessionId[] = [];
   for (let t = 0; t < tables; t += 1) {
@@ -138,25 +145,27 @@ async function seedGames(
       await table(
         enabled,
         players.map((p, i) => [p, minutesAgo(600 - t * 60 + i * 30)]),
+        options.gameType,
       ),
     );
   }
   const games: Game[] = [];
   for (let i = 0; i < count; i += 1) {
-    games.push(
-      await seed(
-        sessions[i % tables]!,
-        finishedGame({
-          players,
-          tricks: options.tricks,
-          finishedAt: minutesAgo(300 - i),
-          ...(options.winner && { winnerId: options.winner(i) }),
-          ...(options.auto && {
-            recentCommandIds: (id: GameId) => [`auto-play:${id}:1:1`, `auto-play:${id}:2:1`],
-          }),
-        }),
-      ),
-    );
+    const game = finishedGame({
+      players,
+      tricks: options.tricks,
+      finishedAt: minutesAgo(300 - i),
+      ...(garam && { endReason: 'GARAM_BEST_SCORE' as const }),
+      ...(options.winner && { winnerId: options.winner(i) }),
+      ...(options.auto && {
+        recentCommandIds: (id: GameId) => [`auto-play:${id}:1:1`, `auto-play:${id}:2:1`],
+      }),
+    });
+    if (garam) {
+      game.gameType = 'GARAM';
+      game.garamVariant = 15;
+    }
+    games.push(await seed(sessions[i % tables]!, game));
   }
   return games;
 }
@@ -409,5 +418,102 @@ describe('Isolation, concurrence et idempotence', () => {
       expect.objectContaining({ scope: 'PAIR', score: 10, level: 'low' }),
     ]);
     expect(await detection.listAlerts()).toEqual([]);
+  });
+});
+
+describe('GARAM TIA (D-125) : mêmes analyses, historique du jeu de la partie observée', () => {
+  it('FREQUENT_COPLAY sur des manches GARAM : signal sur la manche observée, même format', async () => {
+    const games = await seedGames(true, [X, Y], 6, { tables: 3, gameType: 'GARAM' });
+    const observed = games.at(-1)!;
+    await detectionWith().analyzeGame(observed);
+    const signals = await detectionWith().listSignals(observed.id);
+    expect(signals.find((s) => s.type === 'FREQUENT_COPLAY')).toMatchObject({
+      gameId: observed.id,
+      playerIds: [X, Y].sort(),
+      evidence: {
+        algorithm: 'FREQUENT_COPLAY_V1',
+        observedGameId: observed.id,
+        metrics: { gamesTogether: 6, sessionsTogether: 3, gamesOfFirst: 6, gamesOfSecond: 6 },
+      },
+    });
+    // Score de la paire calculé par le même socle (étape 4).
+    expect(await detectionWith().listScores(observed.id)).toEqual([
+      expect.objectContaining({ scope: 'PAIR', score: 10, level: 'low' }),
+    ]);
+  });
+
+  it('Fap-Fap inchangé : des manches GARAM n’alimentent jamais l’analyse d’une partie du Ter', async () => {
+    await seedGames(true, [X, Y], 5, { tables: 3, gameType: 'GARAM' });
+    const [observed] = await seedGames(true, [X, Y], 1);
+    await detectionWith().analyzeGame(observed!);
+    expect(await typesOf(observed!.id)).toEqual([]);
+  });
+
+  it('réciproquement : des parties du Ter n’alimentent jamais l’analyse d’une manche GARAM', async () => {
+    await seedGames(true, [X, Y], 5, { tables: 3 });
+    const [observed] = await seedGames(true, [X, Y], 1, { gameType: 'GARAM' });
+    await detectionWith().analyzeGame(observed!);
+    expect(await typesOf(observed!.id)).toEqual([]);
+  });
+
+  it('CORRELATED_WINS sur des manches GARAM à 4 joueurs', async () => {
+    const games = await seedGames(true, [X, Y, Z, W], 10, {
+      winner: (i) => (i % 2 ? X : Y),
+      gameType: 'GARAM',
+    });
+    const observed = games.at(-1)!;
+    await detectionWith().analyzeGame(observed);
+    expect(
+      (await detectionWith().listSignals(observed.id)).find((s) => s.type === 'CORRELATED_WINS'),
+    ).toMatchObject({
+      playerIds: [X, Y].sort(),
+      evidence: { metrics: { gamesTogether: 10, pairWins: 10, observedRate: 1 } },
+    });
+  });
+
+  it('CARD_CHOICE_ANOMALY : jamais pour une manche GARAM, ni à partir des parties du Ter', async () => {
+    // Historique du Ter qui suffit à un signal pour une partie du Ter (test plus haut)…
+    await seedGames(true, [Z, X], 4, { tricks: takesAgainst(X, Z) });
+    await seedGames(true, [Y, X], 4, { tricks: declinesAgainst(X, Y) });
+    // … mais la partie observée est une manche GARAM : aucune décision de contrôle lue.
+    const [observed] = await seedGames(true, [Y, X], 1, { gameType: 'GARAM' });
+    const { spy, calls } = spiedHistory();
+    await detectionWith(spy).analyzeGame(observed!);
+    expect(calls).toContain('playedToTheEnd');
+    expect(await typesOf(observed!.id)).not.toContain('CARD_CHOICE_ANOMALY');
+  });
+
+  it('CONNECTION_PATTERN sur des tables GARAM ; les tables du Ter ne comptent pas', async () => {
+    let observed: Game | undefined;
+    for (const [i, gameType] of (['TER', 'GARAM', 'GARAM', 'GARAM'] as const).entries()) {
+      const arrival = minutesAgo(1_000 - i * 100);
+      const sessionId = await table(
+        true,
+        [
+          [X, arrival],
+          [Y, new Date(arrival.getTime() + 3_000)],
+        ],
+        gameType,
+      );
+      const game = finishedGame({
+        players: [X, Y],
+        finishedAt: minutesAgo(900 - i * 100),
+        ...(gameType === 'GARAM' && { endReason: 'GARAM_BEST_SCORE' as const }),
+      });
+      if (gameType === 'GARAM') {
+        game.gameType = 'GARAM';
+        game.garamVariant = 15;
+      }
+      observed = await seed(sessionId, game);
+    }
+    await detectionWith().analyzeGame(observed!);
+    expect(
+      (await detectionWith().listSignals(observed!.id)).find(
+        (s) => s.type === 'CONNECTION_PATTERN',
+      ),
+    ).toMatchObject({
+      playerIds: [X, Y].sort(),
+      evidence: { metrics: { tablesTogether: 3, synchronizedArrivals: 3 } },
+    });
   });
 });

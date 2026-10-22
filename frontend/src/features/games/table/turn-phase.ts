@@ -36,17 +36,19 @@ export function turnPhaseOf(
   game: GameView,
   { dealing, offsetMs }: { dealing: boolean; offsetMs: number },
 ): TurnPhase | null {
-  const play = game.play;
-  if (game.status !== 'in_progress' || !play || dealing) return null;
+  // Le Ter (`play`) ou GARAM TIA (`garam`, D-119) : même tour, même échéance du serveur.
+  const nextPlayerId = game.play?.nextPlayerId ?? game.garam?.nextPlayerId;
+  if (game.status !== 'in_progress' || !(game.play || game.garam) || dealing) return null;
   // D-102 : aucun tour tant que le serveur n'a pas confirmé la distribution.
   if (game.dealEndsAt) return null;
-  const playerId = game.activePlayerId ?? play.nextPlayerId;
+  const playerId = game.activePlayerId ?? nextPlayerId;
   if (!playerId || !game.turnDeadlineAt) return null;
   const fled = game.players.find((p) => p.playerId === playerId)?.fledAt;
   if (fled) return null;
   const deadline = Date.parse(game.turnDeadlineAt);
   if (!Number.isFinite(deadline)) return null;
   const started = game.turnStartedAt ? Date.parse(game.turnStartedAt) : NaN;
+  // Le Ter et GARAM TIA (D-122) : 10 s affichées sur les 13 s du serveur (D-098).
   const shown = displayedDeadline(deadline);
   const totalMs =
     Number.isFinite(started) && shown > started

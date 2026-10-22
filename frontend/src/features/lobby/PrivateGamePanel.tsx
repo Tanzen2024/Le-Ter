@@ -14,8 +14,10 @@ import { fontOf, tablePalette as palette, useTableFonts } from '../../components
 import { ApiError, isAlreadyPlaying } from '../../lib/api-client';
 import { useCurrentUser } from '../auth/hooks';
 import { MAX_PLAYER_CHOICES, type MaxPlayers } from '../games/hooks';
-import type { OpenTable } from '../../types/session';
+import { GARAM_VARIANTS, garamVariantLabel, type GaramVariant } from '../../types/game';
+import type { GameType, OpenTable } from '../../types/session';
 import {
+  isPrivateGame,
   useCreateSession,
   useDetectionAvailable,
   useMySessions,
@@ -34,15 +36,26 @@ import { useEnterTable, type EnterTarget } from './use-enter-table';
  * Nom, mise, nombre de joueurs et mot de passe facultatif sont enregistrés par le serveur
  * (D-039). La mise reste indicative : aucun mouvement de jetons n'existe encore (R-13).
  */
-export function PrivateGamePanel({ onClose }: { onClose: () => void }) {
+export function PrivateGamePanel({
+  onClose,
+  gameType = 'TER',
+}: {
+  onClose: () => void;
+  /** Jeu des parties créées et listées (D-119) : Le Ter par défaut, ou GARAM TIA. */
+  gameType?: GameType;
+}) {
   const m = useLobbyMetrics();
   const { data: user } = useCurrentUser();
   const table = useEnterTable(user?.id, onClose);
   return (
-    <LobbyPanel title="Partie privée" onClose={onClose} width={Math.max(520, m.width * 0.7)}>
+    <LobbyPanel
+      title={gameType === 'GARAM' ? 'Garam Tia' : 'Fap-Fap'}
+      onClose={onClose}
+      width={Math.max(520, m.width * 0.7)}
+    >
       <View style={[styles.columns, { gap: m.gap }]}>
-        <CreateColumn onClose={onClose} enter={table.enter} />
-        <SearchColumn table={table} />
+        <CreateColumn onClose={onClose} enter={table.enter} gameType={gameType} />
+        <SearchColumn table={table} gameType={gameType} />
       </View>
     </LobbyPanel>
   );
@@ -55,9 +68,11 @@ const PASSWORD_MIN_LENGTH = 4;
 function CreateColumn({
   onClose,
   enter,
+  gameType,
 }: {
   onClose: () => void;
   enter: (target: EnterTarget) => void;
+  gameType: GameType;
 }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
@@ -69,8 +84,12 @@ function CreateColumn({
   const [stake, setStake] = useState('');
   const [password, setPassword] = useState('');
   const [maxPlayers, setMaxPlayers] = useState<MaxPlayers>(4);
+  // Variante GARAM TIA (D-127) : 15 présélectionnée sur ce formulaire, toujours envoyée
+  // explicitement au serveur (qui n'a, lui, aucune valeur par défaut).
+  const [variant, setVariant] = useState<GaramVariant>(15);
   // Détection anti-collusion (D-043) : désactivée par défaut ; fixée à la création. Proposée
   // seulement si l'administration l'a activée globalement (D-053, D-081).
+  // Même option pour Fap-Fap et GARAM TIA (D-125) : un seul système de détection.
   const detectionAvailable = useDetectionAvailable();
   const [detection, setDetection] = useState(false);
   const [formError, setFormError] = useState<string>();
@@ -111,6 +130,7 @@ function CreateColumn({
     create.create(
       {
         maxPlayers,
+        ...(gameType === 'GARAM' && { gameType, garamVariant: variant }),
         name: trimmed,
         stakeAmount,
         suspicionDetectionEnabled: detectionAvailable && detection,
@@ -186,6 +206,40 @@ function CreateColumn({
           </Text>
         </Pressable>
       </View>
+      {gameType === 'GARAM' ? (
+        <View
+          style={[styles.row, styles.between, { gap: m.gap }]}
+          accessibilityRole="radiogroup"
+          accessibilityLabel="Variante de la partie, obligatoire"
+        >
+          <Text style={label}>Variante :</Text>
+          <View style={[styles.row, styles.variants, { gap: m.gap * 0.4 }]}>
+            {GARAM_VARIANTS.map((v) => (
+              <Pressable
+                key={v}
+                testID={`garam-variant-${v}`}
+                onPress={() => edit(setVariant)(v)}
+                accessibilityRole="radio"
+                accessibilityLabel={garamVariantLabel(v)}
+                accessibilityState={{ checked: variant === v }}
+                hitSlop={4}
+                style={({ pressed }) => [
+                  styles.field,
+                  styles.capacity,
+                  styles.variant,
+                  { height: m.controlHeight * 0.85, minWidth: m.controlHeight * 0.8 },
+                  variant === v && styles.selected,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={[styles.capacityText, fontOf(fonts.button), { fontSize: m.bodySize }]}>
+                  {v}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
       <View style={[styles.row, { gap: m.gap }]}>
         <Text style={label}>Mot de passe :</Text>
         <PanelInput
@@ -227,20 +281,16 @@ function CreateColumn({
   );
 }
 
-/** Partie créée par le formulaire « Créer une partie » (D-039) : elle porte toujours un nom. */
-type PrivateGame = OpenTable & { name: string };
-
-/**
- * Une ligne = une partie privée RÉELLEMENT créée, telle que le serveur la renvoie (en
- * attente, place libre). Les tables sans nom viennent de l'ancien écran « Nouvelle session »
- * (avant D-039) : ce ne sont pas des parties privées, on ne leur invente ni nom ni mise.
- */
-const isPrivateGame = (t: OpenTable): t is PrivateGame => t.name !== undefined;
-
-function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
+function SearchColumn({
+  table,
+  gameType,
+}: {
+  table: ReturnType<typeof useEnterTable>;
+  gameType: GameType;
+}) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
-  const open = useOpenTables();
+  const open = useOpenTables(gameType);
   // Détection coupée par l'administration (D-081) : aucune colonne « bouclier ».
   const detectionAvailable = useDetectionAvailable();
   const inputRef = useRef<TextInput>(null);
@@ -369,7 +419,8 @@ function SearchColumn({ table }: { table: ReturnType<typeof useEnterTable> }) {
           <View key={t.sessionId} style={{ gap: m.gap * 0.5 }}>
             <GameRow
               c={columns}
-              name={t.name}
+              // GARAM TIA : la variante de la table est visible avant de la rejoindre (D-127).
+              name={t.garamVariant ? `${t.name} · ${garamVariantLabel(t.garamVariant)}` : t.name}
               mine={t.mine}
               locked={t.hasPassword}
               guarded={detectionAvailable ? t.suspicionDetectionEnabled : undefined}
@@ -686,6 +737,11 @@ const styles = StyleSheet.create({
   disabledField: { opacity: 0.6 },
   coinInField: { position: 'absolute' },
   capacity: { alignItems: 'center', justifyContent: 'center' },
+  // Les 4 variantes se partagent la largeur restante sur une seule ligne ; elles ne passent à la
+  // ligne que si même leur largeur minimale ne tient pas.
+  variants: { flex: 1, minWidth: 0, flexWrap: 'wrap' },
+  variant: { flexGrow: 1, flexBasis: 0 },
+  selected: { borderColor: palette.gold, backgroundColor: 'rgba(242, 196, 81, 0.28)' },
   capacityText: { color: '#FFFFFF' },
   searchIcon: { position: 'absolute', right: 4, alignItems: 'center', justifyContent: 'center' },
   lens: { borderColor: palette.gold },

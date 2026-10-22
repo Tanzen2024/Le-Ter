@@ -17,6 +17,7 @@ import type { AuthService } from '../auth/auth.service';
 import type { PaymentService } from '../payments/payment.service';
 import { AdminQueryService } from './admin-query.service';
 import { AdminSessionService } from './admin-session.service';
+import { PasswordService } from '../auth/password.service';
 import { PlayerModerationService } from './player-moderation.service';
 
 export interface AdminServices {
@@ -37,6 +38,8 @@ export function createAdminServices(deps: {
   payments?: PaymentService;
   redis?: RedisClientType;
   clock?: () => Date;
+  /** Hachage des codes de récupération (D-135) ; les tests réduisent son coût. */
+  passwords?: PasswordService;
 }): AdminServices {
   const audit = new PostgresAdminAuditRepository(deps.sql);
   const memory = new MemoryRateLimitStore();
@@ -66,6 +69,7 @@ export function createAdminServices(deps: {
       repository: new PostgresModerationRepository(deps.sql),
       audit,
       logger: deps.logger,
+      passwords: deps.passwords ?? new PasswordService(),
       clock: deps.clock,
     }),
     rateLimitStore,

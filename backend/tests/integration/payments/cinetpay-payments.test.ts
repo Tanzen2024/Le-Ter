@@ -1314,6 +1314,50 @@ describe('Recharge automatique (opérateur déduit du numéro du compte)', () =>
     expect(rows.map((r) => r.status)).toEqual(['FAILED', 'SUCCESS']);
   });
 
+  it.each(['FAILED', 'EXPIRED'] as const)(
+    'direct accepté puis %s chez CinetPay : le même achat passe automatiquement par la page (D-134)',
+    async (final) => {
+      const { app, cinetpay } = setup({ directPayOperators: MTN, pagePreselectOperators: MTN });
+      const A = await player(app);
+      const key = randomUUID();
+      const direct = await A.deposit({ tokens: 1500 }, key);
+      expect(direct.body.payment).toMatchObject({ status: 'PENDING', mode: 'DIRECT', operator: 'MTN_CM' });
+
+      // Encore en attente : la même demande renvoie le même direct, AUCUN repli.
+      const stillPending = await A.deposit({ tokens: 1500 }, key);
+      expect(stillPending.body.payment.id).toBe(direct.body.payment.id);
+      expect(cinetpay.created).toHaveLength(1);
+
+      // CinetPay clôt le direct sans débit (statut final relu chez le fournisseur).
+      cinetpay.set(0, { status: final });
+      await notify(app, cinetpay.notification());
+      expect(await A.balance()).toBe(0);
+
+      // Même achat (même clé) : page CinetPay, MTN présélectionné, un seul nouveau paiement.
+      const page = await A.deposit({ tokens: 1500 }, key);
+      expect(page.status).toBe(202);
+      expect(page.body.payment).toMatchObject({
+        amount: 1500,
+        status: 'PENDING',
+        mode: 'REDIRECT',
+        operator: 'MTN_CM',
+        paymentUrl: expect.any(String),
+      });
+      expect(cinetpay.created).toHaveLength(2);
+      expect(cinetpay.created[1]).not.toHaveProperty('direct');
+      expect(cinetpay.created[1]!.pagePaymentMethod).toBe('MTN_CM');
+      // Rejeu : la même page, jamais une troisième demande.
+      const again = await A.deposit({ tokens: 1500 }, key);
+      expect(again.body.payment.id).toBe(page.body.payment.id);
+      expect(cinetpay.created).toHaveLength(2);
+
+      // Payé sur la page : crédit unique.
+      cinetpay.set(1, { status: 'SUCCESS' });
+      await notify(app, cinetpay.notification(1));
+      expect(await A.balance()).toBe(1500);
+    },
+  );
+
   it('direct à l’issue INCERTAINE : paiement en attente renvoyé, AUCUN repli ni second paiement', async () => {
     const { app, cinetpay } = setup({ directPayOperators: MTN });
     cinetpay.timeoutAfterCreate = true;

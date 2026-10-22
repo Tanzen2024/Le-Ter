@@ -25,7 +25,7 @@ const columns: Column<PlayerRow>[] = [
       <div className="min-w-0">
         <p className="text-ink font-medium">{p.username}</p>
         <p className="text-muted truncate text-xs">
-          {p.firstName} {p.lastName} · {p.email}
+          {p.firstName} {p.lastName} · {p.email ?? p.phone}
         </p>
       </div>
     ),

@@ -12,6 +12,7 @@ import { useLobbyMetrics } from "../../lobby/lobby-metrics";
 import { Coin, PanelButton } from "../../lobby/LobbyUi";
 import { ChipStack } from "../../wallet/ShopIllustrations";
 import { ReportProblemLink } from "../../complaints/ReportProblemLink";
+import { GARAM_TWO_ACES_SCORE } from "../garam/garam-presentation";
 import { playerLabel } from "../format";
 
 /**
@@ -183,7 +184,23 @@ export function GameOverPanel({
         )
       : result?.method === "OPPONENT_FLED" && !iFled && fledName
         ? t.opponentFled(fledName)
-        : undefined;
+        : // GARAM TIA (D-119) : condition spéciale, ou meilleur total (fin normale).
+          result?.method === "GARAM_AUTOMATIC_WIN" && result.garamCondition
+          ? t.garamAutomatic(t.garamConditions[result.garamCondition] ?? "")
+          : result?.method === "GARAM_BEST_SCORE" && result.scores
+            ? [
+                // 22 points = deux As (D-130) : « Victoire avec deux As » au lieu du total.
+                result.scores[result.winnerId] === GARAM_TWO_ACES_SCORE
+                  ? t.garamTwoAces
+                  : t.garamBestScore(result.scores[result.winnerId] ?? 0),
+                // Pénalité « moins de X » de la variante (D-127), décidée par le serveur.
+                result.belowThresholdIds?.includes(game.viewerId)
+                  ? t.garamBelowThreshold(result.penaltyThreshold ?? game.garamVariant)
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : undefined;
 
   const replayAllowed = canContinue === true;
   const replayNotice =

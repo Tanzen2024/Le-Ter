@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import {
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -11,9 +12,11 @@ import {
 } from 'react-native';
 
 import { tablePalette } from '../table/TableDecor';
+import { ExclusiveOverlay } from './ExclusiveOverlay';
 
 /**
- * Fenêtre des sélecteurs de date et d'heure : fond assombri, carte sombre, titre et actions.
+ * Fenêtre des sélecteurs de date et d'heure : seule visible (D-126), carte sombre, titre et
+ * actions.
  * `supportedOrientations` : l'app est en paysage ; sans lui, iOS ouvrirait la fenêtre en
  * portrait.
  */
@@ -23,12 +26,15 @@ export function PickerModal({
   onClose,
   children,
   actions,
+  scroll = false,
 }: {
   visible: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
   actions: ReactNode;
+  /** Contenu défilant si la hauteur manque (calendrier) ; jamais autour d'une liste. */
+  scroll?: boolean;
 }) {
   return (
     <Modal
@@ -38,21 +44,30 @@ export function PickerModal({
       supportedOrientations={['landscape', 'portrait']}
       onRequestClose={onClose}
     >
-      <View style={styles.backdrop}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-          accessible={false}
-          importantForAccessibility="no"
-        />
-        <View style={styles.card} accessibilityViewIsModal>
+      <ExclusiveOverlay style={styles.backdrop}>
+        <View style={styles.card}>
           <Text accessibilityRole="header" style={styles.title}>
             {title}
           </Text>
-          {children}
+          {/* `scroll` : écran trop bas (petit téléphone en paysage), le contenu défile, titre et
+              actions restent visibles ; jamais une rangée coupée par le bord de la fenêtre.
+              Pas pour un contenu qui défile déjà lui-même (liste des pays). */}
+          {scroll ? (
+            <ScrollView
+              testID="picker-scroll"
+              style={styles.content}
+              contentContainerStyle={styles.contentInner}
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+            >
+              {children}
+            </ScrollView>
+          ) : (
+            children
+          )}
           <View style={styles.actions}>{actions}</View>
         </View>
-      </View>
+      </ExclusiveOverlay>
     </Modal>
   );
 }
@@ -94,6 +109,8 @@ export function PickerTrigger({
   style,
   textStyle,
   testID,
+  lines = 1,
+  shrinkToFit = false,
 }: {
   label: string;
   hint: string;
@@ -105,6 +122,10 @@ export function PickerTrigger({
   style?: StyleProp<ViewStyle>;
   textStyle?: StyleProp<TextStyle>;
   testID?: string;
+  /** Lignes du texte affiché avant « … » (un long nom de pays peut en demander 2). */
+  lines?: number;
+  /** Réduit la police (jusqu'à 65 %) pour que le texte tienne sans être tronqué. */
+  shrinkToFit?: boolean;
 }) {
   return (
     <Pressable
@@ -118,7 +139,9 @@ export function PickerTrigger({
       style={({ pressed }) => [styles.trigger, style, pressed && styles.pressed]}
     >
       <Text
-        numberOfLines={1}
+        numberOfLines={lines}
+        adjustsFontSizeToFit={shrinkToFit}
+        minimumFontScale={shrinkToFit ? 0.65 : undefined}
         style={[styles.triggerText, textStyle, !display && styles.placeholder]}
       >
         {display ?? placeholder ?? ''}
@@ -148,7 +171,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
     padding: 12,
   },
   card: {
@@ -162,7 +184,14 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 8,
   },
-  title: { color: tablePalette.gold, fontSize: 15, fontWeight: '700', textAlign: 'center' },
+  title: {
+    color: tablePalette.gold,
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  content: { flexGrow: 0, flexShrink: 1 },
+  contentInner: { gap: 8, alignItems: 'center' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
   action: {
     minHeight: 40,
@@ -174,7 +203,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  actionPrimary: { backgroundColor: tablePalette.jade, borderColor: tablePalette.jade },
+  actionPrimary: {
+    backgroundColor: tablePalette.jade,
+    borderColor: tablePalette.jade,
+  },
   actionText: { color: tablePalette.cream, fontWeight: '700' },
   actionTextPrimary: { color: tablePalette.gold },
   trigger: { flexDirection: 'row', alignItems: 'center', gap: 8 },

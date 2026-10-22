@@ -316,6 +316,30 @@ describe("panneau de fin de partie : message selon le résultat officiel", () =>
     }
   });
 
+  it("GARAM : victoire à 22 points annoncée « Victoire avec deux As » ; un autre total reste « Meilleur total »", async () => {
+    const garamWin = (score: number) =>
+      finishedGame({
+        result: {
+          winnerId: OTHER,
+          method: "GARAM_BEST_SCORE" as const,
+          scores: { [OTHER]: score, [ME]: 18 },
+          belowThresholdIds: [],
+          penaltyThreshold: 15,
+          remainingOpponentIds: [ME],
+          fledPlayerIds: [],
+        },
+        mySettlement: undefined,
+      });
+    const twoAces = panel({ game: garamWin(22) });
+    await render(<GameOverPanel {...twoAces.props} />);
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent("Victoire avec deux As");
+    expect(screen.queryByText(/22/)).toBeNull();
+    await cleanup();
+    const best = panel({ game: garamWin(21) });
+    await render(<GameOverPanel {...best.props} />);
+    expect(screen.getByTestId("game-over-reason")).toHaveTextContent("Meilleur total : 21");
+  });
+
   it("victoire au contrôle : aucune mention de main spéciale ni de fuite", async () => {
     const { props } = panel();
     await render(<GameOverPanel {...props} />);

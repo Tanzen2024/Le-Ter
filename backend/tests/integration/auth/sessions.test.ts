@@ -233,6 +233,12 @@ describe('GET /api/auth/me', () => {
     const res = await me(user.accessToken).expect(200);
     expect(res.body.user.id).toBe(user.userId);
     expect(res.body.user).not.toHaveProperty('passwordHash');
+    // Numéro d'ordre du joueur sur la plateforme (D-133), affiché dans le HUD de l'app.
+    const { rows } = await database.sql.query<{ player_number: string }>(
+      'SELECT player_number FROM users WHERE id = $1',
+      [user.userId],
+    );
+    expect(res.body.user.playerNumber).toBe(Number(rows[0]?.player_number));
   });
 
   it.each([

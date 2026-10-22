@@ -9,6 +9,7 @@ import { getRequestId } from '../middleware/request-id';
 import type { SessionService, SessionSnapshot } from '../services/sessions/session.service';
 import {
   parseCreateSessionInput,
+  parseGameTypeQuery,
   parseIdempotencyKey,
   parseJoinSessionInput,
   parseNextGameInput,
@@ -45,9 +46,11 @@ export function createSessionController(sessions: SessionService) {
     },
 
     /** Tables ouvertes (partie en attente, siège libre) ; la mienne est marquée `mine`. */
-    async listOpen(_req: Request, res: Response): Promise<void> {
+    async listOpen(req: Request, res: Response): Promise<void> {
+      // Un jeu par liste (D-119) : sans paramètre, Le Ter (clients antérieurs inchangés).
+      const gameType = parseGameTypeQuery(req.query.gameType);
       const [tables, detectionAvailable] = await Promise.all([
-        sessions.listOpenTables(currentPlayer(res)),
+        sessions.listOpenTables(currentPlayer(res), gameType),
         sessions.isDetectionAvailable(),
       ]);
       // `detectionAvailable` : l'option « Détection anti-collusion » est-elle proposée (D-081) ?
@@ -125,6 +128,10 @@ export function toSessionView({ session, lastGame, viewerCanContinue }: SessionS
   const round = session.round;
   return {
     sessionId: session.id,
+    ...(session.gameType === 'GARAM' && {
+      gameType: session.gameType,
+      ...(session.garamVariant !== undefined && { garamVariant: session.garamVariant }),
+    }),
     version: session.version,
     status: session.status,
     creatorId: session.creatorId,

@@ -12,7 +12,7 @@ import { displayedDeadline } from '../../../hooks/use-server-countdown';
 import { ApiError } from '../../../lib/api-client';
 import { useMessages } from '../../../lib/i18n';
 import { useGameUiStore } from '../../../stores/game-ui-store';
-import type { GameView, PlayerInGame } from '../../../types/game';
+import { garamVariantLabel, type GameView, type PlayerInGame } from '../../../types/game';
 import { useLobbyMetrics } from '../../lobby/lobby-metrics';
 import { Coin, PanelButton } from '../../lobby/LobbyUi';
 import { SettingsPanel } from '../../lobby/SettingsPanel';
@@ -34,6 +34,7 @@ import {
 } from '../hooks';
 import { useGameUpdates, useTournamentSettlementUpdates } from '../game-updates';
 import { TournamentTableWaiting } from './TournamentTableWaiting';
+import { GaramPlayArea, GaramStakeVotePanel } from '../garam/GaramPlayArea';
 import { TournamentTableHud } from './TournamentTableHud';
 import { tournamentKeys, useTournamentSignals } from '../../tournaments/hooks';
 import { CARD_RATIO, HiddenHand } from './Cards';
@@ -50,6 +51,7 @@ import {
   PlayedCardSpotlight,
   PlayedCardsZone,
   SPOT_ANGLE,
+  SPOT_OFFSET,
   playedRowIn,
   playedZones,
   publicCardLeft,
@@ -275,14 +277,37 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
   const chatTop = controlsTop + layout.control * 2 + layout.gap * 2;
   return (
     <View style={styles.fill}>
-      <PlayArea
-        game={game}
-        receivedAt={receivedAt}
-        layout={layout}
-        dealing={dealing}
-        onDealDone={finishDeal}
-        onResultShown={onResultShown}
-      />
+      {game.gameType === 'GARAM' ? (
+        // GARAM TIA (D-119) : même table, mêmes cartes, déroulement propre au jeu.
+        <GaramPlayArea
+          game={game}
+          receivedAt={receivedAt}
+          layout={layout}
+          dealing={dealing}
+          onDealDone={finishDeal}
+          onResultShown={onResultShown}
+          center={(presenting) => (
+            // Fin de manche présentée sur la table (révélation, totaux, gagnant, D-128) : le
+            // panneau de résultat attend la fin de la présentation.
+            <TableCenter
+              game={game}
+              receivedAt={receivedAt}
+              layout={layout}
+              dealing={dealing}
+              presenting={presenting}
+            />
+          )}
+        />
+      ) : (
+        <PlayArea
+          game={game}
+          receivedAt={receivedAt}
+          layout={layout}
+          dealing={dealing}
+          onDealDone={finishDeal}
+          onResultShown={onResultShown}
+        />
+      )}
 
       {/* Contrôles discrets : quitter et réglages en haut à gauche. */}
       <View style={[styles.corner, { top: controlsTop, left: m.safe.left, gap: layout.gap }]}>
@@ -304,6 +329,18 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
             ⚙️
           </Text>
         </SoftIconButton>
+        {game.gameType === 'GARAM' ? (
+          // Variante jouée (D-127), visible de tous pendant toute la partie (vue du serveur).
+          <GlassBox style={styles.chip}>
+            <Text
+              testID="garam-variant"
+              accessibilityLabel={`Variante : ${garamVariantLabel(game.garamVariant)}`}
+              style={[styles.variantText, fontOf(fonts.button), { fontSize: m.smallSize }]}
+            >
+              {garamVariantLabel(game.garamVariant)}
+            </Text>
+          </GlassBox>
+        ) : null}
       </View>
 
       {/* Solde en lecture seule (aucune donnée de portefeuille : « — ») et chat en haut à
@@ -439,17 +476,6 @@ function useQuitGame(game: GameView) {
     error: failure,
   };
 }
-
-/**
- * Position de la carte jouée sur la table, poussée vers son joueur comme sur la référence
- * (carte posée à 16 % du diamètre du centre, côté de celui qui l'a jouée).
- */
-const SPOT_OFFSET: Record<SeatSide, { x: number; y: number }> = {
-  bottom: { x: 0, y: 0.16 },
-  top: { x: 0, y: -0.16 },
-  left: { x: -0.16, y: 0 },
-  right: { x: 0.16, y: 0 },
-};
 
 function seatStateOf(game: GameView, player: PlayerInGame, presenting: boolean): SeatState {
   const id = player.playerId;
@@ -929,6 +955,16 @@ function TableCenter({
     );
   }
 
+  if (game.status === 'waiting' && game.garamStakeVote) {
+    return (
+      <View style={[styles.centerSlot, centered(diameter), { top: cy - radius, height: diameter }]}>
+        <GlassBox style={box}>
+          <GaramStakeVotePanel game={game} />
+        </GlassBox>
+      </View>
+    );
+  }
+
   if (game.status === 'waiting') {
     const missing = game.maxPlayers - game.players.length;
     const isCreator = game.creatorId === game.viewerId;
@@ -1010,7 +1046,10 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
   const fonts = useTableFonts();
   const t = useMessages().gameOver;
   const { session, decision, quit, pending, error } = useQuitGame(game);
-  const tie = game.endReason === 'INSTANT_WIN_TIE';
+  // Égalité de priorité (Ter) ou manche nulle (GARAM TIA) : rejouée aussitôt par le serveur.
+  const tie = game.endReason === 'INSTANT_WIN_TIE' || game.endReason === 'GARAM_TIE';
+  const garamTie = game.garamTie;
+  const tieBest = garamTie?.scores ? Math.max(...Object.values(garamTie.scores)) : 0;
   const replayId = tie ? session.data?.currentGame?.gameId : undefined;
 
   // Reprise immédiate (D-035) : la nouvelle donne remplace cet écran, sans étape.
@@ -1024,9 +1063,15 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
     return (
       <GlassBox style={{ padding: m.gap, gap: m.gap * 0.6 }}>
         <Text style={[styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.2 }]}>
-          {t.tieTitle}
+          {garamTie ? t.garamTieTitle : t.tieTitle}
         </Text>
-        <Text style={[styles.smallText, { fontSize: m.smallSize }]}>{t.tieDetail}</Text>
+        <Text style={[styles.smallText, { fontSize: m.smallSize }]}>
+          {garamTie
+            ? garamTie.kind === 'SCORE'
+              ? t.garamTieScore(tieBest)
+              : t.garamTieSpecial
+            : t.tieDetail}
+        </Text>
         {replayId ? <PanelButton title={t.newDeal} onPress={() => openGame(replayId)} /> : null}
       </GlassBox>
     );
@@ -1161,5 +1206,6 @@ const styles = StyleSheet.create({
   whisper: { color: 'rgba(255, 245, 225, 0.75)' },
   error: { color: palette.error },
   chip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999 },
+  variantText: { color: '#F5C842' },
   hand: { position: 'absolute', flexDirection: 'row', alignItems: 'flex-end' },
 });

@@ -1,3 +1,5 @@
+import type { ApiError } from '../../lib/api-client';
+import type { GameType, GaramVariant } from '../../types/game';
 import type { TournamentCreationRules, TournamentProposalInput } from '../../types/tournament';
 
 /**
@@ -12,6 +14,16 @@ import type { TournamentCreationRules, TournamentProposalInput } from '../../typ
  * `fieldErrorsFromApi` les replace sur le formulaire.
  */
 export interface TournamentFormValues {
+  /**
+   * Jeu du tournoi (D-124) : `null` tant que l'utilisateur n'a pas choisi. Jamais présélectionné
+   * à la création (ni Fap-Fap ni GARAM TIA).
+   */
+  gameType: GameType | null;
+  /**
+   * Variante d'un tournoi GARAM TIA (D-127) : 15 présélectionnée (amendement du 2026-10-21),
+   * toujours envoyée explicitement ; `null` reste refusé ; ignorée pour Fap-Fap.
+   */
+  garamVariant: GaramVariant | null;
   /** JJ/MM/AAAA, heure locale du téléphone. */
   date: string;
   /** HH:MM. */
@@ -25,8 +37,25 @@ export interface TournamentFormValues {
   shares: string[];
 }
 
-export type TournamentFormField = Exclude<keyof TournamentFormValues, 'shares'> | 'shares';
+export type TournamentFormField = keyof TournamentFormValues;
+/** Champs saisis au clavier ou par les sélecteurs de date et d'heure. */
+export type TournamentTextField = Exclude<
+  TournamentFormField,
+  'shares' | 'gameType' | 'garamVariant'
+>;
 export type TournamentFormErrors = Partial<Record<TournamentFormField, string>>;
+
+/** Les deux jeux proposés, dans cet ordre ; libellés affichés tels quels. */
+export const TOURNAMENT_GAMES: readonly { value: GameType; label: string }[] = [
+  { value: 'TER', label: 'FAP-FAP' },
+  { value: 'GARAM', label: 'GARAM TIA' },
+];
+
+/** Jeu non choisi : même message que le serveur. */
+export const TOURNAMENT_GAME_REQUIRED = 'Veuillez sélectionner le jeu du tournoi.';
+
+/** Variante GARAM non choisie (D-127) : même message que le serveur. */
+export const GARAM_VARIANT_REQUIRED = 'Veuillez choisir la variante : GARAM 15, 16, 17 ou 18.';
 
 export const MAX_RANKS = 10;
 
@@ -86,6 +115,8 @@ const pad = (n: number) => String(n).padStart(2, '0');
 export function defaultTournamentForm(now: Date = new Date()): TournamentFormValues {
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   return {
+    gameType: null,
+    garamVariant: 15,
     date: `${pad(tomorrow.getDate())}/${pad(tomorrow.getMonth() + 1)}/${tomorrow.getFullYear()}`,
     startTime: '18:00',
     durationMinutes: String(TOURNAMENT_DURATION_MINUTES.default),
@@ -147,6 +178,10 @@ export function toTournamentPayload(
   rules?: TournamentCreationRules,
 ): { ok: true; payload: TournamentProposalInput } | { ok: false; errors: TournamentFormErrors } {
   const errors: TournamentFormErrors = {};
+  const { gameType } = values;
+  if (gameType === null) errors.gameType = TOURNAMENT_GAME_REQUIRED;
+  const { garamVariant } = values;
+  if (gameType === 'GARAM' && garamVariant === null) errors.garamVariant = GARAM_VARIANT_REQUIRED;
   const start = parseLocalStart(values.date, values.startTime);
   if (!start) {
     if (!parseLocalStart(values.date, '00:00')) errors.date = 'Date au format JJ/MM/AAAA.';
@@ -170,11 +205,13 @@ export function toTournamentPayload(
   if (shares.length < 1 || shares.length > MAX_RANKS || shares.some((s) => !PERCENT.test(s))) {
     errors.shares = 'Un pourcentage par rang récompensé.';
   }
-  if (Object.keys(errors).length > 0 || !start) return { ok: false, errors };
+  if (Object.keys(errors).length > 0 || !start || gameType === null) return { ok: false, errors };
 
   return {
     ok: true,
     payload: {
+      gameType,
+      ...(gameType === 'GARAM' && garamVariant !== null && { garamVariant }),
       ...(timezone && { timezone }),
       startsAt: start.toISOString(),
       endsAt: new Date(start.getTime() + duration * 60_000).toISOString(),
@@ -232,6 +269,8 @@ export function sharesTotal(shares: string[]): number {
 
 /** Champs de l'API → champs du formulaire (messages du serveur affichés tels quels). */
 const API_FIELD_MAP: Record<string, TournamentFormField> = {
+  gameType: 'gameType',
+  garamVariant: 'garamVariant',
   timezone: 'date',
   startsAt: 'startTime',
   endsAt: 'durationMinutes',
@@ -253,4 +292,15 @@ export function fieldErrorsFromApi(
     if (target && !errors[target]) errors[target] = message;
   }
   return errors;
+}
+
+/** Erreurs d'une création refusée, posées sur le formulaire (champs renvoyés par le serveur). */
+export function formErrorsFromApiError(err: ApiError): TournamentFormErrors {
+  return fieldErrorsFromApi(err.fields);
+}
+
+/** Erreur à afficher sous le formulaire : seulement celles qu'aucun champ ne porte. */
+export function generalApiError(err: ApiError | undefined): string | undefined {
+  if (!err || Object.keys(formErrorsFromApiError(err)).length > 0) return undefined;
+  return err.message;
 }

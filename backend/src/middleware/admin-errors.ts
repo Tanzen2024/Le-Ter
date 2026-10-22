@@ -87,4 +87,7 @@ const MODERATION_CONFLICT_MESSAGES: Record<ModerationConflictError['code'], stri
   NOT_SUSPENDED: 'Ce joueur n’a aucune suspension en cours.',
   NOT_CHAT_RESTRICTED: 'Le chat de ce joueur n’est pas restreint.',
   NOTE_ALREADY_DELETED: 'Cette note est déjà supprimée.',
+  RECOVERY_PLAYERS_ONLY:
+    'La récupération par code est réservée aux joueurs ; un administrateur garde son accès par email.',
+  ACCOUNT_NOT_ACTIVE: 'Ce compte n’est pas actif : réactivez-le avant de réinitialiser son accès.',
 };

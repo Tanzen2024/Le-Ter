@@ -15,6 +15,7 @@ import {
   type SignalType,
 } from '../../domain/detection/detection-config';
 import { playerPairs } from '../../domain/detection/geo';
+import type { GameType } from '../../domain/game/game';
 import type { GameId, PlayerId } from '../../domain/game/game-id';
 import type {
   AnalysisPeriod,
@@ -33,6 +34,11 @@ import type { DetectionAnalyzer, DetectionContext } from './detection.service';
  *
  * Éléments justificatifs minimisés : compteurs, taux, période. Jamais d'IP (aucune n'est
  * conservée), de coordonnées, de main d'un joueur ni d'identifiant d'une autre partie.
+ *
+ * Communs à Fap-Fap et à GARAM TIA (D-125) : l'historique est celui du JEU de la partie
+ * observée (`gameTypeOf`), jamais un mélange des deux. CARD_CHOICE_ANOMALY ne lit que des
+ * parties jouées jusqu'au 5e tour du Ter (`CONTROL_AFTER_LAST_TRICK`) : une manche GARAM n'en
+ * produit donc aucune (décision de contrôle non définie pour GARAM), sans cas particulier.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -66,6 +72,8 @@ function evidenceOf(
 }
 
 const uniquePlayers = (context: DetectionContext) => [...new Set(context.playerIds)];
+/** Jeu de la partie observée (absent : Le Ter, D-119). */
+const gameTypeOf = (context: DetectionContext): GameType => context.game.gameType ?? 'TER';
 
 export class FrequentCoplayAnalyzer implements DetectionAnalyzer {
   readonly name = 'frequent-coplay';
@@ -76,7 +84,9 @@ export class FrequentCoplayAnalyzer implements DetectionAnalyzer {
     const period = periodOf(context, windowDays);
     const drafts: SignalDraft[] = [];
     for (const pair of playerPairs(uniquePlayers(context)).map(sortedPair)) {
-      const found = evaluateCoplay(await this.history.coplayStats(pair, period));
+      const found = evaluateCoplay(
+        await this.history.coplayStats(pair, period, gameTypeOf(context)),
+      );
       if (!found) continue;
       drafts.push({
         type: 'FREQUENT_COPLAY',
@@ -108,7 +118,12 @@ export class CardChoiceAnomalyAnalyzer implements DetectionAnalyzer {
     const drafts: SignalDraft[] = [];
 
     for (const deciderId of players) {
-      const ids = await this.history.playedToTheEndGameIds(deciderId, period, maxGamesPerPlayer);
+      const ids = await this.history.playedToTheEndGameIds(
+        deciderId,
+        period,
+        maxGamesPerPlayer,
+        gameTypeOf(context),
+      );
       const decisions: ControlDecision[] = [];
       const excluded: Partial<Record<GameExclusion, number>> = {};
       for (const id of ids) {
@@ -154,7 +169,7 @@ export class CorrelatedWinsAnalyzer implements DetectionAnalyzer {
     const { windowDays } = DETECTION_THRESHOLDS.correlatedWins;
     const period = periodOf(context, windowDays);
     const players = uniquePlayers(context);
-    const outcomes = await this.history.outcomes(players, period);
+    const outcomes = await this.history.outcomes(players, period, gameTypeOf(context));
     const drafts: SignalDraft[] = [];
     for (const pair of playerPairs(players).map(sortedPair)) {
       const found = evaluateCorrelatedWins(outcomes, pair);
@@ -180,7 +195,9 @@ export class ConnectionPatternAnalyzer implements DetectionAnalyzer {
     const period = periodOf(context, windowDays);
     const drafts: SignalDraft[] = [];
     for (const pair of playerPairs(uniquePlayers(context)).map(sortedPair)) {
-      const found = evaluateConnectionPattern(await this.history.sharedTables(pair, period));
+      const found = evaluateConnectionPattern(
+        await this.history.sharedTables(pair, period, gameTypeOf(context)),
+      );
       if (!found) continue;
       drafts.push({
         type: 'CONNECTION_PATTERN',

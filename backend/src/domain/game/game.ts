@@ -1,4 +1,13 @@
 import type { CardId } from '../cards/card';
+import type { GaramCardId } from '../garam/garam-cards';
+import type {
+  GaramLegacyCondition,
+  GaramPlay,
+  GaramSpecialCondition,
+  GaramStakeVote,
+  GaramTie,
+  GaramVariant,
+} from '../garam/garam-rules';
 import type { SessionId } from '../sessions/session';
 import type { InstantWinRank, WinConditionId } from '../rules/win-conditions';
 import type { GameId, PlayerId } from './game-id';
@@ -11,6 +20,17 @@ import type { GameId, PlayerId } from './game-id';
  * défini (docs/TODO.md R-23, R-25).
  */
 export type GameStatus = 'waiting' | 'in_progress' | 'finished';
+
+/**
+ * Jeu d'une partie (D-119) : `TER` (Le Ter, jeu historique) ou `GARAM` (GARAM TIA). Fixé par
+ * la session à la création, immuable (colonne `game_type`). Absent ou `TER` : Le Ter.
+ */
+export const GAME_TYPES = ['TER', 'GARAM'] as const;
+export type GameType = (typeof GAME_TYPES)[number];
+
+export function isGameType(value: unknown): value is GameType {
+  return typeof value === 'string' && (GAME_TYPES as readonly string[]).includes(value);
+}
 
 /** Nombre de joueurs autorisé par la spécification fonctionnelle (§1). */
 export const MIN_PLAYERS = 2;
@@ -116,7 +136,11 @@ export type GameEndMethod =
    * Partie à 2 : l'adversaire s'est couché (avant sa deuxième carte) ; le joueur restant gagne
    * aussitôt, victoire SIMPLE, et le fuyard paie sa mise comme un perdant (D-086).
    */
-  | 'OPPONENT_FLED';
+  | 'OPPONENT_FLED'
+  /** GARAM TIA : condition spéciale de victoire automatique (§3.12, §3.13). */
+  | 'GARAM_AUTOMATIC_WIN'
+  /** GARAM TIA : fin normale, plus grand total ≤ 21 (§3.14). */
+  | 'GARAM_BEST_SCORE';
 
 /**
  * Raison de la fin d'une partie (colonne `games.end_reason`) :
@@ -125,7 +149,16 @@ export type GameEndMethod =
  *   partie est immédiatement rejouée dans une NOUVELLE partie de la session ;
  * - ADMIN_STOP : arrêt administratif, sans résultat de jeu.
  */
-export type GameEndReason = GameEndMethod | 'INSTANT_WIN_TIE' | 'ADMIN_STOP';
+export type GameEndReason = GameEndMethod | 'INSTANT_WIN_TIE' | 'GARAM_TIE' | 'ADMIN_STOP';
+
+/**
+ * Fins SANS gagnant rejouées aussitôt dans une nouvelle partie de la même session, sans
+ * Poursuivre/Quitter et avec le même J1 : égalité de priorité du Ter (D-035) et manche nulle
+ * de GARAM TIA (D-119).
+ */
+export function isReplayEndReason(reason: GameEndReason | undefined): boolean {
+  return reason === 'INSTANT_WIN_TIE' || reason === 'GARAM_TIE';
+}
 
 /** Type de victoire. Une victoire instantanée est toujours SIMPLE (jamais Kora). */
 export type VictoryType = 'SIMPLE';
@@ -152,6 +185,23 @@ export interface GameResult {
    * la fuite d'une partie à 2 (`OPPONENT_FLED`) : le fuyard y est le perdant (D-086).
    */
   fledPlayerIds: PlayerId[];
+  /**
+   * GARAM TIA : main spéciale gagnante (déclarée, ou arbitrée automatiquement si
+   * `automatic`, D-130). Les manches jouées avant D-130 peuvent porter une ancienne condition.
+   */
+  garamCondition?: GaramSpecialCondition | GaramLegacyCondition;
+  /** GARAM TIA : total final de chaque joueur (fin normale, §3.14). */
+  scores?: Record<string, number>;
+  /**
+   * GARAM TIA : perdants dont le total est STRICTEMENT inférieur au seuil de la variante
+   * (fin normale seulement, D-119, D-127), qui paient une mise de plus au gagnant. Les
+   * résultats enregistrés avant D-127 (`belowFifteenIds`, GARAM 15) sont relus sous ce nom.
+   */
+  belowThresholdIds?: PlayerId[];
+  /** GARAM TIA : seuil « moins de X » appliqué (la variante de la partie, D-127). */
+  penaltyThreshold?: GaramVariant;
+  /** GARAM TIA : cartes en main révélées à la fin (§2.5). */
+  garamHands?: Record<string, GaramCardId[]>;
 }
 
 /**
@@ -160,6 +210,13 @@ export interface GameResult {
  */
 export interface Game {
   id: GameId;
+  /** Jeu de la partie (D-119). Absent : Le Ter. */
+  gameType?: GameType;
+  /**
+   * GARAM TIA : variante de la partie (15, 16, 17 ou 18, D-127), recopiée de la session à la
+   * création, immuable. Toujours présente pour GARAM, jamais pour Le Ter.
+   */
+  garamVariant?: GaramVariant;
   /**
    * Session à laquelle appartient la partie (D-033). Toujours présente en base
    * (`games.session_id NOT NULL`) ; absente seulement pour des parties de test isolées.
@@ -177,9 +234,20 @@ export interface Game {
   maxPlayers: number;
   /** Mise de la partie (séquence « création de partie »). Unité à définir (R-13). */
   stakeAmount?: number;
+  /**
+   * GARAM TIA : mise définie à la création de la table (D-138), reportée de manche en manche.
+   * Une proposition de doubler refusée ou sans réponse de tous ramène la manche à cette mise.
+   */
+  garamBaseStake?: number;
   players: PlayerInGame[];
-  /** Présent dès que la partie a démarré. */
+  /** Présent dès que la partie a démarré (Le Ter). */
   play?: TerPlay;
+  /** GARAM TIA : état de la manche, présent dès qu'elle a démarré (D-119). */
+  garam?: GaramPlay;
+  /** GARAM TIA : manche nulle (endReason = GARAM_TIE). */
+  garamTie?: GaramTie;
+  /** GARAM TIA : proposition de doubler la mise, sur la manche en attente qui rejoue (§3.15). */
+  garamStakeVote?: GaramStakeVote;
   /** Présent quand la partie s'est terminée par une victoire. */
   result?: GameResult;
   /** Raison de la fin, présente dès que la partie est terminée. */
@@ -247,6 +315,15 @@ export function isForwardTransition(from: GameStatus, to: GameStatus): boolean {
 
 export function isActive(game: Game): boolean {
   return game.status !== 'finished';
+}
+
+export function isGaram(game: Pick<Game, 'gameType'>): boolean {
+  return game.gameType === 'GARAM';
+}
+
+/** Joueur attendu par le serveur dans une partie en cours, quel que soit le jeu. */
+export function expectedPlayerOf(game: Pick<Game, 'play' | 'garam'>): PlayerId | undefined {
+  return game.play?.nextPlayerId ?? game.garam?.nextPlayerId;
 }
 
 export function activePlayerIds(game: Game): PlayerId[] {

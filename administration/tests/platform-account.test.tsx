@@ -20,6 +20,7 @@ vi.mock('next/navigation', () => ({
 const entry = (overrides: Partial<LedgerEntry>): LedgerEntry => ({
   id: 'e-1',
   kind: 'GAME_COMMISSION',
+  source: 'FAP_FAP',
   amount: 4,
   currency: 'XAF',
   feeBps: 400,

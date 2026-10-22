@@ -1,6 +1,7 @@
 import type { CardId } from '../../src/domain/cards/card';
 import { createDeck } from '../../src/domain/cards/deck';
 import type { RandomSource } from '../../src/domain/cards/random-source';
+import { createGaramDeck, type GaramCardId } from '../../src/domain/garam/garam-cards';
 
 /** Générateur déterministe (mulberry32) : même graine → même suite. */
 export function seededRandom(seed: number): RandomSource {
@@ -82,4 +83,24 @@ export function deckForHands(hands: CardId[][]): CardId[] {
 export const DEFAULT_TEST_SEED = 20261007;
 export function defaultTestRandom(): RandomSource {
   return seededRandom(DEFAULT_TEST_SEED);
+}
+
+/**
+ * GARAM TIA (D-119) : hasard qui fait produire à shuffleDeck EXACTEMENT les paquets donnés
+ * (un par manche démarrée, dans l'ordre), puis l'ordre identité. Un paquet = les 3 cartes de
+ * chaque joueur dans l'ordre de la table, puis le terre.
+ */
+export function garamDecksRandom(...decks: GaramCardId[][]): RandomSource {
+  const draws: number[] = [];
+  for (const target of decks) {
+    const deck = createGaramDeck();
+    const full = [...target, ...deck.filter((c) => !target.includes(c))];
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = deck.indexOf(full[i] as GaramCardId);
+      draws.push(j);
+      [deck[i], deck[j]] = [deck[j] as GaramCardId, deck[i] as GaramCardId];
+    }
+  }
+  let index = 0;
+  return { nextInt: (max) => (index < draws.length ? (draws[index++] as number) : max - 1) };
 }

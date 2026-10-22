@@ -52,6 +52,7 @@ import type {
 import { InMemoryGameEventHub } from '../../src/websocket/in-memory-game-event-hub';
 import { NO_RATE_LIMITS, TEST_JWT_SECRET } from './auth';
 import { defaultTestRandom } from './random';
+import { sameAsTurn } from './game-service.fixture';
 
 export interface GameApiTestContext {
   app: Express;
@@ -88,10 +89,19 @@ export function createGameApiTestApp(
     gameWritesPerMinute?: number;
     /** Durées des timers (15 s par défaut, comme en production, D-034, D-068). */
     turnDurationMs?: number;
+    /**
+     * GARAM TIA, tirage automatique (D-136). Par défaut : la durée d'un tour, pour que les tests
+     * qui tirent par `DRAW_CARD` ne soient pas devancés par le serveur.
+     */
+    garamAutoDrawMs?: { first: number; step: number; afterFirstRound?: number; pass?: number };
+    /** GARAM TIA : délai de la déclaration automatique d'une main spéciale (D-137). */
+    garamAutoDeclareMs?: number;
     decisionWindowMs?: number;
     autoCardSelection?: AutomaticCardSelectionStrategy;
     /** Présentation du 5e tour avant la ronde (D-041) ; 0 par défaut dans les tests. */
     lastTrickPresentationMs?: (cards: number) => number;
+    /** GARAM TIA : présentation de fin de manche avant la ronde (D-128) ; 0 par défaut. */
+    garamRevealPresentationMs?: (players: number) => number;
     /** Partie suivante automatique après « Poursuivre » (D-042) ; désactivée par défaut. */
     autoNextGame?: boolean;
     /** Chat de partie (D-045) ; absent, ses routes ne sont pas montées. */
@@ -168,6 +178,8 @@ export function createGameApiTestApp(
     rules: options.rules,
     random: options.random ?? defaultTestRandom(),
     turnDurationMs: options.turnDurationMs,
+    garamAutoDrawMs: options.garamAutoDrawMs ?? sameAsTurn(options.turnDurationMs),
+    garamAutoDeclareMs: options.garamAutoDeclareMs,
     dealDurationMs: options.dealDurationMs ?? (() => 0),
     autoCardSelection: options.autoCardSelection,
   });
@@ -183,6 +195,7 @@ export function createGameApiTestApp(
     passwords: new PasswordService(4),
     // Échéances de ronde exactes : la présentation du 5e tour (D-041) est testée à part.
     lastTrickPresentationMs: options.lastTrickPresentationMs ?? (() => 0),
+    garamRevealPresentationMs: options.garamRevealPresentationMs ?? (() => 0),
     // Les tests historiques créent la partie suivante eux-mêmes (POST …/games).
     autoNextGame: options.autoNextGame ?? false,
     decisionWindowMs: options.decisionWindowMs,

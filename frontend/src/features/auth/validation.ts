@@ -1,4 +1,4 @@
-import { findPhoneCountry, toE164 } from '../../lib/phone-countries';
+import { findPhoneCountry, splitInternationalNumber, toE164 } from '../../lib/phone-countries';
 import type { ChangePasswordPayload, RegisterPayload } from '../../types/auth';
 
 /**
@@ -66,9 +66,9 @@ export function validateCredentialsStep(
   values: Pick<RegisterPayload, CredentialsField>,
 ): FieldErrors<CredentialsField> {
   const errors: FieldErrors<CredentialsField> = {};
+  // Email facultatif (D-135) : vérifié seulement s'il est saisi.
   const email = values.email.trim();
-  if (!email) errors.email = REQUIRED;
-  else if (!EMAIL_PATTERN.test(email)) errors.email = 'Adresse email invalide.';
+  if (email && !EMAIL_PATTERN.test(email)) errors.email = 'Adresse email invalide.';
 
   if (!values.country) errors.country = REQUIRED;
   const phone = phoneProblem(values.country, values.phone);
@@ -78,6 +78,73 @@ export function validateCredentialsStep(
   if (password) errors.password = password;
   if (!values.confirmPassword) errors.confirmPassword = REQUIRED;
   else if (values.confirmPassword !== values.password) {
+    errors.confirmPassword = 'Les mots de passe ne correspondent pas.';
+  }
+  return errors;
+}
+
+/** Pays + numéro national (connexion, récupération) : mêmes règles qu'à l'inscription. */
+export function validatePhone(country: string, phone: string): FieldErrors<'country' | 'phone'> {
+  const errors: FieldErrors<'country' | 'phone'> = {};
+  if (!country) errors.country = REQUIRED;
+  const problem = phoneProblem(country, phone);
+  if (problem) errors.phone = problem;
+  return errors;
+}
+
+/**
+ * Champ unique de la connexion : une adresse e-mail dès qu'il contient « @ » ou une lettre,
+ * sinon un numéro de téléphone. Le joueur ne choisit jamais le mode lui-même.
+ */
+export function looksLikeEmail(identifier: string): boolean {
+  return /[@\p{L}]/u.test(identifier);
+}
+
+export type LoginCredentials = { email: string } | { country: string; phone: string };
+
+/**
+ * Identifiant de connexion → `{ email }` ou `{ country, phone }` (numéro national, sans
+ * séparateurs), les deux formes acceptées par `POST /api/auth/login`. Un numéro tapé avec son
+ * indicatif (« +237… ») l'emporte sur le pays sélectionné.
+ */
+export function resolveLoginIdentifier(
+  country: string,
+  identifier: string,
+): { credentials: LoginCredentials } | { error: string } {
+  const value = identifier.trim();
+  if (!value) return { error: 'Saisissez votre téléphone ou votre adresse e-mail.' };
+  if (looksLikeEmail(value)) {
+    return EMAIL_PATTERN.test(value)
+      ? { credentials: { email: value } }
+      : { error: 'Adresse e-mail invalide.' };
+  }
+  if (/^(\+|00)/.test(value)) {
+    const international = splitInternationalNumber(value);
+    return international
+      ? {
+          credentials: {
+            country: international.code,
+            phone: international.national,
+          },
+        }
+      : { error: 'Numéro de téléphone invalide.' };
+  }
+  const problem = country ? phoneProblem(country, value) : REQUIRED;
+  return problem
+    ? { error: problem }
+    : { credentials: { country, phone: value.replace(/[\s.()-]/g, '') } };
+}
+
+/** Nouveau mot de passe et confirmation (réinitialisation, D-135). */
+export function validateNewPassword(
+  newPassword: string,
+  confirmPassword: string,
+): FieldErrors<'newPassword' | 'confirmPassword'> {
+  const errors: FieldErrors<'newPassword' | 'confirmPassword'> = {};
+  const password = passwordProblem(newPassword);
+  if (password) errors.newPassword = password;
+  if (!confirmPassword) errors.confirmPassword = REQUIRED;
+  else if (confirmPassword !== newPassword) {
     errors.confirmPassword = 'Les mots de passe ne correspondent pas.';
   }
   return errors;

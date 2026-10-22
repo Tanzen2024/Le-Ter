@@ -1,10 +1,12 @@
+import { GARAM_VARIANT_REQUIRED, isGaramVariant } from '../domain/garam/garam-rules';
+import { isGameType } from '../domain/game/game';
 import type {
   CancellationReason,
   TournamentInput,
   TournamentSettings,
   TournamentStatus,
 } from '../domain/tournaments/tournament';
-import { TOURNAMENT_STATUSES } from '../domain/tournaments/tournament';
+import { TOURNAMENT_GAME_REQUIRED, TOURNAMENT_STATUSES } from '../domain/tournaments/tournament';
 import { ValidationError } from './validation-error';
 
 /**
@@ -32,6 +34,19 @@ export function parseTournamentInput(
   const b = asBody(body);
   const fields: Record<string, string> = {};
   const out: Partial<TournamentInput> = {};
+
+  // Jeu (D-124) : 'TER' (Fap-Fap) ou 'GARAM' (GARAM TIA), le `game_type` des sessions.
+  // Obligatoire à la création ; absent, null, vide ou inconnu : refusé, jamais remplacé.
+  if (!partial || b.gameType !== undefined) {
+    if (isGameType(b.gameType)) out.gameType = b.gameType;
+    else fields.gameType = TOURNAMENT_GAME_REQUIRED;
+  }
+  // Variante GARAM TIA (D-127) : transmise telle quelle, vérifiée avec le jeu par
+  // `validateTournamentInput` (obligatoire pour GARAM, refusée pour Fap-Fap).
+  if (b.garamVariant !== undefined && b.garamVariant !== null) {
+    if (isGaramVariant(b.garamVariant)) out.garamVariant = b.garamVariant;
+    else fields.garamVariant = GARAM_VARIANT_REQUIRED;
+  }
 
   // Ni nom ni description (D-060) : ces clés, si un ancien client les envoie, sont ignorées.
   if (b.timezone !== undefined) {

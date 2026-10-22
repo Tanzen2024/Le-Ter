@@ -16,6 +16,22 @@ import type { UserId } from '../users/user';
  * « Inconnu » est `null`, jamais 0.
  */
 
+/**
+ * Source d'une recette de la caisse UNIQUE de la plateforme (`platform_ledger.source`, D-120).
+ * Elle trace l'origine d'une écriture, jamais une caisse distincte : le solde reste global.
+ */
+export const LEDGER_SOURCES = ['FAP_FAP', 'TOURNAMENT', 'GARAM_TIA'] as const;
+export type LedgerSource = (typeof LEDGER_SOURCES)[number];
+
+export function isLedgerSource(value: unknown): value is LedgerSource {
+  return typeof value === 'string' && (LEDGER_SOURCES as readonly string[]).includes(value);
+}
+
+/** Source de la commission d'une partie, d'après son jeu (Le Ter = Fap-Fap, D-119). */
+export function gameLedgerSource(gameType: 'TER' | 'GARAM' | undefined): LedgerSource {
+  return gameType === 'GARAM' ? 'GARAM_TIA' : 'FAP_FAP';
+}
+
 export const PLATFORM_PAYOUT_CURRENCY = 'XAF' as const;
 /** Bornes d'un transfert CinetPay v1 (SDK officiel `cinetpay-js` : 100 à 1 500 000). */
 export const PLATFORM_PAYOUT_MIN_AMOUNT = 100;

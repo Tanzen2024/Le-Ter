@@ -150,7 +150,8 @@ function FrameContent({
             style={[
               styles.bannerTitle,
               fontOf(fonts.button),
-              { fontSize: Math.round(clamp(bannerHeight * 0.36, 14, 26)) },
+              // Même taille que le titre des panneaux Fap-Fap et Garam Tia (LobbyPanel).
+              { fontSize: m.panelTitleSize },
             ]}
           >
             Tournois

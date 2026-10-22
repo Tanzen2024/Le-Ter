@@ -1,5 +1,10 @@
 import { isGameId, type GameId } from '../domain/game/game-id';
-import { ALLOWED_MAX_PLAYERS } from '../domain/game/game';
+import { ALLOWED_MAX_PLAYERS, GAME_TYPES, isGameType, type GameType } from '../domain/game/game';
+import {
+  GARAM_VARIANT_REQUIRED,
+  isGaramVariant,
+  type GaramVariant,
+} from '../domain/garam/garam-rules';
 import { isValidGameStake } from '../domain/rules/stake';
 import { BCRYPT_MAX_PASSWORD_BYTES } from '../services/auth/password.service';
 import { ValidationError } from './validation-error';
@@ -46,11 +51,22 @@ export interface JoinGameInput {
 }
 
 /** Actions de jeu exposées. START, LEAVE : règles non tranchées (R-23, R-19). */
-export const GAME_ACTION_TYPES = ['PLAY_CARD', 'DECLARE_WIN', 'FLEE'] as const;
+export const GAME_ACTION_TYPES = [
+  'PLAY_CARD',
+  'DECLARE_WIN',
+  'FLEE',
+  // GARAM TIA (D-119) : tirer au terre, répondre à « doubler la mise ».
+  'DRAW_CARD',
+  'STAKE_VOTE',
+] as const;
 export type GameActionType = (typeof GAME_ACTION_TYPES)[number];
 
 export type GameAction =
-  { type: 'PLAY_CARD'; cardId: string } | { type: 'DECLARE_WIN' } | { type: 'FLEE' };
+  | { type: 'PLAY_CARD'; cardId: string }
+  | { type: 'DECLARE_WIN' }
+  | { type: 'FLEE' }
+  | { type: 'DRAW_CARD' }
+  | { type: 'STAKE_VOTE'; accept: boolean };
 
 export interface GameActionInput {
   /** Obligatoire : un renvoi (réseau instable) n'est appliqué qu'une fois. */
@@ -100,6 +116,10 @@ export const TABLE_PASSWORD_MIN_LENGTH = 4;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 export interface CreateSessionInput extends CreateGameInput {
+  /** Jeu de la table (D-119) : 'TER' par défaut, ou 'GARAM'. */
+  gameType?: GameType;
+  /** GARAM TIA : variante 15, 16, 17 ou 18, OBLIGATOIRE et explicite (D-127). */
+  garamVariant?: GaramVariant;
   name?: string;
   password?: string;
   /** Détection anti-collusion (D-043) : booléen facultatif, faux par défaut. */
@@ -151,6 +171,17 @@ export function parseCreateSessionInput(body: unknown): CreateSessionInput {
   if (suspicionDetectionEnabled !== undefined && typeof suspicionDetectionEnabled !== 'boolean') {
     fields.suspicionDetectionEnabled = 'Valeur attendue : vrai ou faux.';
   }
+  const { gameType } = source;
+  if (gameType !== undefined && !isGameType(gameType)) {
+    fields.gameType = `Jeu inconnu. Jeux possibles : ${GAME_TYPES.join(', ')}.`;
+  }
+  // Variante GARAM (D-127) : obligatoire pour GARAM, jamais déduite ; refusée pour Le Ter.
+  const { garamVariant } = source;
+  if (gameType === 'GARAM' && !isGaramVariant(garamVariant)) {
+    fields.garamVariant = GARAM_VARIANT_REQUIRED;
+  } else if (gameType !== 'GARAM' && garamVariant !== undefined && garamVariant !== null) {
+    fields.garamVariant = 'La variante ne concerne que GARAM TIA.';
+  }
   if (Object.keys(fields).length > 0 || !base) {
     throw new ValidationError(fields);
   }
@@ -159,7 +190,18 @@ export function parseCreateSessionInput(body: unknown): CreateSessionInput {
     ...(name !== undefined && { name }),
     ...(password !== undefined && { password }),
     ...(typeof suspicionDetectionEnabled === 'boolean' && { suspicionDetectionEnabled }),
+    ...(gameType === 'GARAM' &&
+      isGaramVariant(garamVariant) && { gameType: 'GARAM' as const, garamVariant }),
   };
+}
+
+/** `?gameType=` de la liste des tables ouvertes (D-119) : Le Ter si absent. */
+export function parseGameTypeQuery(value: unknown): GameType {
+  if (value === undefined || value === '') return 'TER';
+  if (!isGameType(value)) {
+    throw new ValidationError({ gameType: `Jeu inconnu. Jeux possibles : ${GAME_TYPES.join(', ')}.` });
+  }
+  return value;
 }
 
 /** Arrivée dans une partie privée (POST /api/sessions/:id/join) : mot de passe éventuel. */
@@ -243,8 +285,14 @@ export function parseGameActionInput(body: unknown): GameActionInput {
     } else {
       action = { type, cardId };
     }
-  } else if (type === 'DECLARE_WIN' || type === 'FLEE') {
+  } else if (type === 'DECLARE_WIN' || type === 'FLEE' || type === 'DRAW_CARD') {
     action = { type };
+  } else if (type === 'STAKE_VOTE') {
+    if (typeof payload.accept !== 'boolean') {
+      fields.accept = 'Réponse attendue : vrai (doubler) ou faux.';
+    } else {
+      action = { type, accept: payload.accept };
+    }
   } else {
     fields.type = `Action inconnue. Actions possibles : ${GAME_ACTION_TYPES.join(', ')}.`;
   }

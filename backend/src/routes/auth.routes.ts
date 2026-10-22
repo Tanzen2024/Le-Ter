@@ -16,6 +16,14 @@ export interface AuthRateLimits {
   refresh: { windowMs: number; max: number };
   /** Changements de mot de passe par utilisateur authentifié (essais du mot de passe actuel). */
   passwordChange?: { windowMs: number; max: number };
+  /**
+   * Récupération par code (D-135), en plus du blocage EN BASE du compte après 5 codes faux :
+   * essais par IP, et par numéro (toutes IP confondues sur cette instance).
+   */
+  recoveryPerIp?: { windowMs: number; max: number };
+  recoveryPerPhone?: { windowMs: number; max: number };
+  /** Réinitialisations et nouveaux codes du Profil. */
+  recoveryReset?: { windowMs: number; max: number };
 }
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -26,6 +34,9 @@ export const DEFAULT_AUTH_RATE_LIMITS: AuthRateLimits = {
   loginPerIp: { windowMs: FIFTEEN_MINUTES, max: 100 },
   refresh: { windowMs: FIFTEEN_MINUTES, max: 300 },
   passwordChange: { windowMs: FIFTEEN_MINUTES, max: 10 },
+  recoveryPerIp: { windowMs: FIFTEEN_MINUTES, max: 30 },
+  recoveryPerPhone: { windowMs: FIFTEEN_MINUTES, max: 10 },
+  recoveryReset: { windowMs: FIFTEEN_MINUTES, max: 10 },
 };
 
 export function createAuthRouter(
@@ -40,6 +51,12 @@ export function createAuthRouter(
     const email: unknown = (req.body as { email?: unknown } | undefined)?.email;
     return typeof email === 'string' ? email.trim().toLowerCase() : '';
   };
+  // Clé grossière du numéro (chiffres seulement) : suffit à regrouper les essais sur un compte.
+  const phoneOf = (req: Request) => {
+    const phone: unknown = (req.body as { phone?: unknown } | undefined)?.phone;
+    return typeof phone === 'string' ? phone.replace(/\D/g, '') : '';
+  };
+  const recoveryReset = limits.recoveryReset ?? DEFAULT_AUTH_RATE_LIMITS.recoveryReset!;
 
   router.post(
     '/register',
@@ -52,9 +69,40 @@ export function createAuthRouter(
     createRateLimiter({
       name: 'login-account',
       ...limits.loginPerAccount,
-      keyOf: (req) => `${ip(req)}|${emailOf(req)}`,
+      // Email ou téléphone (D-135) : chaque identifiant a son propre compteur.
+      keyOf: (req) => `${ip(req)}|${emailOf(req) || phoneOf(req)}`,
     }),
     controller.login,
+  );
+  router.post(
+    '/recovery/verify',
+    createRateLimiter({
+      name: 'recovery-ip',
+      ...(limits.recoveryPerIp ?? DEFAULT_AUTH_RATE_LIMITS.recoveryPerIp!),
+    }),
+    createRateLimiter({
+      name: 'recovery-phone',
+      ...(limits.recoveryPerPhone ?? DEFAULT_AUTH_RATE_LIMITS.recoveryPerPhone!),
+      // Téléphone ou email (D-142), dans l'ordre du validateur (le téléphone l'emporte) :
+      // ajouter un email inventé ne donne jamais un nouveau compteur au même numéro.
+      keyOf: (req) => phoneOf(req) || emailOf(req),
+    }),
+    controller.verifyRecovery,
+  );
+  router.post(
+    '/recovery/reset',
+    createRateLimiter({ name: 'recovery-reset', ...recoveryReset }),
+    controller.resetPassword,
+  );
+  router.post(
+    '/recovery-code',
+    createRequireAuth(auth, logger),
+    createRateLimiter({
+      name: 'recovery-code',
+      ...recoveryReset,
+      keyOf: (_req, res) => getAuth(res).userId,
+    }),
+    controller.regenerateRecoveryCode,
   );
   router.post(
     '/refresh',

@@ -110,6 +110,25 @@ describe('formulaire de proposition', () => {
     expect(screen.getByLabelText('Part du rang 4 (%)')).toBeTruthy();
   });
 
+  it('jeu du tournoi : les deux choix visibles, aucun sélectionné ; un seul à la fois', async () => {
+    await renderWith(<ProposalForm onSaved={jest.fn()} />);
+    expect(screen.getByText('Jeu du tournoi *')).toBeTruthy();
+    const selected = (name: string) =>
+      screen.getByRole('radio', { name }).props.accessibilityState.selected;
+    expect([selected('FAP-FAP'), selected('GARAM TIA')]).toEqual([false, false]);
+
+    // Sans choix : message, aucun appel API.
+    await fireEvent.press(screen.getByText('Proposer'));
+    expect(screen.getByText('Veuillez sélectionner le jeu du tournoi.')).toBeTruthy();
+    expect(api.propose).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByText('GARAM TIA'));
+    expect([selected('FAP-FAP'), selected('GARAM TIA')]).toEqual([false, true]);
+    expect(screen.queryByText('Veuillez sélectionner le jeu du tournoi.')).toBeNull();
+    await fireEvent.press(screen.getByText('FAP-FAP'));
+    expect([selected('FAP-FAP'), selected('GARAM TIA')]).toEqual([true, false]);
+  });
+
   it('validation du format avant envoi : aucun appel API', async () => {
     await renderWith(<ProposalForm onSaved={jest.fn()} />);
     await type('Participation (FCFA)', '10 €');
@@ -121,6 +140,7 @@ describe('formulaire de proposition', () => {
   it('date et heure choisies dans les sélecteurs : début local exact dans la requête', async () => {
     api.propose.mockResolvedValue({ tournament: summary() });
     await renderWith(<ProposalForm onSaved={jest.fn()} />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     // Champs non saisissables au clavier : ce sont des boutons qui ouvrent un sélecteur.
     expect(screen.getByLabelText('Date').props.accessibilityRole).toBe('button');
     expect(screen.getByLabelText('Heure de début').props.accessibilityRole).toBe('button');
@@ -162,6 +182,7 @@ describe('formulaire de proposition', () => {
   it('durée de 45 minutes : proposition envoyée (fin = début + 45 min)', async () => {
     api.propose.mockResolvedValue({ tournament: summary() });
     await renderForm();
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     await type('Durée (minutes)', '45');
     await fireEvent.press(screen.getByText('Enregistrer le brouillon'));
     await waitFor(() => expect(api.propose).toHaveBeenCalled());
@@ -173,6 +194,7 @@ describe('formulaire de proposition', () => {
     const onSaved = jest.fn();
     api.propose.mockResolvedValue({ tournament: summary() });
     await renderWith(<ProposalForm onSaved={onSaved} />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     await fireEvent.press(screen.getByText('Enregistrer le brouillon'));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.propose).toHaveBeenCalledWith(
@@ -197,6 +219,7 @@ describe('formulaire de proposition', () => {
       tournament: summary({ status: 'PENDING_APPROVAL' }),
     });
     await renderWith(<ProposalForm onSaved={onSaved} />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     await fireEvent.press(screen.getByText('Proposer'));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.submit).toHaveBeenCalledWith('jeton', summary().tournamentId);
@@ -210,6 +233,7 @@ describe('formulaire de proposition', () => {
       }),
     );
     await renderWith(<ProposalForm onSaved={jest.fn()} />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     await fireEvent.press(screen.getByText('Proposer'));
     expect(
       await screen.findByText('Le tournoi doit commencer au moins 1 h plus tard.'),
@@ -226,6 +250,7 @@ describe('formulaire de proposition', () => {
       ),
     );
     await renderWith(<ProposalForm onSaved={jest.fn()} />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
     await fireEvent.press(screen.getByText('Proposer'));
     expect(await screen.findByText(/déjà un tournoi en attente/)).toBeTruthy();
   });

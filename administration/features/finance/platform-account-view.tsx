@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { DataTable, DetailList, Pagination, type Column } from '@/components/data/data-table';
-import { FilterBar } from '@/components/data/filter-bar';
+import { FilterBar, SearchInput } from '@/components/data/filter-bar';
 import { StatCard } from '@/components/data/stat-card';
 import { ErrorState, LoadingRows, UnavailableNotice } from '@/components/feedback/states';
 import { PageHeader } from '@/components/layout/page-header';
@@ -15,13 +15,23 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Select } from '@/components/ui/form-controls';
 import { useListState } from '@/hooks/use-list-state';
 import { formatDateTime, formatNumber, formatPercentFromBps, formatXaf } from '@/lib/format';
-import { label, LEDGER_KIND } from '@/lib/labels';
+import { isRangePeriod, RangePeriodFilter, rangeOf } from '@/features/shared/period-range';
+import { label, LEDGER_KIND, LEDGER_SOURCE, LEDGER_SOURCES } from '@/lib/labels';
 import type { LedgerEntry } from '@/types/admin';
 
 import { ledgerQuery, platformAccountQuery } from './api';
 
 const columns: Column<LedgerEntry>[] = [
   { key: 'date', header: 'Date', cell: (e) => formatDateTime(e.createdAt) },
+  {
+    key: 'source',
+    header: 'Source',
+    cell: (e) => (
+      <Badge tone={e.source === 'GARAM_TIA' ? 'accent' : e.source === 'TOURNAMENT' ? 'info' : 'neutral'}>
+        {label(LEDGER_SOURCE, e.source)}
+      </Badge>
+    ),
+  },
   {
     key: 'kind',
     header: 'Écriture',
@@ -54,8 +64,26 @@ const columns: Column<LedgerEntry>[] = [
 export function PlatformAccountView() {
   const router = useRouter();
   const account = useQuery(platformAccountQuery());
-  const { filters, page, setFilter, setPage, reset } = useListState(['kind'] as const);
-  const entries = useQuery(ledgerQuery({ page, kind: filters.kind }));
+  const { filters, page, setFilter, setFilters, setPage, reset } = useListState([
+    'kind',
+    'source',
+    'q',
+    'periode',
+    'du',
+    'au',
+  ] as const);
+  // Filtres combinables (D-120) : source + type + période + recherche, appliqués par le serveur.
+  const period = isRangePeriod(filters.periode) ? filters.periode : '';
+  const range = period ? rangeOf(period, filters.du, filters.au) : undefined;
+  const entries = useQuery(
+    ledgerQuery({
+      page,
+      kind: filters.kind || undefined,
+      source: filters.source || undefined,
+      q: filters.q || undefined,
+      ...range,
+    }),
+  );
   const a = account.data;
 
   return (
@@ -81,6 +109,15 @@ export function PlatformAccountView() {
               hint="Somme des écritures"
               icon={Landmark}
             />
+            {a.bySource.map((s) => (
+              <StatCard
+                key={s.source}
+                label={`Recettes ${label(LEDGER_SOURCE, s.source)}`}
+                value={formatXaf(s.amount)}
+                hint={`${formatNumber(s.count)} écritures · même caisse`}
+                tone="success"
+              />
+            ))}
             {a.byKind.map((k) => (
               <StatCard
                 key={k.kind}
@@ -189,6 +226,32 @@ export function PlatformAccountView() {
           description="Entrées seulement ; aucune écriture n’est modifiable depuis l’administration."
         />
         <FilterBar onReset={reset}>
+          <SearchInput
+            value={filters.q}
+            onChange={(v) => setFilter('q', v)}
+            placeholder="Référence, partie, session, tournoi…"
+            label="Rechercher une écriture"
+          />
+          <Select
+            aria-label="Source"
+            value={filters.source}
+            onChange={(e) => setFilter('source', e.target.value)}
+            className="w-auto"
+          >
+            <option value="">Toutes les sources</option>
+            {LEDGER_SOURCES.map((s) => (
+              <option key={s} value={s}>
+                {LEDGER_SOURCE[s]}
+              </option>
+            ))}
+          </Select>
+          <RangePeriodFilter
+            period={period}
+            du={filters.du}
+            au={filters.au}
+            onChange={setFilters}
+            allLabel="Depuis le début"
+          />
           <Select
             aria-label="Type d’écriture"
             value={filters.kind}

@@ -64,6 +64,7 @@ export function createSessionGameInstance(
     passwords: new PasswordService(4),
     // Échéances de ronde exactes : la présentation du 5e tour (D-041) est testée à part.
     lastTrickPresentationMs: deps.lastTrickPresentationMs ?? (() => 0),
+    garamRevealPresentationMs: () => 0,
     // Les tests historiques créent la partie suivante eux-mêmes (POST …/games).
     autoNextGame: deps.autoNextGame ?? false,
     decisionWindowMs: deps.decisionWindowMs,

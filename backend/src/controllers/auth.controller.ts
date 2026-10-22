@@ -6,6 +6,9 @@ import type { AuthService } from '../services/auth/auth.service';
 import {
   parseChangePasswordInput,
   parseLoginInput,
+  parseRecoveryCodeRequest,
+  parseRecoveryResetInput,
+  parseRecoveryVerifyInput,
   parseRefreshTokenInput,
   parseRegisterInput,
 } from '../validators/auth.validators';
@@ -16,9 +19,12 @@ import {
  */
 export function createAuthController(auth: AuthService) {
   return {
+    /**
+     * 201 `{ user, recoveryCode }` : le code de récupération en clair (D-135) n'est renvoyé
+     * QUE dans cette réponse ; aucune autre route ne le renvoie.
+     */
     async register(req: Request, res: Response): Promise<void> {
-      const user = await auth.register(parseRegisterInput(req.body), meta(res));
-      res.status(201).json({ user });
+      res.status(201).json(await auth.register(parseRegisterInput(req.body), meta(res)));
     },
 
     async login(req: Request, res: Response): Promise<void> {
@@ -44,6 +50,24 @@ export function createAuthController(auth: AuthService) {
       const input = parseChangePasswordInput(req.body);
       await auth.changePassword(getAuth(res).userId, input, meta(res));
       res.status(204).end();
+    },
+
+    /** « Mot de passe oublié ? », étape code (D-135) : `{ resetToken, expiresAt }`. */
+    async verifyRecovery(req: Request, res: Response): Promise<void> {
+      res.json(await auth.verifyRecoveryCode(parseRecoveryVerifyInput(req.body), meta(res)));
+    },
+
+    /** Étape nouveau mot de passe : `{ recoveryCode }` (le nouveau code, affiché une fois). */
+    async resetPassword(req: Request, res: Response): Promise<void> {
+      res.json(await auth.resetPassword(parseRecoveryResetInput(req.body), meta(res)));
+    },
+
+    /** Nouveau code pour le compte du JWT, après son mot de passe actuel. */
+    async regenerateRecoveryCode(req: Request, res: Response): Promise<void> {
+      const { currentPassword } = parseRecoveryCodeRequest(req.body);
+      res.json(
+        await auth.regenerateRecoveryCode(getAuth(res).userId, currentPassword, meta(res)),
+      );
     },
   };
 }

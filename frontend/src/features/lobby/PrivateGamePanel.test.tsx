@@ -42,7 +42,10 @@ const guardedTable: OpenTable = {
  * Bouton « Détection anti-collusion » (D-043) : proposé seulement si l'administration a activé
  * la détection globalement (D-053, D-081), d'après `detectionAvailable` du serveur.
  */
-async function renderPanel(detectionAvailable: boolean | undefined) {
+async function renderPanel(
+  detectionAvailable: boolean | undefined,
+  gameType: 'TER' | 'GARAM' = 'TER',
+) {
   api.listOpen.mockResolvedValue({
     tables: [guardedTable],
     ...(detectionAvailable !== undefined && { detectionAvailable }),
@@ -50,7 +53,7 @@ async function renderPanel(detectionAvailable: boolean | undefined) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await render(
     <QueryClientProvider client={client}>
-      <PrivateGamePanel onClose={() => undefined} />
+      <PrivateGamePanel onClose={() => undefined} gameType={gameType} />
     </QueryClientProvider>,
   );
   await waitFor(() => expect(screen.getByText('Table surveillée')).toBeTruthy());
@@ -90,5 +93,73 @@ describe('option « Détection anti-collusion » et interrupteur global', () => 
     await fireEvent.press(screen.getByText('Créer'));
     await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
     expect(api.create.mock.calls[0]![1]).toMatchObject({ suspicionDetectionEnabled: false });
+  });
+
+  it('GARAM TIA (D-125) : même option, envoyée avec le jeu de la table', async () => {
+    api.create.mockReturnValue(new Promise(() => undefined));
+    await renderPanel(true, 'GARAM');
+    await fireEvent.press(screen.getByRole('switch', { name: 'Détection anti-collusion' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'GARAM 16' }));
+    await fireEvent.press(screen.getByText('Créer'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
+    expect(api.create.mock.calls[0]![1]).toMatchObject({
+      gameType: 'GARAM',
+      garamVariant: 16,
+      suspicionDetectionEnabled: true,
+    });
+  });
+
+  it('GARAM TIA, détection coupée par l’administration : option non proposée', async () => {
+    await renderPanel(false, 'GARAM');
+    expect(screen.queryByRole('switch', { name: 'Détection anti-collusion' })).toBeNull();
+  });
+});
+
+describe('variante GARAM TIA (D-127)', () => {
+  it('15 présélectionnée ; sans autre choix, envoyée explicitement', async () => {
+    api.create.mockReturnValue(new Promise(() => undefined));
+    await renderPanel(true, 'GARAM');
+    for (const v of [15, 16, 17, 18]) {
+      const radio = screen.getByRole('radio', { name: `GARAM ${v}` });
+      if (v === 15) expect(radio).toBeChecked();
+      else expect(radio).not.toBeChecked();
+    }
+    await fireEvent.press(screen.getByText('Créer'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
+    expect(api.create.mock.calls[0]![1]).toMatchObject({ gameType: 'GARAM', garamVariant: 15 });
+  });
+
+  it.each([15, 16, 17, 18])('GARAM %i : choisie puis envoyée telle quelle', async (v) => {
+    api.create.mockReturnValue(new Promise(() => undefined));
+    await renderPanel(true, 'GARAM');
+    await fireEvent.press(screen.getByRole('radio', { name: `GARAM ${v}` }));
+    expect(screen.getByRole('radio', { name: `GARAM ${v}` })).toBeChecked();
+    await fireEvent.press(screen.getByText('Créer'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
+    expect(api.create.mock.calls[0]![1]).toMatchObject({ gameType: 'GARAM', garamVariant: v });
+  });
+
+  it('Fap-Fap : aucun choix de variante, aucune variante envoyée', async () => {
+    api.create.mockReturnValue(new Promise(() => undefined));
+    await renderPanel(true, 'TER');
+    expect(screen.queryByRole('radio', { name: 'GARAM 15' })).toBeNull();
+    await fireEvent.press(screen.getByText('Créer'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
+    expect(api.create.mock.calls[0]![1]).not.toHaveProperty('garamVariant');
+    expect(api.create.mock.calls[0]![1]).not.toHaveProperty('gameType');
+  });
+
+  it('liste GARAM : la variante de chaque table est affichée', async () => {
+    api.listOpen.mockResolvedValue({
+      tables: [{ ...guardedTable, gameType: 'GARAM', garamVariant: 17 }],
+      detectionAvailable: true,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <PrivateGamePanel onClose={() => undefined} gameType="GARAM" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Table surveillée · GARAM 17')).toBeTruthy();
   });
 });

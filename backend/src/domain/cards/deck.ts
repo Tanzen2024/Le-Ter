@@ -10,11 +10,11 @@ export function createDeck(): CardId[] {
  * Mélange de Fisher-Yates (document « Melanger cartes ») : parcours de la fin vers
  * le début, échange avec un index aléatoire dans [0, i]. Renvoie un nouveau tableau.
  */
-export function shuffleDeck(cards: readonly CardId[], random: RandomSource): CardId[] {
+export function shuffleDeck<C extends string = CardId>(cards: readonly C[], random: RandomSource): C[] {
   const deck = [...cards];
   for (let i = deck.length - 1; i > 0; i--) {
     const j = random.nextInt(i + 1);
-    [deck[i], deck[j]] = [deck[j] as CardId, deck[i] as CardId];
+    [deck[i], deck[j]] = [deck[j] as C, deck[i] as C];
   }
   return deck;
 }

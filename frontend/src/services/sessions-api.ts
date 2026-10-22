@@ -1,12 +1,16 @@
 import { apiRequest } from '../lib/api-client';
-import type { GameView } from '../types/game';
-import type { OpenTable, SessionGameSummary, SessionView } from '../types/session';
+import type { GameView, GaramVariant } from '../types/game';
+import type { GameType, OpenTable, SessionGameSummary, SessionView } from '../types/session';
 
 type MaxPlayers = 2 | 3 | 4;
 
 /** Partie privée à créer (D-039) : le mot de passe part en clair sur HTTPS, haché par le serveur. */
 export interface NewPrivateGame {
   maxPlayers: MaxPlayers;
+  /** Jeu de la table (D-119) ; absent : Le Ter. */
+  gameType?: GameType;
+  /** GARAM TIA : variante choisie par le joueur, obligatoire (D-127). */
+  garamVariant?: GaramVariant;
   name?: string;
   stakeAmount?: number;
   password?: string;
@@ -28,11 +32,12 @@ export const sessionsApi = {
       headers: { 'Idempotency-Key': idempotencyKey },
     }),
 
-  /** Tables ouvertes à rejoindre (partie en attente, place libre), hors les miennes. */
-  listOpen: (accessToken: string) =>
-    apiRequest<{ tables: OpenTable[]; detectionAvailable?: boolean }>('/api/sessions/open', {
-      accessToken,
-    }),
+  /** Tables ouvertes d'UN jeu (D-119), à rejoindre (partie en attente, place libre). */
+  listOpen: (accessToken: string, gameType: GameType = 'TER') =>
+    apiRequest<{ tables: OpenTable[]; detectionAvailable?: boolean }>(
+      gameType === 'TER' ? '/api/sessions/open' : `/api/sessions/open?gameType=${gameType}`,
+      { accessToken },
+    ),
 
   listMine: (accessToken: string) =>
     apiRequest<{ sessions: SessionView[] }>('/api/sessions/me/active', { accessToken }),

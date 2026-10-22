@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { formatDateTime, formatDuration, formatNumber, shortId } from '@/lib/format';
-import { END_REASON, GAME_ANOMALY, GAME_STATUS, label } from '@/lib/labels';
+import { END_REASON, GAME_ANOMALY, GAME_STATUS, GAME_TYPE, label } from '@/lib/labels';
 
 import { gameQuery } from './api';
 
@@ -62,6 +62,10 @@ export function GameDetailView({ id }: { id: string }) {
                       {g.id}
                     </span>,
                   ],
+                  ['Jeu', label(GAME_TYPE, g.gameType)],
+                  ...(g.gameType === 'GARAM'
+                    ? [['Variante', g.garamVariant ? `GARAM ${g.garamVariant}` : '—'] as [string, string]]
+                    : []),
                   ['Statut', <StatusBadge key="s" map={GAME_STATUS} value={g.status} />],
                   ['Démarrée', formatDateTime(g.startedAt)],
                   ['Terminée', formatDateTime(g.finishedAt)],

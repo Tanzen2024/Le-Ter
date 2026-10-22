@@ -42,6 +42,7 @@ const tournaments: TournamentSummary[] = ALL_STATUSES.map((status, i) => ({
   tournamentId: `t-${status}`,
   status,
   creatorType: 'ADMIN',
+  gameType: 'TER',
   timezone: 'Africa/Douala',
   startsAt: `2026-10-${String(i + 1).padStart(2, '0')}T17:00:00.000Z`,
   endsAt: `2026-10-${String(i + 1).padStart(2, '0')}T18:00:00.000Z`,

@@ -108,6 +108,9 @@ export const playerActions = {
     api.post<{ sanctionId: string }>(`users/${id}/suspension/lift`, { reason }),
   revokeSessions: (id: string, reason?: string) =>
     api.post<{ revokedSessions: number }>(`users/${id}/sessions/revoke`, reason ? { reason } : {}),
+  /** Récupération par l'assistance (D-135) : nouveau code, renvoyé une seule fois. */
+  recoverAccount: (id: string, reason: string) =>
+    api.post<{ recoveryCode: string }>(`users/${id}/recovery`, { reason }),
   restrictChat: (id: string, body: RestrictionBody) =>
     api.post<{ sanctionId: string }>(`users/${id}/chat-restriction`, body),
   liftChatRestriction: (id: string, reason: string) =>

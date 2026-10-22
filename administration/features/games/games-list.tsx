@@ -29,6 +29,7 @@ export function GamesList() {
   const { filters, page, setFilter, setPage, reset } = useListState([
     'status',
     'anomaly',
+    'gameType',
     'du',
     'au',
     'gameId',
@@ -41,6 +42,7 @@ export function GamesList() {
       page,
       status: filters.status,
       anomaly: filters.anomaly,
+      gameType: filters.gameType,
       gameId,
       playerId: filters.playerId,
       tournamentId: filters.tournamentId,
@@ -77,6 +79,16 @@ export function GamesList() {
             <option value="waiting">En attente</option>
             <option value="in_progress">En cours</option>
             <option value="finished">Terminées</option>
+          </Select>
+          <Select
+            aria-label="Jeu"
+            value={filters.gameType}
+            onChange={(e) => setFilter('gameType', e.target.value)}
+            className="w-auto"
+          >
+            <option value="">Tous les jeux</option>
+            <option value="TER">Fap-Fap</option>
+            <option value="GARAM">Garam Tia</option>
           </Select>
           <Select
             aria-label="Anomalie"

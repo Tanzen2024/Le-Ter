@@ -65,6 +65,7 @@ débite un solde.
 | POST | `/users/:userId/suspension` | `{ reason, comment?, endsAt? }` (absente : indéterminée) | 201 `{ sanctionId, revokedSessions }` | `USER_SUSPENDED` |
 | POST | `/users/:userId/suspension/lift` | `{ reason }` | `{ sanctionId }` | `USER_SUSPENSION_LIFTED` |
 | POST | `/users/:userId/sessions/revoke` | `{ reason? }` | `{ revokedSessions }` | `USER_SESSIONS_REVOKED` |
+| POST | `/users/:userId/recovery` | `{ reason }` | `{ recoveryCode }` (une seule fois) | `PLAYER_ACCOUNT_RECOVERY` (D-135 : joueur seulement, jamais soi-même ; 409 `RECOVERY_PLAYERS_ONLY` / `ACCOUNT_NOT_ACTIVE`) |
 | POST | `/users/:userId/chat-restriction` | `{ reason, comment?, endsAt? }` | 201 `{ sanctionId }` | `USER_CHAT_RESTRICTED` |
 | POST | `/users/:userId/chat-restriction/lift` | `{ reason }` | `{ sanctionId }` | `USER_CHAT_RESTRICTION_LIFTED` |
 | POST | `/users/:userId/warnings` | `Idempotency-Key` ; `{ reason, playerMessage?, comment? }` | 201 (200 si rejouée) `{ sanctionId, delivered, replayed }` | `USER_WARNED` |

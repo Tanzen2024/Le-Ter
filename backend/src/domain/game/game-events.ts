@@ -34,7 +34,27 @@ export type GameEventType =
   /** Égalité de priorité des mains instantanées : partie annulée, rejouée aussitôt (D-035). */
   | 'game:instant_win_tie'
   /** Début du 5e tour automatique : l'unique carte de chaque joueur est jouée (D-035). */
-  | 'game:last_trick_automatic';
+  | 'game:last_trick_automatic'
+  /** GARAM TIA (D-119) : carte prise à la tête du terre. payload : playerId, cardId, total. */
+  | 'game:card_drawn'
+  /**
+   * GARAM TIA : tirage terminé, « Impossible » (`cardId` : la carte qui ferait dépasser 21,
+   * restée au terre) ou terre vide (`cardId` absent).
+   */
+  | 'game:draw_impossible'
+  /**
+   * GARAM TIA (D-140) : le contrôleur ne peut prendre aucune carte et annonce « Je passe » ;
+   * la main passe au suivant à l'échéance de son tour. payload : playerId, cardId éventuel.
+   */
+  | 'game:player_passed'
+  /** GARAM TIA : manche nulle, rejouée aussitôt dans la même partie (§3.12, §3.15). */
+  | 'game:garam_tie'
+  /** GARAM TIA : réponse d'un joueur à la proposition de doubler la mise (§3.15). */
+  | 'game:stake_vote'
+  /** GARAM TIA : proposition close ; payload : stakeAmount retenu, doubled. */
+  | 'game:stake_vote_closed'
+  /** GARAM TIA : joueurs retirés, solde insuffisant pour la mise de la manche (§3.16). */
+  | 'game:players_withdrawn';
 
 /**
  * Enveloppe commune à tous les événements. Le `gameId` est obligatoire :

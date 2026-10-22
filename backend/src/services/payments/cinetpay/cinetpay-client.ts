@@ -83,7 +83,8 @@ export interface CinetPayPaymentRequest {
   currency: string;
   lang: 'fr' | 'en';
   designation: string;
-  clientEmail: string;
+  /** Absent pour un joueur sans email (D-135) : `client_email` n'est alors pas envoyé. */
+  clientEmail?: string;
   clientFirstName: string;
   clientLastName: string;
   successUrl: string;
@@ -275,7 +276,7 @@ export class CinetPayClient {
       amount: request.amount,
       lang: request.lang,
       designation: request.designation,
-      client_email: request.clientEmail,
+      ...(request.clientEmail && { client_email: request.clientEmail }),
       client_first_name: request.clientFirstName,
       client_last_name: request.clientLastName,
       success_url: request.successUrl,

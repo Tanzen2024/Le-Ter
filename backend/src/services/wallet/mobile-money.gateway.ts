@@ -25,7 +25,8 @@ export interface MobileMoneyRequest {
   customer?: {
     firstName: string;
     lastName: string;
-    email: string;
+    /** Facultatif (D-135) : un joueur sans email est transmis sans email, jamais avec une adresse inventée. */
+    email: string | null;
     /** Numéro d'inscription, format international (`+237…`), transmis à CinetPay (D-088). */
     phone?: string;
   };

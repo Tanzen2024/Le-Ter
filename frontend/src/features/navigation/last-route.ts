@@ -32,7 +32,7 @@ const RESTORABLE = [
 ];
 
 /** Panneaux de la coquille (LobbyShell) rouvrables : leur contenu est relu sur le serveur. */
-export const RESTORABLE_PANELS = ['profile', 'settings', 'private', 'shop'] as const;
+export const RESTORABLE_PANELS = ['profile', 'settings', 'private', 'garam', 'shop'] as const;
 export type RestorablePanel = (typeof RESTORABLE_PANELS)[number];
 /** Écrans qui portent la coquille et donc ses panneaux. */
 const LOBBY_PATHS = ['/', '/tournament'];

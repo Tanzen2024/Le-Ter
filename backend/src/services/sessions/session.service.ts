@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Game } from '../../domain/game/game';
+import { isReplayEndReason, type Game, type GameType } from '../../domain/game/game';
 import { ParticipationRefusedError } from '../../domain/game/game-errors';
 import type { PlayerId } from '../../domain/game/game-id';
 import { InsufficientBalanceForStakeError, InvalidGameStakeError } from '../../domain/rules/stake';
@@ -36,7 +36,8 @@ import {
 import type { SessionEventDraft } from '../../domain/sessions/session-events';
 import { PasswordService } from '../auth/password.service';
 import type { GameEventDraft } from '../../domain/game/game-events';
-import { determineFirstPlayer } from '../../domain/sessions/table-order';
+import { determineFirstPlayer, nextDealer } from '../../domain/sessions/table-order';
+import { garamRevealPresentationMs } from '../../domain/garam/garam-rules';
 import { DuplicateCreationKeyError } from '../../repositories/game.repository';
 import type {
   LeaveWrite,
@@ -57,7 +58,7 @@ const OPEN_TABLES_LIMIT = 30;
 /** Paramètres de création d'une session (et de sa première partie). */
 export type NewSessionOptions = Pick<
   CreateGameOptions,
-  'maxPlayers' | 'stakeAmount' | 'creationKey' | 'autoStartDelayMs'
+  'maxPlayers' | 'stakeAmount' | 'creationKey' | 'autoStartDelayMs' | 'gameType' | 'garamVariant'
 > & {
   /** Nom de la partie privée (D-039), déjà validé (1 à 40 caractères). */
   name?: string;
@@ -118,6 +119,12 @@ export interface SessionServiceDependencies {
    * des écrans (`lastTrickPresentationMs`) ; 0 dans les tests qui ne portent pas dessus.
    */
   lastTrickPresentationMs?: (cards: number) => number;
+  /**
+   * GARAM TIA : présentation de fin d'une manche gagnée (révélation des mains, totaux,
+   * gagnant, D-128), ajoutée avant la ronde. Par défaut `garamRevealPresentationMs` ; 0 dans
+   * les tests qui ne portent pas dessus.
+   */
+  garamRevealPresentationMs?: (players: number) => number;
   /** Accès aux sessions réservées (tables de tournoi, D-051) ; absent : aucune restriction. */
   admission?: SessionAdmissionPolicy;
   /**
@@ -188,6 +195,7 @@ export class SessionService {
   private readonly windowMs: number;
   private readonly passwords: TablePasswordHasher;
   private readonly presentationMs: (cards: number) => number;
+  private readonly garamPresentationMs: (players: number) => number;
   private readonly autoNextGame: boolean;
   private readonly background = new BackgroundTasks();
 
@@ -197,10 +205,29 @@ export class SessionService {
     this.windowMs = deps.decisionWindowMs ?? SESSION_DECISION_WINDOW_MS;
     this.passwords = deps.passwords ?? new PasswordService();
     this.presentationMs = deps.lastTrickPresentationMs ?? lastTrickPresentationMs;
+    this.garamPresentationMs = deps.garamRevealPresentationMs ?? garamRevealPresentationMs;
     this.autoNextGame = deps.autoNextGame ?? true;
     // Fin d'une partie → ronde Poursuivre/Quitter. Si ce processus s'arrête avant, la
     // reprise (`recoverDecisionTimers`) ou la prochaine mutation de la session l'ouvre,
     // avec la même échéance (fin de partie + 10 s).
+    // GARAM TIA (§3.16) : un joueur retiré d'une manche faute de solde quitte la table.
+    deps.games.onPlayersWithdrawn((game, playerIds) => {
+      const { sessionId } = game;
+      if (!sessionId) return;
+      for (const playerId of playerIds) {
+        this.background.run(() =>
+          this.leaveSession(sessionId, playerId).then(
+            () => undefined,
+            (err: unknown) =>
+              deps.logger.error('withdrawn player removal failed', {
+                sessionId,
+                gameId: game.id,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+          ),
+        );
+      }
+    });
     deps.games.onGameFinished((game) => {
       const { sessionId } = game;
       if (sessionId) {
@@ -242,11 +269,16 @@ export class SessionService {
         password !== undefined ? await this.passwords.hashPassword(password) : undefined;
       // Détection coupée par l'administration (D-081) : l'option n'est pas proposée ; une
       // demande venant d'un ancien client n'active jamais la table.
+      // GARAM TIA : la détection anti-collusion s'y applique comme au Ter (D-125) : même
+      // option de table, même interrupteur global. Variante obligatoire, vérifiée par
+      // GameService avant tout enregistrement (D-127) ; tables de tournoi GARAM permises.
+      const garam = options.gameType === 'GARAM';
       const detection = suspicionDetectionEnabled === true && (await this.isDetectionAvailable());
       const session = newSession(creatorId, options.maxPlayers, this.clock(), {
         name,
         passwordHash,
         suspicionDetectionEnabled: detection,
+        ...(garam && { gameType: 'GARAM' as const, garamVariant: options.garamVariant }),
       });
       let game: Game;
       try {
@@ -310,7 +342,7 @@ export class SessionService {
   ): Promise<{ game: Game; replayed: boolean }> {
     const log = this.log(creatorId, 'CREATE_NEXT_GAME', meta).child({ sessionId });
     try {
-      const { maxPlayers } = await this.load(sessionId);
+      const { maxPlayers, gameType, garamVariant } = await this.load(sessionId);
       if (this.deps.continuation && !(await this.deps.continuation.allowsNewGame(sessionId))) {
         throw new SessionClosedError(sessionId);
       }
@@ -321,7 +353,13 @@ export class SessionService {
       if (options.maxPlayers !== undefined && options.maxPlayers !== maxPlayers) {
         throw new SessionMaxPlayersImmutableError(sessionId, maxPlayers);
       }
-      const withSession = { ...options, maxPlayers, sessionId };
+      const withSession = {
+        ...options,
+        maxPlayers,
+        sessionId,
+        gameType: gameType ?? 'TER',
+        ...(garamVariant !== undefined && { garamVariant }),
+      };
       const replayed = await this.deps.games.findCreationReplay(creatorId, withSession, log);
       if (replayed) {
         return { game: replayed, replayed: true };
@@ -398,6 +436,17 @@ export class SessionService {
   ): ReturnType<typeof determineFirstPlayer<PlayerId>> {
     const seats = seatMap(session);
     const previous = lastGame?.status === 'finished' ? lastGame : null;
+    // GARAM TIA (§3.17) : après une manche jouée, le dégagement passe au siège occupé suivant,
+    // sens antihoraire ; la manche nulle garde son dégageur (règles communes ci-dessous).
+    if (
+      session.gameType === 'GARAM' &&
+      previous &&
+      !isReplayEndReason(previous.endReason) &&
+      previous.firstPlayerSeat !== undefined
+    ) {
+      const dealer = nextDealer(session.maxPlayers, previous.firstPlayerSeat, (seat) => seats[seat]);
+      return dealer === undefined ? { kind: 'none' } : { kind: 'first', playerId: dealer };
+    }
     return determineFirstPlayer({
       creatorId: session.creatorId,
       arrivalOrder: arrivalOrder(session),
@@ -408,7 +457,7 @@ export class SessionService {
         ? {
             ...(previous.winnerId !== undefined && { winnerId: previous.winnerId }),
             ...(previous.winnerSeat !== undefined && { winnerSeat: previous.winnerSeat }),
-            ...(previous.endReason === 'INSTANT_WIN_TIE' && {
+            ...(isReplayEndReason(previous.endReason) && {
               tieFirstPlayerId: previous.firstPlayerId,
             }),
           }
@@ -623,7 +672,7 @@ export class SessionService {
   private async ensureContinuation(sessionId: SessionId): Promise<void> {
     if (!this.autoNextGame) return;
     const last = await this.deps.sessions.findLastGame(sessionId);
-    if (!last || last.status !== 'finished' || last.endReason === 'INSTANT_WIN_TIE') return;
+    if (!last || last.status !== 'finished' || isReplayEndReason(last.endReason)) return;
     const previous = await this.deps.games.findGame(last.gameId);
     if (!previous) return;
     const log = this.deps.logger.child({ sessionId, action: 'CONTINUE_NEXT_GAME' });
@@ -690,7 +739,7 @@ export class SessionService {
    */
   private async ensureReplay(sessionId: SessionId): Promise<void> {
     const last = await this.deps.sessions.findLastGame(sessionId);
-    if (!last || last.endReason !== 'INSTANT_WIN_TIE') {
+    if (!last || !isReplayEndReason(last.endReason)) {
       return;
     }
     const previous = await this.deps.games.findGame(last.gameId);
@@ -706,7 +755,7 @@ export class SessionService {
         if (
           ctx.session.status === 'closed' ||
           ctx.lastGame?.gameId !== previous.id ||
-          ctx.lastGame.endReason !== 'INSTANT_WIN_TIE'
+          !isReplayEndReason(ctx.lastGame.endReason)
         ) {
           throw new ReplayNotNeeded();
         }
@@ -771,8 +820,8 @@ export class SessionService {
    * Tables ouvertes à rejoindre (partie en attente, siège libre), la sienne marquée `mine`.
    * Lecture indicative : rejoindre reste validé par `joinSession` puis la partie.
    */
-  listOpenTables(viewerId: PlayerId): Promise<OpenTableSummary[]> {
-    return this.deps.sessions.findOpenTables(viewerId, OPEN_TABLES_LIMIT);
+  listOpenTables(viewerId: PlayerId, gameType: GameType = 'TER'): Promise<OpenTableSummary[]> {
+    return this.deps.sessions.findOpenTables(viewerId, OPEN_TABLES_LIMIT, gameType);
   }
 
   /**
@@ -1047,9 +1096,14 @@ export class SessionService {
     });
   }
 
-  /** Ronde Poursuivre/Quitter, ouverte après la présentation du 5e tour (D-041). */
+  /**
+   * Ronde Poursuivre/Quitter, ouverte après la présentation du 5e tour (D-041) ou, en GARAM
+   * TIA, après la révélation des mains de la manche (D-128).
+   */
   private syncRound(session: Session, lastGame: LastGameInfo | null, now: Date) {
-    const presentation = this.presentationMs(lastGame?.lastTrickCards ?? 0);
+    const presentation =
+      this.presentationMs(lastGame?.lastTrickCards ?? 0) +
+      (lastGame?.gameType === 'GARAM' ? this.garamPresentationMs(lastGame.playerIds.length) : 0);
     return syncDecisionRound(session, lastGame, now, this.windowMs, presentation);
   }
 

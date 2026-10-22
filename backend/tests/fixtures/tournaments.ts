@@ -113,6 +113,7 @@ export function createTournamentTestStack(
     timers: sessionTimers,
     passwords: new PasswordService(4),
     lastTrickPresentationMs: () => 0,
+    garamRevealPresentationMs: () => 0,
     autoNextGame: options.autoNextGame ?? false,
     decisionWindowMs: 60 * MINUTE,
     admission: tournamentSessionAdmission(repository, clock.now, settlePending),
@@ -251,6 +252,7 @@ export function tournamentInput(
 ): TournamentInput {
   const startsAt = new Date(clock.now().getTime() + startsInMs);
   return {
+    gameType: 'TER',
     startsAt,
     endsAt: new Date(startsAt.getTime() + 2 * HOUR),
     entryFee: 1000,

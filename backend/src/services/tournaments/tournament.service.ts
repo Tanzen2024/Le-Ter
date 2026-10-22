@@ -527,9 +527,19 @@ export class TournamentService {
       if (!actor.isAdmin && t.creatorId !== actor.userId) throw new NotTournamentCreatorError(id);
       if (!editable.includes(t.status)) throw new TournamentLockedError(id);
       const now = this.clock();
+      // Jeu fixé à la création (D-124) : renvoyé tel quel, il ne compte pas comme un changement.
+      if (patch.gameType !== undefined && patch.gameType !== t.gameType) {
+        throw new InvalidTournamentError({ gameType: 'Le jeu d’un tournoi ne se modifie pas.' });
+      }
+      // Variante GARAM fixée à la création comme le jeu (D-127).
+      if (patch.garamVariant !== undefined && patch.garamVariant !== t.garamVariant) {
+        throw new InvalidTournamentError({
+          garamVariant: 'La variante d’un tournoi ne se modifie pas.',
+        });
+      }
       const registered = await uow.countActiveRegistrations(id);
       const changed = (Object.keys(patch) as (keyof TournamentPatch)[]).filter(
-        (k) => patch[k] !== undefined,
+        (k) => k !== 'gameType' && k !== 'garamVariant' && patch[k] !== undefined,
       );
       if (registered > 0 && changed.length > 0) throw new TournamentLockedError(id, changed);
       const settings = await uow.readSettings();
@@ -1597,6 +1607,9 @@ export class TournamentService {
         name: tournamentLabel(t.startsAt, t.timezone).slice(0, SESSION_NAME_MAX_LENGTH).trim(),
         tournamentId: t.id,
         autoStartDelayMs: TOURNAMENT_TABLE_AUTO_START_MS,
+        // Jeu et variante du tournoi (D-124, D-127) : une table GARAM joue ses manches avec
+        // le moteur GARAM ; Fap-Fap inchangé.
+        ...(t.gameType === 'GARAM' && { gameType: 'GARAM' as const, garamVariant: t.garamVariant }),
       },
       meta,
     );
@@ -2189,6 +2202,8 @@ function draftOf(
 
 function fieldsOf(valid: ReturnType<typeof validateTournamentInput>) {
   return {
+    gameType: valid.gameType,
+    ...(valid.garamVariant !== undefined && { garamVariant: valid.garamVariant }),
     timezone: valid.timezone,
     startsAt: valid.startsAt,
     endsAt: valid.endsAt,
@@ -2219,6 +2234,8 @@ function withTokenSetup(t: Tournament, settings: TournamentSettings): Tournament
 
 function inputOf(t: Tournament): TournamentInput {
   return {
+    gameType: t.gameType,
+    ...(t.garamVariant !== undefined && { garamVariant: t.garamVariant }),
     timezone: t.timezone,
     startsAt: t.startsAt,
     endsAt: t.endsAt,

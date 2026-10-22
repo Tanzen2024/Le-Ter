@@ -14,6 +14,7 @@ import {
   parseAuditQuery,
   parseGameListQuery,
   parseIdempotencyKey,
+  parseDashboardQuery,
   parseLedgerQuery,
   parsePage,
   parsePaymentQuery,
@@ -75,7 +76,8 @@ export function createAdminController(deps: {
     },
 
     async dashboard(req: Request, res: Response): Promise<void> {
-      res.json(await queries.dashboard(parsePeriod(q(req), queries.now())));
+      const { period, source } = parseDashboardQuery(q(req), queries.now());
+      res.json(await queries.dashboard(period, source));
     },
 
     async attention(_req: Request, res: Response): Promise<void> {

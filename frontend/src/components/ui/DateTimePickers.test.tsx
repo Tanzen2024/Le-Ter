@@ -38,6 +38,25 @@ describe('DatePickerField', () => {
     expect(onChange).toHaveBeenCalledWith('15/10/2026');
   });
 
+  it('petit écran : mois et année sur une seule ligne (rétrécis, jamais coupés), calendrier défilant', async () => {
+    await render(
+      <DatePickerField label="Date" value="10/11/2026" onChange={jest.fn()} minDate={MIN} />,
+    );
+    await fireEvent.press(screen.getByLabelText('Date'));
+    const month = screen.getByTestId('date-picker-month');
+    expect(month.props.children).toBe('novembre 2026');
+    expect(month.props.numberOfLines).toBe(1);
+    expect(month.props.adjustsFontSizeToFit).toBe(true);
+    // Les 4 flèches restent plus étroites qu'un jour : il reste au mois plus de 3 jours de large.
+    const flat = (style: unknown) => Object.assign({}, ...[style].flat(Infinity).filter(Boolean));
+    const day = flat(screen.getByLabelText('mardi 10 novembre 2026').props.style).width;
+    const arrow = flat(screen.getByLabelText(/mois précédent/i).props.style).width;
+    expect(arrow).toBeLessThan(day);
+    expect(day * 7 - arrow * 4).toBeGreaterThan(day * 3);
+    // Hauteur insuffisante : le calendrier (6 semaines en novembre 2026) défile, jamais coupé.
+    expect(screen.getByTestId('picker-scroll')).toBeTruthy();
+  });
+
   it('dates passées (avant le minimum) : non sélectionnables, mois précédent bloqué', async () => {
     const onChange = jest.fn();
     await render(

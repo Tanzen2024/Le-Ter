@@ -222,13 +222,14 @@ describe("création", () => {
     api.create.mockResolvedValue({ tournament: tournament() });
     await renderWith(<AdminTournamentFormScreen />);
     await screen.findByLabelText("Date", {}, WAIT);
+    await fireEvent.press(screen.getByText("FAP-FAP"));
     await fireEvent.press(screen.getByText("Publier le tournoi"));
     await waitFor(() =>
       expect(router.replace).toHaveBeenCalledWith(`/admin/tournaments/${ID}`),
     );
     expect(api.create).toHaveBeenCalledWith(
       "jeton",
-      expect.objectContaining({ entryFee: 1000 }),
+      expect.objectContaining({ entryFee: 1000, gameType: "TER" }),
     );
   });
 
@@ -244,6 +245,7 @@ describe("création", () => {
   it("valeurs par défaut prises dans les Paramètres des tournois", async () => {
     api.create.mockResolvedValue({ tournament: tournament() });
     await renderForm();
+    await fireEvent.press(screen.getByText("FAP-FAP"));
     await fireEvent.press(screen.getByText("Publier le tournoi"));
     await waitFor(() => expect(api.create).toHaveBeenCalled());
     expect(api.create.mock.calls[0][1]).toMatchObject({ minimumPlayers: 25 });
@@ -252,6 +254,7 @@ describe("création", () => {
   it("joueurs sous le minimum réglé : message du serveur, aucun appel API", async () => {
     await renderForm();
     await fireEvent.changeText(screen.getByLabelText("Joueurs minimum"), "24");
+    await fireEvent.press(screen.getByText("FAP-FAP"));
     await fireEvent.press(screen.getByText("Publier le tournoi"));
     expect(screen.getByText("Au moins 25.")).toBeTruthy();
     expect(api.create).not.toHaveBeenCalled();
@@ -265,6 +268,7 @@ describe("création", () => {
         screen.getByLabelText("Durée (minutes)"),
         minutes,
       );
+      await fireEvent.press(screen.getByText("FAP-FAP"));
       await fireEvent.press(screen.getByText("Publier le tournoi"));
       expect(
         screen.getByText("Durée entre 45 minutes et 120 minutes."),
@@ -282,6 +286,7 @@ describe("création", () => {
         screen.getByLabelText("Durée (minutes)"),
         minutes,
       );
+      await fireEvent.press(screen.getByText("FAP-FAP"));
       await fireEvent.press(screen.getByText("Publier le tournoi"));
       await waitFor(() => expect(api.create).toHaveBeenCalled());
       const payload = api.create.mock.calls[0][1];
@@ -301,12 +306,44 @@ describe("création", () => {
     );
     await renderWith(<AdminTournamentFormScreen />);
     await screen.findByLabelText("Date", {}, WAIT);
+    await fireEvent.press(screen.getByText("FAP-FAP"));
     await fireEvent.press(screen.getByText("Publier le tournoi"));
     expect(
       await screen.findByText(
         "Un autre tournoi est déjà programmé sur ce créneau.",
       ),
     ).toBeTruthy();
+  });
+
+  it("jeu du tournoi : aucun choisi au chargement ; sans choix, message et aucun appel API", async () => {
+    await renderWith(<AdminTournamentFormScreen />);
+    await screen.findByLabelText("Date", {}, WAIT);
+    for (const name of ["FAP-FAP", "GARAM TIA"]) {
+      expect(
+        screen.getByRole("radio", { name }).props.accessibilityState.selected,
+      ).toBe(false);
+    }
+    await fireEvent.press(screen.getByText("Publier le tournoi"));
+    expect(
+      screen.getByText("Veuillez sélectionner le jeu du tournoi."),
+    ).toBeTruthy();
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
+  it("GARAM TIA : variante 15 présélectionnée, modifiable (D-127)", async () => {
+    api.create.mockResolvedValue({ tournament: tournament() });
+    await renderWith(<AdminTournamentFormScreen />);
+    await screen.findByLabelText("Date", {}, WAIT);
+    await fireEvent.press(screen.getByText("GARAM TIA"));
+    for (const v of [15, 16, 17, 18]) {
+      expect(
+        screen.getByRole("radio", { name: `GARAM ${v}` }).props.accessibilityState.selected,
+      ).toBe(v === 15);
+    }
+    await fireEvent.press(screen.getByText("GARAM 17"));
+    await fireEvent.press(screen.getByText("Publier le tournoi"));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
+    expect(api.create.mock.calls[0][1]).toMatchObject({ gameType: "GARAM", garamVariant: 17 });
   });
 });
 

@@ -21,7 +21,13 @@ export type GameOutcome =
 
 export type OutcomeTone = 'neutral' | 'accent' | 'info';
 
-const VICTORY_REASONS = new Set(['INSTANT_WIN', 'CONTROL_AFTER_LAST_TRICK', 'OPPONENT_FLED']);
+const VICTORY_REASONS = new Set([
+  'INSTANT_WIN',
+  'CONTROL_AFTER_LAST_TRICK',
+  'OPPONENT_FLED',
+  'GARAM_AUTOMATIC_WIN',
+  'GARAM_BEST_SCORE',
+]);
 
 type OutcomeInput = Pick<
   GameRow,
@@ -104,6 +110,20 @@ export function describeGameOutcome(g: OutcomeInput): GameOutcome {
       'Données contradictoires',
       `Vainqueur enregistré pour une fin sans vainqueur (${label(END_REASON, reason)})`,
     );
+  }
+
+  if (reason === 'GARAM_TIE') {
+    return {
+      kind: 'state',
+      title: 'Manche nulle (GARAM TIA)',
+      tone: 'neutral',
+      details: [
+        'Égalité, aucun vainqueur',
+        g.replayedByGameId
+          ? `Rejouée dans la partie ${shortId(g.replayedByGameId)}`
+          : 'Aucune reprise enregistrée',
+      ],
+    };
   }
 
   if (reason === 'INSTANT_WIN_TIE') {

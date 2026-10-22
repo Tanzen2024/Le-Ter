@@ -17,6 +17,7 @@ const ZOE = { playerId: 'u-zoe', username: 'ZOE', seat: 2 };
 function game(over: Partial<GameRow> = {}): GameRow {
   return {
     id: 'aaaaaaaa-0000-4000-8000-000000000001',
+    gameType: 'TER',
     status: 'finished',
     sessionId: 'ssssssss-0000-4000-8000-000000000001',
     tournament: null,

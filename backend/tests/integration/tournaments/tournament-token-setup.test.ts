@@ -68,6 +68,7 @@ type Client = Awaited<ReturnType<typeof user>>;
 function body(extra: Record<string, unknown> = {}) {
   const startsAt = new Date(stack.clock.now().getTime() + 3 * HOUR);
   return {
+    gameType: 'TER',
     startsAt: startsAt.toISOString(),
     endsAt: new Date(startsAt.getTime() + 2 * HOUR).toISOString(),
     entryFee: 1000,

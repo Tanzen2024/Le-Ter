@@ -18,6 +18,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { downloadUrl } from '@/lib/api/client';
 import { formatDateTime, formatNumber, formatXaf } from '@/lib/format';
 import { CANCELLATION_REASON, label, RESERVATION_STATUS, TOURNAMENT_STATUS } from '@/lib/labels';
+import { tournamentGameLabel } from '@/lib/validation/tournament';
 import type { TournamentRegistration, TournamentResult } from '@/types/admin';
 
 import {
@@ -272,6 +273,11 @@ export function TournamentDetailView({ id }: { id: string }) {
             <CardBody>
               <DetailList
                 items={[
+                  // Valeur enregistrée du tournoi (jamais une valeur par défaut).
+                  ['Jeu du tournoi', tournamentGameLabel(t.gameType)],
+                  ...(t.gameType === 'GARAM'
+                    ? [['Variante', t.garamVariant ? `GARAM ${t.garamVariant}` : '—'] as [string, string]]
+                    : []),
                   ['Début', formatDateTime(t.startsAt)],
                   ['Fin', formatDateTime(t.endsAt)],
                   ['Clôture des inscriptions', formatDateTime(t.registrationClosesAt)],

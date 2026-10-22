@@ -54,6 +54,7 @@ export interface GeolocationRepository {
   /**
    * Nombre d'AUTRES parties surveillées (détection activée) où cette paire exacte a reçu
    * un signal PROXIMITY depuis `since`. Une partie non surveillée n'y figure jamais.
+   * Parties du MÊME jeu que `gameId` seulement (Fap-Fap ou GARAM TIA, D-125).
    */
   countOtherProximityGames(
     gameId: GameId,

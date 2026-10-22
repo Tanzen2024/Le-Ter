@@ -3,17 +3,24 @@ import { randomUUID } from 'node:crypto';
 import {
   newUserId,
   toPublicUser,
+  type NewUser,
   type PublicUser,
   type User,
   type UserId,
   type UserRole,
 } from '../../domain/users/user';
 import type { AuthSessionRepository } from '../../repositories/auth-session.repository';
+import type {
+  PasswordRecoveryRepository,
+  RecoveryLockPolicy,
+} from '../../repositories/password-recovery.repository';
 import { DuplicateUserError, type UserRepository } from '../../repositories/user.repository';
 import type { Logger } from '../../utils/logger';
 import type {
   ChangePasswordInput,
   LoginInput,
+  RecoveryResetInput,
+  RecoveryVerifyInput,
   RegisterInput,
 } from '../../validators/auth.validators';
 import { AccessTokenService, InvalidAccessTokenError } from './access-token.service';
@@ -24,9 +31,19 @@ import {
   CurrentPasswordIncorrectError,
   InvalidCredentialsError,
   InvalidRefreshTokenError,
+  RecoveryFailedError,
   RegistrationConflictError,
+  ResetGrantInvalidError,
 } from './auth-errors';
 import type { PasswordService } from './password.service';
+import {
+  generateRecoveryCode,
+  generateResetToken,
+  hashResetToken,
+  isWellFormedResetToken,
+  normalizeRecoveryCode,
+  recoveryCodeSecret,
+} from './recovery-code';
 import { generateRefreshToken, hashRefreshToken, isWellFormedRefreshToken } from './refresh-token';
 
 /** Identité authentifiée d'une requête : issue du JWT vérifié, jamais du client. */
@@ -66,11 +83,31 @@ export interface CallMeta {
 export interface AuthServiceDependencies {
   users: UserRepository;
   sessions: AuthSessionRepository;
+  /** Récupération par code (D-135). */
+  recovery: PasswordRecoveryRepository;
   passwords: PasswordService;
   accessTokens: AccessTokenService;
   refreshTokenTtlSeconds: number;
   logger: Logger;
   clock?: () => Date;
+  /** Blocage du compte après des codes refusés (défaut : 5 échecs → 15 min). */
+  recoveryLock?: RecoveryLockPolicy;
+  /** Durée de l'autorisation de réinitialisation (défaut : 10 min). */
+  resetGrantTtlMs?: number;
+}
+
+export const DEFAULT_RECOVERY_LOCK: RecoveryLockPolicy = { maxFailures: 5, lockMs: 15 * 60_000 };
+export const DEFAULT_RESET_GRANT_TTL_MS = 10 * 60_000;
+
+/** Inscription réussie : le code de récupération en clair n'existe QUE dans cette réponse. */
+export interface Registration {
+  user: PublicUser;
+  recoveryCode: string;
+}
+
+export interface ResetGrant {
+  resetToken: string;
+  expiresAt: string;
 }
 
 /**
@@ -87,7 +124,12 @@ export class AuthService {
     this.clock = deps.clock ?? (() => new Date());
   }
 
-  async register(input: RegisterInput, meta: CallMeta = {}): Promise<PublicUser> {
+  /**
+   * Inscription d'un joueur : téléphone obligatoire, email facultatif (D-135). Un code de
+   * récupération est créé avec le compte : seule son empreinte est enregistrée, le code en
+   * clair n'est renvoyé qu'ici, une fois.
+   */
+  async register(input: RegisterInput, meta: CallMeta = {}): Promise<Registration> {
     const log = this.deps.logger.child({ requestId: meta.requestId, action: 'REGISTER' });
     const taken = await this.deps.users.findTakenFields(input);
     if (taken.length > 0) {
@@ -96,7 +138,12 @@ export class AuthService {
     }
 
     const now = this.clock();
-    const user: User = {
+    const recoveryCode = generateRecoveryCode();
+    const [passwordHash, recoveryCodeHash] = await Promise.all([
+      this.deps.passwords.hashPassword(input.password),
+      this.deps.passwords.hashPassword(recoveryCodeSecret(recoveryCode)),
+    ]);
+    const user: NewUser = {
       id: newUserId(),
       firstName: input.firstName,
       lastName: input.lastName,
@@ -104,14 +151,16 @@ export class AuthService {
       username: input.username,
       phone: input.phone,
       phoneVerified: false,
-      passwordHash: await this.deps.passwords.hashPassword(input.password),
+      passwordHash,
+      recoveryCodeHash,
       role: 'user',
       status: 'active',
       createdAt: now,
       updatedAt: now,
     };
+    let created: User;
     try {
-      await this.deps.users.insert(user);
+      created = await this.deps.users.insert(user);
     } catch (err) {
       // Inscription concurrente avec les mêmes informations.
       if (err instanceof DuplicateUserError) {
@@ -120,8 +169,8 @@ export class AuthService {
       }
       throw err;
     }
-    log.info('register succeeded', { userId: user.id });
-    return toPublicUser(user);
+    log.info('register succeeded', { userId: created.id, withEmail: created.email !== null });
+    return { user: toPublicUser(created), recoveryCode };
   }
 
   async login(input: LoginInput, meta: CallMeta = {}): Promise<TokenPair & { user: PublicUser }> {
@@ -136,19 +185,23 @@ export class AuthService {
       }
       throw check.reason === 'account_disabled'
         ? new AccountDisabledError()
-        : new InvalidCredentialsError();
+        : new InvalidCredentialsError(input.phone !== undefined ? 'phone' : 'email');
     }
     const { user, accessToken, refreshToken } = await this.openSession(check.user, log);
     return { user, accessToken, refreshToken };
   }
 
   /**
-   * Vérifie email et mot de passe SANS ouvrir de session (temps constant si le compte est
-   * inconnu). Utilisé par `login` et par la connexion d'administration, qui contrôle le rôle
-   * AVANT d'ouvrir une session (une connexion refusée ne révoque pas la session existante).
+   * Vérifie l'identifiant (email ou téléphone, D-135) et le mot de passe SANS ouvrir de
+   * session (temps constant si le compte est inconnu). Utilisé par `login` et par la connexion
+   * d'administration, qui contrôle le rôle AVANT d'ouvrir une session (une connexion refusée
+   * ne révoque pas la session existante).
    */
   async verifyCredentials(input: LoginInput): Promise<CredentialCheck> {
-    const user = await this.deps.users.findByEmail(input.email);
+    const user =
+      input.phone !== undefined
+        ? await this.deps.users.findByPhone(input.phone)
+        : await this.deps.users.findByEmail(input.email);
     const valid = user
       ? await this.deps.passwords.verifyPassword(input.password, user.passwordHash)
       : await this.deps.passwords.verifyAgainstDummy(input.password);
@@ -319,6 +372,139 @@ export class AuthService {
       throw new CurrentPasswordIncorrectError();
     }
     log.info('password changed', { userId });
+  }
+
+  // --- Récupération par code (D-135) ---------------------------------------------------------
+
+  /**
+   * Étape « code » de « Mot de passe oublié ? ». Le numéro seul ne prouve rien : le code
+   * est comparé (bcrypt) à l'empreinte du compte. Numéro inconnu, compte sans code, inactif
+   * ou administrateur, code faux, compte bloqué : MÊME erreur, et une comparaison factice
+   * garde la même durée. Chaque code faux est compté en base ; au seuil, blocage temporaire.
+   * Succès : autorisation temporaire, à usage unique (seule son empreinte est stockée).
+   */
+  async verifyRecoveryCode(input: RecoveryVerifyInput, meta: CallMeta = {}): Promise<ResetGrant> {
+    const log = this.deps.logger.child({ requestId: meta.requestId, action: 'RECOVERY_VERIFY' });
+    const now = this.clock();
+    const target =
+      input.email !== undefined
+        ? await this.deps.recovery.findTargetByEmail(input.email)
+        : await this.deps.recovery.findTargetByPhone(input.phone);
+    const canonical = normalizeRecoveryCode(input.code);
+    const usable =
+      target &&
+      target.role === 'user' &&
+      target.status === 'active' &&
+      target.recoveryCodeHash !== null &&
+      !(target.lockedUntil && target.lockedUntil > now);
+    const valid =
+      usable && canonical
+        ? await this.deps.passwords.verifyPassword(canonical, target.recoveryCodeHash as string)
+        : await this.deps.passwords.verifyAgainstDummy(canonical ?? input.code);
+    if (!target) {
+      log.warn('recovery rejected', { reason: 'unknown_account' });
+      throw new RecoveryFailedError('unknown_account');
+    }
+    if (!usable) {
+      const reason =
+        target.lockedUntil && target.lockedUntil > now
+          ? 'locked'
+          : target.recoveryCodeHash === null
+            ? 'no_code'
+            : 'not_allowed';
+      log.warn('recovery rejected', { reason, userId: target.userId });
+      throw new RecoveryFailedError(reason);
+    }
+    if (!valid) {
+      const lockedUntil = await this.deps.recovery.recordFailure(
+        target.userId,
+        now,
+        this.deps.recoveryLock ?? DEFAULT_RECOVERY_LOCK,
+      );
+      log.warn('recovery rejected', {
+        reason: 'invalid_code',
+        userId: target.userId,
+        ...(lockedUntil && { lockedUntil: lockedUntil.toISOString() }),
+      });
+      throw new RecoveryFailedError('invalid_code');
+    }
+    const grant = generateResetToken();
+    const expiresAt = new Date(
+      now.getTime() + (this.deps.resetGrantTtlMs ?? DEFAULT_RESET_GRANT_TTL_MS),
+    );
+    const issued = await this.deps.recovery.issueResetGrant(
+      target.userId,
+      target.recoveryCodeHash as string,
+      { id: randomUUID(), tokenHash: grant.hash, createdAt: now, expiresAt },
+    );
+    if (!issued) {
+      // Code remplacé, utilisé ou compte désactivé entre la lecture et l'écriture.
+      log.warn('recovery rejected', { reason: 'concurrent_change', userId: target.userId });
+      throw new RecoveryFailedError('concurrent_change');
+    }
+    log.info('recovery code accepted', { userId: target.userId });
+    return { resetToken: grant.token, expiresAt: expiresAt.toISOString() };
+  }
+
+  /**
+   * Étape « nouveau mot de passe » : l'autorisation est consommée, le mot de passe remplacé,
+   * l'ancien code invalidé et remplacé par un NOUVEAU code (renvoyé une seule fois), et toutes
+   * les sessions du compte sont fermées. Une autorisation absente, expirée ou déjà utilisée
+   * est refusée.
+   */
+  async resetPassword(
+    input: RecoveryResetInput,
+    meta: CallMeta = {},
+  ): Promise<{ recoveryCode: string }> {
+    const log = this.deps.logger.child({ requestId: meta.requestId, action: 'RECOVERY_RESET' });
+    if (!isWellFormedResetToken(input.resetToken)) {
+      log.warn('password reset rejected', { reason: 'malformed' });
+      throw new ResetGrantInvalidError();
+    }
+    const recoveryCode = generateRecoveryCode();
+    const [passwordHash, codeHash] = await Promise.all([
+      this.deps.passwords.hashPassword(input.newPassword),
+      this.deps.passwords.hashPassword(recoveryCodeSecret(recoveryCode)),
+    ]);
+    const done = await this.deps.recovery.completeReset(
+      hashResetToken(input.resetToken),
+      passwordHash,
+      codeHash,
+      this.clock(),
+    );
+    if (!done) {
+      log.warn('password reset rejected', { reason: 'invalid_grant' });
+      throw new ResetGrantInvalidError();
+    }
+    log.info('password reset', { userId: done.userId, revokedSessions: done.revokedSessions });
+    return { recoveryCode };
+  }
+
+  /**
+   * Nouveau code de récupération pour le joueur CONNECTÉ (Profil, D-135), après vérification
+   * de son mot de passe actuel. L'ancien code est invalidé ; le nouveau n'est renvoyé qu'ici.
+   */
+  async regenerateRecoveryCode(
+    userId: UserId,
+    currentPassword: string,
+    meta: CallMeta = {},
+  ): Promise<{ recoveryCode: string }> {
+    const log = this.deps.logger.child({ requestId: meta.requestId, action: 'RECOVERY_CODE' });
+    const user = await this.deps.users.findById(userId);
+    if (!user || user.status !== 'active') {
+      throw new AuthenticationRequiredError('user_unavailable');
+    }
+    if (!(await this.deps.passwords.verifyPassword(currentPassword, user.passwordHash))) {
+      log.warn('recovery code rejected', { reason: 'invalid_current_password', userId });
+      throw new CurrentPasswordIncorrectError();
+    }
+    const recoveryCode = generateRecoveryCode();
+    const codeHash = await this.deps.passwords.hashPassword(recoveryCodeSecret(recoveryCode));
+    if (!(await this.deps.recovery.replaceCode(userId, codeHash, this.clock()))) {
+      throw new AuthenticationRequiredError('user_unavailable');
+    }
+    log.info('recovery code regenerated', { userId });
+    return { recoveryCode };
   }
 
   async getCurrentUser(userId: UserId): Promise<PublicUser> {

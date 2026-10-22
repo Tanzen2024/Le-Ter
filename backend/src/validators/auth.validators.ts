@@ -13,16 +13,20 @@ import { ValidationError } from './validation-error';
 export interface RegisterInput {
   firstName: string;
   lastName: string;
-  email: string;
+  /** Facultatif pour un joueur (D-135) : null s'il n'est pas fourni. */
+  email: string | null;
   username: string;
   phone: string;
   password: string;
 }
 
-export interface LoginInput {
-  email: string;
-  password: string;
-}
+/**
+ * Connexion par email (comptes existants, administration) OU par téléphone (D-135 : pays +
+ * numéro national, E.164 reconstruit par le serveur comme à l'inscription).
+ */
+export type LoginInput =
+  | { email: string; phone?: undefined; password: string }
+  | { phone: string; email?: undefined; password: string };
 
 const NAME_PATTERN = /^\p{L}[\p{L}\p{M}' .-]*$/u;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -34,6 +38,8 @@ const MAX_EMAIL_LENGTH = 254;
 const MIN_PASSWORD_LENGTH = 8;
 /** Borne de la connexion : évite de faire hacher un corps énorme. */
 const MAX_LOGIN_PASSWORD_LENGTH = 1024;
+/** « LT-XXXX-XXXX-XXXX » avec une marge pour les espaces saisis. */
+const MAX_RECOVERY_CODE_LENGTH = 40;
 
 const REQUIRED = 'Ce champ est obligatoire.';
 
@@ -43,7 +49,8 @@ export function parseRegisterInput(body: unknown): RegisterInput {
 
   const firstName = name(source.firstName, 'firstName', fields);
   const lastName = name(source.lastName, 'lastName', fields);
-  const email = parseEmail(source.email, fields);
+  // Email facultatif d'un joueur (D-135) : vide = aucun, jamais une adresse inventée.
+  const email = text(source.email) === '' ? null : parseEmail(source.email, fields);
 
   const rawUsername = text(source.username);
   if (!rawUsername) {
@@ -75,8 +82,11 @@ export function parseRegisterInput(body: unknown): RegisterInput {
 export function parseLoginInput(body: unknown): LoginInput {
   const source = asRecord(body);
   const fields: Record<string, string> = {};
-  const email = text(source.email).toLowerCase();
-  if (!email) {
+  // Téléphone fourni : connexion par téléphone (D-135) ; sinon par email.
+  const byPhone = text(source.phone) !== '';
+  const phone = byPhone ? parsePhone(source.country, source.phone, fields) : '';
+  const email = byPhone ? '' : text(source.email).toLowerCase();
+  if (!byPhone && !email) {
     fields.email = REQUIRED;
   }
   const password = typeof source.password === 'string' ? source.password : '';
@@ -88,7 +98,80 @@ export function parseLoginInput(body: unknown): LoginInput {
   if (Object.keys(fields).length > 0) {
     throw new ValidationError(fields);
   }
-  return { email, password };
+  return byPhone ? { phone, password } : { email, password };
+}
+
+export type RecoveryVerifyInput =
+  | { phone: string; email?: undefined; code: string }
+  | { email: string; phone?: undefined; code: string };
+
+/**
+ * Corps de POST /api/auth/recovery/verify (D-135, D-142) : pays + numéro (même règle qu'à
+ * l'inscription) OU email (comme la connexion), et code de récupération. Le code n'est
+ * contrôlé que par sa longueur ici : sa forme et sa valeur sont jugées par le service, sans
+ * rien révéler.
+ */
+export function parseRecoveryVerifyInput(body: unknown): RecoveryVerifyInput {
+  const source = asRecord(body);
+  const fields: Record<string, string> = {};
+  // Téléphone fourni : récupération par téléphone ; sinon par email (même règle que la connexion).
+  const byPhone = text(source.phone) !== '';
+  const phone = byPhone ? parsePhone(source.country, source.phone, fields) : '';
+  const email = byPhone ? '' : text(source.email).toLowerCase();
+  if (!byPhone && !email) {
+    fields.phone = REQUIRED;
+  }
+  const code = text(source.code);
+  if (!code) {
+    fields.code = REQUIRED;
+  } else if (code.length > MAX_RECOVERY_CODE_LENGTH) {
+    fields.code = 'Code de récupération invalide.';
+  }
+  if (Object.keys(fields).length > 0) {
+    throw new ValidationError(fields);
+  }
+  return byPhone ? { phone, code } : { email, code };
+}
+
+export interface RecoveryResetInput {
+  resetToken: string;
+  newPassword: string;
+}
+
+/** Corps de POST /api/auth/recovery/reset : autorisation reçue, nouveau mot de passe, confirmation. */
+export function parseRecoveryResetInput(body: unknown): RecoveryResetInput {
+  const source = asRecord(body);
+  const fields: Record<string, string> = {};
+  const resetToken = typeof source.resetToken === 'string' ? source.resetToken : '';
+  if (!resetToken) {
+    fields.resetToken = REQUIRED;
+  }
+  const newPassword = typeof source.newPassword === 'string' ? source.newPassword : '';
+  const strength = checkPasswordStrength(newPassword);
+  if (strength) {
+    fields.newPassword = strength;
+  }
+  if (typeof source.confirmPassword !== 'string' || source.confirmPassword === '') {
+    fields.confirmPassword = REQUIRED;
+  } else if (source.confirmPassword !== newPassword) {
+    fields.confirmPassword = 'Les mots de passe ne correspondent pas.';
+  }
+  if (Object.keys(fields).length > 0) {
+    throw new ValidationError(fields);
+  }
+  return { resetToken, newPassword };
+}
+
+/** Corps de POST /api/auth/recovery-code : mot de passe actuel du compte du JWT. */
+export function parseRecoveryCodeRequest(body: unknown): { currentPassword: string } {
+  const { currentPassword } = asRecord(body);
+  if (typeof currentPassword !== 'string' || currentPassword === '') {
+    throw new ValidationError({ currentPassword: REQUIRED });
+  }
+  if (currentPassword.length > MAX_LOGIN_PASSWORD_LENGTH) {
+    throw new ValidationError({ currentPassword: 'Mot de passe trop long.' });
+  }
+  return { currentPassword };
 }
 
 export interface ChangePasswordInput {

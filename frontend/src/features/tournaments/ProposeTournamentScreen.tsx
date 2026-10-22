@@ -19,16 +19,24 @@ import {
 } from './hooks';
 import { proposalStatus, type ProposalTone } from './proposal-status';
 import {
+  GARAM_VARIANTS,
+  garamVariantLabel,
+  type GameType,
+  type GaramVariant,
+} from '../../types/game';
+import {
   defaultShares,
   defaultTournamentForm,
-  fieldErrorsFromApi,
+  formErrorsFromApiError,
+  generalApiError,
   MAX_RANKS,
   sharesTotal,
   toTournamentPayload,
+  TOURNAMENT_GAMES,
   withRuleDefaults,
   type TournamentFormErrors,
-  type TournamentFormField,
   type TournamentFormValues,
+  type TournamentTextField,
 } from './tournament-form';
 import { useTournamentMessages } from './tournament-messages';
 import { formatFcfa, formatTournamentPeriod } from './tournament-state';
@@ -82,11 +90,24 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
     setValues((v) => withRuleDefaults(v, rules));
   }
   const propose = useProposeTournament();
-  const apiError = propose.error instanceof ApiError ? propose.error : undefined;
+  const generalError = generalApiError(
+    propose.error instanceof ApiError ? propose.error : undefined,
+  );
 
-  const set = (field: Exclude<TournamentFormField, 'shares'>) => (text: string) => {
+  const set = (field: TournamentTextField) => (text: string) => {
     setValues((v) => ({ ...v, [field]: text }));
     setErrors((e) => ({ ...e, [field]: undefined }));
+  };
+  // Jeu du tournoi (D-124) : aucun choix au départ, un seul à la fois.
+  const setGame = (gameType: GameType) => {
+    // Changer de jeu remet la variante présélectionnée (15) : jamais de variante reportée.
+    setValues((v) => ({ ...v, gameType, garamVariant: gameType === v.gameType ? v.garamVariant : 15 }));
+    setErrors((e) => ({ ...e, gameType: undefined, garamVariant: undefined }));
+  };
+  // Variante d'un tournoi GARAM TIA (D-127) : choix explicite obligatoire.
+  const setVariant = (garamVariant: GaramVariant) => {
+    setValues((v) => ({ ...v, garamVariant }));
+    setErrors((e) => ({ ...e, garamVariant: undefined }));
   };
   const setRanks = (count: number) => {
     setValues((v) => ({ ...v, shares: defaultShares(count) }));
@@ -117,7 +138,7 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
           onSaved();
         },
         onError: (err) => {
-          if (err instanceof ApiError) setErrors(fieldErrorsFromApi(err.fields));
+          if (err instanceof ApiError) setErrors(formErrorsFromApiError(err));
         },
       },
     );
@@ -125,7 +146,7 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
 
   const label = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
   const field = (
-    key: Exclude<TournamentFormField, 'shares'>,
+    key: TournamentTextField,
     title: string,
     props: TextInputProps = {},
   ) => (
@@ -158,6 +179,44 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
 
   return (
     <InnerFrame style={{ gap: m.gap * 0.7 }}>
+      <View style={styles.gameField}>
+        <Text style={label}>Jeu du tournoi *</Text>
+        <ChoiceGroup>
+          {TOURNAMENT_GAMES.map((game) => (
+            <PanelButton
+              key={game.value}
+              title={game.label}
+              selected={values.gameType === game.value}
+              onPress={() => setGame(game.value)}
+            />
+          ))}
+        </ChoiceGroup>
+        {errors.gameType ? (
+          <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
+            {errors.gameType}
+          </Text>
+        ) : null}
+      </View>
+      {values.gameType === 'GARAM' ? (
+        <View style={styles.gameField}>
+          <Text style={label}>Variante *</Text>
+          <ChoiceGroup>
+            {GARAM_VARIANTS.map((variant) => (
+              <PanelButton
+                key={variant}
+                title={garamVariantLabel(variant)}
+                selected={values.garamVariant === variant}
+                onPress={() => setVariant(variant)}
+              />
+            ))}
+          </ChoiceGroup>
+          {errors.garamVariant ? (
+            <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
+              {errors.garamVariant}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
       <View style={[styles.row, { gap: m.gap }]}>
         <View style={styles.field}>
           <Text style={label}>{t.form.date}</Text>
@@ -241,9 +300,9 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
         Votre proposition sera vérifiée par l’administration avant publication. Les inscrits
         réservent la participation ; elle n’est débitée qu’au démarrage du tournoi.
       </Text>
-      {apiError && !Object.keys(apiError.fields).length ? (
+      {generalError ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
-          {apiError.message}
+          {generalError}
         </Text>
       ) : null}
       <View style={[styles.row, styles.actions, { gap: m.gap }]}>
@@ -385,6 +444,7 @@ const styles = StyleSheet.create({
   between: { justifyContent: 'space-between' },
   actions: { justifyContent: 'flex-end', flexWrap: 'wrap' },
   field: { flex: 1, minWidth: 120, gap: 4 },
+  gameField: { alignItems: 'flex-start', gap: 4 },
   share: { width: 72, gap: 2 },
   label: { color: '#FFFFFF' },
   hint: { color: tablePalette.cream, opacity: 0.85 },

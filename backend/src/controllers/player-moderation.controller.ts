@@ -84,6 +84,12 @@ export function createPlayerModerationController(deps: {
       res.json(await moderation.revokeSessions(target(req), reason, actor(res)));
     },
 
+    /** `{ recoveryCode }` : le nouveau code, renvoyé UNE fois à l'administrateur (D-135). */
+    async recoverAccount(req: Request, res: Response): Promise<void> {
+      const { reason } = parseReasonBody(req.body);
+      res.json(await moderation.recoverAccount(target(req), reason!, actor(res)));
+    },
+
     async restrictChat(req: Request, res: Response): Promise<void> {
       const input = parseRestrictionInput(req.body);
       res.status(201).json(await moderation.restrictChat(target(req), input, actor(res)));

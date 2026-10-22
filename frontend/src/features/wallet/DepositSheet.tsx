@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { ApiError } from '../../lib/api-client';
 import type { DirectPayOperator, PaymentView, WalletTransactionView } from '../../types/wallet';
 import { useBackToClose } from '../games/table/GameOverlays';
@@ -51,7 +52,6 @@ const OPERATORS: Record<
 
 /** Charte Le-Ter, en version douce : vert profond, or et bordeaux en accents. */
 const COLORS = {
-  backdrop: 'rgba(3, 12, 8, 0.55)',
   cardTop: '#163C2B',
   cardBottom: '#0E271C',
   cardBorder: 'rgba(242, 196, 81, 0.18)',
@@ -130,6 +130,11 @@ export function DepositSheet({
   const [input, setInput] = useState('');
   const [payment, setPayment] = useState<PaymentView>();
   const [notice, setNotice] = useState<Notice>();
+  // Achat en cours (montant + clé d'idempotence de l'appui) : un repli vers la page CinetPay
+  // est une nouvelle demande du MÊME achat, jamais un second paiement (D-134).
+  const [intent, setIntent] = useState<{ tokens: number; key: string }>();
+  // Paiement direct clos sans débit : repli automatique en cours vers la page CinetPay.
+  const [fallingBack, setFallingBack] = useState<string>();
   useBackToClose(onClose);
 
   const limits = wallet.data?.depositLimits ?? DEFAULT_DEPOSIT_LIMITS;
@@ -153,8 +158,10 @@ export function DepositSheet({
     if (processing || unavailable || verifying || !operator || !check.ok) return;
     setNotice(undefined);
     operation.reset();
+    const key = operation.newKey();
+    setIntent({ tokens: check.amount, key });
     operation.mutate(
-      { tokens: check.amount, key: operation.newKey() },
+      { tokens: check.amount, key },
       {
         onSuccess: (result) => {
           if (!result.payment) {
@@ -165,6 +172,32 @@ export function DepositSheet({
           if (result.payment.paymentUrl) void openPaymentPage(result.payment.paymentUrl);
         },
         onError: (err) => setNotice(noticeOf(err)),
+      },
+    );
+  };
+
+  /**
+   * Paiement DIRECT (MTN) clos par CinetPay sans débit (échoué, expiré) : le même achat passe
+   * AUTOMATIQUEMENT par la page CinetPay (D-134). Le serveur revérifie que le direct est bien
+   * clos sans débit ; un direct encore en attente n'est jamais doublé.
+   */
+  const fallBackToPage = (closed: PaymentView) => {
+    if (closed.mode !== 'DIRECT' || !intent || fallingBack === closed.id) return;
+    if (closed.status !== 'FAILED' && closed.status !== 'EXPIRED') return;
+    setFallingBack(closed.id);
+    operation.mutate(
+      { tokens: intent.tokens, key: intent.key },
+      {
+        onSuccess: (result) => {
+          setFallingBack(undefined);
+          if (!result.payment || result.payment.id === closed.id) return;
+          setPayment(result.payment);
+          if (result.payment.paymentUrl) void openPaymentPage(result.payment.paymentUrl);
+        },
+        onError: (err) => {
+          setFallingBack(undefined);
+          setNotice(noticeOf(err));
+        },
       },
     );
   };
@@ -246,7 +279,7 @@ export function DepositSheet({
   );
 
   return (
-    <View style={[StyleSheet.absoluteFill, styles.backdrop]}>
+    <ExclusiveOverlay style={styles.backdrop}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.center}
@@ -286,12 +319,30 @@ export function DepositSheet({
                     <Text style={[styles.chipText, small]}>{pageHint}</Text>
                   </View>
                 ) : null}
-                <PaymentProgress
-                  paymentId={payment.id}
-                  initial={payment}
-                  doneLabel="Fermer"
-                  onDone={onClose}
-                />
+                {fallingBack ? (
+                  <View style={styles.row} testID="deposit-page-fallback">
+                    <ActivityIndicator color={COLORS.gold} size="small" />
+                    <Text style={[styles.muted, small]}>
+                      Paiement direct indisponible : ouverture de la page de paiement CinetPay…
+                    </Text>
+                  </View>
+                ) : (
+                  <PaymentProgress
+                    key={payment.id}
+                    paymentId={payment.id}
+                    initial={payment}
+                    doneLabel="Fermer"
+                    onDone={onClose}
+                    onFinal={fallBackToPage}
+                  />
+                )}
+                {notice && payment ? (
+                  <View style={[styles.chip, styles.chipWarning]}>
+                    <Text accessibilityRole="alert" style={[styles.chipText, small]}>
+                      {notice.text}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             ) : (
               <>
@@ -330,7 +381,7 @@ export function DepositSheet({
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </ExclusiveOverlay>
   );
 }
 
@@ -411,7 +462,7 @@ function PayButton({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { backgroundColor: COLORS.backdrop },
+  backdrop: { alignItems: 'stretch', justifyContent: 'flex-start' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   card: {
     overflow: 'hidden',

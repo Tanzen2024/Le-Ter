@@ -18,6 +18,7 @@ import type {
   NewSanction,
 } from './moderation.repository';
 import { revokeUserSessions } from './postgres-auth-session.repository';
+import { replaceRecoveryCode } from './postgres-password-recovery.repository';
 import { activeSanctionSql } from './user-sanctions.sql';
 
 interface SanctionRow {
@@ -150,6 +151,10 @@ class PostgresModerationTx implements ModerationTx {
       status,
       now.toISOString(),
     ]);
+  }
+
+  replaceRecoveryCode(userId: UserId, codeHash: string, now: Date): Promise<boolean> {
+    return replaceRecoveryCode(this.tx, userId, codeHash, now);
   }
 
   revokeSessions(userId: UserId, now: Date, reason: AdminRevocationReason): Promise<number> {

@@ -3,6 +3,8 @@
  * succèdent plusieurs parties. Types d'affichage seulement : le serveur décide de tout
  * (J1, sièges, ouverture, fermeture, départs automatiques).
  */
+import type { GaramVariant } from './game';
+
 export type SessionStatus = 'open' | 'closed';
 
 export interface SessionPlayer {
@@ -39,6 +41,10 @@ export interface SessionDecision {
 
 export interface SessionView {
   sessionId: string;
+  /** Jeu de la table (D-119) ; absent : Le Ter. */
+  gameType?: GameType;
+  /** GARAM TIA : variante de la table (D-127). */
+  garamVariant?: GaramVariant;
   version: number;
   status: SessionStatus;
   creatorId: string;
@@ -87,8 +93,15 @@ export interface SessionGameSummary {
  * une place libre. L'utilisateur n'y voit qu'une PARTIE : l'identifiant de session reste
  * technique et n'est jamais affiché.
  */
+/** Jeu d'une table (D-119) : Le Ter (absent ou 'TER') ou GARAM TIA. */
+export type GameType = 'TER' | 'GARAM';
+
 export interface OpenTable {
   sessionId: string;
+  /** Jeu de la table ; absent : Le Ter. */
+  gameType?: GameType;
+  /** GARAM TIA : variante de la table (D-127). */
+  garamVariant?: GaramVariant;
   gameId: string;
   /**
    * Nom choisi à la création (D-039). Absent pour les tables de l'ancien écran « Nouvelle

@@ -11,6 +11,8 @@ const SIGN: Record<string, string> = {
   tournament_prize: '+',
   withdrawal: '−',
   tournament_entry: '−',
+  game_winnings: '+',
+  game_stake: '−',
 };
 
 export const transactionColumns: Column<WalletTransaction>[] = [

@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { tablePalette } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { useLanguage } from '../../lib/i18n';
 import { useMarkNotificationRead, useNotifications } from '../tournaments/hooks';
 
@@ -26,7 +27,7 @@ export function ModerationNotice() {
   if (!warning) return null;
 
   return (
-    <View style={styles.backdrop} accessibilityViewIsModal>
+    <ExclusiveOverlay style={styles.backdrop}>
       <View style={styles.card} accessibilityRole="alert">
         <Text style={styles.title}>⚠️ {t.title}</Text>
         <Text style={styles.message}>{warning.payload.message ?? ''}</Text>
@@ -39,19 +40,12 @@ export function ModerationNotice() {
           <Text style={styles.buttonText}>{t.ok}</Text>
         </Pressable>
       </View>
-    </View>
+    </ExclusiveOverlay>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    padding: 16,
-    zIndex: 50,
-  },
+  backdrop: { padding: 16 },
   card: {
     maxWidth: 480,
     width: '100%',

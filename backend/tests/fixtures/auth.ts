@@ -90,7 +90,10 @@ export async function registerAndLogin(
 ): Promise<Session & { email: string; password: string }> {
   const body = validRegistration(overrides);
   const registered = await request(app).post('/api/auth/register').send(body).expect(201);
-  const session = await login(app, body.email, body.password);
+  // Joueur sans email (D-135) : connexion par téléphone.
+  const session = body.email
+    ? await login(app, body.email, body.password)
+    : await loginWith(app, { country: body.country, phone: body.phone, password: body.password });
   return {
     ...session,
     userId: registered.body.user.id,
@@ -99,8 +102,13 @@ export async function registerAndLogin(
   };
 }
 
-export async function login(app: Express, email: string, password: string): Promise<Session> {
-  const res = await request(app).post('/api/auth/login').send({ email, password }).expect(200);
+export function login(app: Express, email: string, password: string): Promise<Session> {
+  return loginWith(app, { email, password });
+}
+
+/** Connexion avec un corps quelconque : email ou pays + téléphone (D-135). */
+export async function loginWith(app: Express, body: object): Promise<Session> {
+  const res = await request(app).post('/api/auth/login').send(body).expect(200);
   return {
     userId: res.body.user.id,
     accessToken: res.body.accessToken,

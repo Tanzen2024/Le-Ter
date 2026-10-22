@@ -47,13 +47,14 @@ export function purchasesTotal(o: FinanceOverview): CountAmount {
 
 // --- Carte 10 : mouvements des comptes de jeu ------------------------------------------------
 
-export type MovementGroup = 'credit' | 'debit' | 'pending' | 'failed';
+export type MovementGroup = 'credit' | 'debit' | 'pending' | 'failed' | 'unknown';
 
 export const MOVEMENT_GROUPS: Record<MovementGroup, string> = {
   credit: 'Crédits effectifs',
   debit: 'Débits effectifs',
   pending: 'En attente (non réglés)',
   failed: 'Échoués ou refusés',
+  unknown: 'Nature non reconnue (ni crédit ni débit)',
 };
 
 /** Effet d'une opération RÉUSSIE sur le solde du joueur. */
@@ -62,11 +63,19 @@ const DIRECTION: Record<WalletKind, 'credit' | 'debit'> = {
   tournament_prize: 'credit',
   tournament_entry: 'debit',
   withdrawal: 'debit',
+  game_winnings: 'credit',
+  game_stake: 'debit',
 };
 
+/**
+ * Une nature ou un statut inconnu renvoyé par l'API est rangé à part (`unknown`) : jamais
+ * compté comme crédit ou débit par supposition, jamais masqué.
+ */
 export function movementGroup(status: WalletStatus, kind: WalletKind): MovementGroup {
-  if (status === 'succeeded') return DIRECTION[kind];
-  return status === 'pending' ? 'pending' : 'failed';
+  if (status === 'pending') return 'pending';
+  if (status === 'failed') return 'failed';
+  if (status === 'succeeded' && Object.hasOwn(DIRECTION, kind)) return DIRECTION[kind];
+  return 'unknown';
 }
 
 const KIND_LABEL: Record<WalletKind, string> = {
@@ -74,6 +83,8 @@ const KIND_LABEL: Record<WalletKind, string> = {
   withdrawal: 'Retraits',
   tournament_entry: 'Inscriptions de tournoi',
   tournament_prize: 'Gains de tournoi',
+  game_stake: 'Mises de partie',
+  game_winnings: 'Gains de partie',
 };
 
 export interface MovementLine {
@@ -89,13 +100,15 @@ export interface MovementLine {
  * des achats CinetPay échoués.
  */
 export function movementLines(o: FinanceOverview): MovementLine[] {
-  const order: MovementGroup[] = ['credit', 'debit', 'pending', 'failed'];
-  return o.walletMovements
+  const order: MovementGroup[] = ['credit', 'debit', 'pending', 'failed', 'unknown'];
+  return (o.walletMovements ?? [])
     .map((m) => ({
       group: movementGroup(m.status, m.kind),
       label: m.withoutPayment
         ? 'Achats refusés avant CinetPay (aucun paiement)'
-        : (KIND_LABEL[m.kind] ?? m.kind),
+        : Object.hasOwn(KIND_LABEL, m.kind)
+          ? KIND_LABEL[m.kind]
+          : String(m.kind),
       count: m.count,
       tokens: m.tokens,
     }))
@@ -110,10 +123,12 @@ export function movementTotals(
     debit: { count: 0, tokens: 0 },
     pending: { count: 0, tokens: 0 },
     failed: { count: 0, tokens: 0 },
+    unknown: { count: 0, tokens: 0 },
   };
   for (const line of movementLines(o)) {
-    totals[line.group].count += line.count;
-    totals[line.group].tokens += line.tokens;
+    const group: MovementGroup = Object.hasOwn(totals, line.group) ? line.group : 'unknown';
+    totals[group].count += Number(line.count) || 0;
+    totals[group].tokens += Number(line.tokens) || 0;
   }
   return totals;
 }

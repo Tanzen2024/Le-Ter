@@ -206,8 +206,8 @@ async function seedRevenue(creatorId: string, amount: number) {
     [gameId, creatorId, at, sessionId],
   );
   await database.sql.query(
-    `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at)
-     VALUES ($1, $2, 'GAME_COMMISSION', $3, 500, 'XAF', $4)`,
+    `INSERT INTO platform_ledger (id, game_id, kind, amount, fee_bps, currency, created_at, source)
+     VALUES ($1, $2, 'GAME_COMMISSION', $3, 500, 'XAF', $4, 'FAP_FAP')`,
     [randomUUID(), gameId, amount, at],
   );
 }

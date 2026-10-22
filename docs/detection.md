@@ -3,6 +3,7 @@
 > Décisions : D-043 (réglage), D-044 (étape 1), D-046 (étape 2), D-047 (étape 3), D-048 (étape 4),
 > D-049 (étape 5), D-053 (interrupteur global).
 > Code : `backend/src/domain/detection/`, `backend/src/services/detection/`.
+> Jeux : Fap-Fap (Le Ter) et GARAM TIA (D-125), par le même système et la même configuration.
 
 ## Feuille de route
 
@@ -42,6 +43,15 @@ joueurs. Signaux, scores et alertes ne sont visibles que par l'administration (�
   le signal ; identifiant lisible `TYPE_V1` (`evidence.algorithm`). Changer la signification
   d'un algorithme impose une nouvelle version.
 - **Configuration** : `backend/src/domain/detection/detection-config.ts` uniquement.
+- **Jeux (D-125)** : Fap-Fap et GARAM TIA. Une manche GARAM est analysée comme une partie
+  du Ter (même déclenchement, mêmes signaux, mêmes seuils). L'historique d'une analyse ne
+  contient que des parties du même `game_type` que la partie observée : les deux jeux ne
+  se mélangent jamais dans une statistique. CARD_CHOICE_ANOMALY (décisions de contrôle des
+  tours du Ter) ne s'applique pas à GARAM. Pas de tournoi GARAM ; les tables de tournoi ne
+  sont pas surveillées. Score, score précédent et alertes sont calculés PAR JEU (signaux du
+  jeu de la partie analysée seulement ; clé d'alerte GARAM suffixée `|GARAM`, clé Fap-Fap
+  inchangée). L'historique des scores d'un sujet (administration) liste les instantanés des
+  deux jeux, chacun rattaché à sa partie.
 
 ## Étape 3 — Analyse comportementale
 

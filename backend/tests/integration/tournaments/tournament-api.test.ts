@@ -65,6 +65,7 @@ async function user(balance = 0, role: 'user' | 'admin' = 'user') {
 function body(startsInMs = HOUR, extra: Record<string, unknown> = {}) {
   const startsAt = new Date(stack.clock.now().getTime() + startsInMs);
   return {
+    gameType: 'TER',
     startsAt: startsAt.toISOString(),
     endsAt: new Date(startsAt.getTime() + 2 * HOUR).toISOString(),
     entryFee: 1000,
@@ -296,6 +297,95 @@ describe('proposition par un joueur et paramètres', () => {
     );
     expect(res.status).toBe(400);
     expect(res.body.fields).toHaveProperty('prizeRules');
+  });
+
+  describe('jeu du tournoi (D-124) : choix explicite obligatoire, aucune valeur par défaut', () => {
+    const without = (key: string) => {
+      const b: Record<string, unknown> = body();
+      delete b[key];
+      return b;
+    };
+
+    it.each([
+      ['absent', () => without('gameType')],
+      ['null', () => body(HOUR, { gameType: null })],
+      ['chaîne vide', () => body(HOUR, { gameType: '' })],
+      ['valeur inconnue', () => body(HOUR, { gameType: 'FAP_FAP' })],
+      ['valeur arbitraire', () => body(HOUR, { gameType: 'ter' })],
+    ])('%s : 400, jamais complété en Fap-Fap', async (_case, payloadOf) => {
+      const payload = payloadOf();
+      const admin = await user(0, 'admin');
+      const player = await user();
+      for (const [client, path] of [
+        [admin, '/api/admin/tournaments'],
+        [player, '/api/tournaments'],
+      ] as const) {
+        const res = await client.post(path, payload);
+        expect(res.status).toBe(400);
+        expect(res.body.fields).toEqual(
+          expect.objectContaining({ gameType: 'Veuillez sélectionner le jeu du tournoi.' }),
+        );
+      }
+      // Rien n'a été créé, ni publié ni en brouillon.
+      const list = await admin.get('/api/admin/tournaments').expect(200);
+      expect(list.body.tournaments).toEqual([]);
+    });
+
+    it('Fap-Fap (TER) : créé et renvoyé tel quel', async () => {
+      const admin = await user(0, 'admin');
+      const res = await admin.post('/api/admin/tournaments', body()).expect(201);
+      expect(res.body.tournament.gameType).toBe('TER');
+    });
+
+    it.each([15, 16, 17, 18])('GARAM TIA %i : créé avec sa variante (D-127)', async (variant) => {
+      const admin = await user(0, 'admin');
+      const res = await admin
+        .post('/api/admin/tournaments', body(HOUR, { gameType: 'GARAM', garamVariant: variant }))
+        .expect(201);
+      expect(res.body.tournament).toMatchObject({ gameType: 'GARAM', garamVariant: variant });
+    });
+
+    it('GARAM TIA sans variante, variante invalide ou variante pour Fap-Fap : refusé (D-127)', async () => {
+      const admin = await user(0, 'admin');
+      for (const garamVariant of [undefined, null, 14, 19, '15', 0]) {
+        const res = await admin.post(
+          '/api/admin/tournaments',
+          body(HOUR, { gameType: 'GARAM', garamVariant }),
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.fields).toHaveProperty('garamVariant');
+      }
+      const ter = await admin.post('/api/admin/tournaments', body(HOUR, { garamVariant: 15 }));
+      expect(ter.status).toBe(400);
+      expect(ter.body.fields).toHaveProperty('garamVariant');
+      const list = await admin.get('/api/admin/tournaments').expect(200);
+      expect(list.body.tournaments).toEqual([]);
+    });
+
+    it('GARAM TIA : la variante enregistrée ne se modifie pas', async () => {
+      const admin = await user(0, 'admin');
+      const created = await admin
+        .post('/api/admin/tournaments', body(HOUR, { gameType: 'GARAM', garamVariant: 16 }))
+        .expect(201);
+      const path = `/api/admin/tournaments/${created.body.tournament.tournamentId as string}`;
+      await admin.patch(path, { garamVariant: 16, entryFee: 2000 }).expect(200);
+      const changed = await admin.patch(path, { garamVariant: 18 });
+      expect(changed.status).toBe(400);
+      expect(changed.body.fields).toHaveProperty('garamVariant');
+    });
+
+    it('modification : le jeu enregistré se renvoie tel quel mais ne change pas', async () => {
+      const admin = await user(0, 'admin');
+      const created = await admin.post('/api/admin/tournaments', body()).expect(201);
+      const path = `/api/admin/tournaments/${created.body.tournament.tournamentId as string}`;
+      const same = await admin.patch(path, { gameType: 'TER', entryFee: 2000 }).expect(200);
+      expect(same.body.tournament).toMatchObject({ gameType: 'TER', entryFee: 2000 });
+      const changed = await admin.patch(path, { gameType: 'GARAM' });
+      expect(changed.status).toBe(400);
+      expect(changed.body.fields).toHaveProperty('gameType');
+      const cleared = await admin.patch(path, { gameType: null });
+      expect(cleared.status).toBe(400);
+    });
   });
 
   it('paramètres plateforme : lecture, modification auditée, bornes', async () => {

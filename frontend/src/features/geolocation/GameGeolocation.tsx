@@ -1,6 +1,7 @@
 import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, useTableFonts } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import type { GameView } from '../../types/game';
 import { useAppear, useBackToClose } from '../games/table/GameOverlays';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -80,9 +81,8 @@ export function LocationConsentDialog({
   const button = [styles.button, { height: buttonHeight, borderRadius: buttonHeight / 2 }];
   const label = [styles.buttonText, fontOf(fonts.button), { fontSize: m.bodySize * 1.05 }];
   return (
-    <View style={[StyleSheet.absoluteFill, styles.veil]}>
+    <ExclusiveOverlay>
       <Animated.View
-        accessibilityViewIsModal
         style={[
           styles.dialog,
           {
@@ -150,18 +150,13 @@ export function LocationConsentDialog({
           </Pressable>
         </View>
       </Animated.View>
-    </View>
+    </ExclusiveOverlay>
   );
 }
 
 const styles = StyleSheet.create({
   pressed: { opacity: 0.8, transform: [{ scale: 0.97 }] },
   idle: { opacity: 0.5 },
-  veil: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
-  },
   dialog: {
     alignItems: 'stretch',
     borderRadius: 14,

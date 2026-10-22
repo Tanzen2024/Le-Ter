@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../../components/ui/Button';
 import { DatePickerField } from '../../../components/ui/DatePickerField';
@@ -10,16 +10,24 @@ import { colors, radius, spacing } from '../../../constants/theme';
 import { ApiError } from '../../../lib/api-client';
 import { todayOf } from '../../../lib/date-time';
 import {
+  GARAM_VARIANTS,
+  garamVariantLabel,
+  type GameType,
+  type GaramVariant,
+} from '../../../types/game';
+import {
   defaultShares,
   defaultTournamentForm,
-  fieldErrorsFromApi,
+  formErrorsFromApiError,
+  generalApiError,
   MAX_RANKS,
   sharesTotal,
   toTournamentPayload,
+  TOURNAMENT_GAMES,
   withRuleDefaults,
   type TournamentFormErrors,
-  type TournamentFormField,
   type TournamentFormValues,
+  type TournamentTextField,
 } from '../../tournaments/tournament-form';
 import { AdminGate } from './AdminGate';
 import { AdminPage, adminStyles } from './AdminTournamentsScreen';
@@ -52,11 +60,22 @@ function AdminTournamentForm() {
     setValues((v) => withRuleDefaults(v, rules));
   }
   const create = useCreateTournament();
-  const apiError = create.error instanceof ApiError ? create.error : undefined;
+  const generalError = generalApiError(create.error instanceof ApiError ? create.error : undefined);
 
-  const set = (field: Exclude<TournamentFormField, 'shares'>) => (text: string) => {
+  const set = (field: TournamentTextField) => (text: string) => {
     setValues((v) => ({ ...v, [field]: text }));
     setErrors((e) => ({ ...e, [field]: undefined }));
+  };
+  // Jeu du tournoi (D-124) : aucun choix au chargement, l'administrateur choisit.
+  const setGame = (gameType: GameType) => {
+    // Changer de jeu remet la variante présélectionnée (15) : jamais de variante reportée.
+    setValues((v) => ({ ...v, gameType, garamVariant: gameType === v.gameType ? v.garamVariant : 15 }));
+    setErrors((e) => ({ ...e, gameType: undefined, garamVariant: undefined }));
+  };
+  // Variante d'un tournoi GARAM TIA (D-127) : choix explicite obligatoire.
+  const setVariant = (garamVariant: GaramVariant) => {
+    setValues((v) => ({ ...v, garamVariant }));
+    setErrors((e) => ({ ...e, garamVariant: undefined }));
   };
 
   const submit = () => {
@@ -68,13 +87,71 @@ function AdminTournamentForm() {
     create.mutate(parsed.payload, {
       onSuccess: (t) => router.replace(`/admin/tournaments/${t.tournamentId}`),
       onError: (err) => {
-        if (err instanceof ApiError) setErrors(fieldErrorsFromApi(err.fields));
+        if (err instanceof ApiError) setErrors(formErrorsFromApiError(err));
       },
     });
   };
 
   return (
     <AdminPage title="Créer un tournoi" backTo="/admin/tournaments">
+      <View style={styles.field}>
+        <Text style={styles.label}>Jeu du tournoi *</Text>
+        <View accessibilityRole="radiogroup" style={styles.row}>
+          {TOURNAMENT_GAMES.map((game) => {
+            const selected = values.gameType === game.value;
+            return (
+              <Pressable
+                key={game.value}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                onPress={() => setGame(game.value)}
+                style={({ pressed }) => [
+                  styles.choice,
+                  selected && styles.choiceSelected,
+                  errors.gameType ? styles.pickerInvalid : null,
+                  pressed && styles.choicePressed,
+                ]}
+              >
+                <Text style={[styles.choiceText, selected && styles.choiceTextSelected]}>
+                  {game.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {errors.gameType ? <Text style={adminStyles.error}>{errors.gameType}</Text> : null}
+      </View>
+      {values.gameType === 'GARAM' ? (
+        <View style={styles.field}>
+          <Text style={styles.label}>Variante *</Text>
+          <View accessibilityRole="radiogroup" style={styles.row}>
+            {GARAM_VARIANTS.map((variant) => {
+              const selected = values.garamVariant === variant;
+              return (
+                <Pressable
+                  key={variant}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected }}
+                  onPress={() => setVariant(variant)}
+                  style={({ pressed }) => [
+                    styles.choice,
+                    selected && styles.choiceSelected,
+                    errors.garamVariant ? styles.pickerInvalid : null,
+                    pressed && styles.choicePressed,
+                  ]}
+                >
+                  <Text style={[styles.choiceText, selected && styles.choiceTextSelected]}>
+                    {garamVariantLabel(variant)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {errors.garamVariant ? (
+            <Text style={adminStyles.error}>{errors.garamVariant}</Text>
+          ) : null}
+        </View>
+      ) : null}
       <View style={styles.field}>
         <Text style={styles.label}>Date</Text>
         <DatePickerField
@@ -165,9 +242,9 @@ function AdminTournamentForm() {
         Le tournoi est publié dès sa création ; la commission appliquée est celle des paramètres
         actuels, figée pour ce tournoi.
       </Text>
-      {apiError && !Object.keys(apiError.fields).length ? (
+      {generalError ? (
         <Text accessibilityRole="alert" style={adminStyles.error}>
-          {apiError.message}
+          {generalError}
         </Text>
       ) : null}
       <Button title="Publier le tournoi" onPress={submit} loading={create.isPending} />
@@ -189,5 +266,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   pickerInvalid: { borderColor: colors.danger },
+  // Jeu du tournoi : deux options côte à côte, aucune choisie au départ.
+  choice: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+  },
+  choiceSelected: { borderColor: colors.gold, backgroundColor: colors.feltLight },
+  choicePressed: { opacity: 0.8 },
+  choiceText: { fontSize: 16, fontWeight: '700', color: colors.text },
+  choiceTextSelected: { color: colors.gold },
   pickerText: { fontSize: 16, color: colors.text },
 });

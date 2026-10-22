@@ -1,3 +1,5 @@
+import { GAME_TYPES, type GameType } from '../domain/game/game';
+import { LEDGER_SOURCES, type LedgerSource } from '../domain/platform-finance/platform-finance';
 import {
   AUDIT_ACTIONS,
   AUDIT_TARGET_TYPES,
@@ -185,6 +187,7 @@ export function parseGameListQuery(query: Query): GameListQuery {
     'tournamentId',
     'gameId',
     'anomaly',
+    'gameType',
   ]);
   const result: GameListQuery = { ...r.page(), ...r.range() };
   const status = r.oneOf<AdminGameStatus>('status', GAME_STATUSES);
@@ -193,11 +196,13 @@ export function parseGameListQuery(query: Query): GameListQuery {
   const sessionId = r.uuid('sessionId');
   const tournamentId = r.uuid('tournamentId');
   const gameId = r.uuid('gameId');
+  const gameType = r.oneOf<GameType>('gameType', GAME_TYPES);
   r.done();
   return {
     ...result,
     ...(status && { status }),
     ...(anomaly && { anomaly }),
+    ...(gameType && { gameType }),
     ...(playerId && { playerId }),
     ...(sessionId && { sessionId }),
     ...(tournamentId && { tournamentId }),
@@ -269,12 +274,32 @@ export function parseWithdrawalQuery(query: Query): AdminWithdrawalQuery {
 }
 
 export function parseLedgerQuery(query: Query): LedgerQuery {
-  const r = new Reader(query, [...PAGE_KEYS, 'kind', 'from', 'to', 'tournamentId']);
+  const r = new Reader(query, [...PAGE_KEYS, 'kind', 'source', 'q', 'from', 'to', 'tournamentId']);
   const result: LedgerQuery = { ...r.page(), ...r.range() };
   const kind = r.oneOf<LedgerKind>('kind', LEDGER_KINDS);
+  const source = r.oneOf<LedgerSource>('source', LEDGER_SOURCES);
+  const search = r.string('q', 100);
   const tournamentId = r.uuid('tournamentId');
   r.done();
-  return { ...result, ...(kind && { kind }), ...(tournamentId && { tournamentId }) };
+  return {
+    ...result,
+    ...(kind && { kind }),
+    ...(source && { source }),
+    ...(search && { q: search }),
+    ...(tournamentId && { tournamentId }),
+  };
+}
+
+/** Tableau de bord : période (30 jours par défaut) et source facultative (D-120). */
+export function parseDashboardQuery(
+  query: Query,
+  now: Date,
+): { period: Period; source?: LedgerSource } {
+  const period = parsePeriod(query, now, ['source']);
+  const r = new Reader(query, ['from', 'to', 'source']);
+  const source = r.oneOf<LedgerSource>('source', LEDGER_SOURCES);
+  r.done();
+  return { period, ...(source && { source }) };
 }
 
 export function parseAuditQuery(query: Query): AuditListQuery {

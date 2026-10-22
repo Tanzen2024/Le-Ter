@@ -28,6 +28,7 @@ describe('connexion', () => {
 describe('création de tournoi', () => {
   it('heure saisie en Africa/Douala (UTC+1), durée convertie en fin, rangs numérotés', () => {
     const values = tournamentFormSchema.parse({
+      gameType: 'TER',
       date: '2026-10-20',
       time: '20:00',
       durationMinutes: '60',
@@ -37,6 +38,7 @@ describe('création de tournoi', () => {
       prizeRules: [{ percent: '50' }, { percent: '30,5' }, { percent: '19.5' }],
     });
     expect(toTournamentPayload(values)).toEqual({
+      gameType: 'TER',
       timezone: 'Africa/Douala',
       startsAt: '2026-10-20T19:00:00.000Z',
       endsAt: '2026-10-20T20:00:00.000Z',
@@ -53,6 +55,8 @@ describe('création de tournoi', () => {
   it('les règles métier restent au serveur : seul le format est contrôlé ici', () => {
     // 10 minutes est accepté par le formulaire : c'est le serveur qui refuse (30 à 120 min).
     const parsed = tournamentFormSchema.safeParse({
+      gameType: 'GARAM',
+      garamVariant: '18',
       date: '2026-10-20',
       time: '20:00',
       durationMinutes: '10',
@@ -73,6 +77,55 @@ describe('création de tournoi', () => {
         prizeRules: [],
       }).success,
     ).toBe(false);
+  });
+
+  it('jeu du tournoi (D-124) : obligatoire, aucune valeur par défaut ni valeur inconnue', () => {
+    const base = {
+      date: '2026-10-20',
+      time: '20:00',
+      durationMinutes: '60',
+      entryFee: '1000',
+      minimumPlayers: '20',
+      maximumPlayers: '',
+      prizeRules: [{ percent: '100' }],
+    };
+    for (const gameType of [undefined, null, '', 'FAP_FAP', 'ter']) {
+      const parsed = tournamentFormSchema.safeParse({ ...base, gameType });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues.find((i) => i.path[0] === 'gameType')?.message).toBe(
+        'Veuillez sélectionner le jeu du tournoi.',
+      );
+    }
+    expect(
+      toTournamentPayload(tournamentFormSchema.parse({ ...base, gameType: 'GARAM', garamVariant: '15' })),
+    ).toEqual(expect.objectContaining({ gameType: 'GARAM', garamVariant: 15 }));
+  });
+
+  it('variante GARAM TIA (D-127) : obligatoire pour GARAM, aucune par défaut, absente pour Fap-Fap', () => {
+    const base = {
+      date: '2026-10-20',
+      time: '20:00',
+      durationMinutes: '60',
+      entryFee: '1000',
+      minimumPlayers: '20',
+      maximumPlayers: '',
+      prizeRules: [{ percent: '100' }],
+    };
+    for (const garamVariant of [undefined, '14', '19', '']) {
+      const parsed = tournamentFormSchema.safeParse({ ...base, gameType: 'GARAM', garamVariant });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues.some((i) => i.path[0] === 'garamVariant')).toBe(true);
+    }
+    for (const v of ['15', '16', '17', '18'] as const) {
+      const payload = toTournamentPayload(
+        tournamentFormSchema.parse({ ...base, gameType: 'GARAM', garamVariant: v }),
+      );
+      expect(payload).toMatchObject({ gameType: 'GARAM', garamVariant: Number(v) });
+    }
+    const ter = toTournamentPayload(
+      tournamentFormSchema.parse({ ...base, gameType: 'TER', garamVariant: '17' }),
+    );
+    expect(ter).not.toHaveProperty('garamVariant');
   });
 
   it('actions proposées selon le statut ; aucune pendant un démarrage ni un tournoi en cours', () => {

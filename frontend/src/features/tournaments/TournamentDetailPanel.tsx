@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { ApiError } from '../../lib/api-client';
 import type { TournamentView } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -678,10 +679,9 @@ function RegistrationConfirmDialog({
       supportedOrientations={['landscape', 'portrait']}
       onRequestClose={onCancel}
     >
-      <View style={styles.backdrop}>
+      <ExclusiveOverlay style={styles.backdrop}>
         <View
           testID="tournament-register-dialog"
-          accessibilityViewIsModal
           style={[styles.dialog, { gap: m.gap, padding: Math.round(m.gap * 1.4) }]}
         >
           <Text
@@ -753,7 +753,7 @@ function RegistrationConfirmDialog({
             />
           </View>
         </View>
-      </View>
+      </ExclusiveOverlay>
     </Modal>
   );
 }
@@ -916,10 +916,13 @@ export function StatusChip({
   tournament,
   size,
   fontFamily,
+  fit = false,
 }: {
   tournament: Pick<TournamentView, 'status' | 'startsAt' | 'serverNow'>;
   size: number;
   fontFamily?: string;
+  /** Place trop étroite : le texte rétrécit pour rester entier, jamais tronqué (« … »). */
+  fit?: boolean;
 }) {
   const t = useTournamentMessages();
   const key = tournamentStatusKey(tournament);
@@ -932,7 +935,12 @@ export function StatusChip({
         key === 'CANCELLED' && styles.chipMuted,
       ]}
     >
-      <Text numberOfLines={1} style={[styles.chipText, fontOf(fontFamily), { fontSize: size - 1 }]}>
+      <Text
+        numberOfLines={1}
+        adjustsFontSizeToFit={fit}
+        minimumFontScale={fit ? 0.6 : undefined}
+        style={[styles.chipText, fontOf(fontFamily), { fontSize: size - 1 }]}
+      >
         {t.status[key]}
       </Text>
     </View>
@@ -1020,7 +1028,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     padding: 16,
   },
   dialog: {

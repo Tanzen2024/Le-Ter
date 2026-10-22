@@ -196,8 +196,10 @@ export class DetectionService {
     const subjects = [...new Set(gameSignals.map((s) => subjectKeyOf(s.playerIds)))].sort();
     if (subjects.length === 0) return { scores: [], alertsCreated: 0 };
     const since = new Date(now.getTime() - SCORING_CONFIG.signalValidityDays * DAY_MS);
+    // Score par jeu (D-125) : seuls les signaux et scores du jeu de la partie analysée.
+    const gameType = await this.deps.repository.gameTypeOfGame(gameId);
     const [subjectSignals, previous] = await Promise.all([
-      this.deps.repository.listSubjectSignals(subjects, since),
+      this.deps.repository.listSubjectSignals(subjects, since, gameType),
       this.deps.repository.previousScores(subjects, gameId),
     ]);
     const bySubject = new Map<string, DetectionSignal[]>();
@@ -215,7 +217,7 @@ export class DetectionService {
           signalsSince: since,
         }),
       );
-    const alerts = scores.flatMap((score) => alertFor(score, randomUUID()) ?? []);
+    const alerts = scores.flatMap((score) => alertFor(score, randomUUID(), gameType) ?? []);
     const alertsCreated = await this.deps.repository.saveScoring(gameId, scores, alerts, now);
     if (alertsCreated > 0)
       announceToAdmin(this.deps.adminEvents, 'DETECTION_ALERT', this.deps.logger);

@@ -43,8 +43,8 @@ beforeEach(async () => {
   await database.sql.query(
     // Schéma courant : plus de nom (D-060, migration 0024) ; les autres colonnes ont leur
     // valeur par défaut (brouillon).
-    `INSERT INTO tournaments (id, starts_at, ends_at, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $4)`,
+    `INSERT INTO tournaments (game_type, id, starts_at, ends_at, created_at, updated_at)
+     VALUES ('TER', $1, $2, $3, $4, $4)`,
     [tournamentId, new Date(now.getTime() + HOUR), new Date(now.getTime() + 3 * HOUR), now],
   );
   await database.sql.query(

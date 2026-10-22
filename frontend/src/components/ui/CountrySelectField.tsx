@@ -8,15 +8,19 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import Svg, { Path, Rect } from 'react-native-svg';
 
 import { colors, spacing } from '../../constants/theme';
-import { findPhoneCountry, searchPhoneCountries } from '../../lib/phone-countries';
+import { findPhoneCountry, flagEmoji, searchPhoneCountries } from '../../lib/phone-countries';
 import { PickerAction, pickerColors, PickerModal, PickerTrigger } from './PickerModal';
 
 /**
- * Champ Pays de l'inscription (apparence claire des champs `soft`) : ouvre la fenêtre des
+ * Champ Pays (inscription, connexion par téléphone, récupération) : ouvre la fenêtre des
  * sélecteurs avec une recherche par nom (sans casse ni accents). Chaque option n'affiche QUE
- * le nom du pays : ni drapeau, ni indicatif, ni code, ni devise.
+ * le nom du pays : ni drapeau, ni indicatif, ni code, ni devise. Apparence claire des champs
+ * `soft`, pilule sombre des champs `table`, `inline` : indicatif seul (« +237 ▾ »), posé
+ * au début d'un champ (sans libellé au-dessus ni cadre propre), ou `login` : le même indicatif
+ * dans son propre cadre, posé à gauche d'un champ `login` (Connexion, Inscription).
  */
 export function CountrySelectField({
   label,
@@ -25,6 +29,9 @@ export function CountrySelectField({
   error,
   placeholder,
   dense = false,
+  appearance = 'soft',
+  controlHeight = 44,
+  flag = false,
 }: {
   label: string;
   /** Code ISO du pays choisi, `''` si aucun. */
@@ -33,7 +40,15 @@ export function CountrySelectField({
   error?: string;
   placeholder?: string;
   dense?: boolean;
+  appearance?: 'soft' | 'table' | 'inline' | 'login';
+  /** Hauteur de la pilule `table` ou du cadre `login` (celle des champs voisins). */
+  controlHeight?: number;
+  /** Apparence `inline` ou `login` : drapeau du pays choisi devant l'indicatif. */
+  flag?: boolean;
 }) {
+  const table = appearance === 'table';
+  const framed = appearance === 'login';
+  const inline = appearance === 'inline' || framed;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const { width, height } = useWindowDimensions();
@@ -45,21 +60,73 @@ export function CountrySelectField({
   };
 
   return (
-    <View style={[styles.container, dense && styles.containerDense]}>
-      <Text style={styles.label}>{label}</Text>
-      <PickerTrigger
-        testID="country-select"
-        label={label}
-        hint="Ouvre la liste des pays"
-        display={selected?.name}
-        placeholder={placeholder}
-        icon="▾"
-        invalid={Boolean(error)}
-        onPress={() => setOpen(true)}
-        style={[styles.row, dense && styles.rowDense, error ? styles.rowError : null]}
-        textStyle={styles.text}
-      />
-      {error ? (
+    <View
+      style={
+        framed ? styles.framed : inline ? styles.inline : table ? null : [styles.container, dense && styles.containerDense]
+      }
+    >
+      {table || inline ? null : <Text style={styles.label}>{label}</Text>}
+      {inline ? (
+        // Bouton dédié, de largeur fixe : jamais réduit ni masqué par la saisie à côté.
+        <Pressable
+          testID="country-select"
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityHint="Ouvre la liste des pays"
+          accessibilityValue={
+            selected ? { text: `${selected.name} ${selected.dialCode}` } : undefined
+          }
+          onPress={() => setOpen(true)}
+          style={({ pressed }) => [
+            styles.inlineRow,
+            framed && [styles.framedRow, { height: Math.max(controlHeight, 44) }],
+            pressed && styles.pressed,
+          ]}
+        >
+          {flag && selected ? <CountryFlag code={selected.code} /> : null}
+          <Text numberOfLines={1} allowFontScaling={false} style={styles.inlineText}>
+            {selected?.dialCode ?? '+'}
+          </Text>
+          <Text
+            allowFontScaling={false}
+            style={styles.inlineIcon}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          >
+            ▾
+          </Text>
+        </Pressable>
+      ) : (
+        <PickerTrigger
+          testID="country-select"
+          label={label}
+          hint="Ouvre la liste des pays"
+          display={selected?.name}
+          placeholder={placeholder ?? (table ? label : undefined)}
+          icon="▾"
+          invalid={Boolean(error)}
+          onPress={() => setOpen(true)}
+          style={
+            table
+              ? [
+                  styles.tableRow,
+                  {
+                    height: controlHeight,
+                    borderRadius: controlHeight / 2,
+                    paddingHorizontal: controlHeight / 2,
+                  },
+                  error ? styles.tableRowError : null,
+                ]
+              : [styles.row, dense && styles.rowDense, error ? styles.rowError : null]
+          }
+          textStyle={table ? styles.tableText : styles.text}
+          // Colonne étroite (à côté du téléphone) : un long nom de pays n'est jamais tronqué.
+          // Pilule de hauteur fixe : une ligne, police réduite au besoin ; sinon jusqu'à 2 lignes.
+          lines={table ? 1 : 2}
+          shrinkToFit
+        />
+      )}
+      {error && !table && !inline ? (
         <Text style={styles.error} accessibilityLiveRegion="polite">
           {error}
         </Text>
@@ -73,7 +140,10 @@ export function CountrySelectField({
         <View
           style={[
             styles.sheet,
-            { width: Math.min(380, width - 48), height: Math.min(340, height * 0.6) },
+            {
+              width: Math.min(380, width - 48),
+              height: Math.min(340, height * 0.6),
+            },
           ]}
         >
           <TextInput
@@ -123,6 +193,43 @@ export function CountrySelectField({
   );
 }
 
+/**
+ * Drapeau du pays choisi. Celui du Cameroun (pays par défaut) est dessiné : Windows n'affiche
+ * pas les emojis drapeaux (il écrit « CM »). Les autres pays gardent l'emoji.
+ */
+function CountryFlag({ code }: { code: string }) {
+  if (code === 'CM') {
+    return (
+      <Svg
+        testID="country-flag-CM"
+        width={24}
+        height={16}
+        viewBox="0 0 30 20"
+        accessibilityElementsHidden
+        importantForAccessibility="no"
+      >
+        <Rect x={0} y={0} width={10} height={20} fill="#007A5E" />
+        <Rect x={10} y={0} width={10} height={20} fill="#CE1126" />
+        <Rect x={20} y={0} width={10} height={20} fill="#FCD116" />
+        <Path
+          d="M15 6.7L15.74 8.98L18.14 8.98L16.2 10.39L16.94 12.67L15 11.26L13.06 12.67L13.8 10.39L11.86 8.98L14.26 8.98Z"
+          fill="#FCD116"
+        />
+      </Svg>
+    );
+  }
+  return (
+    <Text
+      allowFontScaling={false}
+      style={styles.inlineFlag}
+      accessibilityElementsHidden
+      importantForAccessibility="no"
+    >
+      {flagEmoji(code)}
+    </Text>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { marginBottom: spacing.md },
   containerDense: { marginBottom: spacing.sm },
@@ -145,7 +252,50 @@ const styles = StyleSheet.create({
   rowDense: { minHeight: 48 },
   rowError: { borderColor: colors.danger, backgroundColor: '#FFF6F5' },
   text: { fontSize: 16, color: colors.text },
-  error: { color: colors.danger, fontSize: 12.5, lineHeight: 17, marginTop: spacing.xs },
+  // Mêmes valeurs que la ligne `table` de TextField (connexion).
+  tableRow: {
+    borderWidth: 1.5,
+    borderColor: 'rgba(242, 196, 81, 0.55)',
+    backgroundColor: 'rgba(4, 24, 13, 0.55)',
+  },
+  tableRowError: { borderColor: '#FF8A7A' },
+  tableText: { fontSize: 15, color: '#F7F1E1' },
+  // Indicatif au début du champ `login` de TextField, séparé de la saisie par un filet.
+  inline: { alignSelf: 'stretch', flexShrink: 0 },
+  inlineRow: {
+    flex: 1,
+    minWidth: 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingLeft: 14,
+    paddingRight: 10,
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(242, 196, 81, 0.25)',
+  },
+  // Indicatif dans son propre cadre, à gauche du champ : mêmes bordure et fond que `login`.
+  framed: { flexShrink: 0 },
+  framedRow: {
+    flex: 0,
+    minWidth: 104,
+    paddingLeft: 12,
+    borderWidth: 1,
+    borderRightWidth: 1,
+    borderColor: 'rgba(242, 196, 81, 0.32)',
+    borderRightColor: 'rgba(242, 196, 81, 0.32)',
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+  },
+  inlineText: { fontSize: 16, fontWeight: '600', color: '#F7F1E1' },
+  inlineFlag: { fontSize: 18 },
+  inlineIcon: { fontSize: 14, color: '#F2C451' },
+  error: {
+    color: colors.danger,
+    fontSize: 12.5,
+    lineHeight: 17,
+    marginTop: spacing.xs,
+  },
   sheet: { gap: 8 },
   search: {
     minHeight: 44,
@@ -156,10 +306,19 @@ const styles = StyleSheet.create({
     color: pickerColors.text,
     fontSize: 15,
   },
-  option: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 8 },
+  option: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
   optionActive: { backgroundColor: pickerColors.selected },
   optionText: { color: pickerColors.text, fontSize: 15 },
   optionTextActive: { color: pickerColors.selectedText, fontWeight: '700' },
-  empty: { color: pickerColors.muted, textAlign: 'center', paddingVertical: 12 },
+  empty: {
+    color: pickerColors.muted,
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
   pressed: { opacity: 0.75 },
 });

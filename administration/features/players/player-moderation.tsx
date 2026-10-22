@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import {
+  KeyRound,
   LogOut,
   MessageSquareOff,
   MessageSquareText,
@@ -54,6 +55,7 @@ type Dialog =
   | 'restrict-chat'
   | 'lift-chat'
   | 'warn'
+  | 'recovery'
   | null;
 
 /**
@@ -71,6 +73,8 @@ export function ModerationActionsCard({
   const refresh = useRefreshPlayer();
   const [dialog, setDialog] = useState<Dialog>(null);
   const [warnKey, setWarnKey] = useState(() => idempotencyKey('warn'));
+  // Nouveau code de récupération (D-135) : en mémoire de la page seulement, montré une fois.
+  const [recoveryCode, setRecoveryCode] = useState<string>();
   const limits = moderation?.limits ?? DEFAULT_LIMITS;
   const isSelf = moderation?.isSelf ?? true;
   const suspended = moderation?.suspension ?? null;
@@ -148,6 +152,17 @@ export function ModerationActionsCard({
         >
           <TriangleAlert /> Envoyer un avertissement
         </Button>
+        <Button
+          variant="secondary"
+          className="w-full justify-start"
+          disabled={loading || isSelf || disabled || player.role !== 'user'}
+          onClick={() => setDialog('recovery')}
+        >
+          <KeyRound /> Réinitialiser l’accès
+        </Button>
+        {recoveryCode ? (
+          <RecoveryCodeNotice code={recoveryCode} onDone={() => setRecoveryCode(undefined)} />
+        ) : null}
         {isSelf && !loading && (
           <p className="text-muted text-xs">
             Votre propre compte : désactivation, suspension et déconnexion sont interdites.
@@ -231,6 +246,21 @@ export function ModerationActionsCard({
           await done('Chat rétabli.');
         }}
       />
+      <ReasonDialog
+        open={dialog === 'recovery'}
+        onOpenChange={close}
+        limits={limits}
+        tone="danger"
+        title="Réinitialiser l’accès du joueur"
+        description="Pour un joueur qui a perdu son code de récupération, après vérification de son identité. L’ancien code cesse de fonctionner ; un nouveau code vous est affiché UNE fois, à transmettre au joueur, qui choisira ensuite son mot de passe par « Mot de passe oublié ? ». Aucun mot de passe n’est vu ni modifié ici. Action auditée."
+        reasonLabel="Motif"
+        confirmLabel="Réinitialiser l’accès"
+        onConfirm={async (reason) => {
+          const result = await playerActions.recoverAccount(player.id, reason);
+          setRecoveryCode(result.recoveryCode);
+          await done('Accès réinitialisé : transmettez le nouveau code au joueur.');
+        }}
+      />
       <WarningDialog
         open={dialog === 'warn'}
         onOpenChange={close}
@@ -246,6 +276,40 @@ export function ModerationActionsCard({
         }}
       />
     </Card>
+  );
+}
+
+/**
+ * Nouveau code de récupération, affiché une seule fois (D-135) : jamais relu depuis le
+ * serveur, effacé de la page dès que l'administrateur confirme l'avoir transmis.
+ */
+function RecoveryCodeNotice({ code, onDone }: { code: string; onDone: () => void }) {
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast.success('Code copié.');
+    } catch {
+      toast.error('Copie impossible : recopiez le code.');
+    }
+  };
+  return (
+    <div className="border-warning bg-warning-soft space-y-2 rounded-md border p-3" role="status">
+      <p className="text-sm font-semibold">Nouveau code de récupération</p>
+      <p className="font-mono text-lg tracking-widest select-all" data-testid="admin-recovery-code">
+        {code}
+      </p>
+      <p className="text-muted text-xs">
+        Il ne sera plus affiché. Transmettez-le au joueur par un canal sûr.
+      </p>
+      <div className="flex gap-2">
+        <Button variant="secondary" size="sm" onClick={() => void copy()}>
+          Copier le code
+        </Button>
+        <Button size="sm" onClick={onDone}>
+          Code transmis
+        </Button>
+      </div>
+    </div>
   );
 }
 

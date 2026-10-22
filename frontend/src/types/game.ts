@@ -4,6 +4,90 @@
  */
 export type GameStatus = 'waiting' | 'in_progress' | 'finished';
 
+/** Jeu d'une partie (D-119) : Le Ter (absent ou 'TER') ou GARAM TIA. */
+export type GameType = 'TER' | 'GARAM';
+
+/**
+ * GARAM TIA : variante choisie à la création (D-127). Elle fixe seulement le seuil de la
+ * pénalité « moins de X » ; la limite de 21 est commune. Décidée et appliquée par le serveur.
+ */
+export const GARAM_VARIANTS = [15, 16, 17, 18] as const;
+export type GaramVariant = (typeof GARAM_VARIANTS)[number];
+
+export function garamVariantLabel(variant: GaramVariant | undefined): string {
+  return variant === undefined ? 'GARAM TIA' : `GARAM ${variant}`;
+}
+
+/** GARAM TIA : conditions spéciales de victoire automatique (§3.12, §3.13). */
+export type GaramSpecialCondition =
+  | 'THREE_SEVENS'
+  | 'THREE_OF_A_KIND'
+  | 'SUM_TEN'
+  | 'SAME_SUIT'
+  | 'SUM_TWENTY_ONE'
+  // Manches jouées avant D-130 (historique seulement) : deux As ne sont plus une main
+  // spéciale, ils se jugent à la fin normale de la manche.
+  | 'TWO_ACES'
+  | 'LOW_SUM'
+  | 'SAME_SUIT_TERRE';
+
+/**
+ * GARAM TIA : la manche vue par le joueur connecté (backend : GaramPlayerView). Publiques :
+ * terre, premières cartes, cartes tirées. `myHand` : MA main seulement.
+ */
+export interface GaramView {
+  phase: 'FIRST_ROUND' | 'DRAW';
+  dealerId: string;
+  order: string[];
+  dealSequence: DealBatch[];
+  /** Terre, tête en premier. */
+  terre: string[];
+  firstCards: TrickPlay[];
+  leadSuit?: string;
+  controllerId?: string;
+  drawOrder: string[];
+  drawn: Record<string, string[]>;
+  drawDone: string[];
+  /** `passed` : le contrôleur a annoncé « Je passe » (D-140), pas « Impossible ». */
+  lastRefusal?: { playerId: string; cardId?: string; passed?: true };
+  /**
+   * Public (D-140) : le contrôleur ne peut prendre aucune carte et annonce « Je passe » ; le
+   * serveur passe la main au joueur suivant à l'échéance de ce tour.
+   */
+  passingPlayerId?: string;
+  nextPlayerId?: string;
+  myHand: string[];
+  myTotal?: number;
+  handCounts: Record<string, number>;
+  canDraw: boolean;
+  /** Main spéciale que je détiens (D-129) : envoyée à moi seul par le serveur. */
+  mySpecial?: GaramSpecialCondition;
+  /**
+   * Public (D-137) : une main spéciale va être déclarée par le serveur, peu après la
+   * distribution. Ni son détenteur ni sa nature ne sont connus avant la victoire.
+   */
+  specialPending?: boolean;
+}
+
+/** GARAM TIA : manche nulle, rejouée aussitôt dans la même partie. */
+export interface GaramTie {
+  kind: 'SPECIAL' | 'SCORE';
+  condition?: GaramSpecialCondition;
+  playerIds: string[];
+  scores?: Record<string, number>;
+  hands?: Record<string, string[]>;
+}
+
+/** GARAM TIA : proposition de doubler la mise (§3.15). */
+export interface GaramStakeVote {
+  previousStake: number;
+  proposedStake: number;
+  deadlineAt: string;
+  answeredPlayerIds: string[];
+  myVote?: boolean;
+  canVote: boolean;
+}
+
 export interface PlayerInGame {
   playerId: string;
   /** Rang d'arrivée dans CETTE partie. */
@@ -63,11 +147,19 @@ export type GameEndReason =
   | 'CONTROL_AFTER_LAST_TRICK'
   | 'OPPONENT_FLED'
   | 'INSTANT_WIN_TIE'
+  | 'GARAM_AUTOMATIC_WIN'
+  | 'GARAM_BEST_SCORE'
+  | 'GARAM_TIE'
   | 'ADMIN_STOP';
 
 export interface GameResult {
   winnerId: string;
-  method: 'INSTANT_WIN' | 'CONTROL_AFTER_LAST_TRICK' | 'OPPONENT_FLED';
+  method:
+    | 'INSTANT_WIN'
+    | 'CONTROL_AFTER_LAST_TRICK'
+    | 'OPPONENT_FLED'
+    | 'GARAM_AUTOMATIC_WIN'
+    | 'GARAM_BEST_SCORE';
   /** Victoire instantanée : rang retenu (1 = le plus fort) et combinaison. */
   instantWinRank?: number;
   instantWinCombination?: InstantWinCombination;
@@ -76,10 +168,27 @@ export interface GameResult {
   victoryType?: 'SIMPLE';
   remainingOpponentIds: string[];
   fledPlayerIds: string[];
+  /**
+   * GARAM TIA : condition spéciale gagnante, totaux, perdants sous le seuil de la variante
+   * (pénalité « moins de X », D-127) et seuil appliqué, mains révélées.
+   */
+  garamCondition?: GaramSpecialCondition;
+  scores?: Record<string, number>;
+  belowThresholdIds?: string[];
+  penaltyThreshold?: GaramVariant;
+  garamHands?: Record<string, string[]>;
 }
 
 export interface GameView {
   gameId: string;
+  /** Jeu de la partie (D-119) ; absent : Le Ter. */
+  gameType?: GameType;
+  /** GARAM TIA : variante de la partie (D-127), affichée pendant toute la partie. */
+  garamVariant?: GaramVariant;
+  /** GARAM TIA : la manche, la manche nulle, la proposition de doubler la mise. */
+  garam?: GaramView;
+  garamTie?: GaramTie;
+  garamStakeVote?: GaramStakeVote;
   /** Session de la partie (D-033). */
   sessionId?: string;
   /** J1 : premier servi, premier à jouer, contrôle initial (décidé par le serveur). */
@@ -152,4 +261,9 @@ export interface GameView {
 
 /** Actions de jeu exposées par l'API (DECLARE_WIN = « Gagner instantanément »). */
 export type GameAction =
-  { type: 'PLAY_CARD'; cardId: string } | { type: 'DECLARE_WIN' } | { type: 'FLEE' };
+  | { type: 'PLAY_CARD'; cardId: string }
+  | { type: 'DECLARE_WIN' }
+  | { type: 'FLEE' }
+  /** GARAM TIA : tirer à la tête du terre ; répondre à « doubler la mise ». */
+  | { type: 'DRAW_CARD' }
+  | { type: 'STAKE_VOTE'; accept: boolean };

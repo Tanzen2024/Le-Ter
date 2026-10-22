@@ -1,9 +1,11 @@
 import {
+  expectedPlayerOf,
   isForwardTransition,
   type Game,
   type GameEndReason,
   type GameResult,
   type GameStatus,
+  type GameType,
   type PlayerInGame,
   type TerPlay,
 } from '../domain/game/game';
@@ -13,6 +15,7 @@ import {
   InvalidStatusTransitionError,
   ParticipationRefusedError,
 } from '../domain/game/game-errors';
+import { isGaramVariant } from '../domain/garam/garam-rules';
 import { newGameId, type GameId, type PlayerId } from '../domain/game/game-id';
 import {
   PG_UNIQUE_VIOLATION,
@@ -49,6 +52,12 @@ const ONE_REPLAY_PER_GAME_INDEX = 'games_one_replay_per_game';
  */
 interface GameStateDocument {
   play?: TerPlay;
+  /** GARAM TIA (D-119) : état de la manche, manche nulle, proposition de doubler la mise. */
+  garam?: Game['garam'];
+  garamTie?: Game['garamTie'];
+  /** GARAM TIA : mise de création de la table (D-138). */
+  garamBaseStake?: number;
+  garamStakeVote?: Omit<NonNullable<Game['garamStakeVote']>, 'deadlineAt'> & { deadlineAt: string };
   result?: GameResult;
   instantWinTie?: Game['instantWinTie'];
   recentCommandIds: string[];
@@ -58,6 +67,8 @@ interface GameRow {
   id: string;
   version: number;
   status: GameStatus;
+  game_type: GameType;
+  garam_variant: number | null;
   creator_id: string;
   max_players: number;
   stake_amount: string | number | null;
@@ -233,9 +244,9 @@ export async function insertGameRows(
        created_at, updated_at, started_at, finished_at, turn_deadline_at, creation_key,
        session_id, first_player_id, winner_id, turn_started_at, active_player_id,
        turn_timed_out_at, end_reason, replay_of_game_id, auto_start_delay_ms, start_deadline_at,
-       deal_ends_at, tournament_id)
+       deal_ends_at, tournament_id, game_type, garam_variant)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-       $19, $20, $21, $22, $23, $24, $25)`,
+       $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
     [
       game.id,
       game.version,
@@ -262,6 +273,8 @@ export async function insertGameRows(
       timestamp(game.startDeadlineAt),
       timestamp(game.dealEndsAt),
       game.tournamentId ?? null,
+      game.gameType ?? 'TER',
+      game.garamVariant ?? null,
     ],
   );
   await writePlayers(tx, game);
@@ -368,7 +381,7 @@ export async function deleteWaitingGame(tx: SqlExecutor, gameId: GameId): Promis
 
 /** Joueur attendu d'une partie en cours (colonne `active_player_id`, D-034). */
 function activePlayerOf(game: Game): PlayerId | null {
-  return game.status === 'in_progress' ? (game.play?.nextPlayerId ?? null) : null;
+  return game.status === 'in_progress' ? (expectedPlayerOf(game) ?? null) : null;
 }
 
 /** Violations d'unicité à l'insertion d'une partie → erreurs du domaine. */
@@ -492,9 +505,29 @@ function stateDocument(game: Game): string {
     ...(game.play && { play: game.play }),
     ...(game.result && { result: game.result }),
     ...(game.instantWinTie && { instantWinTie: game.instantWinTie }),
+    ...(game.garam && { garam: game.garam }),
+    ...(game.garamTie && { garamTie: game.garamTie }),
+    ...(game.garamBaseStake !== undefined && { garamBaseStake: game.garamBaseStake }),
+    ...(game.garamStakeVote && {
+      garamStakeVote: {
+        ...game.garamStakeVote,
+        deadlineAt: game.garamStakeVote.deadlineAt.toISOString(),
+      },
+    }),
     recentCommandIds: game.recentCommandIds,
   };
   return JSON.stringify(doc);
+}
+
+/**
+ * Résultats GARAM enregistrés avant les variantes (D-127) : `belowFifteenIds` (seuil 15, la
+ * seule règle d'alors) relu comme `belowThresholdIds` + `penaltyThreshold: 15`. Rien n'est
+ * réécrit en base.
+ */
+function withGaramThreshold(result: GameResult & { belowFifteenIds?: PlayerId[] }): GameResult {
+  const { belowFifteenIds, ...rest } = result;
+  if (!belowFifteenIds || rest.belowThresholdIds) return rest;
+  return { ...rest, belowThresholdIds: belowFifteenIds, penaltyThreshold: 15 };
 }
 
 function toGame(row: GameRow): Game {
@@ -506,10 +539,21 @@ function toGame(row: GameRow): Game {
     ...(p.fled_at !== null && { fledAt: new Date(p.fled_at) }),
     ...(p.username && { username: p.username }),
   }));
-  const { play, result, instantWinTie, recentCommandIds } = row.state;
+  const {
+    play,
+    result,
+    instantWinTie,
+    garam,
+    garamTie,
+    garamBaseStake,
+    garamStakeVote,
+    recentCommandIds,
+  } = row.state;
 
   return {
     id: row.id as GameId,
+    ...(row.game_type === 'GARAM' && { gameType: 'GARAM' as const }),
+    ...(isGaramVariant(row.garam_variant) && { garamVariant: row.garam_variant }),
     ...(row.session_id !== null && { sessionId: row.session_id as SessionId }),
     firstPlayerId: row.first_player_id as PlayerId,
     version: row.version,
@@ -519,8 +563,14 @@ function toGame(row: GameRow): Game {
     ...(row.stake_amount !== null && { stakeAmount: toSafeInteger(row.stake_amount) }),
     players,
     ...(play && { play }),
-    ...(result && { result }),
+    ...(result && { result: withGaramThreshold(result) }),
     ...(instantWinTie && { instantWinTie }),
+    ...(garam && { garam }),
+    ...(garamTie && { garamTie }),
+    ...(garamBaseStake !== undefined && { garamBaseStake }),
+    ...(garamStakeVote && {
+      garamStakeVote: { ...garamStakeVote, deadlineAt: new Date(garamStakeVote.deadlineAt) },
+    }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.started_at && { startedAt: row.started_at }),

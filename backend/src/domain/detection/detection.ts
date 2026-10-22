@@ -1,3 +1,4 @@
+import type { GameType } from '../game/game';
 import type { GameId, PlayerId } from '../game/game-id';
 import {
   ALERT_CONFIG,
@@ -266,11 +267,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Alerte interne qu'appelle un score, ou `null` (D-048) : seulement aux niveaux configurés
  * (HIGH, VERY_HIGH) ET avec plusieurs types de signaux distincts — un signal isolé n'est
- * jamais une alerte. Clé de déduplication : type, sujet, niveau, version, période.
+ * jamais une alerte. Clé de déduplication : type, sujet, niveau, version, période, et jeu
+ * pour GARAM TIA (D-125) ; la clé d'une alerte Fap-Fap est inchangée.
  */
 export function alertFor(
   score: SuspicionScore,
   id: string,
+  gameType: GameType = 'TER',
 ): Omit<DetectionAlert, 'status' | 'createdAt'> | null {
   const priority = ALERT_CONFIG.levels[score.level];
   const signalTypes = score.components.filter((c) => c.contribution > 0).map((c) => c.type);
@@ -296,6 +299,7 @@ export function alertFor(
       score.level,
       `v${score.algorithmVersion}`,
       periodStart.toISOString().slice(0, 10),
+      ...(gameType === 'TER' ? [] : [gameType]),
     ].join('|'),
   };
 }

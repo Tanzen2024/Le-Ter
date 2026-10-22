@@ -162,6 +162,15 @@ describe('plan de versement et crédits réels', () => {
     expect(await prizeTransactions(t)).toHaveLength(3);
   });
 
+  it('commission du tournoi : une écriture de la caisse unique, source TOURNAMENT (D-120)', async () => {
+    const t = await startedTournament();
+    const { rows } = await database.sql.query<{ kind: string; source: string }>(
+      'SELECT kind, source FROM platform_ledger WHERE tournament_id = $1',
+      [t.id],
+    );
+    expect(rows).toEqual([{ kind: 'TOURNAMENT_PLATFORM_FEE', source: 'TOURNAMENT' }]);
+  });
+
   it('incohérence financière : versements bloqués et visibles ; reprise automatique une fois cohérent', async () => {
     const t = await startedTournament();
     // Écriture de commission altérée : la cagnotte n'est plus prouvée par le journal.

@@ -1,4 +1,10 @@
 import type { Card } from '../cards/card';
+import {
+  DEAL_BATCH_LANDING_MS,
+  DEAL_BATCH_STEP_MS,
+  DEAL_DELIVERY_MARGIN_MS,
+  DEAL_FIRST_BATCH_DELAY_MS,
+} from '../game/deal-timing';
 
 /**
  * Règles du Ter codées en dur dans le moteur (D-035, socle de vérité). Les règles qui se
@@ -34,12 +40,15 @@ export const TURN_DURATION_MS = 13_000;
  * (`useDealProgress`, `TableCards.tsx`) : premier lot à 250 ms, un lot toutes les 420 ms,
  * vol + pose 510 ms, plus une marge de réception réseau. La fin de phase est une échéance
  * PERSISTÉE (`games.deal_ends_at`) ; le premier tour ne commence qu'à la transition
- * COMPLETE_DEAL, jamais par le seul passage du temps côté client.
+ * COMPLETE_DEAL, jamais par le seul passage du temps côté client. Valeurs communes aux deux
+ * jeux : `domain/game/deal-timing.ts` (D-126).
  */
-export const DEAL_FIRST_BATCH_DELAY_MS = 250;
-export const DEAL_BATCH_STEP_MS = 420;
-export const DEAL_BATCH_LANDING_MS = 510;
-export const DEAL_DELIVERY_MARGIN_MS = 500;
+export {
+  DEAL_BATCH_LANDING_MS,
+  DEAL_BATCH_STEP_MS,
+  DEAL_DELIVERY_MARGIN_MS,
+  DEAL_FIRST_BATCH_DELAY_MS,
+};
 
 /** Durée de la phase de distribution pour `batchCount` lots (2 passages × joueurs). */
 export function dealPhaseDurationMs(batchCount: number): number {

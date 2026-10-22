@@ -61,6 +61,7 @@ const GROUP_TONE: Record<MovementGroup, 'success' | 'danger' | 'warning' | undef
   debit: undefined,
   pending: 'warning',
   failed: 'danger',
+  unknown: 'warning',
 };
 
 /**

@@ -60,7 +60,7 @@ describeWithPostgres('Réclamations sur PostgreSQL réel (D-114)', () => {
       },
       silentLogger,
     );
-    const user = await auth.register({
+    const { user } = await auth.register({
       firstName: 'Reclam',
       lastName: 'Test',
       email: `reclam${sequence}@example.com`,

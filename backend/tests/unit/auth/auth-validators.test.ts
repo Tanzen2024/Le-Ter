@@ -44,18 +44,17 @@ describe('Inscription — validation et normalisation (R-15)', () => {
     });
   });
 
-  it('exige les 8 champs (pays compris)', () => {
+  it('exige les 7 champs obligatoires (pays compris ; email facultatif, D-135)', () => {
     expect(Object.keys(fieldErrors({})).sort()).toEqual([
       'confirmPassword',
       'country',
-      'email',
       'firstName',
       'lastName',
       'password',
       'phone',
       'username',
     ]);
-    expect(Object.keys(fieldErrors(null))).toHaveLength(8);
+    expect(Object.keys(fieldErrors(null))).toHaveLength(7);
   });
 
   it.each([

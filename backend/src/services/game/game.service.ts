@@ -3,20 +3,32 @@ import { randomUUID } from 'node:crypto';
 import type { RandomSource } from '../../domain/cards/random-source';
 import {
   ALLOWED_MAX_PLAYERS,
+  expectedPlayerOf,
   MIN_PLAYERS_TO_START,
   RECENT_COMMANDS_LIMIT,
   syncStartDeadline,
   type Game,
+  type GameType,
 } from '../../domain/game/game';
+import * as garam from '../../domain/garam/garam-engine';
+import {
+  GARAM_STAKE_VOTE_MS,
+  GARAM_TURN_DURATION_MS,
+  isGaramVariant,
+  type GaramVariant,
+} from '../../domain/garam/garam-rules';
+import { rotateFrom } from '../../domain/sessions/table-order';
 import { assertPlayerInGame } from '../../domain/game/game-access';
 import { InvalidCardError } from '../../domain/cards/card';
 import {
+  ActionNotAvailableForGameError,
   GameAccessDeniedError,
   GameFinishedError,
   GameFullError,
   GameNotFoundError,
   GameNotJoinableError,
   GameVersionConflictError,
+  InvalidGaramVariantError,
   InvalidPlayerCountError,
   FirstPlayerNotInGameError,
   GameRuleViolationError,
@@ -24,6 +36,7 @@ import {
   GameStartForbiddenError,
   IdempotencyKeyReuseError,
   ParticipationRefusedError,
+  StakeVoteInProgressError,
   TurnExpiredError,
 } from '../../domain/game/game-errors';
 import {
@@ -42,7 +55,11 @@ import {
   SessionGameInProgressError,
   type SessionId,
 } from '../../domain/sessions/session';
-import { InvalidGameStakeError, isValidGameStake } from '../../domain/rules/stake';
+import {
+  InsufficientBalanceForStakeError,
+  InvalidGameStakeError,
+  isValidGameStake,
+} from '../../domain/rules/stake';
 import { UnresolvedRuleError } from '../../domain/rules/unresolved-rule';
 import { cryptoRandomSource } from '../../utils/crypto-random-source';
 import {
@@ -101,6 +118,13 @@ export interface GameStartWindow {
 /** Paramètres de création (R-23 : maxPlayers ∈ {2, 3, 4}). */
 export interface CreateGameOptions {
   maxPlayers: number;
+  /** Jeu de la partie (D-119), celui de sa session. Absent : Le Ter. */
+  gameType?: GameType;
+  /**
+   * GARAM TIA : variante de la session (15, 16, 17 ou 18, D-127). Obligatoire pour GARAM,
+   * interdite pour Le Ter ; jamais de valeur par défaut.
+   */
+  garamVariant?: GaramVariant;
   stakeAmount?: number;
   /** Clé d'idempotence (en-tête Idempotency-Key). */
   creationKey?: string;
@@ -189,6 +213,17 @@ export interface GameServiceDependencies {
   /** Durée d'un tour. Par défaut TURN_DURATION_MS (13 s dont 10 s affichées, D-098). */
   turnDurationMs?: number;
   /**
+   * GARAM TIA, tirage automatique (D-136) : délai avant la 1re carte d'un joueur, puis entre
+   * deux cartes. Par défaut GARAM_AUTO_DRAW_FIRST_MS / GARAM_AUTO_DRAW_STEP_MS (tests : injecté).
+   * `afterFirstRound` : délai avant la 1re carte de la manche (premier tour vu et rangé) ;
+   * absent, il vaut `first` (tests rapides). `pass` : durée totale du tour « Je passe » du
+   * contrôleur (D-140) ; absent, 1 ms (tests : échéance aussitôt atteinte ; une échéance doit
+   * suivre le début du tour, contrainte de `games`).
+   */
+  garamAutoDrawMs?: { first: number; step: number; afterFirstRound?: number; pass?: number };
+  /** GARAM TIA : délai de la déclaration automatique d'une main spéciale (D-137, tests). */
+  garamAutoDeclareMs?: number;
+  /**
    * Durée de la phase de distribution selon le nombre de lots (D-102). Par défaut
    * `dealPhaseDurationMs`. Renvoyer 0 confirme la distribution dans la transition de
    * démarrage (tests du moteur qui ne portent pas sur la distribution).
@@ -206,6 +241,12 @@ export interface GameServiceDependencies {
 export type GameFinishedListener = (game: Game) => void;
 
 /**
+ * GARAM TIA (§3.16) : joueurs retirés d'une manche en attente faute de solde pour sa mise ;
+ * SessionService les fait quitter la table.
+ */
+export type PlayersWithdrawnListener = (game: Game, playerIds: PlayerId[]) => void;
+
+/**
  * Point d'entrée unique de toute modification d'une partie.
  *
  * Garanties :
@@ -220,6 +261,7 @@ export class GameService {
   private readonly queue = new KeyedSerialQueue<GameId>();
   private readonly clock: () => Date;
   private readonly finishedListeners: GameFinishedListener[] = [];
+  private readonly withdrawnListeners: PlayersWithdrawnListener[] = [];
   private readonly background = new BackgroundTasks();
   private readonly startTimers: GameTimerRegistry;
 
@@ -234,6 +276,11 @@ export class GameService {
    */
   onGameFinished(listener: GameFinishedListener): void {
     this.finishedListeners.push(listener);
+  }
+
+  /** Être prévenu, APRÈS enregistrement, des joueurs retirés d'une manche GARAM (§3.16). */
+  onPlayersWithdrawn(listener: PlayersWithdrawnListener): void {
+    this.withdrawnListeners.push(listener);
   }
 
   private get turnDurationMs(): number {
@@ -326,6 +373,9 @@ export class GameService {
     if (
       existing.maxPlayers !== options.maxPlayers ||
       existing.stakeAmount !== options.stakeAmount ||
+      (options.gameType !== undefined &&
+        (existing.gameType ?? 'TER') !== options.gameType) ||
+      (options.garamVariant !== undefined && existing.garamVariant !== options.garamVariant) ||
       (options.sessionId !== undefined && existing.sessionId !== options.sessionId)
     ) {
       throw new IdempotencyKeyReuseError(existing.id);
@@ -353,6 +403,11 @@ export class GameService {
     if (!(ALLOWED_MAX_PLAYERS as readonly number[]).includes(maxPlayers)) {
       throw new InvalidPlayerCountError(maxPlayers);
     }
+    // D-127 : variante explicite pour GARAM TIA, aucune pour Le Ter.
+    const garamGame = options.gameType === 'GARAM';
+    if (garamGame ? !isGaramVariant(options.garamVariant) : options.garamVariant !== undefined) {
+      throw new InvalidGaramVariantError(options.garamVariant);
+    }
     // Mise enregistrée : toujours > 0 (D-073). Son absence n'est admise que pour une table de
     // tournoi : la politique de mise la refuse pour une partie ordinaire.
     if (stakeAmount !== undefined && !isValidGameStake(stakeAmount)) {
@@ -367,6 +422,7 @@ export class GameService {
     const now = this.clock();
     const game: Game = {
       id: this.deps.repository.nextId(),
+      ...(garamGame && { gameType: 'GARAM' as const, garamVariant: options.garamVariant }),
       ...(sessionId && { sessionId }),
       firstPlayerId: options.firstPlayerId ?? creatorId,
       version: 1,
@@ -374,6 +430,8 @@ export class GameService {
       creatorId,
       maxPlayers,
       ...(stakeAmount !== undefined && { stakeAmount }),
+      // GARAM TIA : mise de création de la table, rappelée après un doublement refusé (D-138).
+      ...(garamGame && stakeAmount !== undefined && { garamBaseStake: stakeAmount }),
       // Le créateur est ajouté à la partie (diagramme « création de partie »).
       players: [
         {
@@ -432,7 +490,8 @@ export class GameService {
       if (game.players.some((p) => p.playerId === playerId)) {
         return null; // Déjà membre : rejoindre est idempotent.
       }
-      if (game.status !== 'waiting') {
+      // GARAM TIA : la manche qui rejoue une égalité n'accepte que ses joueurs (§3.15).
+      if (game.status !== 'waiting' || game.garamStakeVote) {
         throw new GameNotJoinableError(gameId);
       }
       if (game.players.length >= game.maxPlayers) {
@@ -539,15 +598,12 @@ export class GameService {
           }
           await this.deps.startPolicy?.assertCanStart(structuredClone(game));
         }
+        if (game.garamStakeVote) {
+          throw new StakeVoteInProgressError(gameId);
+        }
         // Distribution, J1, contrôle et ordre du tour dans la même transition (D-032,
         // D-033). Les règles encore ouvertes (R-03, R-08…) ne concernent que les coups.
-        return engine.startGame(game, {
-          rules: this.rules,
-          random: this.random,
-          now,
-          turnDurationMs: this.turnDurationMs,
-          dealDurationMs: this.deps.dealDurationMs,
-        });
+        return this.startEngine(game, now);
       },
       true,
     );
@@ -561,20 +617,146 @@ export class GameService {
   playCard(gameId: GameId, playerId: PlayerId, cardId: unknown, meta: CommandMeta = {}) {
     return this.executePlayerCommand(gameId, playerId, 'PLAY_CARD', meta, (game, { now }) => {
       assertTurnNotExpired(game, playerId, now);
-      return engine.playCard(game, playerId, cardId, this.engineContext(now));
+      return game.gameType === 'GARAM'
+        ? garam.playGaramCard(game, playerId, cardId, this.garamContext(now))
+        : engine.playCard(game, playerId, cardId, this.engineContext(now));
     });
+  }
+
+  /** GARAM TIA : tirer une carte à la tête du terre (§3.8). */
+  drawCard(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}) {
+    return this.executePlayerCommand(gameId, playerId, 'DRAW_CARD', meta, (game, { now }) => {
+      assertActionOfGame(game, 'DRAW_CARD', 'GARAM');
+      assertTurnNotExpired(game, playerId, now);
+      return garam.drawGaramCard(game, playerId, this.garamContext(now));
+    });
+  }
+
+  /**
+   * GARAM TIA : réponse à la proposition de doubler la mise (§3.15). Dès que tous les joueurs
+   * ont répondu, la proposition est close et la manche démarre (sans attendre l'échéance).
+   */
+  async voteStake(gameId: GameId, playerId: PlayerId, accept: boolean, meta: CommandMeta = {}) {
+    let withdrawn: PlayerId[] = [];
+    const game = await this.executePlayerCommand(
+      gameId,
+      playerId,
+      'STAKE_VOTE',
+      meta,
+      async (g, { now }) => {
+        assertActionOfGame(g, 'STAKE_VOTE', 'GARAM');
+        const events = garam.voteGaramStake(g, playerId, accept, now);
+        if (events === null || !garam.stakeVoteComplete(g)) return events;
+        const closed = await this.closeStakeVote(g, now);
+        withdrawn = closed.withdrawn;
+        return [...events, ...closed.events];
+      },
+    );
+    this.notifyWithdrawn(game, withdrawn);
+    return game;
+  }
+
+  /**
+   * Clôture de la proposition (§3.15, §3.16) : mise doublée si tous ont dit oui, sinon
+   * inchangée ; tout joueur dont le solde ne couvre plus 2 × la mise retenue est retiré de la
+   * manche (puis de la table) ; dès 2 joueurs restants, la manche démarre.
+   */
+  private async closeStakeVote(
+    g: Game,
+    now: Date,
+  ): Promise<{ events: GameEventDraft[]; withdrawn: PlayerId[] }> {
+    const vote = g.garamStakeVote;
+    if (!vote) return { events: [], withdrawn: [] };
+    const doubled = garam.stakeVoteAccepted(g);
+    // Tous oui : mise doublée ; un refus OU une absence de réponse à l'échéance : retour à la
+    // mise de création de la table, jamais une mise déjà doublée (D-138).
+    g.stakeAmount = doubled ? vote.proposedStake : (vote.baseStake ?? vote.previousStake);
+    g.garamStakeVote = undefined;
+    g.startDeadlineAt = undefined;
+    const events: GameEventDraft[] = [
+      { type: 'game:stake_vote_closed', payload: { stakeAmount: g.stakeAmount, doubled } },
+    ];
+    const withdrawn: PlayerId[] = [];
+    for (const p of [...g.players]) {
+      try {
+        await this.deps.stakePolicy?.assertCanStake(p.playerId, structuredClone(g));
+      } catch (err) {
+        if (
+          !(err instanceof InsufficientBalanceForStakeError) &&
+          !(err instanceof InvalidGameStakeError)
+        ) {
+          throw err;
+        }
+        withdrawn.push(p.playerId);
+      }
+    }
+    if (withdrawn.length > 0) {
+      const order = engine.tableOrder(g);
+      g.players = g.players.filter((p) => !withdrawn.includes(p.playerId));
+      // Dégageur retiré : le joueur restant suivant, sens antihoraire (sortants ignorés, §3.17).
+      const remaining = rotateFrom(order, g.firstPlayerId).filter((id) => !withdrawn.includes(id));
+      if (remaining[0]) {
+        g.firstPlayerId = remaining[0];
+        if (withdrawn.includes(g.creatorId)) g.creatorId = remaining[0];
+      }
+      events.push({
+        type: 'game:players_withdrawn',
+        payload: { playerIds: withdrawn, stakeAmount: g.stakeAmount },
+      });
+    }
+    if (g.players.length >= MIN_PLAYERS_TO_START) {
+      events.push(...this.startEngine(g, now));
+    }
+    return { events, withdrawn };
+  }
+
+  private notifyWithdrawn(game: Game, playerIds: PlayerId[]): void {
+    if (playerIds.length === 0) return;
+    this.deps.logger.info('GARAM_PLAYERS_WITHDRAWN', {
+      gameId: game.id,
+      sessionId: game.sessionId,
+      players: playerIds.length,
+    });
+    for (const listener of this.withdrawnListeners) {
+      try {
+        listener(structuredClone(game), [...playerIds]);
+      } catch (err) {
+        this.deps.logger.error('players withdrawn listener failed', {
+          gameId: game.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /** Démarrage et distribution selon le jeu de la partie (D-119). */
+  private startEngine(game: Game, now: Date): GameEventDraft[] {
+    const context = {
+      rules: this.rules,
+      random: this.random,
+      now,
+      turnDurationMs: this.turnDurationMs,
+      dealDurationMs: this.deps.dealDurationMs,
+    };
+    return game.gameType === 'GARAM'
+      ? garam.startGaramGame(game, { ...context, ...this.garamContext(now) })
+      : engine.startGame(game, context);
   }
 
   declareWin(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}) {
     return this.executePlayerCommand(gameId, playerId, 'DECLARE_WIN', meta, (game, { now }) =>
-      engine.declareWin(game, playerId, this.engineContext(now)),
+      // « Main spéciale » : propre à chaque jeu (Fap-Fap D-035, GARAM TIA D-129).
+      game.gameType === 'GARAM'
+        ? garam.declareGaramWin(game, playerId, this.garamContext(now))
+        : engine.declareWin(game, playerId, this.engineContext(now)),
     );
   }
 
   flee(gameId: GameId, playerId: PlayerId, meta: CommandMeta = {}) {
-    return this.executePlayerCommand(gameId, playerId, 'FLEE', meta, (game, { now }) =>
-      engine.flee(game, playerId, this.engineContext(now)),
-    );
+    return this.executePlayerCommand(gameId, playerId, 'FLEE', meta, (game, { now }) => {
+      assertActionOfGame(game, 'FLEE', 'TER');
+      return engine.flee(game, playerId, this.engineContext(now));
+    });
   }
 
   // --- Timer de tour (D-034) --------------------------------------------------
@@ -606,7 +788,7 @@ export class GameService {
   private async applyTurnTimeout(gameId: GameId): Promise<Game> {
     let timedOutNow = false;
     const game = await this.mutate(gameId, 'TURN_TIMEOUT', undefined, {}, (g, { now }) => {
-      const playerId = g.play?.nextPlayerId;
+      const playerId = expectedPlayerOf(g);
       if (g.status !== 'in_progress' || !playerId || !g.turnDeadlineAt || g.turnTimedOutAt) {
         return null;
       }
@@ -630,10 +812,15 @@ export class GameService {
     // Seul le déclenchement qui a constaté l'expiration enchaîne le coup automatique ; un
     // doublon (autre timer, autre instance) s'arrête là.
     if (timedOutNow && game.status === 'in_progress' && game.turnTimedOutAt) {
-      this.deps.logger.warn('TURN_TIMEOUT', {
+      // GARAM TIA, phase de tirage : échéance du tirage automatique (D-136), pas une absence ;
+      // main spéciale en attente : échéance de sa déclaration automatique (D-137).
+      const autoDraw = game.garam?.phase === 'DRAW';
+      const autoDeclare = Boolean(game.garam?.special);
+      const label = autoDeclare ? 'AUTO_DECLARE_DUE' : autoDraw ? 'AUTO_DRAW_DUE' : 'TURN_TIMEOUT';
+      this.deps.logger[autoDraw || autoDeclare ? 'info' : 'warn'](label, {
         gameId,
         sessionId: game.sessionId,
-        playerId: game.play?.nextPlayerId,
+        playerId: expectedPlayerOf(game),
         version: game.version,
         deadline: game.turnDeadlineAt?.toISOString(),
         timeout: game.turnTimedOutAt.toISOString(),
@@ -668,12 +855,20 @@ export class GameService {
   private async applyStartDeadline(gameId: GameId): Promise<Game> {
     let started = false;
     let closed = false;
+    let withdrawn: PlayerId[] = [];
     const game = await this.mutate(gameId, 'AUTO_START_GAME', undefined, {}, async (g, { now }) => {
       if (g.status !== 'waiting' || !g.startDeadlineAt) {
         return null; // déjà démarrée (manuellement ou ailleurs), ou plus d'échéance
       }
       if (now.getTime() < g.startDeadlineAt.getTime()) {
         return null; // déclenchement anticipé : le timer est réarmé ci-dessous
+      }
+      // GARAM TIA : fin du temps de réponse à la proposition de doubler la mise (§3.15).
+      if (g.garamStakeVote) {
+        const result = await this.closeStakeVote(g, now);
+        withdrawn = result.withdrawn;
+        started = g.garam !== undefined;
+        return result.events;
       }
       if (g.players.length < MIN_PLAYERS_TO_START) {
         return null; // impossible : l'échéance est retirée sous 2 joueurs
@@ -686,15 +881,10 @@ export class GameService {
         return [];
       }
       started = true;
-      return engine.startGame(g, {
-        rules: this.rules,
-        random: this.random,
-        now,
-        turnDurationMs: this.turnDurationMs,
-        dealDurationMs: this.deps.dealDurationMs,
-      });
+      return this.startEngine(g, now);
     });
     this.syncStartTimer(game);
+    this.notifyWithdrawn(game, withdrawn);
     if (closed) {
       this.deps.logger.info('GAME_AUTO_START_CLOSED', { gameId, sessionId: game.sessionId });
     }
@@ -757,6 +947,9 @@ export class GameService {
    * enregistrement, puis événements. `commandId` déterministe par tour : idempotent.
    */
   private async playAutomatically(game: Game): Promise<Game> {
+    if (game.gameType === 'GARAM') {
+      return this.playGaramAutomatically(game);
+    }
     const play = game.play;
     const playerId = play?.nextPlayerId;
     if (!play || !playerId) {
@@ -819,6 +1012,56 @@ export class GameService {
     }
   }
 
+  /**
+   * GARAM TIA, après TURN_TIMEOUT (§3.11, §7.11, D-127) : carte légale déterministe au premier
+   * tour, une carte tirée dans la limite de 21 ensuite (`garam.playGaramAutomatically`). Même chemin qu'une action manuelle ;
+   * `commandId` déterministe par tour (idempotent).
+   */
+  private async playGaramAutomatically(game: Game): Promise<Game> {
+    const play = game.garam;
+    const playerId = play?.nextPlayerId;
+    if (!play || !playerId) {
+      return game;
+    }
+    const commandId = `auto-garam:${game.id}:${play.phase}:${play.firstCards.length}:${play.terre.length}:${playerId}${play.passing ? ':pass' : ''}`;
+    const log = this.deps.logger.child({
+      gameId: game.id,
+      sessionId: game.sessionId,
+      playerId,
+      action: 'AUTO_GARAM_ACTION',
+    });
+    try {
+      const after = await this.mutate(
+        game.id,
+        'AUTO_GARAM_ACTION',
+        undefined,
+        { commandId },
+        (g, { now }) => {
+          if (g.status !== 'in_progress' || !g.turnTimedOutAt || g.garam?.nextPlayerId !== playerId) {
+            return null;
+          }
+          const phase = g.garam.phase;
+          const declaring = Boolean(g.garam.special);
+          const passing = Boolean(g.garam.passing);
+          const events = garam.playGaramAutomatically(g, playerId, this.garamContext(now));
+          // Main spéciale déclarée par le serveur (D-137), « Je passe » du contrôleur (D-140) :
+          // aucune carte jouée à la place de quiconque.
+          return declaring || passing
+            ? events
+            : [{ type: 'game:auto_card_played', payload: { playerId, phase } }, ...events];
+        },
+      );
+      log.info('AUTO_GARAM_ACTION', { commandId, version: after.version });
+      return after;
+    } catch (err) {
+      log.warn('AUTO_GARAM_ACTION rejected', {
+        commandId,
+        errorName: err instanceof Error ? err.name : typeof err,
+      });
+      return this.load(game.id);
+    }
+  }
+
   /** Échéances de tour persistées (parties en cours), pour reconstruire les timers. */
   findTurnDeadlines(): Promise<TurnDeadline[]> {
     return this.deps.repository.findTurnDeadlines();
@@ -860,7 +1103,10 @@ export class GameService {
       if (now.getTime() < g.dealEndsAt.getTime()) {
         return null; // déclenchement anticipé : le timer est réarmé ci-dessous
       }
-      const events = engine.completeDeal(g, this.engineContext(now));
+      const events =
+        g.gameType === 'GARAM'
+          ? garam.completeGaramDeal(g, this.garamContext(now))
+          : engine.completeDeal(g, this.engineContext(now));
       completed = events !== null;
       return events;
     });
@@ -869,7 +1115,7 @@ export class GameService {
       this.deps.logger.info('DEAL_COMPLETED', {
         gameId,
         sessionId: game.sessionId,
-        playerId: game.play?.nextPlayerId,
+        playerId: expectedPlayerOf(game),
         version: game.version,
         deadline: game.turnDeadlineAt?.toISOString(),
       });
@@ -942,6 +1188,11 @@ export class GameService {
       if (g.play) {
         g.play.nextPlayerId = undefined;
       }
+      if (g.garam) {
+        g.garam.nextPlayerId = undefined;
+      }
+      g.garamStakeVote = undefined;
+      g.startDeadlineAt = undefined;
       return [{ type: 'game:finished', payload: { endReason: 'ADMIN_STOP' } }];
     });
   }
@@ -1028,6 +1279,10 @@ export class GameService {
       }));
     const game: Game = {
       id: this.deps.repository.nextId(),
+      ...(previous.gameType === 'GARAM' && {
+        gameType: 'GARAM' as const,
+        garamVariant: previous.garamVariant,
+      }),
       ...(previous.sessionId && { sessionId: previous.sessionId }),
       firstPlayerId: previous.firstPlayerId,
       version: 1,
@@ -1035,6 +1290,7 @@ export class GameService {
       creatorId: previous.creatorId,
       maxPlayers: previous.maxPlayers,
       ...(previous.stakeAmount !== undefined && { stakeAmount: previous.stakeAmount }),
+      ...carryGaramBaseStake(previous),
       players,
       createdAt: now,
       updatedAt: now,
@@ -1045,13 +1301,27 @@ export class GameService {
       }),
       ...(previous.tournamentId !== undefined && { tournamentId: previous.tournamentId }),
     };
-    const events = engine.startGame(game, {
-      rules: this.rules,
-      random: this.random,
-      now,
-      turnDurationMs: this.turnDurationMs,
-      dealDurationMs: this.deps.dealDurationMs,
-    });
+    // GARAM TIA, manche nulle (§3.15) : égalité au plus grand total OU égalité de priorité de
+    // mains spéciales (D-130) : la manche attend la réponse à la proposition de doubler la
+    // mise (même mécanisme) ; sans mise (table de tournoi), elle est distribuée aussitôt.
+    const voteStake =
+      game.gameType === 'GARAM' &&
+      previous.garamTie !== undefined &&
+      previous.stakeAmount !== undefined;
+    let events: GameEventDraft[] = [];
+    if (voteStake) {
+      const deadlineAt = new Date(now.getTime() + GARAM_STAKE_VOTE_MS);
+      game.garamStakeVote = {
+        previousStake: previous.stakeAmount as number,
+        proposedStake: (previous.stakeAmount as number) * 2,
+        baseStake: garamBaseStakeOf(previous) as number,
+        deadlineAt,
+        votes: {},
+      };
+      game.startDeadlineAt = deadlineAt;
+    } else {
+      events = this.startEngine(game, now);
+    }
     return {
       game,
       events: [
@@ -1084,6 +1354,10 @@ export class GameService {
   ): { game: Game; events: GameEventDraft[] } {
     const game: Game = {
       id: this.deps.repository.nextId(),
+      ...(previous.gameType === 'GARAM' && {
+        gameType: 'GARAM' as const,
+        garamVariant: previous.garamVariant,
+      }),
       ...(previous.sessionId && { sessionId: previous.sessionId }),
       firstPlayerId,
       version: 1,
@@ -1091,6 +1365,7 @@ export class GameService {
       creatorId: firstPlayerId,
       maxPlayers: previous.maxPlayers,
       ...(previous.stakeAmount !== undefined && { stakeAmount: previous.stakeAmount }),
+      ...carryGaramBaseStake(previous),
       players: seats.map((s, seat) => ({
         playerId: s.playerId,
         seat,
@@ -1117,13 +1392,7 @@ export class GameService {
     if (game.players.length < MIN_PLAYERS_TO_START) {
       return { game, events: [created] };
     }
-    const started = engine.startGame(game, {
-      rules: this.rules,
-      random: this.random,
-      now,
-      turnDurationMs: this.turnDurationMs,
-      dealDurationMs: this.deps.dealDurationMs,
-    });
+    const started = this.startEngine(game, now);
     return { game, events: [created, ...started] };
   }
 
@@ -1282,6 +1551,28 @@ export class GameService {
     return { rules: this.rules, now, turnDurationMs: this.turnDurationMs };
   }
 
+  /**
+   * GARAM TIA : son propre temps de tour, 25 s affichées (GARAM_TURN_DURATION_MS, D-143), même
+   * échéance persistée et même action automatique que le Ter. `turnDurationMs` injecté (tests)
+   * vaut pour les deux jeux. Tirage : délais du tirage automatique (D-136).
+   */
+  private garamContext(now: Date): garam.GaramContext {
+    const autoDraw = this.deps.garamAutoDrawMs;
+    return {
+      now,
+      turnDurationMs: this.deps.turnDurationMs ?? GARAM_TURN_DURATION_MS,
+      ...(autoDraw && {
+        autoDrawFirstMs: autoDraw.first,
+        autoDrawStepMs: autoDraw.step,
+        autoDrawAfterFirstRoundMs: autoDraw.afterFirstRound ?? autoDraw.first,
+        passTurnMs: autoDraw.pass ?? 1,
+      }),
+      ...(this.deps.garamAutoDeclareMs !== undefined && {
+        autoDeclareMs: this.deps.garamAutoDeclareMs,
+      }),
+    };
+  }
+
   private get rules(): TerRuleSet {
     return this.deps.rules ?? OFFICIAL_TER_RULES;
   }
@@ -1363,7 +1654,7 @@ const officialAutoCardSelection = new LowestCardAutomaticSelectionStrategy();
 
 /** Le joueur attendu ne joue plus après l'échéance persistée (D-034). */
 function assertTurnNotExpired(game: Game, playerId: PlayerId, now: Date): void {
-  if (game.status !== 'in_progress' || game.play?.nextPlayerId !== playerId) {
+  if (game.status !== 'in_progress' || expectedPlayerOf(game) !== playerId) {
     return; // Les autres refus (pas son tour, pas démarrée…) relèvent du moteur.
   }
   if (
@@ -1399,4 +1690,30 @@ function firstFreeGameSeat(game: Game): number {
     seat += 1;
   }
   return seat;
+}
+
+/**
+ * Une action propre à un jeu n'est exécutée que dans une partie de ce jeu (D-126) : refus
+ * explicite avant tout moteur (Fap-Fap : FLEE ; GARAM TIA : DRAW_CARD, STAKE_VOTE). DECLARE_WIN
+ * (« Main spéciale ») existe dans les deux jeux (D-129).
+ */
+function assertActionOfGame(game: Game, action: string, gameType: GameType): void {
+  if ((game.gameType ?? 'TER') !== gameType) {
+    throw new ActionNotAvailableForGameError(game.id, action, game.gameType ?? 'TER');
+  }
+}
+
+/**
+ * GARAM TIA : mise de création de la table (D-138). Une partie enregistrée avant D-138 n'en
+ * porte pas : sa mise courante en tient lieu (inchangée, faute d'historique).
+ */
+function garamBaseStakeOf(game: Game): number | undefined {
+  if (game.gameType !== 'GARAM') return undefined;
+  return game.garamBaseStake ?? game.garamStakeVote?.baseStake ?? game.stakeAmount;
+}
+
+/** Report de la mise de création d'une manche GARAM à la suivante (D-138). */
+function carryGaramBaseStake(previous: Game): Pick<Game, 'garamBaseStake'> {
+  const base = garamBaseStakeOf(previous);
+  return base === undefined ? {} : { garamBaseStake: base };
 }

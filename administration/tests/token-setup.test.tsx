@@ -42,6 +42,7 @@ const proposal: TournamentSummary = {
   tournamentId: 't-1',
   status: 'PENDING_APPROVAL',
   creatorType: 'PLAYER',
+  gameType: 'TER',
   timezone: 'Africa/Douala',
   startsAt: '2026-10-13T17:00:00.000Z',
   endsAt: '2026-10-13T18:00:00.000Z',

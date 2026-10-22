@@ -2,17 +2,24 @@ import { parseArgs } from 'node:util';
 
 import { connectDatabase, disconnectDatabase } from '../config/database';
 import { loadEnvFile, readEnv } from '../config/env';
-import { InvalidTournamentError } from '../domain/tournaments/tournament';
+import { isGameType } from '../domain/game/game';
+import { GARAM_VARIANT_REQUIRED, isGaramVariant } from '../domain/garam/garam-rules';
+import {
+  InvalidTournamentError,
+  TOURNAMENT_GAME_REQUIRED,
+} from '../domain/tournaments/tournament';
 import { PostgresUserRepository } from '../repositories/postgres-user.repository';
 import { createGameService } from '../services/game/create-game-service';
 import { createLogger } from '../utils/logger';
 
 /**
- * `npm run tournament:create -- --admin admin@le-ter.cm \
+ * `npm run tournament:create -- --admin admin@le-ter.cm --game TER \
  *    --starts-at 2026-10-12T18:00:00+01:00 --ends-at 2026-10-12T20:00:00+01:00 \
  *    --entry-fee 1000 --min-players 20 --max-players 100 --prizes 50,30,20`
  *
- * Les tournois n'ont ni nom ni description (D-060).
+ * Les tournois n'ont ni nom ni description (D-060). `--game` est obligatoire (D-124) :
+ * `TER` (Fap-Fap) ou `GARAM` (GARAM TIA), sans valeur par défaut. Pour GARAM, `--variant`
+ * (15, 16, 17 ou 18) est obligatoire, sans valeur par défaut (D-127).
  *
  * Outil d'exploitation (D-054) : crée un tournoi PUBLIÉ au nom d'un compte `admin`, par le
  * MÊME chemin que l'API d'administration (validation, commission copiée, non-chevauchement,
@@ -51,6 +58,8 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       admin: { type: 'string' },
+      game: { type: 'string' },
+      variant: { type: 'string' },
       'starts-at': { type: 'string' },
       'ends-at': { type: 'string' },
       'entry-fee': { type: 'string' },
@@ -62,7 +71,16 @@ async function main(): Promise<void> {
     strict: true,
   });
   if (!values.admin) throw new Error('--admin <email d’un compte admin> obligatoire');
+  if (!isGameType(values.game)) {
+    throw new Error(`--game TER (Fap-Fap) ou GARAM (GARAM TIA) : ${TOURNAMENT_GAME_REQUIRED}`);
+  }
+  const variant = parseInteger(values.variant, 'variant');
+  if (values.game === 'GARAM' && !isGaramVariant(variant)) {
+    throw new Error(`--variant 15, 16, 17 ou 18 : ${GARAM_VARIANT_REQUIRED}`);
+  }
   const input = {
+    gameType: values.game,
+    ...(isGaramVariant(variant) && { garamVariant: variant }),
     ...(values.timezone && { timezone: values.timezone }),
     startsAt: parseDate(values['starts-at'], 'starts-at'),
     endsAt: parseDate(values['ends-at'], 'ends-at'),

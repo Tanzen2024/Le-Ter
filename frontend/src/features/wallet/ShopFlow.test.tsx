@@ -294,6 +294,44 @@ describe('Recharger mon portefeuille', () => {
     expect(openAuthSession).not.toHaveBeenCalled();
   });
 
+  it.each(['FAILED', 'EXPIRED'] as const)(
+    'direct MTN clos %s sans débit : le même achat passe automatiquement par la page CinetPay (D-134)',
+    async (status) => {
+      mtn();
+      const PAGE_ID = '66666666-6666-4666-8666-666666666666';
+      api.deposit
+        .mockResolvedValueOnce({ ...pendingDeposit(1000), payment: directPayment('PENDING') })
+        .mockResolvedValueOnce({
+          ...pendingDeposit(1000),
+          payment: { ...payment('PENDING'), id: PAGE_ID, operator: 'MTN_CM' },
+        });
+      api.payment.mockImplementation((_token: string, id: string) =>
+        Promise.resolve({
+          payment:
+            id === PAYMENT_ID ? directPayment(status) : { ...payment('PENDING'), id: PAGE_ID },
+        }),
+      );
+      await openShopDeposit();
+      await payWith('MTN Mobile Money');
+      await waitFor(() => expect(openAuthSession).toHaveBeenCalledWith(PAYMENT_URL, 'leter://payment/return'));
+      // Même achat : même montant, MÊME clé d'idempotence (jamais un second paiement).
+      expect(api.deposit).toHaveBeenCalledTimes(2);
+      expect(api.deposit.mock.calls[1]).toEqual(['jeton', 1000, 'idem-key-0001']);
+      expect(screen.queryByText(/Paiement (échoué|expiré)/)).toBeNull();
+    },
+  );
+
+  it('direct MTN toujours en attente : aucun repli (jamais de double débit)', async () => {
+    mtn();
+    api.deposit.mockResolvedValue({ ...pendingDeposit(1000), payment: directPayment('PENDING') });
+    api.payment.mockResolvedValue({ payment: directPayment('PENDING') });
+    await openShopDeposit();
+    await payWith('MTN Mobile Money');
+    expect(await screen.findByText('En attente de confirmation sur votre téléphone')).toBeTruthy();
+    expect(api.deposit).toHaveBeenCalledTimes(1);
+    expect(openAuthSession).not.toHaveBeenCalled();
+  });
+
   it('repli décidé par le serveur (page CinetPay) : la page s’ouvre, consigne si l’opérateur n’est pas présélectionné', async () => {
     orange();
     api.deposit.mockResolvedValue(pendingDeposit(2000));

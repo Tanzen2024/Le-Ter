@@ -12,6 +12,8 @@ export default function AuthLayout() {
     <Stack screenOptions={stableStackScreenOptions}>
       <Stack.Screen name="login" />
       <Stack.Screen name="register" />
+      {/* « Mot de passe oublié ? » (D-135) : empilé depuis la connexion. */}
+      <Stack.Screen name="forgot-password" />
     </Stack>
   );
 }

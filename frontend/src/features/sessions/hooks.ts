@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { randomUUID } from 'expo-crypto';
+import { useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
 
 import { sessionsApi, type NewPrivateGame } from '../../services/sessions-api';
 import type { GameView } from '../../types/game';
-import type { SessionView } from '../../types/session';
+import type { GameType, OpenTable, SessionView } from '../../types/session';
 import { withAccessToken } from '../auth/session';
 import { gameKeys, isGameId } from '../games/hooks';
 
@@ -34,17 +36,54 @@ export function useMySessions() {
   });
 }
 
-/** Réponse de la liste des tables ouvertes, partagée par les deux hooks ci-dessous. */
-const openTablesQuery = {
-  queryKey: sessionKeys.open,
-  queryFn: () => withAccessToken((t) => sessionsApi.listOpen(t)),
+/**
+ * Réponse de la liste des tables ouvertes d'UN jeu (D-119), partagée par les deux hooks
+ * ci-dessous. La clé commence par `sessionKeys.open` : invalider la liste les relit toutes.
+ */
+const openTablesQuery = (gameType: GameType = 'TER') => ({
+  queryKey: gameType === 'TER' ? sessionKeys.open : [...sessionKeys.open, gameType],
+  queryFn: () => withAccessToken((t) => sessionsApi.listOpen(t, gameType)),
   staleTime: 0,
   refetchInterval: SESSION_REFRESH_MS,
-};
+});
 
-/** Tables ouvertes à rejoindre ; relues tant que la liste est affichée. */
-export function useOpenTables() {
-  return useQuery({ ...openTablesQuery, select: (data) => data.tables });
+/** Tables ouvertes du jeu à rejoindre ; relues tant que la liste est affichée. */
+export function useOpenTables(gameType: GameType = 'TER') {
+  return useQuery({ ...openTablesQuery(gameType), select: (data) => data.tables });
+}
+
+/** Partie créée par le formulaire « Créer une partie » (D-039) : elle porte toujours un nom. */
+export type PrivateGame = OpenTable & { name: string };
+
+/**
+ * Une ligne = une partie privée RÉELLEMENT créée, telle que le serveur la renvoie (en
+ * attente, place libre). Les tables sans nom viennent de l'ancien écran « Nouvelle session »
+ * (avant D-039) : ce ne sont pas des parties privées, on ne leur invente ni nom ni mise.
+ */
+export const isPrivateGame = (t: OpenTable): t is PrivateGame => t.name !== undefined;
+
+/** Accueil : relecture lente du compteur (la liste « Rechercher » garde sa cadence de 3 s). */
+const HOME_COUNT_REFRESH_MS = 15_000;
+
+/**
+ * Nombre de parties à rejoindre d'un jeu, affiché sur son panneau d'accueil : la MÊME
+ * réponse serveur et le MÊME filtre que la liste « Rechercher une partie » (même clé de
+ * cache : la liste ouverte, une création ou un départ le mettent à jour).
+ */
+export function useOpenTableCount(gameType: GameType) {
+  const query = useQuery({
+    ...openTablesQuery(gameType),
+    refetchInterval: HOME_COUNT_REFRESH_MS,
+    select: (data) => data.tables.filter(isPrivateGame).length,
+  });
+  // Retour sur l'accueil (fin de partie, sortie de la recherche…) : compteur relu.
+  const { refetch } = query;
+  useFocusEffect(
+    useCallback(() => {
+      void refetch();
+    }, [refetch]),
+  );
+  return query;
 }
 
 /**
@@ -55,7 +94,7 @@ export function useOpenTables() {
  */
 export function useDetectionAvailable(): boolean {
   const { data } = useQuery({
-    ...openTablesQuery,
+    ...openTablesQuery(),
     select: (response) => response.detectionAvailable === true,
   });
   return data === true;

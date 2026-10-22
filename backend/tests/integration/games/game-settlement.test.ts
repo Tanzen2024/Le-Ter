@@ -354,6 +354,12 @@ describe('Exemple de référence (barème configuré : 401-500 → 6 %)', () => 
     expect(await ledger()).toEqual([
       { kind: 'GAME_COMMISSION', amount: 30, fee_bps: 600, game_id: gameId },
     ]);
+    // Caisse unique, origine tracée (D-120) : une partie de Le Ter est une recette Fap-Fap.
+    const sources = await database.sql.query<{ source: string }>(
+      'SELECT source FROM platform_ledger WHERE game_id = $1',
+      [gameId],
+    );
+    expect(sources.rows).toEqual([{ source: 'FAP_FAP' }]);
     const lines = await gameTransactions(gameId);
     expect(lines).toHaveLength(2);
     expect(lines).toEqual(

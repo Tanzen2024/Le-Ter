@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type PressableProps,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
@@ -189,19 +190,27 @@ export function DecorativeCards({
   );
 }
 
-/** Dos de carte Le Ter (brun cuivré, cadre doré, médaillon L). Positionné en absolu. */
+/**
+ * Dos de carte Le Ter (brun cuivré, cadre doré, médaillon L). Positionné en absolu.
+ * `letter` et `medallionRatio` : autre lettre, médaillon agrandi pour rester lisible sur une
+ * petite carte (cartes L E T E R de la connexion) ; par défaut, le dos habituel.
+ */
 export function TatamiCard({
   width,
   fontFamily,
   style,
+  letter = BRAND_INITIAL,
+  medallionRatio = 0.46,
 }: {
   width: number;
   fontFamily?: string;
   style: StyleProp<ViewStyle>;
+  letter?: string;
+  medallionRatio?: number;
 }) {
   const radius = width * 0.08;
   const diamond = Math.max(5, width * 0.08);
-  const medallion = width * 0.46;
+  const medallion = width * medallionRatio;
   const diamondStyle = { width: diamond, height: diamond, margin: -diamond / 2 };
   return (
     <View
@@ -242,7 +251,7 @@ export function TatamiCard({
             style={[styles.cardLetter, { fontSize: medallion * 0.62, fontFamily }]}
             allowFontScaling={false}
           >
-            {BRAND_INITIAL}
+            {letter}
           </Text>
         </View>
       </View>
@@ -261,6 +270,7 @@ export function PillButton({
   disabled = false,
   accessibilityLabel,
   style,
+  hitSlop,
 }: {
   title: string;
   onPress: () => void;
@@ -271,6 +281,8 @@ export function PillButton({
   disabled?: boolean;
   accessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
+  /** Zone d'appui élargie au-delà du bouton (bouton compact, toujours facile à toucher). */
+  hitSlop?: PressableProps['hitSlop'];
 }) {
   const inactive = disabled || loading;
   return (
@@ -280,6 +292,7 @@ export function PillButton({
         playSound('uiClick');
       }}
       disabled={inactive}
+      hitSlop={hitSlop}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
       accessibilityState={{ disabled: inactive, busy: loading }}

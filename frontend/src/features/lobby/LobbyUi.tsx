@@ -1,8 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import {
   Alert,
   Animated,
   BackHandler,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +21,7 @@ import {
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { useMessages } from '../../lib/i18n';
 import { playSound, type SoundName } from '../../services/audio-service';
 import { useWallet } from '../wallet/hooks';
@@ -59,14 +62,47 @@ export function useBalanceLabel(): { text: string; label: string; reserved?: str
     : { text: String(available), label: t.lobby.balance(available) };
 }
 
-export function LobbyHud({ username, onAddCoins }: { username?: string; onAddCoins: () => void }) {
+/**
+ * Emprise horizontale du HUD (pseudo à gauche, solde à droite), mesurée par `LobbyShell` : un
+ * panneau ouvert reste entre les deux, le HUD toujours visible au-dessus de lui (D-133).
+ * Hors de la coquille (table de jeu…) : aucune emprise, panneaux inchangés.
+ */
+export const HudInsetsContext = createContext<{ left: number; right: number }>({
+  left: 0,
+  right: 0,
+});
+
+export function LobbyHud({
+  username,
+  playerNumber,
+  onAddCoins,
+  inert = false,
+  onInsets,
+}: {
+  username?: string;
+  /** Numéro d'ordre du joueur sur la plateforme (D-133) ; absent : « — ». */
+  playerNumber?: number;
+  onAddCoins: () => void;
+  /** Panneau ouvert : HUD affiché mais NON interactif (seul le panneau l'est, D-126). */
+  inert?: boolean;
+  /** Emprise mesurée : bord droit du bloc gauche, distance du bloc droit au bord droit. */
+  onInsets?: (insets: { left?: number; right?: number }) => void;
+}) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const balance = useBalanceLabel();
   const t = useMessages();
+  const numbered = typeof playerNumber === 'number' && Number.isSafeInteger(playerNumber);
   return (
     <>
-      <View style={[styles.hudLeft, { top: m.safe.top, left: m.safe.left, gap: m.gap * 0.6 }]}>
+      <View
+        testID="hud-left"
+        onLayout={(e) => {
+          const { x, width } = e.nativeEvent.layout;
+          onInsets?.({ left: Math.ceil(x + width) });
+        }}
+        style={[styles.hudLeft, { top: m.safe.top, left: m.safe.left, gap: m.gap * 0.6 }]}
+      >
         <View
           style={[
             styles.nameBox,
@@ -84,22 +120,30 @@ export function LobbyHud({ username, onAddCoins }: { username?: string; onAddCoi
             {username ?? ' '}
           </Text>
         </View>
-        {/* Compteur de la maquette : aucune donnée serveur ne l'alimente encore. */}
+        {/* Numéro d'ordre du joueur sur la plateforme (D-133), lu sur le compte du serveur. */}
         <View
+          testID="hud-player-number"
           style={[styles.row, { gap: m.gap * 0.8, paddingLeft: m.hudBoxHeight * 0.1 }]}
           accessible
-          accessibilityLabel={t.lobby.counterUnavailable}
+          accessibilityLabel={
+            numbered ? t.lobby.playerNumberA11y(playerNumber) : t.lobby.counterUnavailable
+          }
         >
           <Text allowFontScaling={false} style={{ fontSize: m.hudCounterIcon }}>
             🧑
           </Text>
-          <Text style={[styles.counter, fontOf(fonts.button), { fontSize: m.hudCounterSize }]}>
-            {UNAVAILABLE}
+          <Text
+            numberOfLines={1}
+            style={[styles.counter, fontOf(fonts.button), { fontSize: m.hudCounterSize }]}
+          >
+            {numbered ? t.lobby.playerNumber(playerNumber) : UNAVAILABLE}
           </Text>
         </View>
       </View>
 
       <View
+        testID="hud-right"
+        onLayout={(e) => onInsets?.({ right: Math.ceil(m.width - e.nativeEvent.layout.x) })}
         style={[
           styles.row,
           styles.hudRight,
@@ -108,8 +152,10 @@ export function LobbyHud({ username, onAddCoins }: { username?: string; onAddCoi
       >
         <Pressable
           onPress={onAddCoins}
+          disabled={inert}
           accessibilityRole="button"
           accessibilityLabel={t.lobby.addCoins}
+          accessibilityState={{ disabled: inert }}
           hitSlop={8}
           style={({ pressed }) => pressed && styles.pressed}
         >
@@ -230,7 +276,7 @@ export function BackGlyph() {
 }
 
 /**
- * Panneau superposé (Profil, Réglages, Partie privée) : fond assombri, plaque sombre bordée,
+ * Panneau superposé (Profil, Réglages, Partie privée) : seul visible (D-126), plaque sombre bordée,
  * titre blanc centré, bouton de fermeture rouge. Le bouton retour Android et un appui hors du
  * panneau le ferment. Le contenu défile si la hauteur manque (petits smartphones).
  */
@@ -272,80 +318,99 @@ export function LobbyPanel({
 
   const close = Math.max(40, Math.round(m.panelTitleSize * 1.15));
   const padding = Math.round(m.gap * 1.2);
+  // HUD de la coquille toujours visible (D-133) : le panneau, centré, reste entre ses deux blocs.
+  const hud = useContext(HudInsetsContext);
+  const side =
+    hud.left > 0 || hud.right > 0
+      ? Math.max(m.safe.left, m.safe.right, hud.left + m.gap * 0.5, hud.right + m.gap * 0.5)
+      : undefined;
   return (
-    <View
-      style={[
-        StyleSheet.absoluteFill,
-        styles.overlay,
-        {
-          paddingTop: m.safe.top,
-          paddingBottom: m.safe.bottom,
-          paddingLeft: m.safe.left,
-          paddingRight: m.safe.right,
-        },
-      ]}
+    <ExclusiveOverlay
+      style={{
+        paddingTop: m.safe.top,
+        paddingBottom: m.safe.bottom,
+        paddingLeft: side ?? m.safe.left,
+        paddingRight: side ?? m.safe.right,
+      }}
     >
-      <Pressable
-        style={StyleSheet.absoluteFill}
-        onPress={onClose}
-        accessibilityLabel={closeName}
-        importantForAccessibility="no"
-      />
-      <Animated.View
-        accessibilityViewIsModal
-        style={[
-          styles.panel,
-          {
-            width: Math.min(width, m.availableWidth),
-            maxHeight: m.availableHeight - (below ? m.controlHeight + m.gap : 0),
-            padding,
-            opacity: appear,
-            transform: [
-              { scale: appear.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
-            ],
-          },
-        ]}
+      {/* Clavier ouvert (formulaires : proposer un tournoi, mot de passe…) : le panneau se
+          réduit au-dessus du clavier et son contenu défile jusqu'au dernier champ, au lieu de
+          passer sous le clavier (Expo, gestion du clavier : `padding` sur iOS, la simple
+          présence du composant sur Android). */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardArea}
       >
-        <Text
-          accessibilityRole="header"
-          numberOfLines={1}
+        <Animated.View
+          accessibilityViewIsModal
           style={[
-            styles.panelTitle,
-            fontOf(fonts.button),
-            { fontSize: m.panelTitleSize, marginHorizontal: close + 4, marginBottom: m.gap * 0.6 },
+            styles.panel,
+            {
+              width: Math.min(width, side === undefined ? m.availableWidth : m.width - side * 2),
+              maxHeight: m.availableHeight - (below ? m.controlHeight + m.gap : 0),
+              padding,
+              opacity: appear,
+              transform: [
+                {
+                  scale: appear.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.94, 1],
+                  }),
+                },
+              ],
+            },
           ]}
         >
-          {title}
-        </Text>
-        <Pressable
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel={closeName}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.close,
-            { width: close, height: close, top: padding, right: padding },
-            pressed && styles.pressedButton,
-          ]}
-        >
-          <Text style={[styles.closeText, fontOf(fonts.button), { fontSize: close * 0.62 }]}>
-            X
+          <Text
+            accessibilityRole="header"
+            numberOfLines={1}
+            style={[
+              styles.panelTitle,
+              fontOf(fonts.button),
+              {
+                fontSize: m.panelTitleSize,
+                marginHorizontal: close + 4,
+                marginBottom: m.gap * 0.6,
+              },
+            ]}
+          >
+            {title}
           </Text>
-        </Pressable>
-        <ScrollView
-          style={styles.shrink}
-          keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets
-          showsVerticalScrollIndicator={false}
-          bounces={false}
-        >
-          {children}
-        </ScrollView>
-      </Animated.View>
-      {below ? (
-        <Animated.View style={{ opacity: appear, marginTop: m.gap * 0.6 }}>{below}</Animated.View>
-      ) : null}
-    </View>
+          <ScrollView
+            style={styles.shrink}
+            keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets
+            // Barre visible (permanente sur Android) : un formulaire plus haut que l'écran
+            // montre qu'il continue, ses boutons du bas ne passent jamais inaperçus.
+            showsVerticalScrollIndicator
+            persistentScrollbar
+            bounces={false}
+          >
+            {children}
+          </ScrollView>
+          {/* Bouton X déclaré APRÈS le contenu (et `elevation`) : au premier plan pour le
+            toucher aussi, sur Android le contenu défilant ne capte jamais son appui. */}
+          <Pressable
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel={closeName}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.close,
+              { width: close, height: close, top: padding, right: padding },
+              pressed && styles.pressedButton,
+            ]}
+          >
+            <Text style={[styles.closeText, fontOf(fonts.button), { fontSize: close * 0.62 }]}>
+              X
+            </Text>
+          </Pressable>
+        </Animated.View>
+        {below ? (
+          <Animated.View style={{ opacity: appear, marginTop: m.gap * 0.6 }}>{below}</Animated.View>
+        ) : null}
+      </KeyboardAvoidingView>
+    </ExclusiveOverlay>
   );
 }
 
@@ -462,7 +527,11 @@ const styles = StyleSheet.create({
     experimental_backgroundImage: 'linear-gradient(180deg, #2DB3B1 0%, #1C9396 55%, #17797F 100%)',
     boxShadow: '0 3px 8px rgba(0, 0, 0, 0.5)',
   },
-  coinLetter: { color: palette.gold, fontWeight: '700', includeFontPadding: false },
+  coinLetter: {
+    color: palette.gold,
+    fontWeight: '700',
+    includeFontPadding: false,
+  },
   plus: {
     position: 'absolute',
     alignItems: 'center',
@@ -489,12 +558,16 @@ const styles = StyleSheet.create({
     experimental_backgroundImage: 'linear-gradient(180deg, #EE4B4B 0%, #D42A33 55%, #A81C24 100%)',
   },
   backGlyph: { color: '#FFFFFF', fontWeight: '900', includeFontPadding: false },
-  overlay: {
+  // Zone du panneau : tout l'écran utile, réduite par le clavier ouvert ; le panneau centré
+  // s'y adapte (`flexShrink`), son contenu défile.
+  keyboardArea: {
+    flex: 1,
+    alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
   },
   panel: {
+    flexShrink: 1,
     borderRadius: 8,
     borderWidth: 1.5,
     borderColor: palette.panelBorder,
@@ -504,7 +577,8 @@ const styles = StyleSheet.create({
   panelTitle: { color: '#FFFFFF', textAlign: 'center', ...titleShadow },
   close: {
     position: 'absolute',
-    zIndex: 1,
+    zIndex: 10,
+    elevation: 10,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
