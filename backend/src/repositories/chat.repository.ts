@@ -37,8 +37,9 @@ export interface ChatPageQuery {
 }
 
 /**
- * Port de persistance du chat (D-045). Isolé par `gameId` : toute lecture et toute
- * écriture portent sur UNE partie. Aucune dépendance au moteur de jeu.
+ * Port de persistance du chat (D-045, D-149). Un message appartient à UNE partie ; l'accès
+ * et l'écriture portent sur cette partie. L'historique (`listPage`) couvre la table : toutes
+ * les parties de la session de `gameId`. Aucune dépendance au moteur de jeu.
  */
 export interface ChatRepository {
   /** `null` : partie inexistante. `now` : heure du serveur pour la restriction du chat. */
@@ -57,7 +58,11 @@ export interface ChatRepository {
    */
   insert(message: NewChatMessage): Promise<ChatMessage | null>;
 
-  /** `undefined` : le curseur n'est pas un message de CETTE partie. */
+  /**
+   * Historique de la TABLE (D-149) : messages de toutes les parties de la session de
+   * `gameId`, dans l'ordre (createdAt, id). `undefined` : le curseur n'est pas un message
+   * de cette table.
+   */
   listPage(
     gameId: GameId,
     query: ChatPageQuery,

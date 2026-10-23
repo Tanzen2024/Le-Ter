@@ -4746,36 +4746,6 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Tests** : `LoginScreen.test.tsx`, `RegisterScreen.test.tsx`,
   `ForgotPasswordScreen.test.tsx`, `LoginLayout.test.ts` (mobile).
 
-## D-140 — GARAM TIA : « Je passe » du contrôleur qui ne peut rien tirer
-
-- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
-  D-136 (« Impossible : le tour passe aussitôt au joueur suivant ») pour le seul CONTRÔLEUR ·
-  **Ne change pas** : la règle du tirage (§3.8, limite de 21, terre vide §3.10), l'ordre du
-  tirage (le contrôleur, puis sens antihoraire), le tempo du tirage des autres joueurs, le
-  résultat de la manche.
-- **Principe** : si le joueur qui a le contrôle ne peut prendre aucune carte du terre (la tête
-  ferait dépasser 21, deux As gardés à 22, ou terre vide), le serveur ne passe plus la main
-  aussitôt : il annonce d'abord « Je passe » à toute la table, puis, à l'échéance de ce tour,
-  clôt son tirage (aucune carte prise, la carte refusée reste au terre) et passe la main au
-  joueur suivant, ou termine la manche. Les autres joueurs sans carte prenable restent clos
-  aussitôt (D-136).
-- **Serveur** (`garam-engine.ts`) : le tour du contrôleur s'ouvre avec `GaramPlay.passing`
-  et l'événement public `game:player_passed` (playerId, cardId éventuel). Son échéance,
-  persistée comme toute échéance de tour (reprise par `DeadlineSupervisor`), vaut
-  `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` + `GARAM_PASS_NOTICE_MS` = 3,5 s + 3,5 s = 7 s depuis
-  la fin du premier tour. À l'échéance, `playGaramAutomatically` clôt le tirage
-  (`game:draw_impossible` avec `passed: true`, `lastRefusal.passed`) ; aucun
-  `game:auto_card_played` (personne ne joue à la place du joueur). Une échéance traitée deux
-  fois ne passe qu'une fois (commande idempotente). Pendant ce tour, `canDraw` est faux et
-  `DRAW_CARD` est refusé.
-- **Vue** : `garam.passingPlayerId` (public) pendant le tour « Je passe ».
-- **Application mobile** (`GaramPlayArea.tsx`) : le premier tour se range (2,45 s), le contrôle
-  est annoncé (1,8 s), puis « Vous : « Je passe » » / « Bob : « Je passe » » s'affiche au
-  centre de la table, en doré et annoncé aux lecteurs d'écran, jusqu'à ce que le serveur passe
-  la main (≈ 2,75 s). La notification « Impossible » n'est pas répétée pour ce joueur.
-- **Tests** : `garam-engine.test.ts`, `garam-game.test.ts`, `garam-auto-draw.test.ts` (tempo
-  de production) ; `garam-round-flow.test.tsx` (mobile).
-
 ## D-140 — Connexion et Inscription : décor LETER, drapeau de l'indicatif, icônes des champs
 
 - **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet (capture de
@@ -4826,3 +4796,153 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Écran** : le champ « Téléphone ou email » est résolu comme à la connexion
   (`resolveLoginIdentifier`) ; étape 1 renommée « Identifiant ».
 - **Tests** : `password-recovery.test.ts`, `ForgotPasswordScreen.test.tsx`.
+
+## D-143 — GARAM TIA : 25 s pour jouer la première carte
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-127 (15 s par décision).
+- Chaque joueur dispose de **25 s affichées** (compte à rebours 25 → 0) pour jouer sa première
+  carte, plus la marge réseau invisible commune de 3 s (D-098) : échéance serveur 28 s
+  (`GARAM_DISPLAYED_TURN_MS = 25_000`, `GARAM_TURN_DURATION_MS`). À l'échéance, même
+  mécanisme qu'avant (TURN_TIMEOUT, carte légale déterministe). Le chrono de l'écran se déduit
+  de l'échéance du serveur : aucune constante côté application.
+- **Ne change pas** : tirage automatique, déclaration automatique d'une main spéciale, « Je
+  passe », temps de tour de Fap-Fap (13 s dont 10 s affichées).
+
+## D-144 — GARAM TIA : plus de détection anti-collusion
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Remplace** :
+  D-125 (détection commune avec Fap-Fap).
+- **Création** : l'option 🛡️ « Détection anti-collusion » n'est plus proposée pour une table
+  GARAM (ni interrupteur à la création, ni colonne bouclier dans la recherche), même quand
+  l'administration l'active. Fap-Fap la garde, toujours sous l'interrupteur global (D-053,
+  D-081) : interrupteur coupé, l'option n'apparaît pas non plus pour Fap-Fap.
+- **Serveur** : `SessionService.createSession` ignore `suspicionDetectionEnabled` pour GARAM ;
+  la base le refuse aussi (`sessions_no_detection_for_garam`, migration 0055, `NOT VALID` :
+  aucune ligne existante réécrite, D-043).
+- **Anciennes tables GARAM surveillées** : traitées comme non surveillées (aucune analyse,
+  aucun consentement à la géolocalisation) ; signaux et alertes déjà enregistrés conservés.
+- **Ne change pas** : la détection de Fap-Fap (seuils, signaux, score, alertes, administration).
+
+## D-145 — GARAM TIA : « Je passe » du joueur qui a la main sans carte prenable
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-136 (« Impossible : le tour passe aussitôt au joueur suivant ») pour tout joueur dont le
+  tour s'ouvre sans carte prenable · **Ne change pas** : la règle du tirage (§3.8, limite de
+  21, terre vide §3.10), l'ordre du tirage (le contrôleur, puis sens antihoraire), le tempo
+  du tirage (D-136), le « Impossible » d'un joueur qui s'arrête APRÈS avoir tiré, le résultat.
+- **Principe** : quand la main arrive à un joueur (le contrôleur ou un suivant) qui ne peut
+  prendre aucune carte du terre (la tête ferait dépasser 21, deux As gardés à 22, ou terre
+  vide), le serveur ne passe plus la main aussitôt : ce joueur annonce « Je passe » à toute la
+  table, puis, à l'échéance de son tour, son tirage est clos (aucune carte prise, la carte
+  refusée reste au terre) et la main passe au joueur suivant, ou la manche se termine. Le
+  message n'apparaît jamais avant que le joueur ait la main.
+- **Serveur** (`garam-engine.ts`, `openDrawTurn`) : le tour s'ouvre avec `GaramPlay.passing`
+  et l'événement public `game:player_passed` (playerId, cardId éventuel). Échéance persistée
+  comme toute échéance de tour (reprise par `DeadlineSupervisor`) : attente normale avant une
+  1re carte + `GARAM_PASS_NOTICE_MS` (5 s), soit 3,5 s + 5 s = 8,5 s pour le contrôleur (depuis
+  la fin du premier tour) et 0,8 s + 5 s = 5,8 s pour un joueur suivant. À l'échéance,
+  `playGaramAutomatically` clôt le tirage (`game:draw_impossible` avec `passed: true`,
+  `lastRefusal.passed`) ; aucun `game:auto_card_played`. Une échéance traitée deux fois ne
+  passe qu'une fois (commande idempotente). Pendant ce tour, `canDraw` est faux et
+  `DRAW_CARD` est refusé.
+- **Vue** : `garam.passingPlayerId` (public) pendant le tour « Je passe ».
+- **Application mobile** (`GaramPlayArea.tsx`) : « Vous : « Je passe » » / « Bob : « Je
+  passe » » s'affiche au centre de la table, en doré et annoncé aux lecteurs d'écran, une fois
+  le contrôle annoncé et la dernière carte tirée posée, jusqu'à ce que le serveur passe la
+  main : ≈ 4,25 s pour le contrôleur, ≈ 5 s pour un joueur suivant. La notification
+  « Impossible » n'est pas répétée pour ce joueur.
+- **Tests** : `garam-engine.test.ts`, `garam-game.test.ts`, `garam-auto-draw.test.ts` (tempo
+  de production) ; `garam-round-flow.test.tsx` (mobile).
+
+## D-147 — Interrupteur global de la détection : activé par défaut
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-053 (paramètre absent = désactivé).
+- **Défaut** : tant qu'aucun admin n'a réglé l'interrupteur (aucune ligne `detection_enabled`
+  dans `system_settings`), la détection est ACTIVÉE (`PostgresDetectionSettingsRepository`,
+  `DEFAULT_ENABLED`). L'option 🛡️ est donc proposée à la création d'une table Fap-Fap.
+- **Choix de l'admin respecté** : une valeur déjà enregistrée (activée ou désactivée depuis
+  `/admin`) n'est ni réécrite ni ignorée ; aucune migration. Une base où un admin a coupé la
+  détection reste coupée jusqu'à ce qu'il la réactive.
+- **Ne change pas** : l'option de table 🛡️ reste décochée par défaut et immuable (D-043) ;
+  GARAM TIA n'a toujours aucune détection (D-144).
+
+## D-146 — Application mobile : aucun message d'erreur technique à l'écran
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Ne change
+  pas** : les réponses de l'API, les codes d'erreur, les journaux de développement.
+- **Principe** : le joueur ne voit jamais un message technique (exception JavaScript, trace,
+  anglais système, réponse brute d'un proxy, code interne, identifiant, adresse, vocabulaire
+  interne comme « idempotence », « transition », « session »). Il voit une phrase simple, en
+  français, avec une action possible (« Une erreur est survenue. Réessayez. »).
+- **Filtre central** (`src/lib/user-facing-error.ts`) : `ApiError` filtre son message et ses
+  messages par champ dès sa construction, donc pour tous les clients API. Un message rédigé
+  pour le joueur est conservé (même en 5xx : paiement, maintenance) ; un texte technique est
+  remplacé (« Le serveur a rencontré une erreur… » en 5xx, sinon « Une erreur est survenue.
+  Réessayez. ») ; un champ technique devient « Valeur invalide. ». Les codes au vocabulaire
+  interne sont reformulés (`VERSION_CONFLICT`, `IDEMPOTENCY_KEY_REUSED`,
+  `INVALID_STATUS_TRANSITION`, `INVALID_CARD`, `NOTIFICATION_REJECTED`, `RULE_NOT_DEFINED`).
+- **Erreurs non API** : `userErrorMessage(error, fallback)` n'affiche que le message (filtré)
+  d'une `ApiError`, sinon le texte de secours ; plus aucun `String(error)` ni `error.message`
+  d'une erreur quelconque à l'écran (réclamations, assistant, paiement, tournois, écrans
+  d'administration de l'application).
+- **Écran de secours** (`app/_layout.tsx` → `ErrorBoundary`, `AppErrorScreen.tsx`) : si un
+  écran plante, « Oups… Un problème est survenu sur cet écran. Vos parties et votre solde ne
+  sont pas affectés. » et « Réessayer » ; jamais le message ni la trace de l'exception (journal
+  de développement seulement).
+- **Tests** : `user-facing-error.test.ts`, `AppErrorScreen.test.tsx`, `api-client.test.ts`.
+
+## D-148 — GARAM TIA : « Je passe » plus court, courte pause avant la révélation
+
+- **Date** : 2026-10-22 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-145 (durée de l'annonce « Je passe »), D-128 (présentation de fin de manche).
+- **« Je passe »** : `GARAM_PASS_NOTICE_MS` passe de 5 s à **4 s** (contrôleur : 7,5 s depuis la
+  fin du premier tour ; joueur suivant : 0,8 s + 4 s). L'écran suit l'échéance du serveur.
+- **Avant la révélation** : quand tous les joueurs ont tiré, une pause de **700 ms**
+  (`GARAM_REVEAL_PAUSE_MS`, même valeur côté serveur et téléphone) précède la 1re main
+  dévoilée. `garamRevealPresentationMs` l'inclut : la ronde Continuer/Sortir commence d'autant
+  plus tard (2 joueurs : 8 s ; 4 joueurs : 9,8 s).
+- **Ne change pas** : égalité (mains montrées ensemble), tirage automatique, Fap-Fap.
+
+## D-149 — Chat : historique de la table, envoi sans attente, connexion temps réel sans coupure
+
+- **Date** : 2026-10-22 · **Statut** : demandée et tranchée par le propriétaire du projet ·
+  **Modifie** : D-045 (portée de l'historique, comportement du champ d'envoi, reconnexion).
+- **Historique de la table** : le chat suit la TABLE (session, D-033) de son ouverture à sa
+  fermeture. `GET /api/games/:gameId/chat/messages` renvoie les messages de TOUTES les parties
+  de la session de `gameId`, dans l'ordre `(createdAt, id)` ; `before`/`after` traversent les
+  parties. Un joueur arrivé en cours de session (siège repris) voit tout l'historique de la
+  table. Accès inchangé : il faut être joueur de la partie demandée (403 `NOT_A_MEMBER`).
+- **Inchangé** : un message appartient à UNE partie (`gameId` d'origine conservé), salle et
+  canal par partie ; entre deux parties (partie terminée, ronde Continuer/Quitter), le chat
+  reste en LECTURE SEULE (409 `CHAT_CLOSED`) ; aucune migration.
+- **Envoi (application)** : à l'appui sur Envoyer, le champ est vidé et le clavier fermé
+  immédiatement ; le message s'affiche dès la confirmation du serveur (aucun message local).
+  En cas d'échec, le texte revient dans le champ avec l'erreur (même clé d'envoi : aucun
+  doublon au renvoi).
+- **« Reconnexion… » toutes les 15 min** : le serveur fermait le WebSocket (4401) à
+  l'expiration du jeton d'accès. Le client renouvelle désormais le jeton 1 min avant son
+  expiration et le présente sur la connexion OUVERTE (trame `auth`, déjà acceptée par la
+  passerelle pour le même compte) : ni coupure, ni réabonnement. Échec du renouvellement :
+  reprise habituelle (4401 → renouvellement → reconnexion).
+- **Tests** : `chat-table-history.test.ts`, « Chat pendant une partie en cours »
+  (`chat-realtime.test.ts`), `ChatPanel.test.tsx`, `hooks.test.tsx`, `realtime-client.test.ts`.
+
+## D-150 — Administration : les réclamations à traiter dans la cloche
+
+- **Date** : 2026-10-23 · **Statut** : demandée par le propriétaire du projet (une réclamation
+  déposée par l'assistance n'apparaissait pas dans la cloche) · **Complète** : D-114
+  (réclamations), D-116 (points d'attention mis à jour automatiquement) · **Ne change pas** :
+  le cycle de vie des dossiers, les notifications des joueurs, les droits.
+- **Compteur** : `AttentionCounts.pendingComplaints` (`GET /api/admin/attention` et tableau
+  de bord) = réclamations en `OPEN`, `AI_ANALYSIS` ou `IN_REVIEW`, c'est-à-dire qui attendent
+  l'administration. Une réclamation en attente du joueur (`WAITING_FOR_PLAYER`), décidée ou
+  close n'est pas comptée.
+- **Signal** : nouvelle source `COMPLAINT` du bus de l'administration, émise après chaque
+  écriture validée d'un dossier (dépôt, réponse, pièce, contestation, décision, clôture), sans
+  aucune donnée ; jamais en cas de refus. Un signal perdu est rattrapé par la relecture.
+- **Interface** : cloche « N réclamations à traiter » et bloc « Alertes » du tableau de bord,
+  lien vers `/reclamations`.
+- **Tests** : `complaints-admin-attention.test.ts`, `admin-attention.test.ts` (backend) ;
+  `topbar-notifications.test.tsx`, `dashboard-hydration.test.tsx` (administration).

@@ -49,6 +49,7 @@ describe('GET /api/admin/attention', () => {
       pendingTournamentApprovals: 0,
       stalePendingPayments: 1,
       overdueTurns: 0,
+      pendingComplaints: 0,
     });
     expect(res.body.reconciliationAnomalies).toMatchObject({ total: expect.any(Number) });
     expect(res.body.generatedAt).toBe(ctx.now().toISOString());

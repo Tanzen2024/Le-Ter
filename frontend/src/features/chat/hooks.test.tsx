@@ -156,13 +156,15 @@ describe('useSendChatMessage', () => {
       wrapper: wrapper(),
     });
     send.mockRejectedValueOnce(new Error('réseau'));
-    await act(async () => result.current.send('salut'));
+    const onFailed = jest.fn();
+    await act(async () => result.current.send('salut', onFailed));
     await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(onFailed).toHaveBeenCalledTimes(1);
 
     send.mockResolvedValueOnce({ message: message('a', 1) });
-    const onSent = jest.fn();
-    await act(async () => result.current.send('salut', onSent));
-    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    await act(async () => result.current.send('salut', onFailed));
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(onFailed).toHaveBeenCalledTimes(1);
 
     const [first, second] = send.mock.calls;
     expect(first?.[3]).toBe(second?.[3]);

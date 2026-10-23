@@ -10,6 +10,7 @@ import {
   Flag,
   Gamepad2,
   Landmark,
+  MessageSquareWarning,
   ShieldAlert,
   Trophy,
   UserCheck,
@@ -55,6 +56,12 @@ function Alerts({ data }: { data: AlertsData }) {
       label: 'alertes anti-collusion à examiner',
       href: '/anti-collusion?status=NEW',
       icon: ShieldAlert,
+    },
+    {
+      count: data.alerts.pendingComplaints,
+      label: 'réclamations de joueurs à traiter',
+      href: '/reclamations',
+      icon: MessageSquareWarning,
     },
     {
       count: data.alerts.pendingTournamentApprovals,

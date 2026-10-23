@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { tablePalette as palette } from '../../components/table/TableDecor';
-import { ApiError } from '../../lib/api-client';
+import { userErrorMessage } from '../../lib/api-client';
 import type { ComplaintDraft, SupportMessage } from '../../types/complaint';
 import { PanelButton } from '../lobby/LobbyUi';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -75,7 +75,7 @@ export function AssistantChat({
             {send.isPending ? <Body muted>{t.assistant.thinking}</Body> : null}
             {send.error ? (
               <Text style={styles.error}>
-                {send.error instanceof ApiError ? send.error.message : String(send.error)}
+                {userErrorMessage(send.error)}
               </Text>
             ) : null}
           </ScrollView>

@@ -88,13 +88,18 @@ const view = async (p: Player, gameId: string) =>
   (await expectStatus(p.api.get(`/api/games/${gameId}`), 200)).body.game;
 
 /**
- * Le contrôleur ne peut rien tirer : il annonce « Je passe » (D-140). Échéance immédiate dans
- * ces tests ; elle est appliquée ici (sans attendre le minuteur), puis la main passe.
+ * Chaque joueur qui a la main sans carte prenable annonce « Je passe » (D-145). Échéance de
+ * 1 ms dans ces tests ; elle est appliquée ici (sans attendre le minuteur), joueur après
+ * joueur, jusqu'à un tour où l'on peut tirer ou la fin de la manche.
  */
 async function controllerPasses(gameId: string) {
-  await new Promise((r) => setTimeout(r, 5)); // échéance de 1 ms dépassée
-  await ctx.games.handleTurnTimeout(gameId as GameId);
-  await ctx.games.idle();
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 5)); // échéance de 1 ms dépassée
+    await ctx.games.handleTurnTimeout(gameId as GameId);
+    await ctx.games.idle();
+    const game = await ctx.games.findGame(gameId as GameId);
+    if (game?.status !== 'in_progress' || !game.garam?.passing) return;
+  }
 }
 
 async function balance(p: Player) {
@@ -191,7 +196,7 @@ describe('manche jouée par HTTP', () => {
       'CARD_NOT_PLAYABLE',
     );
     await expectStatus(act(b, gameId, 'PLAY_CARD', { cardId: 'COEUR-3' }), 200);
-    // a contrôle mais 20 + 3 > 21 : il annonce « Je passe » (D-140), puis b tire.
+    // a contrôle mais 20 + 3 > 21 : il annonce « Je passe » (D-145), puis b tire.
     await controllerPasses(gameId);
     const drawing = await view(b, gameId);
     expect(drawing.garam).toMatchObject({
@@ -602,8 +607,8 @@ describe('présentation de fin de manche (D-128)', () => {
     const deadline = Date.parse(session.decision.deadlineAt);
     expect(deadline - Date.parse(done.finishedAt)).toBe(garamRevealPresentationMs(2) + 60_000);
     // 2 joueurs : 2 600 + 2 × 900 + 900 + 2 000 ms.
-    expect(garamRevealPresentationMs(2)).toBe(7_300);
-    expect(garamRevealPresentationMs(4)).toBe(9_100);
+    expect(garamRevealPresentationMs(2)).toBe(8_000);
+    expect(garamRevealPresentationMs(4)).toBe(9_800);
   });
 });
 

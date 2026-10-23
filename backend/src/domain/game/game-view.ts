@@ -74,9 +74,9 @@ export interface GaramPlayerView {
   drawOrder: PlayerId[];
   drawn: Record<string, GaramCardId[]>;
   drawDone: PlayerId[];
-  /** `passed` : le contrôleur a annoncé « Je passe » (D-140), pas « Impossible ». */
+  /** `passed` : le joueur a annoncé « Je passe » (D-145), pas « Impossible ». */
   lastRefusal?: { playerId: PlayerId; cardId?: GaramCardId; passed?: true };
-  /** Public (D-140) : le contrôleur annonce « Je passe » ; la main passe à l'échéance. */
+  /** Public (D-145) : le joueur qui a la main annonce « Je passe » ; elle passe à l'échéance. */
   passingPlayerId?: PlayerId;
   nextPlayerId?: PlayerId;
   /** Main de `viewerId` UNIQUEMENT. */

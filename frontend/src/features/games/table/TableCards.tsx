@@ -34,6 +34,8 @@ const DEAL_FLIGHT_MS = 360;
  */
 export const TRICK_CLEAR_DELAY_MS = 2000;
 const PLAYED_CARD_MOVE_MS = 450;
+/** Fap-Fap : rangement un peu plus vif (-22 %) ; GARAM TIA garde `PLAYED_CARD_MOVE_MS`. */
+export const FAP_FAP_PLAYED_CARD_MOVE_MS = 350;
 
 /**
  * Orientation d'une carte posée au centre (degrés, sens horaire) : droite DEVANT le joueur qui
@@ -659,11 +661,14 @@ export function PlayedCardSpotlight({
   delayMs = 0,
   angle = 0,
   instant = false,
+  moveMs = PLAYED_CARD_MOVE_MS,
   release,
   onReveal,
   onSettled,
 }: {
   cardId: string;
+  /** Durée du trajet vers la zone de cartes jouées (visuel seulement). */
+  moveMs?: number;
   /**
    * Orientation au centre (`SPOT_ANGLE` du siège de son joueur) ; la carte se redresse en
    * rejoignant la zone de cartes jouées, où toutes les cartes sont droites.
@@ -712,7 +717,7 @@ export function PlayedCardSpotlight({
     const timer = setTimeout(() => {
       animation = Animated.timing(move, {
         toValue: 1,
-        duration: PLAYED_CARD_MOVE_MS,
+        duration: moveMs,
         easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
       });
@@ -722,7 +727,7 @@ export function PlayedCardSpotlight({
       clearTimeout(timer);
       animation?.stop();
     };
-  }, [shown, release, move, cardId, onSettled]);
+  }, [shown, release, move, moveMs, cardId, onSettled]);
   const height = width * CARD_RATIO;
   return (
     <Animated.View

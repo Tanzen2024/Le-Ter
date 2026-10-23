@@ -11,11 +11,16 @@ interface SettingRow {
   updated_at: Date;
 }
 
-/** Ligne absente ou valeur non booléenne : désactivée (jamais activée par défaut). */
+/**
+ * Ligne absente (aucun admin ne l'a encore réglée) : ACTIVÉE par défaut (D-147, remplace le
+ * défaut de D-053). Valeur non booléenne : désactivée.
+ */
+const DEFAULT_ENABLED = true;
+
 const toSetting = (row: SettingRow | undefined): DetectionSetting =>
   row
     ? { enabled: row.value === true, updatedAt: row.updated_at }
-    : { enabled: false, updatedAt: null };
+    : { enabled: DEFAULT_ENABLED, updatedAt: null };
 
 export class PostgresDetectionSettingsRepository implements DetectionSettingsRepository {
   constructor(private readonly db: SqlClient) {}
@@ -36,10 +41,11 @@ export class PostgresDetectionSettingsRepository implements DetectionSettingsRep
   }): Promise<{ setting: DetectionSetting; changed: boolean }> {
     return this.db.transaction(async (tx) => {
       // La ligne existe avant le verrou : deux premiers réglages simultanés se sérialisent.
+      // Elle est créée avec la valeur par défaut, pour que le « from » de l'audit soit juste.
       await tx.query(
-        `INSERT INTO system_settings (key, value, updated_at) VALUES ($1, 'false'::jsonb, $2)
+        `INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $3::jsonb, $2)
          ON CONFLICT (key) DO NOTHING`,
-        [KEY, command.now.toISOString()],
+        [KEY, command.now.toISOString(), JSON.stringify(DEFAULT_ENABLED)],
       );
       const { rows } = await tx.query<SettingRow>(
         'SELECT value, updated_at FROM system_settings WHERE key = $1 FOR UPDATE',

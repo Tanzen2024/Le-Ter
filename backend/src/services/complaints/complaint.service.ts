@@ -37,6 +37,7 @@ import type {
   SupportConversationRepository,
 } from '../../repositories/complaint.repository';
 import type { Logger } from '../../utils/logger';
+import { announceToAdmin, type AdminEventPublisher } from '../../websocket/admin-event-bus';
 
 export interface CreateComplaintInput {
   category: ComplaintCategory;
@@ -62,6 +63,11 @@ export interface ComplaintServiceDependencies {
   evidence: ComplaintEvidenceRepository;
   conversations?: SupportConversationRepository;
   signals?: ComplaintSignalPublisher;
+  /**
+   * Signal « point d'attention » de l'administration (D-116) : la cloche relit le nombre de
+   * réclamations à traiter. Facultatif, jamais le contenu du dossier.
+   */
+  adminEvents?: AdminEventPublisher;
   logger: Logger;
   clock?: () => Date;
 }
@@ -921,6 +927,9 @@ export class ComplaintService {
       return work(tx, notified);
     });
     for (const userId of notified) this.signal(userId);
+    // Après la validation seulement : dépôt, réponse, contestation, décision ou clôture peuvent
+    // changer le nombre de réclamations à traiter. Un signal perdu est rattrapé par la relecture.
+    announceToAdmin(this.deps.adminEvents, 'COMPLAINT', this.deps.logger);
     return result;
   }
 

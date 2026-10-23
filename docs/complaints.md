@@ -143,6 +143,14 @@ l'administration, à une décision et à la clôture. Contenu : référence et n
 traitement concurrent ne notifie pas deux fois. Signal temps réel facultatif (`UserEventBus`)
 après COMMIT ; un joueur déconnecté retrouve tout à sa prochaine connexion (bandeau d'accueil).
 
+**Administration (D-150)** : la cloche et le bloc « Alertes » du tableau de bord comptent les
+réclamations **à traiter** (`alerts.pendingComplaints` de `GET /api/admin/attention` : statuts
+`OPEN`, `AI_ANALYSIS`, `IN_REVIEW` ; ni `WAITING_FOR_PLAYER`, ni les dossiers décidés ou clos),
+avec un lien vers la rubrique Réclamations. Après chaque écriture validée d'un dossier
+(`ComplaintService.run`), le signal temps réel `{ type: 'attention', source: 'COMPLAINT' }`
+(D-116, aucune donnée) fait relire ce compteur sans rafraîchir la page ; un signal perdu est
+rattrapé par la relecture périodique (1 min).
+
 ## 7. Sécurité et confidentialité
 
 - Isolation : chaque lecture et écriture joueur filtre par `user_id` du jeton ; un dossier,

@@ -17,6 +17,7 @@ import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { useComplaintMessages } from './complaint-messages';
 import { Body, Card, Field, formatDateTime, Heading, StatusBadge } from './ComplaintUi';
 import { useComplaint, useComplaintActions } from './hooks';
+import { userErrorMessage } from '../../lib/api-client';
 
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
@@ -102,7 +103,7 @@ export function ComplaintDetailScreen({ complaintId }: { complaintId: string }) 
           </Text>
         </View>
         {detail.isPending ? <ActivityIndicator color={palette.gold} /> : null}
-        {detail.error ? <Text style={styles.error}>{detail.error.message}</Text> : null}
+        {detail.error ? <Text style={styles.error}>{userErrorMessage(detail.error)}</Text> : null}
         {complaint && data ? (
           <ScrollView contentContainerStyle={{ gap: m.gap * 0.7 }}>
             <View style={[styles.row, styles.top, { gap: m.gap * 0.7 }]}>
@@ -257,7 +258,7 @@ export function ComplaintDetailScreen({ complaintId }: { complaintId: string }) 
                 </Body>
               ))}
             </Card>
-            {error ? <Text style={styles.error}>{error.message}</Text> : null}
+            {error ? <Text style={styles.error}>{userErrorMessage(error)}</Text> : null}
           </ScrollView>
         ) : null}
       </View>

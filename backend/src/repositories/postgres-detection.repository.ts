@@ -129,8 +129,9 @@ export class PostgresDetectionRepository implements DetectionRepository {
   constructor(private readonly db: SqlClient) {}
 
   async isEnabledForGame(gameId: GameId): Promise<boolean | null> {
+    // GARAM TIA : jamais surveillée (D-144), même une table créée avant avec l'option.
     const { rows } = await this.db.query<{ enabled: boolean }>(
-      `SELECT s.suspicion_detection_enabled AS enabled
+      `SELECT s.suspicion_detection_enabled AND s.game_type <> 'GARAM' AS enabled
        FROM games g JOIN sessions s ON s.id = g.session_id WHERE g.id = $1`,
       [gameId],
     );

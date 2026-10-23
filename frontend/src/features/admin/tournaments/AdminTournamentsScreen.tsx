@@ -9,6 +9,7 @@ import { ADMIN_STATUS_LABELS, CANCELLATION_LABELS } from '../../tournaments/prop
 import { formatFcfa, formatTournamentPeriod } from '../../tournaments/tournament-state';
 import { AdminGate, adminBack } from './AdminGate';
 import { useAdminTournaments } from './hooks';
+import { userErrorMessage } from '../../../lib/api-client';
 
 /** Filtres de la liste : groupes de statuts serveur (aucun filtrage côté application). */
 export const ADMIN_FILTERS: { key: string; label: string; statuses?: TournamentStatus[] }[] = [
@@ -72,7 +73,7 @@ function AdminTournamentList() {
         <ActivityIndicator color={colors.feltLight} />
       ) : error ? (
         <Text accessibilityRole="alert" style={styles.error}>
-          {error.message}
+          {userErrorMessage(error)}
         </Text>
       ) : !data?.length ? (
         <Text style={styles.muted}>Aucun tournoi.</Text>

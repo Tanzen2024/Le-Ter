@@ -8,7 +8,7 @@ export interface DetectionSetting {
 
 /**
  * Interrupteur GLOBAL de la détection (D-053), dans `system_settings` (PostgreSQL, source de
- * vérité). Ligne absente : désactivée.
+ * vérité). Ligne absente : activée par défaut (D-147).
  */
 export interface DetectionSettingsRepository {
   getDetectionSetting(): Promise<DetectionSetting>;

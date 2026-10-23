@@ -305,6 +305,7 @@ async function main(): Promise<void> {
           assistant: assistantEnv,
           limits: supportLimits,
           ...(userEvents && { signals: userEvents }),
+          ...(adminEvents && { adminEvents }),
         })
       : undefined;
   if (complaintServices) {

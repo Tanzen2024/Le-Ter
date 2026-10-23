@@ -43,7 +43,7 @@ export type GameEventType =
    */
   | 'game:draw_impossible'
   /**
-   * GARAM TIA (D-140) : le contrôleur ne peut prendre aucune carte et annonce « Je passe » ;
+   * GARAM TIA (D-145) : le joueur qui a la main ne peut prendre aucune carte et annonce « Je passe » ;
    * la main passe au suivant à l'échéance de son tour. payload : playerId, cardId éventuel.
    */
   | 'game:player_passed'

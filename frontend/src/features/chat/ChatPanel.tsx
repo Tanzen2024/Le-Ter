@@ -41,8 +41,11 @@ export interface ChatPanelProps {
   connection: RealtimeStatus;
   sending: boolean;
   sendError?: string;
-  /** `onSent` : appelé seulement après la confirmation du serveur. */
-  onSend: (content: string, onSent: () => void) => void;
+  /**
+   * Le champ est vidé et le clavier fermé dès l'appui ; `onFailed` (refus ou échec) remet le
+   * texte dans le champ. Le message n'apparaît qu'une fois confirmé par le serveur.
+   */
+  onSend: (content: string, onFailed: () => void) => void;
   onDraftChange?: () => void;
 }
 
@@ -99,7 +102,10 @@ export function ChatPanel(props: ChatPanelProps) {
   const canSubmit = canSend && content.length > 0 && !tooLong && !sending;
   const submit = () => {
     if (!canSubmit) return;
-    props.onSend(content, () => setDraft(''));
+    setDraft('');
+    Keyboard.dismiss();
+    // Échec : le texte revient, sauf si le joueur a déjà commencé un autre message.
+    props.onSend(content, () => setDraft((current) => (current === '' ? content : current)));
   };
 
   const small = { fontSize: m.smallSize };

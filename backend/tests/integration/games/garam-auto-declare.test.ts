@@ -129,7 +129,7 @@ describe('main spéciale automatique (D-137)', () => {
     app(SEVENS);
     const { a, b, gameId, started } = await startedTable();
     expect(started.status).toBe('in_progress');
-    // Échéance = délai de la déclaration automatique, pas les 15 s d'une décision.
+    // Échéance = délai de la déclaration automatique, pas les 25 s d'une décision.
     expect(Date.parse(started.turnDeadlineAt) - Date.parse(started.turnStartedAt)).toBe(
       GARAM_AUTO_DECLARE_MS,
     );

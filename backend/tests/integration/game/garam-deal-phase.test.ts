@@ -9,7 +9,7 @@ import { garamDecksRandom } from '../../fixtures/random';
  * GARAM TIA, phase de distribution et temps de décision (D-102, D-122) : la distribution
  * (mains puis terre) est une phase PERSISTÉE du serveur pendant laquelle aucun temps de
  * décision ne court ; le premier tour commence à sa confirmation, avec la durée COMPLÈTE du
- * tour de GARAM (GARAM_TURN_DURATION_MS, 15 s affichées, D-127) ; à l'échéance, le mécanisme existant (TURN_TIMEOUT puis
+ * tour de GARAM (GARAM_TURN_DURATION_MS, 25 s affichées, D-143) ; à l'échéance, le mécanisme existant (TURN_TIMEOUT puis
  * action automatique) joue une carte LÉGALE.
  */
 const [p1, p2] = [player('garam-1'), player('garam-2')];

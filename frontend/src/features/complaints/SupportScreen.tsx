@@ -19,6 +19,7 @@ import { useComplaintMessages } from './complaint-messages';
 import { Body, Card, formatDateTime, StatusBadge } from './ComplaintUi';
 import { useComplaints } from './hooks';
 import { shortcutDraft } from './shortcut-draft';
+import { userErrorMessage } from '../../lib/api-client';
 
 type Tab = 'assistant' | 'complaints';
 
@@ -126,7 +127,7 @@ function ComplaintList({ created, onNew }: { created: string | null; onNew: () =
       </View>
       {created ? <Body>{t.form.created(created)}</Body> : null}
       {complaints.isPending ? <ActivityIndicator color={palette.gold} /> : null}
-      {complaints.error ? <Text style={styles.error}>{complaints.error.message}</Text> : null}
+      {complaints.error ? <Text style={styles.error}>{userErrorMessage(complaints.error)}</Text> : null}
       <ScrollView contentContainerStyle={{ gap: m.gap * 0.5 }}>
         {complaints.data?.length === 0 ? <Body muted>{t.list.empty}</Body> : null}
         {complaints.data?.map((complaint) => (

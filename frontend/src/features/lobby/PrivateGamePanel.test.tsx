@@ -95,23 +95,30 @@ describe('option « Détection anti-collusion » et interrupteur global', () => 
     expect(api.create.mock.calls[0]![1]).toMatchObject({ suspicionDetectionEnabled: false });
   });
 
-  it('GARAM TIA (D-125) : même option, envoyée avec le jeu de la table', async () => {
+  it('GARAM TIA (D-144) : aucune détection, même activée par l’administration', async () => {
     api.create.mockReturnValue(new Promise(() => undefined));
     await renderPanel(true, 'GARAM');
-    await fireEvent.press(screen.getByRole('switch', { name: 'Détection anti-collusion' }));
+    expect(screen.queryByRole('switch', { name: 'Détection anti-collusion' })).toBeNull();
+    expect(screen.queryByText('🛡️')).toBeNull();
+    expect(JSON.stringify(screen.toJSON())).not.toContain('anti-collusion');
     await fireEvent.press(screen.getByRole('radio', { name: 'GARAM 16' }));
     await fireEvent.press(screen.getByText('Créer'));
     await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1));
     expect(api.create.mock.calls[0]![1]).toMatchObject({
       gameType: 'GARAM',
       garamVariant: 16,
-      suspicionDetectionEnabled: true,
+      suspicionDetectionEnabled: false,
     });
   });
 
   it('GARAM TIA, détection coupée par l’administration : option non proposée', async () => {
     await renderPanel(false, 'GARAM');
     expect(screen.queryByRole('switch', { name: 'Détection anti-collusion' })).toBeNull();
+  });
+
+  it('Fap-Fap garde l’option quand l’administration l’active', async () => {
+    await renderPanel(true, 'TER');
+    expect(screen.getByRole('switch', { name: 'Détection anti-collusion' })).toBeTruthy();
   });
 });
 
@@ -161,5 +168,63 @@ describe('variante GARAM TIA (D-127)', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText('Table surveillée · GARAM 17')).toBeTruthy();
+  });
+});
+
+/**
+ * Scénario observé : une table Fap-Fap 2/4 puis 3/4 non démarrée doit rester affichée. Les
+ * réponses ci-dessous sont celles du serveur (`GET /api/sessions/open`) relevées à 2/4 et 3/4
+ * par `open-tables-api.test.ts` ; le panneau ne doit ni les filtrer ni les retirer seul.
+ */
+describe('liste « Rechercher une partie » : table Fap-Fap 2/4 puis 3/4', () => {
+  const fapFap = (playerCount: number): OpenTable => ({
+    sessionId: '44444444-4444-4444-8444-444444444444',
+    gameId: '55555555-5555-4555-8555-555555555555',
+    name: 'Partie de awa',
+    creatorName: 'awa',
+    stakeAmount: 20,
+    hasPassword: false,
+    suspicionDetectionEnabled: false,
+    mine: false,
+    maxPlayers: 4,
+    playerCount,
+    createdAt: '2026-10-22T20:34:15.477Z',
+  });
+
+  it('affiche 2/4, puis 3/4 après relecture, sans jamais retirer la ligne', async () => {
+    api.listOpen
+      .mockResolvedValueOnce({ tables: [fapFap(2)], detectionAvailable: true })
+      .mockResolvedValue({ tables: [fapFap(3)], detectionAvailable: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <PrivateGamePanel onClose={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('2/4')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rejoindre : Partie de awa' })).toBeTruthy();
+    expect(api.listOpen).toHaveBeenLastCalledWith('jeton', 'TER');
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Actualiser la liste des parties' }));
+    expect(await screen.findByText('3/4')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rejoindre : Partie de awa' })).toBeTruthy();
+    expect(screen.queryByText('Aucune partie trouvée.')).toBeNull();
+  });
+
+  it('la ligne n’est retirée que si le serveur ne la renvoie plus (4/4 ou démarrée)', async () => {
+    api.listOpen
+      .mockResolvedValueOnce({ tables: [fapFap(3)], detectionAvailable: true })
+      .mockResolvedValue({ tables: [], detectionAvailable: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <PrivateGamePanel onClose={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('3/4')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: 'Actualiser la liste des parties' }));
+    expect(await screen.findByText('Aucune partie trouvée.')).toBeTruthy();
   });
 });

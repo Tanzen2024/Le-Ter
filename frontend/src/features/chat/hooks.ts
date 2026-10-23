@@ -142,7 +142,8 @@ export function useGameChat(gameId: string, client: RealtimeClient = appRealtime
 /**
  * Envoi d'un message. Une clé par INTENTION : tant que le même texte est renvoyé (échec
  * réseau, double appui), la même clé est réutilisée et le serveur ne crée qu'un message.
- * Le champ n'est vidé qu'après la confirmation du serveur (`onSent`).
+ * `onFailed` : envoi refusé ou échoué (ou ignoré pendant un envoi en cours), pour que
+ * l'écran rende le texte au joueur.
  */
 export function useSendChatMessage(gameId: string) {
   const queryClient = useQueryClient();
@@ -169,12 +170,15 @@ export function useSendChatMessage(gameId: string) {
     },
   });
 
-  const send = (content: string, onSent?: () => void) => {
-    if (mutation.isPending) return; // Double appui : aucune seconde requête.
+  const send = (content: string, onFailed?: () => void) => {
+    if (mutation.isPending) {
+      onFailed?.(); // Double appui : aucune seconde requête.
+      return;
+    }
     if (intent.current?.content !== content) {
       intent.current = { content, key: randomUUID() };
     }
-    mutation.mutate({ content, key: intent.current.key }, { onSuccess: () => onSent?.() });
+    mutation.mutate({ content, key: intent.current.key }, { onError: () => onFailed?.() });
   };
   return {
     send,

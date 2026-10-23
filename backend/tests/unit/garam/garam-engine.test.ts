@@ -26,6 +26,7 @@ import {
 } from '../../../src/domain/garam/garam-engine';
 import {
   GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS,
+  GARAM_AUTO_DRAW_FIRST_MS,
   GARAM_AUTO_DRAW_STEP_MS,
   GARAM_AUTO_DECLARE_MS,
   GARAM_DISPLAYED_TURN_MS,
@@ -67,11 +68,18 @@ const B = 'b' as PlayerId;
 const C = 'c' as PlayerId;
 const play = (g: Game) => g.garam as GaramPlay;
 
-/** Le contrôleur ne peut rien tirer : il annonce « Je passe », son échéance clôt son tirage (D-140). */
+/** Le contrôleur ne peut rien tirer : il annonce « Je passe », son échéance clôt son tirage (D-145). */
 function passControl(game: Game) {
   const controller = play(game).controllerId as PlayerId;
   expect(play(game).passing?.playerId).toBe(controller);
   return playGaramAutomatically(game, controller, ctx);
+}
+
+/** Chaque joueur qui a la main sans carte prenable passe à son échéance (D-145), jusqu'au bout. */
+function passTurns(game: Game) {
+  for (let p = play(game).passing; p && game.status === 'in_progress'; p = play(game).passing) {
+    playGaramAutomatically(game, p.playerId, ctx);
+  }
 }
 
 describe('paquet GARAM TIA (§2)', () => {
@@ -168,7 +176,7 @@ describe('une seule main spéciale : déclarée AUTOMATIQUEMENT par le serveur (
   it('G1 : en attente après la distribution (court délai, annonce publique, aucun bouton), puis déclarée par le serveur à l’échéance', () => {
     const game = sevens();
     expect(game.status).toBe('in_progress');
-    // Échéance = délai de la déclaration automatique, pas un tour de 15 s.
+    // Échéance = délai de la déclaration automatique, pas un tour de 25 s.
     expect(game.turnDeadlineAt!.getTime() - NOW.getTime()).toBe(GARAM_AUTO_DECLARE_MS);
     for (const viewer of [A, B]) {
       const view = toPlayerView(game, viewer);
@@ -228,7 +236,7 @@ describe('une seule main spéciale : déclarée AUTOMATIQUEMENT par le serveur (
     expect(game.status).toBe('in_progress');
   });
 
-  it('G2 : sans main spéciale : tour normal de 15 s, aucune annonce, la manche continue', () => {
+  it('G2 : sans main spéciale : tour normal de 25 s, aucune annonce, la manche continue', () => {
     const game = started(
       [
         ['CARREAU-4', 'COEUR-8', 'TREFLE-10'],
@@ -426,7 +434,7 @@ describe('deux As gardés : PAS une main spéciale ; à la fin normale, ils batt
     expect(canDeclareGaramWin(game, A)).toBe(false);
     expect(toPlayerView(game, A).garam?.mySpecial).toBeUndefined();
     playGaramCard(game, B, 'TREFLE-10', ctx);
-    // Contrôle à a (seul pique) ; 22 : rien à tirer, il annonce « Je passe » (D-140), puis son
+    // Contrôle à a (seul pique) ; 22 : rien à tirer, il annonce « Je passe » (D-145), puis son
     // tirage est clos à l'échéance.
     expect(play(game)).toMatchObject({ phase: 'DRAW', nextPlayerId: A });
     passControl(game);
@@ -452,7 +460,9 @@ describe('deux As gardés : PAS une main spéciale ; à la fin normale, ils batt
   it('les autres perdants restent soumis au Koraté', () => {
     const game = twoAces(['PIQUE-9', 'COEUR-10', 'TREFLE-4']);
     playGaramCard(game, B, 'TREFLE-10', ctx);
-    passControl(game); // b : 13 ; ♠9 → 22 : Impossible, fin
+    passControl(game); // b : 13 ; ♠9 → 22 : « Je passe » à son tour, puis fin
+    expect(play(game).passing?.playerId).toBe(B);
+    passTurns(game);
     expect(game.result).toMatchObject({
       winnerId: A,
       scores: { a: 22, b: 13 },
@@ -471,8 +481,9 @@ describe('deux As gardés : PAS une main spéciale ; à la fin normale, ils batt
     );
     playGaramCard(game, A, 'COEUR-11', ctx);
     playGaramCard(game, B, 'COEUR-5', ctx);
-    // a (♣As + ♠10 = 21) contrôle : il ne peut rien tirer ; b : 18 + 5 = 23 → Impossible.
+    // a (♣As + ♠10 = 21) contrôle : il ne peut rien tirer ; b : 18 + 5 = 23 → « Je passe ».
     passControl(game);
+    passTurns(game);
     expect(game.result).toMatchObject({ winnerId: A, scores: { a: 21, b: 18 } });
   });
 });
@@ -558,11 +569,15 @@ describe('tirage (§3.8-3.10) et fin normale (§3.14)', () => {
     expect(() => drawGaramCard(game, B, ctx)).toThrow(/pas au tour/);
     drawGaramCard(game, A, ctx); // a : 17 + 4 = 21 ; tête suivante P5 → « Impossible »
     expect(play(game).drawn[A]).toEqual(['TREFLE-4']);
-    expect(play(game).drawDone).toEqual([A, B, C]);
+    expect(play(game).lastRefusal).toEqual({ playerId: A, cardId: 'PIQUE-5' });
+    // b reprend à la carte refusée : 18 + 5 = 23 > 21 → « Je passe » quand la main lui arrive
+    // (D-145), sans tirer ; puis c : 19 + 5 > 21 → « Je passe ». Fin de manche.
+    expect(play(game)).toMatchObject({ drawDone: [A], nextPlayerId: B, passing: { playerId: B } });
+    playGaramAutomatically(game, B, ctx);
+    expect(play(game)).toMatchObject({ drawDone: [A, B], nextPlayerId: C, passing: { playerId: C } });
+    playGaramAutomatically(game, C, ctx);
     expect(play(game).drawn).toEqual({ a: ['TREFLE-4'], b: [], c: [] });
-    expect(play(game).lastRefusal).toEqual({ playerId: C, cardId: 'PIQUE-5' });
-    // b reprend à la carte refusée : 18 + 5 = 23 > 21 → Impossible aussitôt, sans tirer.
-    // c : 19 + 5 > 21 → Impossible. Fin de manche.
+    expect(play(game).lastRefusal).toEqual({ playerId: C, cardId: 'PIQUE-5', passed: true });
     expect(play(game).terre).toEqual(['PIQUE-5', 'CARREAU-3', 'COEUR-6']);
     expect(game.status).toBe('finished');
     expect(game.result).toMatchObject({
@@ -595,7 +610,7 @@ describe('tirage (§3.8-3.10) et fin normale (§3.14)', () => {
     expect(game.garamTie).toMatchObject({ kind: 'SCORE', scores: { a: 17, b: 17 } });
   });
 
-  it('contrôleur qui ne peut rien tirer : « Je passe » annoncé à la table, puis main au suivant (D-140)', () => {
+  it('contrôleur qui ne peut rien tirer : « Je passe » annoncé à la table, puis main au suivant (D-145)', () => {
     // a garde T10 + CA10 = 20 et contrôle ; tête P3 → 23 : rien à tirer. b garde 9.
     const game = started(
       [
@@ -643,6 +658,7 @@ describe('tirage (§3.8-3.10) et fin normale (§3.14)', () => {
     playGaramCard(game, A, 'COEUR-5', ctx);
     playGaramCard(game, B, 'COEUR-4', ctx);
     passControl(game);
+    passTurns(game);
     expect(game.endReason).toBe('GARAM_TIE');
     expect(game.garamTie).toMatchObject({ kind: 'SCORE', playerIds: [A, B] });
   });
@@ -758,6 +774,7 @@ describe('variantes GARAM 15 / 16 / 17 / 18 (D-127)', () => {
     playGaramCard(game, A, 'COEUR-9', ctx);
     playGaramCard(game, B, 'COEUR-8', ctx);
     passControl(game);
+    passTurns(game);
     return game;
   }
 
@@ -855,10 +872,10 @@ describe('présentation de la distribution (D-123)', () => {
     const confirmedAt = game.dealEndsAt as Date;
     completeGaramDeal(game, { now: confirmedAt });
     expect(game.turnStartedAt).toEqual(confirmedAt);
-    // 15 s affichées + 3 s de marge invisible (D-127) ; le temps de Fap-Fap est inchangé.
+    // 25 s affichées + 3 s de marge invisible (D-143) ; le temps de Fap-Fap est inchangé.
     expect(game.turnDeadlineAt!.getTime() - confirmedAt.getTime()).toBe(GARAM_TURN_DURATION_MS);
     expect(GARAM_TURN_DURATION_MS - GARAM_DISPLAYED_TURN_MS).toBe(3_000);
-    expect(GARAM_DISPLAYED_TURN_MS).toBe(15_000);
+    expect(GARAM_DISPLAYED_TURN_MS).toBe(25_000);
     expect(TURN_DURATION_MS).toBe(13_000);
   });
 });
@@ -992,6 +1009,7 @@ describe('visibilité des cartes pendant la manche (D-128)', () => {
     playGaramCard(game, B, 'COEUR-5', ctx);
     playGaramCard(game, C, 'TREFLE-8', ctx);
     drawGaramCard(game, A, ctx);
+    passTurns(game); // b puis c : « Je passe »
     expect(game.status).toBe('finished');
     const seenByB = toPlayerView(game, B);
     expect(seenByB.result?.garamHands?.[A]).toEqual(['TREFLE-7', 'PIQUE-10']);
@@ -1040,14 +1058,16 @@ describe('tirage automatique (D-136)', () => {
       }
       t += GARAM_AUTO_DRAW_STEP_MS;
     }
-    // 7 + 3 + 5 + 4 = 19, terre vide : a terminé ; b n'a rien à tirer ; manche finie.
+    // 7 + 3 + 5 + 4 = 19, terre vide : a terminé ; b n'a rien à tirer : « Je passe » ; fin.
     expect(play(game).drawn[A]).toEqual(drawnAt);
+    expect(play(game).passing).toEqual({ playerId: B });
+    passTurns(game);
     expect(play(game).drawn[B]).toEqual([]);
     expect(game.status).toBe('finished');
     expect(game.turnDeadlineAt).toBeUndefined();
   });
 
-  it('terre vide ou « Impossible » : aucune échéance de tirage, aucune carte en plus', () => {
+  it('terre vide ou « Impossible » : aucune carte en plus ; le suivant annonce « Je passe » (D-145)', () => {
     // a : 7 + 3 = 10, + 10 = 20, puis l'As (11) ferait 31 : « Impossible ».
     const game = started(
       [
@@ -1059,11 +1079,24 @@ describe('tirage automatique (D-136)', () => {
     playGaramCard(game, A, 'COEUR-9', ctx);
     playGaramCard(game, B, 'COEUR-5', ctx);
     playGaramAutomatically(game, A, at(GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS));
-    playGaramAutomatically(game, A, at(GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_AUTO_DRAW_STEP_MS));
+    const stopAt = GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_AUTO_DRAW_STEP_MS;
+    const events = playGaramAutomatically(game, A, at(stopAt));
     expect(play(game).drawn[A]).toEqual(['TREFLE-3', 'PIQUE-10']);
+    // b (20) : l'As ferait 31. La main lui arrive : il annonce « Je passe » à la table, le
+    // temps de poser la dernière carte de a puis de lire l'annonce.
+    expect(events.find((e) => e.type === 'game:player_passed')?.payload).toEqual({
+      playerId: B,
+      cardId: 'CARREAU-11',
+    });
+    expect(play(game)).toMatchObject({ drawDone: [A], nextPlayerId: B, passing: { playerId: B } });
+    expect(toPlayerView(game, A).garam?.passingPlayerId).toBe(B);
+    expect(game.turnDeadlineAt).toEqual(
+      new Date(NOW.getTime() + stopAt + GARAM_AUTO_DRAW_FIRST_MS + GARAM_PASS_NOTICE_MS),
+    );
+    // À l'échéance : tirage de b clos, sans carte ; la manche se termine.
+    passTurns(game);
     expect(play(game).drawDone).toEqual([A, B]);
-    // b (20) : l'As ferait 31 → clos aussitôt, sans échéance : la manche se termine.
-    expect(play(game).lastRefusal).toEqual({ playerId: B, cardId: 'CARREAU-11' });
+    expect(play(game).lastRefusal).toEqual({ playerId: B, cardId: 'CARREAU-11', passed: true });
     expect(play(game).drawn[B]).toEqual([]);
     expect(play(game).terre).toEqual(['CARREAU-11']);
     expect(game.status).toBe('finished');

@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import type { PaymentView } from '../../types/wallet';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { PanelButton } from '../lobby/LobbyUi';
@@ -47,7 +47,7 @@ export function PaymentProgress({
       <View style={[styles.column, { gap: m.gap * 0.7 }]} testID="payment-progress">
         {query.error ? (
           <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.bodySize }]}>
-            {notFound ? 'Paiement introuvable.' : query.error.message}
+            {notFound ? 'Paiement introuvable.' : userErrorMessage(query.error)}
           </Text>
         ) : (
           <>

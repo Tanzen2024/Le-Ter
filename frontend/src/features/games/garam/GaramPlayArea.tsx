@@ -197,14 +197,13 @@ export function GaramPlayArea({
   const controllerId = garam?.controllerId;
   const controlShown = Boolean(controllerId) && roundSettled && firstCards.length > 0;
   const controlNotice = useControlNotice(game.gameId, controlShown ? controllerId : undefined);
-  // « Je passe » du contrôleur (D-140) : après l'annonce du contrôle, jusqu'à ce que le serveur
-  // passe la main (fin de son tour).
-  const passingId = garam?.passingPlayerId;
-  const passShown = Boolean(passingId) && controlShown && !controlNotice;
-
   // --- Tirage automatique (D-136) : le SERVEUR tire ; chaque carte vole, une à la fois, de la
   // tête du terre à la zone de son joueur, une fois le premier tour vu et rangé. ---
   const flights = useGaramDrawFlights(game.gameId, garam, roundSettled);
+  // « Je passe » (D-145) du joueur qui a la main sans carte prenable : une fois le contrôle
+  // annoncé et la dernière carte tirée posée, jusqu'à ce que le serveur passe la main.
+  const passingId = garam?.passingPlayerId;
+  const passShown = Boolean(passingId) && controlShown && !controlNotice && flights.idle;
   const shownTotal = order.reduce((n, id) => n + flights.shownOf(id).length, 0);
   // Places du terre FIXES pour la manche : chaque carte garde la sienne jusqu'à son départ.
   const terreSize = serverTerreCount + Object.values(garam?.drawn ?? {}).flat().length;
@@ -1089,7 +1088,7 @@ export function garamTurnMessage(game: GameView): string {
   const active = game.activePlayerId;
   // Tirage automatique (D-136) : le serveur tire pour le joueur attendu, sans action de sa part.
   if (garam.phase === 'DRAW') {
-    // « Je passe » (D-140) : annoncé à part, personne ne tire pendant ce tour.
+    // « Je passe » (D-145) : annoncé à part, personne ne tire pendant ce tour.
     if (!active || garam.passingPlayerId) return '';
     return active === game.viewerId
       ? 'Tirage automatique…'
@@ -1110,7 +1109,7 @@ export function garamTurnMessage(game: GameView): string {
 
 /**
  * Notification de 2 s (§7.13) quand un tirage s'arrête : « Impossible » (la carte ferait
- * dépasser 21) ou terre vide. Le « Je passe » du contrôleur (D-140) a déjà été annoncé pendant
+ * dépasser 21) ou terre vide. Le « Je passe » du contrôleur (D-145) a déjà été annoncé pendant
  * son tour : il n'est pas répété ici.
  */
 function useRefusalNotice(game: GameView): string | null {

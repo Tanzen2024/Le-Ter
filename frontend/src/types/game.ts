@@ -48,11 +48,11 @@ export interface GaramView {
   drawOrder: string[];
   drawn: Record<string, string[]>;
   drawDone: string[];
-  /** `passed` : le contrôleur a annoncé « Je passe » (D-140), pas « Impossible ». */
+  /** `passed` : le joueur a annoncé « Je passe » (D-145), pas « Impossible ». */
   lastRefusal?: { playerId: string; cardId?: string; passed?: true };
   /**
-   * Public (D-140) : le contrôleur ne peut prendre aucune carte et annonce « Je passe » ; le
-   * serveur passe la main au joueur suivant à l'échéance de ce tour.
+   * Public (D-145) : le joueur qui a la main ne peut prendre aucune carte et annonce « Je
+   * passe » ; le serveur passe la main au joueur suivant à l'échéance de ce tour.
    */
   passingPlayerId?: string;
   nextPlayerId?: string;

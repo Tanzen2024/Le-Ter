@@ -35,6 +35,11 @@ import {
 
 // --- Tempo (mêmes valeurs que le serveur pour la présentation de fin, backend garam-rules.ts) ---
 
+/**
+ * Pause entre la dernière carte tirée posée et la 1re main dévoilée (D-148) : la table voit
+ * tous les tirages en place avant que les cartes cachées s'ouvrent. Même valeur au serveur.
+ */
+export const GARAM_REVEAL_PAUSE_MS = 700;
 /** Révélation de la zone de départ d'un joueur (cartes et total), puis du suivant. */
 export const GARAM_REVEAL_STEP_MS = 900;
 /** Pause après la dernière révélation, avant l'annonce du gagnant. */
@@ -399,10 +404,10 @@ export function garamRevealSchedule(
     ];
   }
   const steps = order.map((_, i) => ({
-    at: i * GARAM_REVEAL_STEP_MS,
+    at: GARAM_REVEAL_PAUSE_MS + i * GARAM_REVEAL_STEP_MS,
     stage: { revealed: order.slice(0, i + 1), scores: false, winner: false, done: false },
   }));
-  const afterReveal = order.length * GARAM_REVEAL_STEP_MS;
+  const afterReveal = GARAM_REVEAL_PAUSE_MS + order.length * GARAM_REVEAL_STEP_MS;
   const all = [...order];
   return [
     ...steps,

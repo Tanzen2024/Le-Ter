@@ -47,6 +47,7 @@ import { flightState, handWithFlight, type CardFlight } from './card-flight';
 import { useTableBalanceLabel } from './table-balance';
 import {
   DealFlight,
+  FAP_FAP_PLAYED_CARD_MOVE_MS,
   handZoneRect,
   PlayedCardSpotlight,
   PlayedCardsZone,
@@ -895,6 +896,7 @@ function PlayArea({
             delayMs={delayMs}
             angle={SPOT_ANGLE[side]}
             instant={p.cardId === flightCard && p.playerId === game.viewerId}
+            moveMs={FAP_FAP_PLAYED_CARD_MOVE_MS}
             release={release}
             onReveal={reveal}
             onSettled={settle}

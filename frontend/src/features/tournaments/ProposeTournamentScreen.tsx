@@ -5,7 +5,7 @@ import { StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-na
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
 import { DatePickerField } from '../../components/ui/DatePickerField';
 import { TimePickerField } from '../../components/ui/TimePickerField';
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import { todayOf } from '../../lib/date-time';
 import type { TournamentCreationRules, TournamentSummary } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -325,7 +325,7 @@ export function MyProposals() {
   const text = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
 
   if (isPending) return <Text style={text}>Chargement…</Text>;
-  if (error) return <Text style={[styles.error, { fontSize: m.smallSize }]}>{error.message}</Text>;
+  if (error) return <Text style={[styles.error, { fontSize: m.smallSize }]}>{userErrorMessage(error)}</Text>;
   if (!data?.length) {
     return <Text style={text}>Vous n’avez encore proposé aucun tournoi.</Text>;
   }
@@ -333,7 +333,7 @@ export function MyProposals() {
     <View style={{ gap: m.gap * 0.6 }}>
       {action.error ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
-          {action.error.message}
+          {userErrorMessage(action.error)}
         </Text>
       ) : null}
       {data.map((t) => (

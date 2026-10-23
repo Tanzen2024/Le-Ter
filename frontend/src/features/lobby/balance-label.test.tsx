@@ -7,6 +7,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
@@ -99,12 +100,13 @@ describe('HUD : pseudo, numéro d’ordre du joueur (D-133) et solde', () => {
 
   it('numéro absent (serveur plus ancien) ou invalide : « — », jamais un numéro inventé', async () => {
     get.mockResolvedValue({ wallet: wallet({}) });
+    // Le « — » cherché est celui du compteur : le solde affiche aussi « — » tant qu'il charge.
+    const counterDash = () => within(screen.getByLabelText('Compteur indisponible')).getByText('—');
     await renderHud();
-    expect(screen.getByText('—')).toBeTruthy();
-    expect(screen.getByLabelText('Compteur indisponible')).toBeTruthy();
+    expect(counterDash()).toBeTruthy();
     await cleanup();
     await renderHud({ playerNumber: 1.5 });
-    expect(screen.getByText('—')).toBeTruthy();
+    expect(counterDash()).toBeTruthy();
   });
 
   it('inerte (panneau ouvert) : toujours affiché, « + » sans effet ; sinon il ouvre la Boutique', async () => {

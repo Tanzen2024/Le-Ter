@@ -121,6 +121,12 @@ const patch = (p: Player, body: unknown) =>
     .send(body as object);
 const setGlobal = async (enabled: boolean) => expectStatus(patch(admin, { enabled }), 200);
 
+/** Interrupteur déjà coupé par un admin (activé par défaut depuis D-147), sans audit. */
+const seedGlobalOff = () =>
+  database.sql.query(
+    "INSERT INTO system_settings (key, value, updated_at) VALUES ('detection_enabled', 'false', now())",
+  );
+
 /** Table de 2 joueurs (partie en attente), surveillée ou non. */
 async function table(monitored: boolean) {
   const owner = await newPlayer();
@@ -222,14 +228,27 @@ const auditRows = async () =>
   ).rows;
 
 describe('Paramètre global', () => {
-  it('paramètre absent → désactivé (false), sans ligne en base', async () => {
+  it('paramètre absent → activé par défaut (D-147), sans ligne en base', async () => {
     expect(await count('system_settings')).toBe(0);
-    expect(await settings.isGloballyEnabled()).toBe(false);
+    expect(await settings.isGloballyEnabled()).toBe(true);
     const res = await expectStatus(admin.api.get(PATH), 200);
-    expect(res.body).toEqual({ enabled: false, updatedAt: null });
+    expect(res.body).toEqual({ enabled: true, updatedAt: null });
+  });
+
+  it('désactivation par un admin respectée, même quand le défaut est activé', async () => {
+    const off = await setGlobal(false);
+    expect(off.body).toMatchObject({ enabled: false, changed: true });
+    expect(await settings.isGloballyEnabled()).toBe(false);
+    expect(await auditRows()).toEqual([
+      expect.objectContaining({
+        action: 'DETECTION_DISABLED',
+        details: { key: 'detection_enabled', from: true, to: false },
+      }),
+    ]);
   });
 
   it('activation puis désactivation : confirmées par le serveur, relues en base', async () => {
+    await seedGlobalOff();
     const on = await setGlobal(true);
     expect(on.body).toEqual({ enabled: true, updatedAt: expect.any(String), changed: true });
     expect((await admin.api.get(PATH)).body.enabled).toBe(true);
@@ -256,7 +275,7 @@ describe('Paramètre global', () => {
       const res = await patch(admin, body);
       expect([body, res.status]).toEqual([body, 400]);
     }
-    expect(await settings.isGloballyEnabled()).toBe(false);
+    expect(await settings.isGloballyEnabled()).toBe(true);
     expect(await auditRows()).toEqual([]);
   });
 
@@ -297,9 +316,9 @@ describe('Permissions', () => {
     const res = await request(ctx.app)
       .patch(PATH)
       .set('Authorization', `Bearer ${forged}`)
-      .send({ enabled: true });
+      .send({ enabled: false });
     expect(res.status).toBe(403);
-    expect(await settings.isGloballyEnabled()).toBe(false);
+    expect(await settings.isGloballyEnabled()).toBe(true);
   });
 
   it('rôle retiré → 403 immédiat', async () => {
@@ -321,6 +340,7 @@ describe('Permissions', () => {
 
 describe('Audit administratif', () => {
   it('activation et désactivation auditées (acteur = session, ancienne / nouvelle valeur)', async () => {
+    await seedGlobalOff();
     await setGlobal(true);
     await setGlobal(false);
     const audit = await auditRows();
@@ -351,15 +371,16 @@ describe('Audit administratif', () => {
   });
 
   it('idempotence : même valeur → 200, changed=false, aucun audit', async () => {
-    const offWhileAbsent = await setGlobal(false);
-    expect(offWhileAbsent.body).toMatchObject({ enabled: false, changed: false });
-    await setGlobal(true);
-    const again = await setGlobal(true);
-    expect(again.body).toMatchObject({ enabled: true, changed: false });
-    expect((await auditRows()).map((r) => r.action)).toEqual(['DETECTION_ENABLED']);
+    const onWhileAbsent = await setGlobal(true);
+    expect(onWhileAbsent.body).toMatchObject({ enabled: true, changed: false });
+    await setGlobal(false);
+    const again = await setGlobal(false);
+    expect(again.body).toMatchObject({ enabled: false, changed: false });
+    expect((await auditRows()).map((r) => r.action)).toEqual(['DETECTION_DISABLED']);
   });
 
   it('concurrence : deux activations simultanées → un seul changement audité', async () => {
+    await seedGlobalOff();
     const second = await newAdmin();
     const results = await Promise.all([
       patch(admin, { enabled: true }),
@@ -398,6 +419,7 @@ describe('Redémarrage : la valeur est toujours relue dans PostgreSQL', () => {
 describe('Hiérarchie global / partie', () => {
   it('GLOBAL OFF bloque DetectionService avant toute lecture ou écriture', async () => {
     const { gameId } = await table(true);
+    await seedGlobalOff();
     const real = new PostgresDetectionRepository(database.sql);
     const calls: string[] = [];
     const spied = new Proxy(real, {
@@ -443,6 +465,7 @@ describe('Hiérarchie global / partie', () => {
   });
 
   it('GLOBAL OFF : option non proposée (detectionAvailable) et jamais enregistrée à la création', async () => {
+    await seedGlobalOff();
     const owner = await newPlayer();
     const list = await expectStatus(owner.api.get('/api/sessions/open'), 200);
     expect(list.body.detectionAvailable).toBe(false);
@@ -505,6 +528,7 @@ describe('Hiérarchie global / partie', () => {
 describe('Géolocalisation anti-collusion', () => {
   it('GLOBAL OFF : aucune collecte demandée ni acceptée, même réponse qu’une table non surveillée', async () => {
     const { owner, gameId } = await table(true);
+    await seedGlobalOff();
     const status = await expectStatus(owner.api.get(`/api/games/${gameId}/geolocation`), 200);
     expect(status.body).toEqual({ detectionEnabled: false });
     const sent = await owner.api.post(`/api/games/${gameId}/position`, {

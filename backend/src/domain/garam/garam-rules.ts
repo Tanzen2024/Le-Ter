@@ -92,13 +92,15 @@ export const GARAM_AUTO_DRAW_STEP_MS = 800;
 export const GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS = 3_500;
 
 /**
- * « Je passe » du contrôleur (D-140) : s'il ne peut prendre aucune carte du terre, son tour
- * reste ouvert ce délai DE PLUS que `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` (7 s en tout depuis
- * la fin du premier tour). Les écrans rangent le tour (2,45 s), annoncent le contrôle (1,8 s),
- * puis affichent « Je passe » jusqu'à l'échéance (≈ 2,75 s) ; le serveur clôt alors son tirage
- * et passe la main au joueur suivant.
+ * « Je passe » (D-145) : un joueur qui reçoit la main sans pouvoir prendre aucune carte du
+ * terre garde son tour ce délai DE PLUS que l'attente normale avant sa 1re carte, le temps que
+ * toute la table lise l'annonce ; le serveur clôt alors son tirage et passe la main.
+ * - contrôleur : 3,5 s + 4 s = 7,5 s depuis la fin du premier tour ; les écrans rangent le tour
+ *   (2,45 s), annoncent le contrôle (1,8 s), puis affichent « Je passe » ≈ 3,25 s ;
+ * - joueur suivant : 0,8 s + 4 s ; la dernière carte du joueur précédent se pose (0,8 s), puis
+ *   « Je passe » s'affiche ≈ 4 s (D-148 : 5 s auparavant).
  */
-export const GARAM_PASS_NOTICE_MS = 3_500;
+export const GARAM_PASS_NOTICE_MS = 4_000;
 
 /**
  * Main spéciale déclarée automatiquement (D-137) : une main spéciale unique n'est plus un choix
@@ -119,6 +121,8 @@ export const GARAM_AUTO_DECLARE_MS = 800;
  * (D-041), sinon son délai s'écoulerait pendant la révélation.
  */
 export const GARAM_REVEAL_LEAD_MS = 2_600;
+/** Pause avant la 1re main dévoilée, tous les tirages posés (D-148). */
+export const GARAM_REVEAL_PAUSE_MS = 700;
 export const GARAM_REVEAL_STEP_MS = 900;
 export const GARAM_SCORE_HOLD_MS = 900;
 export const GARAM_WINNER_HOLD_MS = 2_000;
@@ -128,6 +132,7 @@ export function garamRevealPresentationMs(players: number): number {
   if (players <= 0) return 0;
   return (
     GARAM_REVEAL_LEAD_MS +
+    GARAM_REVEAL_PAUSE_MS +
     players * GARAM_REVEAL_STEP_MS +
     GARAM_SCORE_HOLD_MS +
     GARAM_WINNER_HOLD_MS
@@ -216,8 +221,8 @@ export interface GaramPlay {
    */
   lastRefusal?: { playerId: PlayerId; cardId?: GaramCardId; passed?: true };
   /**
-   * Contrôleur qui ne peut prendre aucune carte (D-140) : son tour reste ouvert le temps
-   * d'annoncer « Je passe » à la table, puis son tirage est clos à l'échéance.
+   * Joueur qui a la main mais ne peut prendre aucune carte (D-145) : son tour reste ouvert le
+   * temps d'annoncer « Je passe » à la table, puis son tirage est clos à l'échéance.
    */
   passing?: { playerId: PlayerId; cardId?: GaramCardId };
   /** Joueur attendu ; absent quand aucune action n'est attendue. */

@@ -5,6 +5,8 @@
  * - Authentification par la 1re trame (`auth`), jamais par l'URL. Une fermeture 4401 (jeton
  *   expiré ou session révoquée) fait renouveler le jeton avant de se reconnecter ; toute autre
  *   fermeture (dont 1013, serveur momentanément indisponible) garde le jeton courant.
+ * - Jeton renouvelé AVANT son expiration et renvoyé sur la connexion ouverte (`auth`) : le
+ *   serveur repousse l'échéance sans couper (aucune reconnexion toutes les 15 min).
  * - Reconnexion avec un délai croissant (1 s → 30 s) ; après chaque reconnexion, tous les
  *   abonnements sont renvoyés et chaque abonné est prévenu (`onSubscribed`) pour rattraper
  *   ce qu'il a manqué par l'historique REST.
@@ -41,6 +43,7 @@ export interface RealtimeClientDeps {
   setTimer?: (callback: () => void, ms: number) => unknown;
   clearTimer?: (timer: unknown) => void;
   random?: () => number;
+  now?: () => number;
 }
 
 export interface ChatSubscriptionHandlers {
@@ -70,6 +73,28 @@ const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 10_000;
 /** Ouverture + authentification : au-delà, la tentative est abandonnée puis reprise. */
 export const HANDSHAKE_TIMEOUT_MS = 15_000;
+/**
+ * Jeton renouvelé et renvoyé (trame `auth`) sur la connexion OUVERTE, cette marge avant son
+ * expiration : le serveur ne la ferme plus en 4401 toutes les 15 min (aucune « Reconnexion… »).
+ */
+export const TOKEN_RENEW_MARGIN_MS = 60_000;
+const MIN_RENEW_DELAY_MS = 5_000;
+
+/** Expiration (ms) d'un JWT, lue sans vérification (le serveur vérifie) ; sinon `undefined`. */
+export function tokenExpiresAt(token: string): number | undefined {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload || typeof globalThis.atob !== 'function') return undefined;
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const exp = (JSON.parse(globalThis.atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))) as {
+      exp?: unknown;
+    }).exp;
+    return typeof exp === 'number' ? exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Codes posés par ce client (jamais envoyés par le serveur). */
 export const NO_PONG_CLOSE = 4000;
 export const HANDSHAKE_TIMEOUT_CLOSE = 4408;
@@ -137,6 +162,9 @@ export class RealtimeClient {
   private pingTimer: unknown;
   private pongTimer: unknown;
   private handshakeTimer: unknown;
+  private renewTimer: unknown;
+  /** Jeton présenté sur la connexion courante (pour programmer son renouvellement). */
+  private authToken: string | null = null;
   /** Tentative en cours (jeton en renouvellement inclus) : une seule à la fois. */
   private connecting = false;
   /** Coupure déjà signalée : les échecs suivants de la même panne ne sont pas répétés. */
@@ -271,6 +299,7 @@ export class RealtimeClient {
     const socket = this.deps.createSocket(this.deps.url);
     this.socket = socket;
     const authToken = token;
+    this.authToken = token;
     // Ouverture bloquée (SYN perdu, VPN en veille) : sans ce délai, aucune fermeture n'arrive
     // avant celle du système, plusieurs minutes plus tard.
     this.handshakeTimer = this.setTimer(() => {
@@ -298,6 +327,9 @@ export class RealtimeClient {
 
     switch (frame.type) {
       case 'ready':
+        this.scheduleRenewal();
+        // Jeton renouvelé sur la connexion ouverte : abonnements intacts, rien à renvoyer.
+        if (this.status === 'connected') return;
         this.clearHandshake();
         if (this.outageReported && __DEV__) {
           console.info(`[réseau] TEMPS_RÉEL_RÉTABLI après ${this.attempt} tentative(s)`);
@@ -366,6 +398,7 @@ export class RealtimeClient {
     this.socket = null;
     this.stopPing();
     this.clearHandshake();
+    this.clearRenewal();
     // Diagnostic (développement) : destination, code et famille de la fermeture, jamais le
     // jeton ; une seule fois par panne (les tentatives suivantes échouent pour la même cause).
     if (code !== 1000 && !this.outageReported) {
@@ -396,6 +429,33 @@ export class RealtimeClient {
     }, delay);
   }
 
+  private clearRenewal(): void {
+    this.clearTimer(this.renewTimer);
+    this.renewTimer = undefined;
+  }
+
+  /** Renouvelle le jeton avant son expiration et le présente sur la même connexion. */
+  private scheduleRenewal(): void {
+    this.clearRenewal();
+    const expiresAt = this.authToken ? tokenExpiresAt(this.authToken) : undefined;
+    if (expiresAt === undefined) return;
+    const now = (this.deps.now ?? Date.now)();
+    const delay = Math.max(MIN_RENEW_DELAY_MS, expiresAt - now - TOKEN_RENEW_MARGIN_MS);
+    const socket = this.socket;
+    this.renewTimer = this.setTimer(() => {
+      this.renewTimer = undefined;
+      void this.deps
+        .refreshToken()
+        .catch(() => null)
+        .then((token) => {
+          // Échec : la connexion vit jusqu'à la fermeture 4401, puis la reprise habituelle.
+          if (!token || socket !== this.socket || this.status !== 'connected') return;
+          this.authToken = token;
+          this.sendFrame({ type: 'auth', token });
+        });
+    }, delay);
+  }
+
   private clearHandshake(): void {
     this.clearTimer(this.handshakeTimer);
     this.handshakeTimer = undefined;
@@ -406,6 +466,7 @@ export class RealtimeClient {
     this.retryTimer = undefined;
     this.stopPing();
     this.clearHandshake();
+    this.clearRenewal();
     this.outageReported = false;
     const socket = this.socket;
     this.socket = null;

@@ -269,11 +269,13 @@ export class SessionService {
         password !== undefined ? await this.passwords.hashPassword(password) : undefined;
       // Détection coupée par l'administration (D-081) : l'option n'est pas proposée ; une
       // demande venant d'un ancien client n'active jamais la table.
-      // GARAM TIA : la détection anti-collusion s'y applique comme au Ter (D-125) : même
-      // option de table, même interrupteur global. Variante obligatoire, vérifiée par
-      // GameService avant tout enregistrement (D-127) ; tables de tournoi GARAM permises.
+      // GARAM TIA : AUCUNE détection anti-collusion (D-144, remplace D-125) ; une demande
+      // venant d'un ancien client est ignorée (la base le refuse aussi, migration 0055).
+      // Variante obligatoire, vérifiée par GameService avant tout enregistrement (D-127) ;
+      // tables de tournoi GARAM permises.
       const garam = options.gameType === 'GARAM';
-      const detection = suspicionDetectionEnabled === true && (await this.isDetectionAvailable());
+      const detection =
+        !garam && suspicionDetectionEnabled === true && (await this.isDetectionAvailable());
       const session = newSession(creatorId, options.maxPlayers, this.clock(), {
         name,
         passwordHash,

@@ -27,9 +27,20 @@ export interface SeatView {
 /** Les sièges de la table, en partant du joueur connecté (siège 0 s'il n'est pas assis). */
 export function arrangeSeats(game: GameView): SeatView[] {
   const count = game.maxPlayers;
-  const sides = SIDES[count] ?? SIDES[4];
   const me = game.players.find((p) => p.playerId === game.viewerId);
   const origin = me ? tableSeat(me) : 0;
+  // Partie démarrée : les joueurs de la partie sont figés, seuls eux sont placés, selon leur
+  // nombre (à 2 sur une table de 3 ou 4, l'adversaire est en face, jamais sur le côté). L'ordre
+  // antihoraire des sièges fixes reste celui de la session.
+  if (game.status !== 'waiting' && game.players.length >= 2) {
+    const sides = SIDES[game.players.length] ?? SIDES[4];
+    const fromMe = (p: PlayerInGame) => (tableSeat(p) - origin + count) % count;
+    return [...game.players]
+      .sort((a, b) => fromMe(a) - fromMe(b))
+      .slice(0, sides.length)
+      .map((player, index) => ({ seat: tableSeat(player), side: sides[index], player }));
+  }
+  const sides = SIDES[count] ?? SIDES[4];
   return sides.map((side, offset) => {
     const seat = (origin + offset) % count;
     return {

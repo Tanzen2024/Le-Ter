@@ -72,7 +72,9 @@ function manualTimers() {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function setup(options: { token?: string | null; refreshed?: string | null } = {}) {
+function setup(
+  options: { token?: string | null; refreshed?: string | null; now?: () => number } = {},
+) {
   const sockets: FakeSocket[] = [];
   const timers = manualTimers();
   const refreshToken = jest.fn(async () =>
@@ -90,6 +92,7 @@ function setup(options: { token?: string | null; refreshed?: string | null } = {
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
     random: () => 0.5,
+    now: options.now,
   });
   return { client, sockets, timers, refreshToken, last: () => sockets[sockets.length - 1]! };
 }
@@ -311,6 +314,31 @@ describe('RealtimeClient', () => {
     timers.fire(10_000); // Aucun pong : connexion morte pendant la veille.
     expect(last().closedWith).toBe(4000);
     expect(client.getStatus()).toBe('offline');
+  });
+
+  it('jeton renouvelé avant expiration sur la MÊME connexion : ni coupure ni réabonnement', async () => {
+    const NOW = 1_700_000_000_000;
+    const jwt = (exp: number) =>
+      `e30.${btoa(JSON.stringify({ exp })).replace(/=+$/, '')}.signature`;
+    const { client, sockets, timers, refreshToken, last } = setup({
+      token: jwt(NOW / 1000 + 15 * 60),
+      refreshed: jwt(NOW / 1000 + 30 * 60),
+      now: () => NOW,
+    });
+    client.subscribeChat(GAME, { onEvent: jest.fn() });
+    await connectReady(last);
+    expect(timers.delays()).toContain(14 * 60_000); // 1 min avant l'expiration
+
+    timers.fire(14 * 60_000);
+    await flush();
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(last().sent.at(-1)).toEqual({ type: 'auth', token: jwt(NOW / 1000 + 30 * 60) });
+
+    last().receive({ type: 'ready' });
+    expect(sockets).toHaveLength(1);
+    expect(client.getStatus()).toBe('connected');
+    expect(last().types().filter((t) => t === 'chat:subscribe')).toHaveLength(1);
+    expect(timers.delays()).toContain(29 * 60_000); // prochain renouvellement programmé
   });
 });
 

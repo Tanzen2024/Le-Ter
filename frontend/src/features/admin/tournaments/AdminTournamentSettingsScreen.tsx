@@ -4,7 +4,7 @@ import { ActivityIndicator, Text } from "react-native";
 import { Button } from "../../../components/ui/Button";
 import { TextField } from "../../../components/ui/TextField";
 import { colors } from "../../../constants/theme";
-import { ApiError } from "../../../lib/api-client";
+import { ApiError, userErrorMessage } from "../../../lib/api-client";
 import type { TournamentSettings } from "../../../types/tournament";
 import { AdminGate } from "./AdminGate";
 import { AdminPage, adminStyles } from "./AdminTournamentsScreen";
@@ -75,7 +75,7 @@ function Settings() {
     return (
       <AdminPage title="Paramètres des tournois" backTo="/admin/tournaments">
         <Text style={adminStyles.error}>
-          {error?.message ?? "Paramètres indisponibles."}
+          {error ? userErrorMessage(error) : "Paramètres indisponibles."}
         </Text>
       </AdminPage>
     );
@@ -149,7 +149,7 @@ function SettingsForm({ initial }: { initial: TournamentSettings }) {
         Object.keys(update.error.fields).length
       ) ? (
         <Text accessibilityRole="alert" style={adminStyles.error}>
-          {update.error.message}
+          {userErrorMessage(update.error)}
         </Text>
       ) : null}
       <Button title="Enregistrer" onPress={save} loading={update.isPending} />

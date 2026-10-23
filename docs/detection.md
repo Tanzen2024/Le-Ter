@@ -3,7 +3,8 @@
 > Décisions : D-043 (réglage), D-044 (étape 1), D-046 (étape 2), D-047 (étape 3), D-048 (étape 4),
 > D-049 (étape 5), D-053 (interrupteur global).
 > Code : `backend/src/domain/detection/`, `backend/src/services/detection/`.
-> Jeux : Fap-Fap (Le Ter) et GARAM TIA (D-125), par le même système et la même configuration.
+> Jeux : Fap-Fap (Le Ter) seulement. GARAM TIA n'a plus de détection (D-144, remplace D-125) :
+> la section « Jeux (D-125) » ci-dessous ne décrit plus que l'historique des anciennes manches GARAM.
 
 ## Feuille de route
 

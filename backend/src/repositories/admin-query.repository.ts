@@ -374,6 +374,11 @@ export interface AttentionCounts {
   pendingTournamentApprovals: number;
   stalePendingPayments: number;
   overdueTurns: number;
+  /**
+   * Réclamations qui attendent l'administration (D-114) : déposées, en analyse ou à examiner
+   * (`OPEN`, `AI_ANALYSIS`, `IN_REVIEW`). Ni celles qui attendent le joueur, ni les décidées.
+   */
+  pendingComplaints: number;
 }
 
 export interface DailyPoint {

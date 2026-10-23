@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { tablePalette as palette } from '../../components/table/TableDecor';
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import {
   COMPLAINT_CATEGORIES,
   type ComplaintCategory,
@@ -124,7 +124,7 @@ export function ComplaintForm({
         ) : null}
         {linkRejected ? <Text style={styles.error}>{t.form.linkInvalid}</Text> : null}
         {error && !linkRejected && !fields.title && !fields.description ? (
-          <Text style={styles.error}>{error.message}</Text>
+          <Text style={styles.error}>{userErrorMessage(error)}</Text>
         ) : null}
         <View style={[styles.row, { gap: m.gap * 0.5 }]}>
           <PanelButton title={t.form.submit} loading={create.isPending} onPress={submit} />

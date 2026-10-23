@@ -14,6 +14,7 @@ import {
   type ComplaintServices,
 } from '../../src/services/complaints/create-complaint-services';
 import { silentLogger } from '../../src/utils/logger';
+import type { AdminEventPublisher } from '../../src/websocket/admin-event-bus';
 import { createAdminTestApp, type AdminTestContext } from './admin';
 
 /**
@@ -60,7 +61,12 @@ export interface ComplaintTestContext {
 /** Application complète (auth, administration, réclamations) ; `model` absent = mode dégradé. */
 export function createComplaintTestApp(
   sql: SqlClient,
-  options: { model?: LanguageModel; maxTurns?: number } = {},
+  options: {
+    model?: LanguageModel;
+    maxTurns?: number;
+    /** Signaux de la cloche de l'administration (D-116) ; absent, aucun signal. */
+    adminEvents?: AdminEventPublisher;
+  } = {},
 ): ComplaintTestContext {
   // L'horloge du service suit celle de l'application, créée juste après.
   const holder: { ctx?: AdminTestContext } = {};
@@ -68,6 +74,7 @@ export function createComplaintTestApp(
     sql,
     logger: silentLogger,
     ...(options.model && { model: options.model }),
+    ...(options.adminEvents && { adminEvents: options.adminEvents }),
     limits: { playerMessagesPerHour: 1000, maxTurnsPerConversation: options.maxTurns ?? 15 },
     clock: () => holder.ctx?.now() ?? new Date('2026-10-09T08:00:00Z'),
   });

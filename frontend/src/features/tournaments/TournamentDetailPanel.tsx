@@ -15,7 +15,7 @@ import {
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
 import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import type { TournamentView } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { useLeaveSession } from '../sessions/hooks';
@@ -340,7 +340,7 @@ function toDisplayError(error: Error | null | undefined): DisplayError | undefin
   if (!error) return undefined;
   return error instanceof ApiError
     ? { code: error.code, message: error.message }
-    : { message: error.message };
+    : { message: userErrorMessage(error) };
 }
 
 function errorText(error: DisplayError, t: TournamentMessages): string {

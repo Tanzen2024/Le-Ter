@@ -8,7 +8,7 @@ import type { PubSubTransport } from './pubsub-transport';
  * navigateur déconnecté) ne fait rien perdre : les compteurs sont relus à la reconnexion et
  * périodiquement.
  */
-export type AdminAttentionSource = 'DETECTION_ALERT' | 'TOURNAMENT_APPROVAL';
+export type AdminAttentionSource = 'DETECTION_ALERT' | 'TOURNAMENT_APPROVAL' | 'COMPLAINT';
 
 export interface AdminEvent {
   type: 'attention';
@@ -38,6 +38,7 @@ export const ADMIN_EVENT_CHANNEL = 'le-ter:admin:events';
 const SOURCES: ReadonlySet<string> = new Set<AdminAttentionSource>([
   'DETECTION_ALERT',
   'TOURNAMENT_APPROVAL',
+  'COMPLAINT',
 ]);
 
 function isAdminEvent(value: unknown): value is AdminEvent {

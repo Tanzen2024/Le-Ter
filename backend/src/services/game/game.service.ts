@@ -216,8 +216,8 @@ export interface GameServiceDependencies {
    * GARAM TIA, tirage automatique (D-136) : délai avant la 1re carte d'un joueur, puis entre
    * deux cartes. Par défaut GARAM_AUTO_DRAW_FIRST_MS / GARAM_AUTO_DRAW_STEP_MS (tests : injecté).
    * `afterFirstRound` : délai avant la 1re carte de la manche (premier tour vu et rangé) ;
-   * absent, il vaut `first` (tests rapides). `pass` : durée totale du tour « Je passe » du
-   * contrôleur (D-140) ; absent, 1 ms (tests : échéance aussitôt atteinte ; une échéance doit
+   * absent, il vaut `first` (tests rapides). `pass` : durée totale d'un tour « Je passe »
+   * (D-145) ; absent, 1 ms (tests : échéance aussitôt atteinte ; une échéance doit
    * suivre le début du tour, contrainte de `games`).
    */
   garamAutoDrawMs?: { first: number; step: number; afterFirstRound?: number; pass?: number };
@@ -1044,7 +1044,7 @@ export class GameService {
           const declaring = Boolean(g.garam.special);
           const passing = Boolean(g.garam.passing);
           const events = garam.playGaramAutomatically(g, playerId, this.garamContext(now));
-          // Main spéciale déclarée par le serveur (D-137), « Je passe » du contrôleur (D-140) :
+          // Main spéciale déclarée par le serveur (D-137), « Je passe » (D-145) :
           // aucune carte jouée à la place de quiconque.
           return declaring || passing
             ? events

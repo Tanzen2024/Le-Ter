@@ -6,6 +6,7 @@ import {
   PostgresSupportConversationRepository,
 } from '../../repositories/postgres-complaint.repository';
 import type { Logger } from '../../utils/logger';
+import type { AdminEventPublisher } from '../../websocket/admin-event-bus';
 import { createLanguageModel } from '../ai/create-language-model';
 import type { LanguageModel } from '../ai/language-model';
 import { AssistantToolbox } from './assistant-tools';
@@ -31,6 +32,8 @@ export function createComplaintServices(options: {
   limits?: SupportLimitsEnv;
   model?: LanguageModel;
   signals?: ComplaintSignalPublisher;
+  /** Signal de la cloche de l'administration (D-116). */
+  adminEvents?: AdminEventPublisher;
   clock?: () => Date;
 }): ComplaintServices {
   const { sql, logger, clock } = options;
@@ -47,6 +50,7 @@ export function createComplaintServices(options: {
     conversations,
     logger,
     ...(options.signals && { signals: options.signals }),
+    ...(options.adminEvents && { adminEvents: options.adminEvents }),
     ...(clock && { clock }),
   });
   const assistant = new SupportAssistantService({

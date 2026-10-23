@@ -1080,6 +1080,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       pending_approvals: number;
       stale_payments: number;
       overdue_turns: number;
+      pending_complaints: number;
     }>(
       `SELECT
          (SELECT count(*) FROM detection_alerts WHERE status = 'NEW')::int AS new_alerts,
@@ -1089,7 +1090,9 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
             AND created_at < $1::timestamptz - make_interval(mins => $2))::int AS stale_payments,
          (SELECT count(*) FROM games WHERE status = 'in_progress'
             AND turn_deadline_at < $1::timestamptz - make_interval(secs => $3))::int
-           AS overdue_turns`,
+           AS overdue_turns,
+         (SELECT count(*) FROM complaints
+            WHERE status IN ('OPEN', 'AI_ANALYSIS', 'IN_REVIEW'))::int AS pending_complaints`,
       [iso(now), ADMIN_THRESHOLDS.stalePendingPaymentMinutes, ADMIN_THRESHOLDS.overdueTurnSeconds],
     );
     const a = alerts.rows[0];
@@ -1098,6 +1101,7 @@ export class PostgresAdminQueryRepository implements AdminQueryRepository {
       pendingTournamentApprovals: n(a?.pending_approvals),
       stalePendingPayments: n(a?.stale_payments),
       overdueTurns: n(a?.overdue_turns),
+      pendingComplaints: n(a?.pending_complaints),
     };
   }
 

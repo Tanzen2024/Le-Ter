@@ -89,8 +89,8 @@ function CreateColumn({
   const [variant, setVariant] = useState<GaramVariant>(15);
   // Détection anti-collusion (D-043) : désactivée par défaut ; fixée à la création. Proposée
   // seulement si l'administration l'a activée globalement (D-053, D-081).
-  // Même option pour Fap-Fap et GARAM TIA (D-125) : un seul système de détection.
-  const detectionAvailable = useDetectionAvailable();
+  // Fap-Fap seulement : GARAM TIA n'a aucune détection (D-144, remplace D-125).
+  const detectionAvailable = useDetectionAvailable() && gameType !== 'GARAM';
   const [detection, setDetection] = useState(false);
   const [formError, setFormError] = useState<string>();
   const defaultName = user ? `Partie de ${user.username}` : '';
@@ -291,8 +291,9 @@ function SearchColumn({
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const open = useOpenTables(gameType);
-  // Détection coupée par l'administration (D-081) : aucune colonne « bouclier ».
-  const detectionAvailable = useDetectionAvailable();
+  // Détection coupée par l'administration (D-081), ou GARAM TIA (D-144) : aucune colonne
+  // « bouclier ».
+  const detectionAvailable = useDetectionAvailable() && gameType !== 'GARAM';
   const inputRef = useRef<TextInput>(null);
   const [query, setQuery] = useState('');
   // Partie 🔒 choisie : le mot de passe est demandé sous sa ligne.

@@ -87,8 +87,9 @@ export interface GaramContext {
   /** Délai avant la 1re carte de la manche : le premier tour est d'abord vu et rangé. */
   autoDrawAfterFirstRoundMs?: number;
   /**
-   * « Je passe » du contrôleur (D-140) : durée TOTALE de son tour, depuis la fin du premier
-   * tour. Par défaut `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_PASS_NOTICE_MS`.
+   * « Je passe » (D-145) : durée TOTALE d'un tour sans carte prenable. Par défaut l'attente
+   * avant une 1re carte (`autoDrawAfterFirstRoundMs` pour le contrôleur, `autoDrawFirstMs`
+   * ensuite) + `GARAM_PASS_NOTICE_MS`.
    */
   passTurnMs?: number;
   /** Main spéciale unique (D-137) : délai avant sa déclaration automatique par le serveur. */
@@ -515,13 +516,11 @@ export function canDrawGaram(game: Game, playerId: PlayerId): boolean {
 }
 
 /**
- * Tour de tirage de `playerId`. S'il ne peut prendre aucune carte (terre vide ou
- * « Impossible »), son tirage est terminé aussitôt et le tour passe au suivant : il n'a aucun
- * choix à faire (le tirage est obligatoire tant qu'il ne dépasse pas 21, §3.8). C'est le cas
- * du joueur aux deux As (22, D-130) : rien à tirer, son tour est clos aussitôt. Exception, le
- * CONTRÔLEUR (D-140) : son tour reste ouvert le temps d'annoncer « Je passe » à la table
- * (`passing`), puis son tirage est clos à l'échéance (`passGaramTurn`). Sinon son échéance est
- * le délai du tirage automatique (D-136) : le serveur tirera pour lui.
+ * Tour de tirage de `playerId`. S'il ne peut prendre aucune carte (terre vide ou carte qui
+ * ferait dépasser 21, dont le joueur aux deux As à 22, D-130), il n'a aucun choix à faire :
+ * quand la main lui arrive, il annonce « Je passe » à la table (`passing`, D-145), puis son
+ * tirage est clos à l'échéance (`passGaramTurn`). Sinon son échéance est le délai du tirage
+ * automatique (D-136) : le serveur tirera pour lui.
  */
 function openDrawTurn(
   game: Game,
@@ -530,34 +529,16 @@ function openDrawTurn(
   ctx: GaramContext,
   firstMs = ctx.autoDrawFirstMs ?? GARAM_AUTO_DRAW_FIRST_MS,
 ): GameEventDraft[] {
-  const events: GameEventDraft[] = [];
-  let current: PlayerId | undefined = playerId;
-  while (current) {
-    play.nextPlayerId = current;
-    const refusal = drawRefusal(play, current);
-    if (!refusal) {
-      beginTurn(game, ctx.now, firstMs);
-      events.push(turnChanged(game, play));
-      return events;
-    }
-    if (current === play.controllerId) {
-      play.passing = { playerId: current, ...(refusal.cardId && { cardId: refusal.cardId }) };
-      // Seul le contrôleur passe ici : son tour s'ouvre toujours à la fin du premier tour.
-      beginTurn(
-        game,
-        ctx.now,
-        ctx.passTurnMs ?? GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_PASS_NOTICE_MS,
-      );
-      events.push(
-        { type: 'game:player_passed', payload: { ...play.passing } },
-        turnChanged(game, play),
-      );
-      return events;
-    }
-    events.push(endDraw(play, current, refusal.cardId));
-    current = nextDrawer(play);
+  play.nextPlayerId = playerId;
+  const refusal = drawRefusal(play, playerId);
+  if (!refusal) {
+    beginTurn(game, ctx.now, firstMs);
+    return [turnChanged(game, play)];
   }
-  return [...events, ...finishRound(game, play, ctx.now)];
+  play.passing = { playerId, ...(refusal.cardId && { cardId: refusal.cardId }) };
+  // Même attente qu'avant une 1re carte (le tour précédent se pose), puis l'annonce.
+  beginTurn(game, ctx.now, ctx.passTurnMs ?? firstMs + GARAM_PASS_NOTICE_MS);
+  return [{ type: 'game:player_passed', payload: { ...play.passing } }, turnChanged(game, play)];
 }
 
 function nextDrawer(play: GaramPlay): PlayerId | undefined {
@@ -584,8 +565,8 @@ function endDraw(
 }
 
 /**
- * Fin du « Je passe » du contrôleur (D-140), à l'échéance de son tour : son tirage est clos
- * (aucune carte prise) et la main passe au joueur suivant, ou la manche se termine.
+ * Fin d'un « Je passe » (D-145), à l'échéance du tour : le tirage du joueur est clos (aucune
+ * carte prise) et la main passe au joueur suivant, ou la manche se termine.
  */
 function passGaramTurn(game: Game, play: GaramPlay, ctx: GaramContext): GameEventDraft[] {
   const passing = play.passing as NonNullable<GaramPlay['passing']>;
@@ -618,7 +599,7 @@ export function drawGaramCard(
     throw new NotYourTurnError(game.id, playerId);
   }
   if (drawRefusal(play, playerId)) {
-    // Un tour sans carte prenable est clos à son ouverture, ou annonce « Je passe » (D-140).
+    // Un tour sans carte prenable est clos à son ouverture, ou annonce « Je passe » (D-145).
     throw new GaramActionNotAllowedError(game.id, 'aucune carte ne peut être tirée');
   }
   const head = play.terre.shift() as GaramCardId;
@@ -671,7 +652,7 @@ export function garamAutomaticCard(game: Game, playerId: PlayerId): GaramCardId 
  *   automatique de D-136 : l'échéance d'un tour de tirage est son court délai.
  * Main spéciale unique en attente (D-137) : l'échéance est celle de sa déclaration
  * automatique ; le serveur la déclare (`declareGaramWin`), aucune carte n'est jouée.
- * « Je passe » du contrôleur (D-140) : l'échéance clôt son tirage (`passGaramTurn`).
+ * « Je passe » (D-145) : l'échéance clôt le tirage du joueur (`passGaramTurn`).
  */
 export function playGaramAutomatically(
   game: Game,

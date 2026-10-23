@@ -1,5 +1,12 @@
 import Constants from 'expo-constants';
 
+import {
+  GENERIC_ERROR_MESSAGE,
+  playerFacingApiMessage,
+  playerFacingFieldMessages,
+  SERVER_ERROR_MESSAGE,
+} from './user-facing-error';
+
 /** Port du backend en développement (`backend/.env`, `PORT`). */
 const DEV_API_PORT = 3000;
 
@@ -53,22 +60,36 @@ if (__DEV__) {
   }
 }
 
-/** Erreur renvoyée par l'API : `code` stable, `message` affichable, `fields` par champ. */
+/**
+ * Erreur renvoyée par l'API : `code` stable, `message` affichable, `fields` par champ. Le
+ * message et les champs sont toujours lisibles par le joueur : un texte technique du serveur
+ * (ou d'un proxy) est remplacé à la construction (`user-facing-error.ts`).
+ */
 export class ApiError extends Error {
+  readonly fields: Record<string, string>;
+
   constructor(
     readonly status: number,
     readonly code: string,
     message: string,
-    readonly fields: Record<string, string> = {},
+    fields: Record<string, string> = {},
   ) {
-    super(message);
+    super(playerFacingApiMessage(status, code, message));
     this.name = 'ApiError';
+    this.fields = playerFacingFieldMessages(fields ?? {});
   }
+}
+
+/**
+ * Texte d'erreur à afficher, quelle que soit l'erreur : le message (déjà filtré) d'une
+ * `ApiError`, sinon `fallback`. Une erreur JavaScript (TypeError, JSON…) n'est jamais affichée.
+ */
+export function userErrorMessage(error: unknown, fallback: string = GENERIC_ERROR_MESSAGE): string {
+  return error instanceof ApiError && error.message ? error.message : fallback;
 }
 
 const NETWORK_ERROR_MESSAGE = 'Impossible de joindre le serveur. Vérifiez votre connexion.';
 const TIMEOUT_MESSAGE = 'Le serveur ne répond pas. Vérifiez votre connexion et réessayez.';
-const SERVER_ERROR_MESSAGE = 'Le serveur a rencontré une erreur. Réessayez dans un instant.';
 
 /**
  * `fetch` vers l'API avec délai maximal. Sans réponse HTTP, une `ApiError` de statut 0 :
@@ -169,7 +190,7 @@ export async function apiRequest<T>(
       PLAYER_FACING_MESSAGES[body.code ?? ''] ??
         body.message ??
         // Réponse 5xx sans message de l'API (proxy, panne) : dite comme telle.
-        (response.status >= 500 ? SERVER_ERROR_MESSAGE : 'Une erreur est survenue. Réessayez.'),
+        (response.status >= 500 ? SERVER_ERROR_MESSAGE : GENERIC_ERROR_MESSAGE),
       body.fields,
     );
   }

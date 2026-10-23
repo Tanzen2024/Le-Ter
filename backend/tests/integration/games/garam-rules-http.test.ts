@@ -78,7 +78,7 @@ const TIMER: GaramCardId[] = [
 function app(decks: GaramCardId[][], production = false) {
   ctx = createGameApiTestApp(database.sql, {
     random: garamDecksRandom(...decks),
-    // Timer de production (15 s affichées, D-127) seulement pour les tests du chrono.
+    // Timer de production (25 s affichées, D-143) seulement pour les tests du chrono.
     ...(production ? {} : { turnDurationMs: 60_000 }),
     decisionWindowMs: 60_000,
     stakePolicies: true,
@@ -276,7 +276,7 @@ describe('tirage (§14-§18)', () => {
 });
 
 describe('chrono (§19-§22, D-127), timer de production', () => {
-  it('15 s fixées par le serveur ; sans action : carte LÉGALE déterministe, puis tirage ≤ 21', async () => {
+  it('25 s fixées par le serveur ; sans action : carte LÉGALE déterministe, puis tirage ≤ 21', async () => {
     app([TIMER], true);
     const [a, b] = [await newPlayer(), await newPlayer()];
     const created = await expectStatus(create(a, { maxPlayers: 2, stakeAmount: 100 }), 201);

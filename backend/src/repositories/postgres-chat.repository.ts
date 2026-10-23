@@ -36,11 +36,18 @@ const MESSAGE_COLUMNS = `m.id, m.game_id, m.sender_id, u.username AS sender_disp
   m.content, m.created_at`;
 
 /**
+ * Parties de la table (session) de la partie `$1` (D-149) : l'historique du chat suit la
+ * table, de son ouverture à sa fermeture. Servi par `games_session_created_idx`.
+ */
+const TABLE_GAMES = `SELECT t.id FROM games g JOIN games t ON t.session_id = g.session_id
+  WHERE g.id = $1`;
+
+/**
  * Chat de partie sur PostgreSQL (migration 0013). Requêtes paramétrées uniquement ; aucun
  * verrou sur `games` : le chat ne ralentit jamais une commande de jeu (D-045).
  *
- * Ordre total des messages d'une partie : (created_at, id), servi par l'index
- * `game_chat_messages_game_created_idx`.
+ * Ordre total des messages d'une table : (created_at, id), servi par l'index
+ * `game_chat_messages_game_created_idx` pour chacune de ses parties.
  */
 export class PostgresChatRepository implements ChatRepository {
   constructor(private readonly db: SqlExecutor) {}
@@ -123,8 +130,9 @@ export class PostgresChatRepository implements ChatRepository {
     let cursor: { created_at: Date | string; id: string } | undefined;
     if (cursorId) {
       const { rows } = await this.db.query<{ created_at: Date | string; id: string }>(
-        'SELECT created_at, id FROM game_chat_messages WHERE id = $1 AND game_id = $2',
-        [cursorId, gameId],
+        `SELECT m.created_at, m.id FROM game_chat_messages m
+         WHERE m.id = $2 AND m.game_id IN (${TABLE_GAMES})`,
+        [gameId, cursorId],
       );
       cursor = rows[0];
       if (!cursor) {
@@ -145,7 +153,7 @@ export class PostgresChatRepository implements ChatRepository {
     const { rows } = await this.db.query<MessageRow>(
       `SELECT ${MESSAGE_COLUMNS}
        FROM game_chat_messages m JOIN users u ON u.id = m.sender_id
-       WHERE m.game_id = $1 ${range}
+       WHERE m.game_id IN (${TABLE_GAMES}) ${range}
        ORDER BY m.created_at ${order}, m.id ${order}
        LIMIT $2`,
       params,

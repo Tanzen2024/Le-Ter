@@ -603,6 +603,139 @@ describe('WebSocket : envoi', () => {
   });
 });
 
+/**
+ * Chat PENDANT la partie (`in_progress`) : le statut d'une partie démarrée ne bloque ni
+ * l'envoi, ni la diffusion, ni l'abonnement. Seuls ses joueurs écrivent et reçoivent.
+ */
+describe('Chat pendant une partie en cours', () => {
+  async function startedTable(count: number) {
+    const players: Player[] = [];
+    for (let i = 0; i < count; i += 1) players.push(await newPlayer());
+    const [owner, ...others] = players as [Player, ...Player[]];
+    const gameId = await gameWith(owner, ...others);
+    const started = await expectStatus(owner.api.post(`/api/games/${gameId}/start`), 200);
+    expect(started.body.game.status).toBe('in_progress');
+    const sockets: TestClient[] = [];
+    for (const p of players) {
+      const client = await connect(p);
+      expect((await client.subscribe(gameId)).type).toBe('chat:subscribed');
+      sockets.push(client);
+    }
+    return { players, sockets, gameId };
+  }
+
+  const contentOf = (f: Frame) => (f.message as { content: string }).content;
+  const received = (client: TestClient, content: string) =>
+    client.next((f) => f.type === 'chat:message' && contentOf(f) === content);
+
+  it('un joueur envoie ; lui et l’autre joueur le reçoivent ; un extérieur ne reçoit rien', async () => {
+    const { players, sockets, gameId } = await startedTable(2);
+    const [A, B] = players as [Player, Player];
+    const outsider = await connect(await newPlayer());
+    expect(await outsider.subscribe(gameId)).toMatchObject({ type: 'error', code: 'NOT_A_MEMBER' });
+
+    const sent = await expectStatus(post(A, gameId, 'Bonjour'), 201);
+    expect(sent.body.message).toMatchObject({ gameId, senderId: A.id, content: 'Bonjour' });
+    for (const client of sockets) {
+      expect((await received(client, 'Bonjour')).message).toEqual(sent.body.message);
+    }
+
+    await expectStatus(post(B, gameId, 'Salut'), 201);
+    expect(contentOf(await received(sockets[0] as TestClient, 'Salut'))).toBe('Salut');
+
+    await settle();
+    expect(outsider.frames.filter((f) => f.type === 'chat:message')).toEqual([]);
+  });
+
+  it('un extérieur ne peut pas écrire dans la partie en cours (HTTP et WebSocket)', async () => {
+    const { sockets, gameId } = await startedTable(2);
+    const intruder = await newPlayer();
+    const res = await expectStatus(post(intruder, gameId, 'intrus'), 403);
+    expect(res.body.code).toBe('NOT_A_MEMBER');
+    const client = await connect(intruder);
+    client.send({ type: 'chat:send', gameId, clientMessageId: randomUUID(), content: 'intrus' });
+    expect(await client.next((f) => f.type === 'error')).toMatchObject({ code: 'NOT_A_MEMBER' });
+
+    await settle();
+    expect(sockets.flatMap((c) => c.frames).filter((f) => f.type === 'chat:message')).toEqual([]);
+    const { rows } = await database.sql.query(
+      'SELECT 1 FROM game_chat_messages WHERE game_id = $1',
+      [gameId],
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it('4 joueurs : A → B → C → D → A, chacun reçoit tous les messages', async () => {
+    const { players, sockets, gameId } = await startedTable(4);
+    for (const [i, p] of players.entries()) {
+      await expectStatus(post(p, gameId, `message ${i}`), 201);
+      for (const client of sockets) await received(client, `message ${i}`);
+    }
+    const history = await expectStatus(
+      players[3]!.api.get(`/api/games/${gameId}/chat/messages`),
+      200,
+    );
+    expect(history.body.messages.map((m: { content: string }) => m.content)).toEqual([
+      'message 0',
+      'message 1',
+      'message 2',
+      'message 3',
+    ]);
+  });
+
+  it('deux messages envoyés en rafale : aucun n’est perdu', async () => {
+    const { players, sockets, gameId } = await startedTable(2);
+    const [A] = players as [Player];
+    await Promise.all([
+      expectStatus(post(A, gameId, 'un'), 201),
+      expectStatus(post(A, gameId, 'deux'), 201),
+    ]);
+    await received(sockets[1] as TestClient, 'un');
+    await received(sockets[1] as TestClient, 'deux');
+    const history = await expectStatus(A.api.get(`/api/games/${gameId}/chat/messages`), 200);
+    expect(history.body.messages.map((m: { content: string }) => m.content).sort()).toEqual([
+      'deux',
+      'un',
+    ]);
+  });
+
+  it('reconnexion : les messages manqués sont rattrapés par l’historique', async () => {
+    const { players, sockets, gameId } = await startedTable(2);
+    const [A, B] = players as [Player, Player];
+    await expectStatus(post(A, gameId, 'avant'), 201);
+    const before = await received(sockets[1] as TestClient, 'avant');
+    sockets[1]!.close();
+
+    await expectStatus(post(A, gameId, 'pendant la coupure'), 201);
+
+    const back = await connect(B);
+    expect((await back.subscribe(gameId)).type).toBe('chat:subscribed');
+    const lastSeen = (before.message as { id: string }).id;
+    const missed = await expectStatus(
+      B.api.get(`/api/games/${gameId}/chat/messages?after=${lastSeen}`),
+      200,
+    );
+    expect(missed.body.messages.map((m: { content: string }) => m.content)).toEqual([
+      'pendant la coupure',
+    ]);
+    expect(missed.body.canSend).toBe(true);
+  });
+
+  it('le chat continue sans réabonnement quand la partie passe de waiting à in_progress', async () => {
+    const [A, B] = [await newPlayer(), await newPlayer()];
+    const gameId = await gameWith(A, B);
+    const watcher = await connect(B);
+    expect((await watcher.subscribe(gameId)).type).toBe('chat:subscribed');
+
+    await expectStatus(post(A, gameId, 'en attente'), 201);
+    await received(watcher, 'en attente');
+    await expectStatus(A.api.post(`/api/games/${gameId}/start`), 200);
+    await expectStatus(post(A, gameId, 'en cours'), 201);
+    await received(watcher, 'en cours');
+    expect(watcher.frames.filter((f) => f.type === 'chat:subscribed')).toEqual([]);
+  });
+});
+
 describe('Diffusion inter-instances (Redis Pub/Sub simulé)', () => {
   const logger = createLogger({}, () => undefined);
   const gameA = randomUUID() as GameId;

@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { Keyboard } from 'react-native';
 
 import type { ChatMessage } from '../../types/chat';
 import { ChatPanel, type ChatPanelProps } from './ChatPanel';
@@ -73,19 +74,30 @@ describe('ChatPanel', () => {
     expect(screen.getByText(payload)).toBeTruthy();
   });
 
-  it('envoie le texte nettoyé ; le champ n’est vidé qu’après la confirmation', async () => {
-    let confirm: () => void = () => undefined;
-    const onSend = jest.fn((_content: string, onSent: () => void) => {
-      confirm = onSent;
-    });
+  it('envoie le texte nettoyé ; champ vidé et clavier fermé dès l’appui', async () => {
+    const dismiss = jest.spyOn(Keyboard, 'dismiss');
+    const onSend = jest.fn();
     await renderPanel({ onSend });
     const input = screen.getByLabelText('Message');
     await fireEvent.changeText(input, '  bien joué  ');
     await fireEvent.press(screen.getByLabelText('Envoyer'));
     expect(onSend).toHaveBeenCalledWith('bien joué', expect.any(Function));
-    expect(screen.getByLabelText('Message').props.value).toBe('  bien joué  ');
-    await act(async () => confirm());
     expect(screen.getByLabelText('Message').props.value).toBe('');
+    expect(dismiss).toHaveBeenCalled();
+    dismiss.mockRestore();
+  });
+
+  it('envoi échoué : le texte revient dans le champ', async () => {
+    let fail: () => void = () => undefined;
+    const onSend = jest.fn((_content: string, onFailed: () => void) => {
+      fail = onFailed;
+    });
+    await renderPanel({ onSend });
+    await fireEvent.changeText(screen.getByLabelText('Message'), 'perdu ?');
+    await fireEvent.press(screen.getByLabelText('Envoyer'));
+    expect(screen.getByLabelText('Message').props.value).toBe('');
+    await act(async () => fail());
+    expect(screen.getByLabelText('Message').props.value).toBe('perdu ?');
   });
 
   it('envoi au clavier (touche Envoyer) ; rien n’est envoyé pour un message vide', async () => {

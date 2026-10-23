@@ -128,7 +128,9 @@ export function LobbyShell({
               {decor}
             </View>
           ) : null}
-          {children}
+          {/* Contenu de l'écran (ex. panneau « Proposer un tournoi ») : lui aussi reste entre
+              les deux blocs du HUD, son X n'est jamais collé au bouton de la boutique (D-133). */}
+          <HudInsetsContext.Provider value={hudInsets}>{children}</HudInsetsContext.Provider>
           <View
             style={[styles.bottomLeft, { left: m.safe.left, bottom: m.safe.bottom, gap: m.gap }]}
           >

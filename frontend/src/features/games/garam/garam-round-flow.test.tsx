@@ -13,6 +13,7 @@ import {
   GARAM_DRAW_BREATH_MS,
   GARAM_DRAW_START_PAUSE_MS,
   GARAM_DRAW_FLIGHT_MS,
+  GARAM_REVEAL_PAUSE_MS,
   GARAM_REVEAL_STEP_MS,
   GARAM_TERRE_STEP,
   GARAM_SCORE_HOLD_MS,
@@ -147,7 +148,7 @@ const table = (game: GameView) => (
 const wait = (ms: number) => act(() => jest.advanceTimersByTime(ms));
 const label = (text: string | RegExp) => screen.queryByLabelText(text, { includeHiddenElements: true });
 
-describe('« Je passe » du contrôleur (D-140)', () => {
+describe('« Je passe » du contrôleur (D-145)', () => {
   it('annoncé après le contrôle, tenu jusqu’à la main passée, jamais répété en « Impossible »', async () => {
     // Je contrôle avec 20 : la tête (♠3) ferait 23, je ne peux rien tirer.
     const PASSING = view({
@@ -196,6 +197,43 @@ describe('« Je passe » du contrôleur (D-140)', () => {
     expect(pass()).toBeNull();
     expect(screen.queryByText(/Impossible/, { includeHiddenElements: true })).toBeNull();
     expect(screen.getByText('Bob tire au terre', { includeHiddenElements: true })).toBeTruthy();
+  });
+
+  it('joueur suivant sans carte prenable : « Je passe » quand la main lui arrive, après la carte posée', async () => {
+    const ui = await render(table(DEALT));
+    await ui.rerender(table(I_PLAYED));
+    await wait(10_000);
+    await ui.rerender(table(ROUND_DONE));
+    await wait(50);
+    await wait(TRICK_CLEAR_DELAY_MS - 150);
+    await wait(1_000);
+    await wait(2_000); // contrôle annoncé puis effacé
+    const pass = () => screen.queryByTestId('garam-pass-notice', { includeHiddenElements: true });
+    // Je tire ♣4 (21) puis « Impossible » ; la main arrive à Bob, qui ne peut rien prendre.
+    await ui.rerender(
+      table(
+        view(
+          {
+            ...I_DREW.garam,
+            drawDone: ['me'],
+            lastRefusal: { playerId: 'me', cardId: 'PIQUE-5' },
+            nextPlayerId: 'b',
+            passingPlayerId: 'b',
+          },
+          { activePlayerId: 'b' },
+        ),
+      ),
+    );
+    // Ma carte vole d'abord : pas d'annonce de Bob avant qu'elle soit posée.
+    expect(pass()).toBeNull();
+    await wait(GARAM_DRAW_START_PAUSE_MS + GARAM_DRAW_BREATH_MS);
+    expect(screen.getByTestId('garam-draw-flight', { includeHiddenElements: true })).toBeTruthy();
+    expect(pass()).toBeNull();
+    await wait(GARAM_DRAW_FLIGHT_MS + 50);
+    expect(pass()).toHaveTextContent('Bob : « Je passe »');
+    // Tenue jusqu'à ce que le serveur passe la main (aucun délai côté téléphone).
+    await wait(4_500);
+    expect(pass()).toBeTruthy();
   });
 
   it('vu par un autre joueur : « Bob : « Je passe » »', async () => {
@@ -274,7 +312,10 @@ describe('manche complète, sans victoire immédiate', () => {
     expect(center).toHaveBeenLastCalledWith(true);
     expect(label('Bob : 2 cartes cachées, 0 tirée du terre')).toBeTruthy();
     expect(screen.queryByTestId('garam-total-me', { includeHiddenElements: true })).toBeNull();
-    await wait(50); // moi d'abord (ordre de la manche)
+    // Courte pause, tous les tirages posés : aucune main encore dévoilée (D-148).
+    await wait(GARAM_REVEAL_PAUSE_MS - 50);
+    expect(screen.queryByTestId('garam-total-me', { includeHiddenElements: true })).toBeNull();
+    await wait(100); // moi d'abord (ordre de la manche)
     expect(screen.getByTestId('garam-total-me', { includeHiddenElements: true })).toHaveTextContent('Total 21');
     expect(label('Bob : 2 cartes cachées, 0 tirée du terre')).toBeTruthy(); // Bob attend son tour
     expect(screen.queryByTestId('garam-total-b', { includeHiddenElements: true })).toBeNull();
@@ -315,7 +356,7 @@ describe('manche complète, sans victoire immédiate', () => {
     // Fin reçue pendant la manche : révélation joueur après joueur, puis le gagnant.
     const ui = await render(table(I_DREW));
     await ui.rerender(table(twoAces));
-    await wait(50 + 2 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS);
+    await wait(50 + GARAM_REVEAL_PAUSE_MS + 2 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS);
     expect(screen.getByTestId('garam-banner', { includeHiddenElements: true })).toHaveTextContent('🏆 Moi');
     expect(screen.getByText('Gagne avec deux As', { includeHiddenElements: true })).toBeTruthy();
     expect(screen.queryByText('22 points', { includeHiddenElements: true })).toBeNull();

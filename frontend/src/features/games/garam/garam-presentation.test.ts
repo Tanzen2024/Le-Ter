@@ -12,6 +12,7 @@ import {
 import {
   GARAM_HAND_MIN_STEP,
   GARAM_MAX_SEAT_CARDS,
+  GARAM_REVEAL_PAUSE_MS,
   GARAM_REVEAL_STEP_MS,
   GARAM_SCORE_HOLD_MS,
   GARAM_TIE_HOLD_MS,
@@ -149,13 +150,14 @@ describe('cartes tirées : une à la fois, dans l’ordre réel du tirage', () =
 describe('fin de manche : révélation, totaux, gagnant (calendrier du serveur)', () => {
   it('mains révélées une par une, puis totaux, puis gagnant, puis panneau de fin', () => {
     const schedule = garamRevealSchedule(['a', 'b', 'c'], false);
+    const p = GARAM_REVEAL_PAUSE_MS;
     expect(schedule.map((s) => s.at)).toEqual([
-      0,
-      GARAM_REVEAL_STEP_MS,
-      2 * GARAM_REVEAL_STEP_MS,
-      3 * GARAM_REVEAL_STEP_MS,
-      3 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS,
-      3 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS + GARAM_WINNER_HOLD_MS,
+      p,
+      p + GARAM_REVEAL_STEP_MS,
+      p + 2 * GARAM_REVEAL_STEP_MS,
+      p + 3 * GARAM_REVEAL_STEP_MS,
+      p + 3 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS,
+      p + 3 * GARAM_REVEAL_STEP_MS + GARAM_SCORE_HOLD_MS + GARAM_WINNER_HOLD_MS,
     ]);
     expect(schedule.map((s) => s.stage.revealed)).toEqual([
       ['a'],
@@ -180,8 +182,8 @@ describe('fin de manche : révélation, totaux, gagnant (calendrier du serveur)'
     for (const n of [2, 3, 4]) {
       const order = ['a', 'b', 'c', 'd'].slice(0, n);
       const last = garamRevealSchedule(order, false).at(-1)!.at;
-      // garamRevealPresentationMs(n) = 2 600 + n × 900 + 900 + 2 000 (backend).
-      expect(2_600 + last).toBe(2_600 + n * 900 + 900 + 2_000);
+      // garamRevealPresentationMs(n) = 2 600 + 700 + n × 900 + 900 + 2 000 (backend).
+      expect(2_600 + last).toBe(2_600 + 700 + n * 900 + 900 + 2_000);
     }
   });
 

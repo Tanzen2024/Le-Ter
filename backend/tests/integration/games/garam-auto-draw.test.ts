@@ -124,7 +124,7 @@ describe('tirage automatique (D-136)', () => {
     app();
     const { a, b, gameId, opened, openedAt } = await drawPhase();
     expect(opened.garam).toMatchObject({ phase: 'DRAW', controllerId: a.id, nextPlayerId: a.id });
-    // Échéance = délai du tirage automatique, pas les 15 s d'une décision.
+    // Échéance = délai du tirage automatique, pas les 25 s d'une décision.
     expect(Date.parse(opened.turnDeadlineAt) - Date.parse(opened.turnStartedAt)).toBe(
       GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS,
     );
@@ -143,7 +143,7 @@ describe('tirage automatique (D-136)', () => {
     expect(done.garam.terre).toEqual(['PIQUE-5']);
   });
 
-  it('contrôleur sans carte prenable : « Je passe » annoncé, puis main au suivant au tempo réel (D-140)', async () => {
+  it('contrôleur sans carte prenable : « Je passe » annoncé, puis main au suivant au tempo réel (D-145)', async () => {
     // a dégage ♥9 et garde ♣10 + ♦10 = 20 ; tête ♠3 → 23 : a ne peut rien tirer.
     const deck: GaramCardId[] = [
       'COEUR-9', 'TREFLE-10', 'CARREAU-10',
@@ -171,7 +171,11 @@ describe('tirage automatique (D-136)', () => {
     );
     expect((await view(b, gameId)).garam).toMatchObject({ passingPlayerId: a.id, drawDone: [] });
 
-    const passed = await until(() => view(b, gameId), (v) => v.garam.drawDone.includes(a.id));
+    const passed = await until(
+      () => view(b, gameId),
+      (v) => v.garam.drawDone.includes(a.id),
+      GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_PASS_NOTICE_MS + 5_000,
+    );
     expect(Date.now() - openedAt).toBeGreaterThanOrEqual(
       GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS + GARAM_PASS_NOTICE_MS - 50,
     );

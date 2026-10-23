@@ -149,6 +149,8 @@ export interface AttentionCounts {
   pendingTournamentApprovals: number;
   stalePendingPayments: number;
   overdueTurns: number;
+  /** Réclamations qui attendent l'administration (déposées, en analyse ou à examiner). */
+  pendingComplaints: number;
 }
 
 /** `GET /api/admin/attention` (D-116) : points d'attention seuls, relus automatiquement. */

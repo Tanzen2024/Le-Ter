@@ -40,7 +40,9 @@ export class PostgresGeolocationRepository implements GeolocationRepository {
       player_ids: PlayerId[] | null;
       consented: boolean;
     }>(
-      `SELECT g.status, s.suspicion_detection_enabled AS enabled,
+      `SELECT g.status,
+              -- GARAM TIA : jamais surveillée (D-144), aucun consentement demandé.
+              s.suspicion_detection_enabled AND s.game_type <> 'GARAM' AS enabled,
               (SELECT array_agg(gp.player_id ORDER BY gp.seat)
                FROM game_players gp WHERE gp.game_id = g.id) AS player_ids,
               EXISTS (SELECT 1 FROM session_players sp
@@ -87,7 +89,7 @@ export class PostgresGeolocationRepository implements GeolocationRepository {
 
   async consentGate(sessionId: string, playerIds: readonly PlayerId[]): Promise<ConsentGate> {
     const { rows } = await this.db.query<{ enabled: boolean; missing: PlayerId[] | null }>(
-      `SELECT s.suspicion_detection_enabled AS enabled,
+      `SELECT s.suspicion_detection_enabled AND s.game_type <> 'GARAM' AS enabled,
               (SELECT array_agg(p.id ORDER BY p.id)
                FROM unnest($2::uuid[]) AS p(id)
                WHERE NOT EXISTS (

@@ -41,6 +41,11 @@ function Notifications() {
           href: '/anti-collusion?status=NEW',
         },
         {
+          count: data.alerts.pendingComplaints,
+          label: 'réclamations à traiter',
+          href: '/reclamations',
+        },
+        {
           count: data.alerts.pendingTournamentApprovals,
           label: 'tournois à approuver',
           href: '/tournois?status=PENDING_APPROVAL',

@@ -120,6 +120,26 @@ describe('GET /api/sessions/open', () => {
     expect(await openTables(C)).toEqual([]);
   });
 
+  it('table pleine : un 5e joueur est refusé (SESSION_FULL)', async () => {
+    const [A, B, C, D, E] = [
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+    ];
+    const table = await createTable(A, 4);
+    for (const p of [B, C, D]) {
+      await expectStatus(p.api.post(`/api/sessions/${table.sessionId}/join`), 200);
+      await expectStatus(p.api.post(`/api/games/${table.gameId}/join`), 200);
+    }
+
+    const refused = await E.api.post(`/api/sessions/${table.sessionId}/join`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('SESSION_FULL');
+    expect(await openTables(E)).toEqual([]);
+  });
+
   it('401 sans jeton', async () => {
     const res = await request(ctx.app).get('/api/sessions/open');
     expect(res.status).toBe(401);
@@ -241,5 +261,263 @@ describe('Détection anti-collusion : réglage de la partie (D-043)', () => {
         session.sessionId,
       ]),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * Scénario observé en jeu : une table Fap-Fap à 4 doit rester trouvable à 2/4 puis 3/4 tant
+ * que le créateur n'a pas appuyé sur « Démarrer » ; elle ne quitte la liste que pleine (4/4)
+ * ou démarrée. Les appels reproduisent ceux de l'interface : création par « Créer une
+ * partie » (nom, mise, détection), puis « Rejoindre » = session, relecture, partie
+ * (`use-enter-table.ts`).
+ */
+describe('Fap-Fap à 4 : visibilité de 1/4 à 4/4 sans « Démarrer »', () => {
+  const STAKE = 20;
+
+  // Câblage de production : mise > 0 obligatoire, solde ≥ 2 × mise vérifié à l'arrivée
+  // dans la session comme dans la partie (D-073).
+  beforeEach(async () => {
+    await ctx.stopTimers();
+    ctx = createGameApiTestApp(database.sql, {
+      rules: testRules,
+      random: identityRandom,
+      decisionWindowMs: 60_000,
+      turnDurationMs: 60_000,
+      stakePolicies: true,
+    });
+  });
+
+  async function newPlayer(balance = 1_000) {
+    const session = await registerAndLogin(ctx.app);
+    await database.sql.query(
+      `INSERT INTO wallets (user_id, balance, created_at, updated_at) VALUES ($1, $2, now(), now())`,
+      [session.userId, balance],
+    );
+    return { ...session, id: session.userId as PlayerId, api: as(ctx.app, session.accessToken) };
+  }
+
+  async function createFromPanel(owner: Player) {
+    const res = await expectStatus(
+      owner.api.post('/api/sessions', {
+        maxPlayers: 4,
+        name: `Partie de ${await usernameOf(owner)}`,
+        stakeAmount: STAKE,
+        suspicionDetectionEnabled: false,
+      }),
+      201,
+    );
+    return {
+      sessionId: res.body.session.sessionId as string,
+      gameId: res.body.game.gameId as string,
+    };
+  }
+
+  async function joinFromPanel(p: Player, sessionId: string) {
+    await expectStatus(p.api.post(`/api/sessions/${sessionId}/join`, {}), 200);
+    const { session } = (await expectStatus(p.api.get(`/api/sessions/${sessionId}`), 200)).body;
+    expect(session.currentGame.status).toBe('waiting');
+    await expectStatus(p.api.post(`/api/games/${session.currentGame.gameId}/join`), 200);
+  }
+
+  const rowOf = async (viewer: Player, sessionId: string) =>
+    (await openTables(viewer)).find((t) => t.sessionId === sessionId);
+
+  /** État réel en base : session ouverte, partie en attente, jamais démarrée. */
+  async function expectStillWaiting(table: { sessionId: string; gameId: string }) {
+    const { rows } = await database.sql.query<{ session: string; game: string }>(
+      `SELECT s.status AS session, g.status AS game
+       FROM sessions s JOIN games g ON g.session_id = s.id WHERE g.id = $1`,
+      [table.gameId],
+    );
+    expect(rows).toEqual([{ session: 'open', game: 'waiting' }]);
+  }
+
+  it('1/4, 2/4, 3/4 visibles pour un nouveau joueur ; 4/4 retirée ; 5e refusé', async () => {
+    const [A, B, C, D, E, F] = [
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+    ];
+    const table = await createFromPanel(A);
+    const visible = (count: number) =>
+      expect.objectContaining({
+        sessionId: table.sessionId,
+        gameId: table.gameId,
+        name: expect.any(String),
+        stakeAmount: STAKE,
+        maxPlayers: 4,
+        playerCount: count,
+        mine: false,
+      });
+
+    // 1/4
+    expect(await rowOf(B, table.sessionId)).toEqual(visible(1));
+    // 2/4 : un nouveau joueur (E, jamais assis) la voit toujours.
+    await joinFromPanel(B, table.sessionId);
+    await expectStillWaiting(table);
+    expect(await rowOf(E, table.sessionId)).toEqual(visible(2));
+    expect(await rowOf(C, table.sessionId)).toEqual(visible(2));
+    // 3/4 : la rejoindre à 3/4 réussit aussi (D, puis 4/4).
+    await joinFromPanel(C, table.sessionId);
+    await expectStillWaiting(table);
+    expect(await rowOf(E, table.sessionId)).toEqual(visible(3));
+    expect(await rowOf(D, table.sessionId)).toEqual(visible(3));
+    // 4/4 : retirée parce que pleine, la partie toujours en attente (non démarrée).
+    await joinFromPanel(D, table.sessionId);
+    await expectStillWaiting(table);
+    expect(await rowOf(E, table.sessionId)).toBeUndefined();
+    expect(await rowOf(F, table.sessionId)).toBeUndefined();
+
+    const refused = await E.api.post(`/api/sessions/${table.sessionId}/join`, {});
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('SESSION_FULL');
+  });
+
+  /** Sièges actifs de la session et joueurs de la partie, relus en base. */
+  async function seatsAndPlayers(table: { sessionId: string; gameId: string }) {
+    const seats = await database.sql.query<{ seat: number }>(
+      'SELECT seat FROM session_players WHERE session_id = $1 AND active ORDER BY seat',
+      [table.sessionId],
+    );
+    const players = await database.sql.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM game_players WHERE game_id = $1',
+      [table.gameId],
+    );
+    return { seats: seats.rows.map((r) => r.seat), players: players.rows[0]?.n };
+  }
+
+  it.each([2, 3, 4])(
+    'table à %i : exactement autant de sièges que de joueurs, jamais plus',
+    async (capacity) => {
+      const owner = await newPlayer();
+      const others = [];
+      for (let i = 0; i < capacity; i += 1) others.push(await newPlayer());
+      const [viewer, ...joiners] = others;
+      const res = await expectStatus(
+        owner.api.post('/api/sessions', {
+          maxPlayers: capacity,
+          name: 'Table',
+          stakeAmount: STAKE,
+        }),
+        201,
+      );
+      const table = {
+        sessionId: res.body.session.sessionId as string,
+        gameId: res.body.game.gameId as string,
+      };
+
+      for (let count = 1; count <= capacity; count += 1) {
+        if (count > 1) await joinFromPanel(joiners[count - 2]!, table.sessionId);
+        const { seats, players } = await seatsAndPlayers(table);
+        expect(players).toBe(count);
+        expect(seats).toEqual(Array.from({ length: count }, (_, i) => i));
+        const row = await rowOf(viewer!, table.sessionId);
+        if (count < capacity) {
+          expect(row).toMatchObject({ playerCount: count, maxPlayers: capacity });
+        } else {
+          expect(row).toBeUndefined();
+        }
+      }
+
+      const refused = await viewer!.api.post(`/api/sessions/${table.sessionId}/join`, {});
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe('SESSION_FULL');
+      expect(await seatsAndPlayers(table)).toEqual({
+        seats: Array.from({ length: capacity }, (_, i) => i),
+        players: capacity,
+      });
+    },
+  );
+
+  it('arrivée = siège ET place dans la partie, en une fois : jamais un siège sans joueur', async () => {
+    const [A, B, C, D, E] = [
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+      await newPlayer(),
+    ];
+    const table = await createFromPanel(A);
+    // Seul l'appel « session » est fait (le second appel du client échoue ou n'arrive pas).
+    for (const [p, count] of [
+      [B, 2],
+      [C, 3],
+      [D, 4],
+    ] as const) {
+      await expectStatus(p.api.post(`/api/sessions/${table.sessionId}/join`, {}), 200);
+      const { seats, players } = await seatsAndPlayers(table);
+      expect({ seats: seats.length, players }).toEqual({ seats: count, players: count });
+      if (count < 4) {
+        expect(await rowOf(E, table.sessionId)).toMatchObject({ playerCount: count });
+      }
+    }
+    expect(await rowOf(E, table.sessionId)).toBeUndefined();
+    // Le second appel du client reste sans effet (déjà joueur).
+    await expectStatus(D.api.post(`/api/games/${table.gameId}/join`), 200);
+    expect((await seatsAndPlayers(table)).players).toBe(4);
+  });
+
+  it('arrivée refusée par la partie (solde insuffisant) : aucun siège pris non plus', async () => {
+    const [A, E] = [await newPlayer(), await newPlayer()];
+    const table = await createFromPanel(A);
+    const poor = await newPlayer(2 * STAKE - 1);
+    expect((await poor.api.post(`/api/sessions/${table.sessionId}/join`, {})).status).toBe(409);
+    expect(await seatsAndPlayers(table)).toEqual({ seats: [0], players: 1 });
+    expect(await rowOf(E, table.sessionId)).toMatchObject({ playerCount: 1 });
+  });
+
+  it('créateur et joueurs assis la voient « mine » avec le même compte, à 2/4 comme à 3/4', async () => {
+    const [A, B, C] = [await newPlayer(), await newPlayer(), await newPlayer()];
+    const table = await createFromPanel(A);
+
+    await joinFromPanel(B, table.sessionId);
+    for (const p of [A, B]) {
+      expect(await rowOf(p, table.sessionId)).toMatchObject({ mine: true, playerCount: 2 });
+    }
+    await joinFromPanel(C, table.sessionId);
+    for (const p of [A, B, C]) {
+      expect(await rowOf(p, table.sessionId)).toMatchObject({ mine: true, playerCount: 3 });
+    }
+  });
+
+  it('arrivée refusée (solde < 2 × mise) : aucun siège pris, la table reste visible à 2/4', async () => {
+    const [A, B, E] = [await newPlayer(), await newPlayer(), await newPlayer()];
+    const poor = await newPlayer(2 * STAKE - 1);
+    const table = await createFromPanel(A);
+    await joinFromPanel(B, table.sessionId);
+
+    const refused = await poor.api.post(`/api/sessions/${table.sessionId}/join`, {});
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    const { rows } = await database.sql.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM session_players WHERE session_id = $1 AND active',
+      [table.sessionId],
+    );
+    expect(rows[0]?.n).toBe(2);
+    expect(await rowOf(E, table.sessionId)).toMatchObject({ playerCount: 2, maxPlayers: 4 });
+  });
+
+  it('aucun changement de visibilité tant que « Démarrer » n’est pas appuyé ; démarrée, elle disparaît', async () => {
+    const [A, B, C, E] = [await newPlayer(), await newPlayer(), await newPlayer(), await newPlayer()];
+    const table = await createFromPanel(A);
+    await joinFromPanel(B, table.sessionId);
+    await joinFromPanel(C, table.sessionId);
+
+    // Relectures répétées (la liste est relue toutes les 3 s) : rien ne change seul.
+    for (let i = 0; i < 5; i += 1) {
+      expect(await rowOf(E, table.sessionId)).toMatchObject({ playerCount: 3, maxPlayers: 4 });
+    }
+    // Le créateur relit sa partie (écran de jeu) : la lecture ne démarre rien.
+    const view = (await expectStatus(A.api.get(`/api/games/${table.gameId}`), 200)).body.game;
+    expect(view.status).toBe('waiting');
+    expect(view).not.toHaveProperty('autoStart');
+    await expectStillWaiting(table);
+    expect(await rowOf(E, table.sessionId)).toMatchObject({ playerCount: 3 });
+
+    // « Démarrer » : seule cause de sortie d'une table 3/4.
+    await expectStatus(A.api.post(`/api/games/${table.gameId}/start`), 200);
+    expect(await rowOf(E, table.sessionId)).toBeUndefined();
   });
 });

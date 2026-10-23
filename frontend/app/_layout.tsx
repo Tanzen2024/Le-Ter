@@ -18,6 +18,12 @@ import { installSoundPlayer } from '../src/services/expo-sound-player';
 import { useAuthStore } from '../src/stores/auth-store';
 
 /**
+ * Écran de secours de toute l'application : une erreur imprévue d'un écran n'affiche jamais
+ * de message technique (exception, trace), seulement « Réessayer ».
+ */
+export { AppErrorScreen as ErrorBoundary } from '../src/features/navigation/AppErrorScreen';
+
+/**
  * Racine de l'application. Le retour au premier plan ne la touche pas : aucun rechargement,
  * aucun remontage, aucune redirection ; seules les données périmées de l'écran affiché sont
  * relues (`app-focus`, `app-lifecycle`). Le cache (`queryClient`), la session et les stores

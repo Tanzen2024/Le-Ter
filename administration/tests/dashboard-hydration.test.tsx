@@ -45,6 +45,7 @@ const DASHBOARD: Dashboard = {
     pendingTournamentApprovals: 0,
     stalePendingPayments: 0,
     overdueTurns: 0,
+    pendingComplaints: 0,
   },
   reconciliationAnomalies: { total: 0, critical: 0 } as Dashboard['reconciliationAnomalies'],
   series: [],
