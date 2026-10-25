@@ -10,10 +10,10 @@ import type { UserId } from '../users/user';
  */
 /**
  * `tournament_entry` : capture d'une réservation d'inscription (débit définitif) ;
- * `tournament_prize` : gain de tournoi (D-054).
+ * `tournament_prize` : gain de tournoi (D-054) ; `referral_reward` : palier de parrainage (D-161).
  */
 export type WalletTransactionKind =
-  'deposit' | 'withdrawal' | 'tournament_entry' | 'tournament_prize';
+  'deposit' | 'withdrawal' | 'tournament_entry' | 'tournament_prize' | 'referral_reward';
 export type WalletTransactionStatus = 'pending' | 'succeeded' | 'failed';
 
 export interface WalletTransaction {

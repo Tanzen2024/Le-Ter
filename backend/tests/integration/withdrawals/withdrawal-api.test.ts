@@ -293,11 +293,10 @@ describe('Montant minimum (1 000 jetons)', () => {
     expect(transfers.submissions).toHaveLength(0);
   });
 
-  it('opérateur inconnu → 400 ; Idempotency-Key absente → 400', async () => {
+  it('Idempotency-Key absente → 400, rien n’est écrit', async () => {
     const { app } = setup();
     const A = await player(app);
     await seed(A.id, 5000);
-    expect((await A.withdraw({ tokens: 1000, operator: 'OM_CI' })).status).toBe(400);
     expect((await A.withdraw(ok, null)).status).toBe(400);
     expect(await count('withdrawals', A.id)).toBe(0);
   });
@@ -320,6 +319,101 @@ describe('Montant minimum (1 000 jetons)', () => {
     await seed(A.id, 5000);
     await A.withdraw({ ...ok, phone: '+237699999999', phoneNumber: '+237699999999', userId: randomUUID() });
     expect(transfers.submissions[0]?.phoneNumber).toBe(A.phone);
+  });
+});
+
+// --- Opérateur : déduit par le serveur du numéro d'inscription --------------------------------
+
+describe('Opérateur déduit du numéro d’inscription (jamais imposé par le client)', () => {
+  const setPhone = (userId: string, phone: string) =>
+    database.sql.query(`UPDATE users SET phone = $1 WHERE id = $2`, [phone, userId]);
+
+  it('retrait valide : opérateur déduit du numéro (67x → MTN), enregistré et transmis au fournisseur', async () => {
+    const { app, transfers } = setup();
+    const A = await player(app);
+    await seed(A.id, 5000);
+    const res = await A.withdraw({ tokens: 1000 });
+    expect(res.status).toBe(202);
+    expect(res.body.withdrawal).toEqual(
+      expect.objectContaining({ operator: 'MTN_CM', operatorLabel: 'MTN Mobile Money' }),
+    );
+    expect(transfers.submissions).toEqual([
+      expect.objectContaining({ operator: 'MTN_CM', phoneNumber: A.phone }),
+    ]);
+  });
+
+  it.each([
+    ['MTN (67x) qui envoie OM_CM', '+237671234501', 'OM_CM', 'MTN_CM'],
+    ['Orange (69x) qui envoie MTN_CM', '+237691234502', 'MTN_CM', 'OM_CM'],
+    ['MTN (67x) qui envoie un opérateur inconnu', '+237671234503', 'OM_CI', 'MTN_CM'],
+  ])('%s : l’opérateur du client est ignoré', async (_l, phone, sent, expected) => {
+    const { app, transfers } = setup();
+    const A = await player(app);
+    await setPhone(A.id, phone);
+    await seed(A.id, 5000);
+    const res = await A.withdraw({ tokens: 1000, operator: sent });
+    expect(res.status).toBe(202);
+    expect(res.body.withdrawal.operator).toBe(expected);
+    const stored = await database.sql.query<{ operator: string }>(
+      'SELECT operator FROM withdrawals WHERE user_id = $1',
+      [A.id],
+    );
+    expect(stored.rows.map((r) => r.operator)).toEqual([expected]);
+    expect(transfers.submissions).toEqual([
+      expect.objectContaining({ operator: expected, phoneNumber: phone }),
+    ]);
+  });
+
+  it('opérateur absent du corps : retrait traité avec l’opérateur du numéro', async () => {
+    const { app, transfers } = setup();
+    const A = await player(app);
+    await setPhone(A.id, '+237691234504');
+    await seed(A.id, 5000);
+    const res = await A.withdraw({ tokens: 1000 });
+    expect(res.status).toBe(202);
+    expect(res.body.withdrawal.operator).toBe('OM_CM');
+    expect(transfers.submissions[0]?.operator).toBe('OM_CM');
+  });
+
+  it.each([
+    ['Nexttel (66x), opérateur indéterminable', '+237661234505'],
+    ['fixe camerounais (2xx)', '+237222123456'],
+    ['hors Cameroun', '+2250701234567'],
+  ])('%s → 422, aucune réservation, aucun envoi, même avec un opérateur valide envoyé', async (_l, phone) => {
+    const { app, transfers } = setup();
+    const A = await player(app);
+    await setPhone(A.id, phone);
+    await seed(A.id, 5000);
+    const res = await A.withdraw({ tokens: 1000, operator: 'MTN_CM' });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('WITHDRAWAL_PHONE_UNSUPPORTED');
+    expect(await balanceOf(A.id)).toBe(5000);
+    expect((await A.wallet()).available).toBe(5000);
+    expect(await count('wallet_transactions', A.id)).toBe(0);
+    expect(await count('withdrawals', A.id)).toBe(0);
+    expect(transfers.submissions).toHaveLength(0);
+    // La politique annonce le même refus (aucun retrait proposé à ce compte).
+    expect((await A.history().expect(200)).body.policy.msisdnSupported).toBe(false);
+  });
+
+  it('nouvel essai (même Idempotency-Key) avec un autre opérateur : même retrait, aucun doublon', async () => {
+    const { app, transfers } = setup();
+    const A = await player(app);
+    await seed(A.id, 5000);
+    const key = randomUUID();
+    const first = await A.withdraw({ tokens: 1000, operator: 'MTN_CM' }, key);
+    const retry = await A.withdraw({ tokens: 1000, operator: 'OM_CM' }, key);
+    const bare = await A.withdraw({ tokens: 1000 }, key);
+    expect(first.status).toBe(202);
+    expect(retry.body.replayed).toBe(true);
+    expect(bare.body.replayed).toBe(true);
+    expect(retry.body.withdrawal.id).toBe(first.body.withdrawal.id);
+    expect(bare.body.withdrawal.operator).toBe('MTN_CM');
+    expect(await count('withdrawals', A.id)).toBe(1);
+    expect(await balanceOf(A.id)).toBe(4000);
+    expect(transfers.submissions).toHaveLength(1);
+    // Autre montant avec la même clé : toujours refusé.
+    expect((await A.withdraw({ tokens: 2000 }, key)).body.code).toBe('IDEMPOTENCY_KEY_REUSED');
   });
 });
 
@@ -890,7 +984,7 @@ describe('Fiabilité financière', () => {
     await seed(A.id, 10_000);
     const w1 = (await A.withdraw({ tokens: 1000, operator: 'MTN_CM' })).body.withdrawal;
     advance(1000);
-    const w2 = (await A.withdraw({ tokens: 2000, operator: 'OM_CM' })).body.withdrawal;
+    const w2 = (await A.withdraw({ tokens: 2000 })).body.withdrawal;
     advance(1000);
     await A.withdraw({ tokens: 3000, operator: 'MTN_CM' });
     transfers.setStatus(w1.reference, 'SUCCESS');
@@ -909,7 +1003,12 @@ describe('Fiabilité financière', () => {
       expect(item.msisdn).not.toBe(A.phone);
       expect(item).not.toHaveProperty('providerReference');
     }
-    expect(items[1].operatorLabel).toBe('Orange Money');
+    // Opérateur DÉDUIT du numéro d'inscription (67x : MTN), quel que soit le corps envoyé.
+    expect(items.map((w: { operatorLabel: string }) => w.operatorLabel)).toEqual([
+      'MTN Mobile Money',
+      'MTN Mobile Money',
+      'MTN Mobile Money',
+    ]);
     // 10 000 − 1 000 (réussi) − 3 000 (en cours) ; les 2 000 échoués sont remboursés.
     expect(await balanceOf(A.id)).toBe(6000);
     const ledger = await database.sql.query<{ total: string }>(
@@ -1400,7 +1499,7 @@ describe('Transferts désactivés : relecture seulement', () => {
     const service = makeService();
     expect(service.available).toBe(false);
     await expect(
-      service.request(A.id as never, { tokens: 1000, operator: 'MTN_CM' }, randomUUID()),
+      service.request(A.id as never, { tokens: 1000 }, randomUUID()),
     ).rejects.toThrow('Fournisseur Mobile Money indisponible');
 
     transfers.setStatus(processing.reference, 'SUCCESS');

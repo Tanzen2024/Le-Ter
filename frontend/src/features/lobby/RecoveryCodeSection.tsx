@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { salon } from '../../constants/theme';
 import { TextField } from '../../components/ui/TextField';
 import { useRegenerateRecoveryCode } from '../auth/hooks';
 import { RecoveryCodeCard } from '../auth/RecoveryCodeCard';
@@ -13,13 +14,22 @@ import { PanelButton } from './LobbyUi';
  * L'ancien code cesse aussitôt de fonctionner ; le nouveau n'est affiché qu'ici, une fois.
  * Sert aussi aux comptes créés avant les codes, qui n'en ont pas encore.
  */
-export function RecoveryCodeSection({ hasCode }: { hasCode: boolean }) {
+export function RecoveryCodeSection({
+  hasCode,
+  onExpandedChange,
+}: {
+  hasCode: boolean;
+  /** Saisie ou code affiché (`true`), ou simple bouton (`false`) : le panneau lui fait place. */
+  onExpandedChange?: (expanded: boolean) => void;
+}) {
   const m = useLobbyMetrics();
   const regenerate = useRegenerateRecoveryCode();
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string>();
   const code = regenerate.data?.recoveryCode;
+  const expanded = open || Boolean(code);
+  useEffect(() => onExpandedChange?.(expanded), [expanded, onExpandedChange]);
 
   const close = () => {
     setOpen(false);
@@ -96,6 +106,6 @@ export function RecoveryCodeSection({ hasCode }: { hasCode: boolean }) {
 const styles = StyleSheet.create({
   start: { alignSelf: 'flex-start' },
   row: { flexDirection: 'row', justifyContent: 'flex-end' },
-  text: { color: '#FFFFFF' },
+  text: { color: salon.textSoft },
   error: { color: '#FF8A7A', fontWeight: '600' },
 });

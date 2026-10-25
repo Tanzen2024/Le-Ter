@@ -3,15 +3,28 @@ import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { gameTheme, salon } from '../../constants/theme';
 import { countryOfPhone, toNationalPhone } from '../../lib/country';
 import { useCurrentUser, useLogout } from '../auth/hooks';
 import { useComplaintMessages } from '../complaints/complaint-messages';
+import { avatarToneOf, ChipArt } from '../games/table/TableParts';
 import { useLobbyMetrics } from './lobby-metrics';
 import { LobbyPanel, PanelButton } from './LobbyUi';
-import { PasswordChangeForm } from './PasswordChangeForm';
+import { usePasswordChangeForm } from './PasswordChangeForm';
 import { RecoveryCodeSection } from './RecoveryCodeSection';
 
-/** Profil : données du compte renvoyées par /api/auth/me, et déconnexion. */
+/**
+ * Profil : données du compte renvoyées par /api/auth/me, et déconnexion. Tenu sans défiler en
+ * paysage, dans cet ordre :
+ * 1. à gauche, la carte du joueur (jeton de la table, pseudo, ID) ;
+ * 2. à droite, les informations en tuiles, puis la sécurité (mot de passe, code de
+ *    récupération). « Modifier » ou un code en cours : le formulaire PREND LA PLACE des
+ *    informations au lieu de s'ajouter dessous ; elles reviennent à l'annulation ;
+ * 3. en bas, la zone d'actions du panneau, séparée et toujours visible : « Aide et
+ *    réclamations » et « Déconnexion » ; pendant « Modifier », celles du formulaire
+ *    (« Annuler », « Enregistrer »), qui restent ainsi visibles même clavier ouvert.
+ * Le défilement du panneau ne sert plus qu'en dernier recours (clavier ouvert).
+ */
 export function ProfilePanel({ onClose }: { onClose: () => void }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
@@ -21,93 +34,176 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
   // Formulaire du mot de passe ouvert ; confirmation affichée après un succès du serveur.
   const [editingPassword, setEditingPassword] = useState(false);
   const [passwordChanged, setPasswordChanged] = useState(false);
+  // Code de récupération en cours (saisie ou code affiché) : il prend la colonne de droite.
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const password = usePasswordChangeForm({
+    onCancel: () => {
+      password.reset();
+      setEditingPassword(false);
+    },
+    onChanged: () => {
+      setEditingPassword(false);
+      setPasswordChanged(true);
+    },
+  });
 
-  const label = [styles.label, fontOf(fonts.button), { fontSize: Math.round(m.bodySize * 1.1) }];
-  const value = [styles.value, { fontSize: m.smallSize }];
+  const chip = Math.round(m.panelTitleSize * 1.9);
+  // Initiale du pseudo RÉEL (aucune image ni avatar inventé) ; rien tant qu'il n'est pas connu.
+  const initial = user?.username ? [...user.username][0]!.toUpperCase() : '';
+  const label = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
+  const value = [styles.value, { fontSize: m.bodySize }];
   // Lecture seule : seul le mot de passe se modifie ici. Le téléphone s'affiche sans
   // indicatif ; le pays se déduit de cet indicatif (inconnu → « — », jamais deviné).
   const country = user ? countryOfPhone(user.phone) : undefined;
-  const rows: [string, string | undefined][] = [
-    ['ID', user?.id],
-    ['Prénom', user?.firstName],
-    ['Nom', user?.lastName],
-    ['Pays', user ? (country?.name.fr ?? '—') : undefined],
-    ['Téléphone', user ? toNationalPhone(user.phone) : undefined],
+  const pairs: [string, string | undefined][][] = [
+    [
+      ['Prénom', user?.firstName],
+      ['Nom', user?.lastName],
+    ],
+    [
+      ['Pays', user ? (country?.name.fr ?? '—') : undefined],
+      ['Téléphone', user ? toNationalPhone(user.phone) : undefined],
+    ],
     // Email facultatif (D-135) : « — » si le joueur n'en a pas.
-    ['Email', user ? (user.email ?? '—') : undefined],
+    [['Email', user ? (user.email ?? '—') : undefined]],
   ];
+  const busy = editingPassword || recoveryOpen;
+  // Carte du joueur : un tiers du panneau, un peu plus sur tablette où les libellés des
+  // boutons (« Aide et réclamations ») sont plus grands.
+  const cardWidth = m.height >= 600 ? '40%' : '34%';
+  const tile = [styles.tile, { paddingHorizontal: m.gap * 0.8, paddingVertical: m.gap * 0.45 }];
 
   return (
-    <LobbyPanel title="Profil" onClose={onClose} width={Math.max(340, m.width * 0.4)}>
-      {/* Contenu posé directement sur la plaque du panneau : un seul fond, un seul cadre
-          (pas de second cadre intérieur qui ferait croire à deux fenêtres). */}
-      <View style={{ gap: m.gap * 0.5, paddingHorizontal: m.gap * 0.5 }}>
-        {isPending ? <ActivityIndicator color={palette.gold} /> : null}
-        <Text
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          style={[styles.username, fontOf(fonts.button), { fontSize: m.panelTitleSize * 0.72 }]}
-        >
-          {user?.username ?? ' '}
-        </Text>
-        {rows.map(([name, content]) => (
-          <View key={name} style={styles.row}>
-            <Text style={[label, styles.labelColumn]}>{name}</Text>
-            <Text style={[value, styles.valueColumn]} numberOfLines={1} adjustsFontSizeToFit>
-              {content ?? ''}
+    <LobbyPanel
+      title="Profil"
+      onClose={onClose}
+      width={Math.max(560, m.width * 0.78)}
+      footer={
+        editingPassword ? (
+          password.actions
+        ) : (
+          <View style={[styles.actions, { gap: m.gap }]}>
+            {/* Aide et réclamations (D-114) : assistant automatisé et suivi des dossiers. */}
+            <View style={styles.action}>
+              <PanelButton title={complaintText.title} onPress={() => router.push('/support')} />
+            </View>
+            <View style={styles.action}>
+              <PanelButton
+                title="Déconnexion"
+                tone="danger"
+                loading={logout.isPending}
+                onPress={() => logout.mutate()}
+              />
+            </View>
+          </View>
+        )
+      }
+    >
+      <View style={[styles.columns, { gap: m.gap * 1.2 }]}>
+        {/* Carte du joueur : un seul fond, aucun second cadre autour des colonnes. */}
+        <View style={[styles.card, { width: cardWidth, gap: m.gap * 0.5, padding: m.gap * 0.8 }]}>
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={[styles.chip, { width: chip, height: chip, borderRadius: chip / 2 }]}
+          >
+            <ChipArt tone={avatarToneOf(user?.username ?? '')} />
+            <Text
+              allowFontScaling={false}
+              style={[styles.initial, fontOf(fonts.title), { fontSize: Math.round(chip * 0.42) }]}
+            >
+              {initial}
             </Text>
           </View>
-        ))}
-        <View style={styles.row}>
-          <Text style={[label, styles.labelColumn]}>Mot de passe</Text>
-          <View style={styles.valueColumn}>
-            {editingPassword ? null : (
-              <View style={styles.start}>
-                <PanelButton
-                  title="Modifier"
-                  accessibilityLabel="Modifier le mot de passe"
-                  onPress={() => {
-                    setPasswordChanged(false);
-                    setEditingPassword(true);
-                  }}
-                />
+          {isPending ? <ActivityIndicator color={palette.gold} /> : null}
+          <Text
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            style={[styles.username, fontOf(fonts.button), { fontSize: m.panelTitleSize * 0.66 }]}
+          >
+            {user?.username ?? ' '}
+          </Text>
+          <View style={[styles.idRow, { gap: m.gap * 0.4 }]}>
+            <Text style={label}>ID</Text>
+            <Text
+              style={[styles.value, styles.shrink, { fontSize: m.smallSize }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.6}
+            >
+              {user?.id ?? ''}
+            </Text>
+          </View>
+          {passwordChanged ? (
+            <Text
+              style={[styles.success, { fontSize: m.smallSize }]}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+            >
+              Mot de passe modifié.
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={[styles.details, { gap: m.gap * 0.6 }]}>
+          {/* Informations : masquées (jamais perdues) pendant une modification. */}
+          {busy ? null : (
+            <View style={{ gap: m.gap * 0.5 }}>
+              {pairs.map((pair) => (
+                <View key={pair[0]![0]} style={[styles.pair, { gap: m.gap * 0.5 }]}>
+                  {pair.map(([name, content]) => (
+                    <View key={name} style={tile}>
+                      <Text style={label} numberOfLines={1}>
+                        {name}
+                      </Text>
+                      <Text
+                        style={value}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.6}
+                      >
+                        {content ?? ''}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Sécurité : deux tuiles côte à côte ; une modification en cours prend la largeur.
+              Positions fixes dans l'arbre : la saisie en cours n'est jamais perdue. */}
+          <View style={[styles.pair, { gap: m.gap * 0.5 }]}>
+            {recoveryOpen ? null : (
+              <View style={[tile, styles.security, { gap: m.gap * 0.4 }]}>
+                <Text style={label}>Mot de passe</Text>
+                {editingPassword ? (
+                  password.fields
+                ) : (
+                  <View style={styles.start}>
+                    <PanelButton
+                      compact
+                      title="Modifier"
+                      accessibilityLabel="Modifier le mot de passe"
+                      onPress={() => {
+                        setPasswordChanged(false);
+                        setEditingPassword(true);
+                      }}
+                    />
+                  </View>
+                )}
               </View>
             )}
+            {user && !editingPassword ? (
+              <View style={[tile, styles.security, { gap: m.gap * 0.4 }]}>
+                <Text style={label}>Code de récupération</Text>
+                <RecoveryCodeSection
+                  hasCode={user.hasRecoveryCode ?? false}
+                  onExpandedChange={setRecoveryOpen}
+                />
+              </View>
+            ) : null}
           </View>
-        </View>
-        {editingPassword ? (
-          <PasswordChangeForm
-            onCancel={() => setEditingPassword(false)}
-            onChanged={() => {
-              setEditingPassword(false);
-              setPasswordChanged(true);
-            }}
-          />
-        ) : null}
-        {user ? (
-          <View style={{ gap: m.gap * 0.4 }}>
-            <Text style={label}>Code de récupération</Text>
-            <RecoveryCodeSection hasCode={user.hasRecoveryCode ?? false} />
-          </View>
-        ) : null}
-        {passwordChanged ? (
-          <Text
-            style={[styles.success, { fontSize: m.smallSize }]}
-            accessibilityRole="alert"
-            accessibilityLiveRegion="polite"
-          >
-            Mot de passe modifié.
-          </Text>
-        ) : null}
-        <View style={[styles.row, styles.end, { marginTop: m.gap, gap: m.gap * 0.5 }]}>
-          {/* Aide et réclamations (D-114) : assistant automatisé et suivi des dossiers. */}
-          <PanelButton title={complaintText.title} onPress={() => router.push('/support')} />
-          <PanelButton
-            title="Déconnexion"
-            tone="danger"
-            loading={logout.isPending}
-            onPress={() => logout.mutate()}
-          />
         </View>
       </View>
     </LobbyPanel>
@@ -115,13 +211,56 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
 }
 
 const styles = StyleSheet.create({
-  username: { color: '#FFFFFF', textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'center', minHeight: 24 },
-  labelColumn: { width: '38%' },
-  valueColumn: { flex: 1, minWidth: 0 },
+  columns: { flexDirection: 'row', alignItems: 'stretch' },
+  // Carte du joueur : creux du panneau, filet de laiton fin.
+  card: {
+    alignItems: 'center',
+    borderRadius: salon.radius.card,
+    borderWidth: 1,
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.well,
+  },
+  chip: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: gameTheme.brass.main,
+    boxShadow: `${gameTheme.shadow.plate}, 0 0 12px ${gameTheme.brass.faint}`,
+  },
+  initial: {
+    color: gameTheme.ivory,
+    includeFontPadding: false,
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1,
+  },
+  username: { alignSelf: 'stretch', textAlign: 'center', color: salon.text, letterSpacing: 0.6 },
+  idRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  shrink: { flexShrink: 1 },
+  // Zone d'actions : deux boutons de même largeur, confortables au toucher.
+  actions: { flexDirection: 'row', justifyContent: 'flex-end' },
+  action: { flexBasis: 0, flexGrow: 1, maxWidth: 260 },
+  details: { flex: 1, minWidth: 0 },
+  pair: { flexDirection: 'row', alignItems: 'stretch' },
+  // Tuile d'information : creux discret, libellé au-dessus de la valeur.
+  tile: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+    borderRadius: salon.radius.control,
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
+  },
+  security: { borderColor: salon.surface.border },
   start: { alignSelf: 'flex-start' },
-  end: { justifyContent: 'flex-end' },
-  label: { color: '#FFFFFF' },
-  value: { color: '#FFFFFF', fontWeight: '600' },
-  success: { color: '#3FD06A', fontWeight: '600' },
+  label: { color: salon.textSoft, letterSpacing: 0.4 },
+  value: { color: salon.text, fontWeight: '600' },
+  success: { color: salon.status.positive.text, fontWeight: '600', textAlign: 'center' },
 });

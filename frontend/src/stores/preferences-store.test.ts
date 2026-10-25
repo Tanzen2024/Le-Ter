@@ -48,7 +48,13 @@ describe('préférences : son', () => {
     usePreferencesStore.getState().setSoundEnabled(false);
     expect(usePreferencesStore.getState().soundEnabled).toBe(false);
     await flush();
-    expect(saved().state).toEqual({ soundEnabled: false, language: 'fr' });
+    expect(saved().state).toEqual({
+      soundEnabled: false,
+      effectsVolume: 'high',
+      musicEnabled: true,
+      musicVolume: 'medium',
+      language: 'fr',
+    });
 
     usePreferencesStore.getState().setSoundEnabled(true);
     expect(usePreferencesStore.getState().soundEnabled).toBe(true);
@@ -112,11 +118,53 @@ describe('préférences : restauration au lancement', () => {
     expect(usePreferencesStore.getState().soundEnabled).toBe(false);
   });
 
-  it('ne garde que les deux préférences connues', () => {
+  it('ne garde que les préférences connues', () => {
     expect(sanitizePreferences(null)).toEqual(DEFAULT_PREFERENCES);
     expect(sanitizePreferences({ soundEnabled: false, language: 'en', token: 'x' })).toEqual({
       soundEnabled: false,
+      effectsVolume: 'high',
+      // Préférence musique absente : elle suit le son coupé.
+      musicEnabled: false,
+      musicVolume: 'medium',
       language: 'en',
     });
+  });
+});
+
+describe('préférences : musique', () => {
+  it('ON et « moyen » par défaut, indépendante des effets, enregistrée puis restaurée', async () => {
+    expect(DEFAULT_PREFERENCES).toMatchObject({ musicEnabled: true, musicVolume: 'medium' });
+    usePreferencesStore.getState().setMusicEnabled(false);
+    usePreferencesStore.getState().setMusicVolume('low');
+    await flush();
+    expect(saved().state).toMatchObject({ musicEnabled: false, musicVolume: 'low', soundEnabled: true });
+    expect(sanitizePreferences({ soundEnabled: true, musicEnabled: false }).musicEnabled).toBe(false);
+    expect(sanitizePreferences({ musicVolume: 'max' }).musicVolume).toBe('medium');
+  });
+});
+
+describe('préférences : volume des effets', () => {
+  it('« fort » par défaut : le volume déjà connu des joueurs ne change pas', () => {
+    expect(DEFAULT_PREFERENCES.effectsVolume).toBe('high');
+    expect(usePreferencesStore.getState().effectsVolume).toBe('high');
+  });
+
+  it("chaque choix est enregistré sur l'appareil, puis restauré", async () => {
+    usePreferencesStore.getState().setEffectsVolume('low');
+    await flush();
+    expect(saved().state.effectsVolume).toBe('low');
+    secure.__store.set(
+      PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ state: { soundEnabled: true, effectsVolume: 'medium', language: 'fr' }, version: 1 }),
+    );
+    await usePreferencesStore.persist.rehydrate();
+    expect(usePreferencesStore.getState().effectsVolume).toBe('medium');
+  });
+
+  it('valeur inconnue (stockage ou appel) : ignorée, valeur par défaut ou précédente gardée', () => {
+    expect(sanitizePreferences({ effectsVolume: 'max' }).effectsVolume).toBe('high');
+    usePreferencesStore.getState().setEffectsVolume('medium');
+    usePreferencesStore.getState().setEffectsVolume('max' as never);
+    expect(usePreferencesStore.getState().effectsVolume).toBe('medium');
   });
 });

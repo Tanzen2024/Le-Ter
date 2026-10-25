@@ -9,10 +9,14 @@ import {
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { EmptyState } from '../../components/ui/SalonParts';
+import { salon } from '../../constants/theme';
 import type { ComplaintDraft } from '../../types/complaint';
 import { leaveLegalDocument } from '../legal/LegalDocumentScreen';
 import { PanelButton } from '../lobby/LobbyUi';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
+import { ReferralSection } from '../referrals/ReferralSection';
+import { useReferralMessages } from '../referrals/referral-messages';
 import { AssistantChat } from './AssistantChat';
 import { ComplaintForm } from './ComplaintForm';
 import { useComplaintMessages } from './complaint-messages';
@@ -21,14 +25,18 @@ import { useComplaints } from './hooks';
 import { shortcutDraft } from './shortcut-draft';
 import { userErrorMessage } from '../../lib/api-client';
 
-type Tab = 'assistant' | 'complaints';
+type Tab = 'assistant' | 'complaints' | 'referral';
+
+const TABS: readonly Tab[] = ['assistant', 'complaints', 'referral'];
 
 /**
  * « Aide et réclamations » (D-114) : l'assistant automatisé, la liste des réclamations du
  * joueur et le dépôt d'une réclamation officielle (toujours possible, même sans assistant).
+ * Onglet Parrainage (D-161) permanent : `?tab=referral` l'ouvre directement.
  */
 export function SupportScreen() {
   const t = useComplaintMessages();
+  const referral = useReferralMessages();
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const params = useLocalSearchParams<{
@@ -37,7 +45,9 @@ export function SupportScreen() {
     tournamentId?: string;
     category?: string;
   }>();
-  const [tab, setTab] = useState<Tab>(params.tab === 'complaints' ? 'complaints' : 'assistant');
+  const [tab, setTab] = useState<Tab>(
+    params.tab === 'complaints' || params.tab === 'referral' ? params.tab : 'assistant',
+  );
   // Ouvert depuis une partie ou un tournoi : le formulaire part de ce contexte (vérifié au dépôt).
   const [form, setForm] = useState<{
     draft: ComplaintDraft | null;
@@ -73,10 +83,10 @@ export function SupportScreen() {
             {t.title}
           </Text>
           <View style={[styles.tabs, { gap: m.gap * 0.4 }]} accessibilityRole="tablist">
-            {(['assistant', 'complaints'] as const).map((value) => (
+            {TABS.map((value) => (
               <PanelButton
                 key={value}
-                title={t.tabs[value]}
+                title={value === 'referral' ? referral.tab : t.tabs[value]}
                 selected={tab === value}
                 onPress={() => {
                   setForm(null);
@@ -99,6 +109,8 @@ export function SupportScreen() {
                 router.push(`/support/${id}`);
               }}
             />
+          ) : tab === 'referral' ? (
+            <ReferralSection />
           ) : tab === 'assistant' ? (
             <AssistantChat
               onFileComplaint={(draft, conversationId) => setForm({ draft, conversationId })}
@@ -118,6 +130,7 @@ export function SupportScreen() {
 function ComplaintList({ created, onNew }: { created: string | null; onNew: () => void }) {
   const t = useComplaintMessages();
   const m = useLobbyMetrics();
+  const fonts = useTableFonts();
   const complaints = useComplaints();
   return (
     <View style={[styles.fill, { gap: m.gap * 0.6 }]}>
@@ -129,7 +142,9 @@ function ComplaintList({ created, onNew }: { created: string | null; onNew: () =
       {complaints.isPending ? <ActivityIndicator color={palette.gold} /> : null}
       {complaints.error ? <Text style={styles.error}>{userErrorMessage(complaints.error)}</Text> : null}
       <ScrollView contentContainerStyle={{ gap: m.gap * 0.5 }}>
-        {complaints.data?.length === 0 ? <Body muted>{t.list.empty}</Body> : null}
+        {complaints.data?.length === 0 ? (
+          <EmptyState glyph="🛟" title={t.list.empty} size={m.bodySize} fontFamily={fonts.button} />
+        ) : null}
         {complaints.data?.map((complaint) => (
           <Pressable
             key={complaint.id}
@@ -160,7 +175,7 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   tabs: { flexDirection: 'row' },
-  title: { flex: 1, color: '#FFFFFF', letterSpacing: 1, ...titleShadow },
-  reference: { color: palette.gold, fontWeight: '700' },
+  title: { flex: 1, color: salon.text, letterSpacing: 1.2, ...titleShadow },
+  reference: { color: salon.brass.text, fontWeight: '700', fontVariant: ['tabular-nums'] },
   error: { color: palette.error },
 });

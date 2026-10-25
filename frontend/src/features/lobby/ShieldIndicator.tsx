@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { salon } from '../../constants/theme';
 import { tablePalette as palette } from '../../components/table/TableDecor';
 
 /** Libellés de la bulle d'information (et du lecteur d'écran). */
@@ -100,9 +101,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    backgroundColor: 'rgba(10, 10, 10, 0.88)',
-    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.4)',
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.fill,
+    boxShadow: salon.surface.shadow,
   },
-  tooltipText: { color: '#FFFFFF', fontWeight: '600' },
+  tooltipText: { color: salon.text, fontWeight: '600' },
 });

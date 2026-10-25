@@ -146,6 +146,8 @@ export const WALLET_KINDS = [
   // Partie ordinaire (D-074) : mise consommée, gain net du gagnant.
   'game_stake',
   'game_winnings',
+  // Récompense de palier du parrainage (D-161).
+  'referral_reward',
 ] as const;
 export type WalletKind = (typeof WALLET_KINDS)[number];
 export const WALLET_STATUSES = ['pending', 'succeeded', 'failed'] as const;

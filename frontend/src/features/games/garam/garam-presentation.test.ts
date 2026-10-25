@@ -17,6 +17,7 @@ import {
   GARAM_SCORE_HOLD_MS,
   GARAM_TIE_HOLD_MS,
   GARAM_WINNER_HOLD_MS,
+  freeSlotBetween,
   garamCenterGeometry,
   garamHandStep,
   garamHandWidth,
@@ -72,6 +73,10 @@ describe('zones de la table GARAM sur tous les écrans (2, 3, 4 joueurs)', () =>
           expect([a.side, b.side, overlaps(a.rect, b.rect)]).toEqual([a.side, b.side, false]);
         }
       }
+      // Ma carte jouée ne recouvre jamais mes cartes non jouées : espace net au-dessus de ma main.
+      const myCard = geo.spotRect('bottom', spotWidth);
+      const handTop = m.height - m.safe.bottom - L.cardHeight;
+      expect(myCard.top + myCard.height).toBeLessThanOrEqual(handTop - 4);
       // Terre et cartes du tour restent sur la table (le cercle de bois).
       const r = L.diameter / 2;
       for (const rect of [terre, ...spots.map((s) => s.rect)]) {
@@ -193,5 +198,32 @@ describe('fin de manche : révélation, totaux, gagnant (calendrier du serveur)'
       { at: 0, stage: { revealed: ['a', 'b'], scores: true, winner: true, done: false } },
       { at: GARAM_TIE_HOLD_MS, stage: { revealed: ['a', 'b'], scores: true, winner: true, done: true } },
     ]);
+  });
+});
+
+describe('panneau de fin : place libre entre les cartes et les totaux des joueurs', () => {
+  const bounds: Rect = { left: 0, top: 0, width: 800, height: 400 };
+  const rect = (left: number, top: number, width: number, height: number): Rect => ({
+    left,
+    top,
+    width,
+    height,
+  });
+
+  it('borné par chaque côté, marge comprise, sans chevaucher aucun élément', () => {
+    const sides: Record<SeatSide, Rect[]> = {
+      top: [rect(350, 10, 100, 60), rect(460, 20, 60, 70)],
+      bottom: [rect(300, 320, 200, 80), rect(520, 300, 50, 40)],
+      left: [rect(20, 150, 120, 60)],
+      right: [rect(660, 150, 120, 60)],
+    };
+    const slot = freeSlotBetween(sides, bounds, 8);
+    expect(slot).toEqual({ left: 148, top: 98, width: 504, height: 194 });
+    for (const r of Object.values(sides).flat()) expect(overlaps(slot, r)).toBe(false);
+  });
+
+  it('sans élément d’un côté : le bord de l’écran', () => {
+    const slot = freeSlotBetween({ top: [], bottom: [], left: [], right: [] }, bounds, 8);
+    expect(slot).toEqual(bounds);
   });
 });

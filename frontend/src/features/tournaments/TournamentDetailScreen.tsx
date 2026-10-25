@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { gameTheme, salon } from '../../constants/theme';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { useTournamentDetail } from './hooks';
 import { TournamentDetailPanel } from './TournamentDetailPanel';
@@ -94,13 +95,12 @@ const styles = StyleSheet.create({
   text: { color: tablePalette.cream, textAlign: 'center' },
   scrollContent: { flexGrow: 1, justifyContent: 'center' },
   panel: {
-    borderRadius: 16,
+    borderRadius: salon.radius.panel,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.35)',
-    backgroundColor: 'rgba(8, 30, 18, 0.9)',
-    experimental_backgroundImage:
-      'linear-gradient(180deg, rgba(16, 48, 29, 0.94) 0%, rgba(8, 28, 17, 0.94) 100%)',
-    boxShadow: '0 8px 20px rgba(0, 0, 0, 0.55)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: `${salon.surface.shadow}, inset 0 1px 0 rgba(246, 239, 223, 0.06)`,
   },
   close: {
     position: 'absolute',

@@ -58,7 +58,11 @@ jest.mock('../../../services/wallet-api', () => ({ walletApi: { get: jest.fn(nev
 jest.mock('../../../services/geolocation-api', () => ({
   geolocationApi: { status: jest.fn(never) },
 }));
-jest.mock('../../../services/audio-service', () => ({ playSound: jest.fn() }));
+jest.mock('../../../services/audio-service', () => ({
+  playSound: jest.fn(),
+  setMusicScene: jest.fn(),
+  isMusicAvailable: jest.fn(() => false),
+}));
 
 const NO_ACTIONS = {
   canPlayCard: false,

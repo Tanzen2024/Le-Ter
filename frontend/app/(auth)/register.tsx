@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AccessibilityInfo, Animated, StyleSheet, Text, View } from 'react-native';
 
@@ -17,7 +17,12 @@ import {
   useLoginMetrics,
 } from '../../src/features/auth/LoginLayout';
 import { RecoveryCodeCard } from '../../src/features/auth/RecoveryCodeCard';
-import { validateCredentialsStep, validateIdentityStep } from '../../src/features/auth/validation';
+import {
+  normalizeReferralInput,
+  referralCodeProblem,
+  validateCredentialsStep,
+  validateIdentityStep,
+} from '../../src/features/auth/validation';
 import { ApiError } from '../../src/lib/api-client';
 import {
   DEFAULT_PHONE_COUNTRY,
@@ -26,12 +31,13 @@ import {
 } from '../../src/lib/phone-countries';
 import type { RegisterPayload } from '../../src/types/auth';
 
-type Field = keyof RegisterPayload;
-const IDENTITY_FIELDS: readonly Field[] = ['firstName', 'lastName', 'username'];
+type Field = Exclude<keyof RegisterPayload, 'referralSource'>;
+type Values = Omit<RegisterPayload, 'referralCode' | 'referralSource'> & { referralCode: string };
+const IDENTITY_FIELDS: readonly Field[] = ['firstName', 'lastName', 'username', 'referralCode'];
 
 const STEPS = ['Identité', 'Accès et téléphone'] as const;
 
-const EMPTY: RegisterPayload = {
+const EMPTY: Values = {
   firstName: '',
   lastName: '',
   username: '',
@@ -40,7 +46,14 @@ const EMPTY: RegisterPayload = {
   phone: '',
   password: '',
   confirmPassword: '',
+  referralCode: '',
 };
+
+/** `?ref=` d'un lien d'invitation (leter://register?ref=CODE) : caractères de code seulement. */
+function referralFromLink(raw: string | string[] | undefined): string {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return normalizeReferralInput(value ?? '').replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
 
 /**
  * Inscription en 2 étapes (R-15), sur le modèle de la connexion (D-139) : même panneau, mêmes
@@ -50,8 +63,11 @@ const EMPTY: RegisterPayload = {
  * connecté quand il l'a enregistré.
  */
 export default function RegisterScreen() {
+  const params = useLocalSearchParams<{ ref?: string }>();
   const [step, setStep] = useState<1 | 2>(1);
-  const [values, setValues] = useState<RegisterPayload>(EMPTY);
+  // Parrainage (D-161) : prérempli par le lien quand l'application l'a reçu, sinon saisi.
+  const [linkedCode] = useState(() => referralFromLink(params.ref));
+  const [values, setValues] = useState<Values>(() => ({ ...EMPTY, referralCode: linkedCode }));
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const register = useRegister();
   const login = useLogin();
@@ -72,7 +88,9 @@ export default function RegisterScreen() {
   };
 
   const next = () => {
-    const found = validateIdentityStep(values);
+    const found: Partial<Record<Field, string>> = validateIdentityStep(values);
+    const referral = referralCodeProblem(values.referralCode);
+    if (referral) found.referralCode = referral;
     setErrors(found);
     if (Object.keys(found).length === 0) setStep(2);
   };
@@ -81,18 +99,25 @@ export default function RegisterScreen() {
     const found = validateCredentialsStep(values);
     setErrors(found);
     if (Object.keys(found).length > 0) return;
+    const { referralCode: rawCode, ...rest } = values;
+    const referralCode = normalizeReferralInput(rawCode);
     register.mutate(
       {
-        ...values,
+        ...rest,
         // Numéro national seul : le serveur reconstruit le numéro international du pays.
         phone: values.phone.replace(/[\s.()-]/g, ''),
         email: values.email.trim(),
+        // Aucun code : aucun champ envoyé. Code du lien inchangé : origine LINK.
+        ...(referralCode && {
+          referralCode,
+          referralSource: referralCode === linkedCode ? ('LINK' as const) : ('MANUAL' as const),
+        }),
       },
       {
         onError: (err) => {
           if (err instanceof ApiError && Object.keys(err.fields).length > 0) {
             setErrors(err.fields as Partial<Record<Field, string>>);
-            // Un pseudo déjà pris se corrige à l'étape 1.
+            // Un pseudo déjà pris ou un code de parrainage refusé se corrigent à l'étape 1.
             if (IDENTITY_FIELDS.some((f) => err.fields[f])) setStep(1);
           }
         },
@@ -156,7 +181,7 @@ export default function RegisterScreen() {
 }
 
 interface StepProps {
-  values: RegisterPayload;
+  values: Values;
   errors: Partial<Record<Field, string>>;
   onEdit: (name: Field, value: string) => void;
 }
@@ -222,21 +247,35 @@ function IdentityStep({ onNext, ...props }: StepProps & { onNext: () => void }) 
           />
         </Column>
       </Row>
-      <View style={{ marginBottom: gap * 1.5 }}>
-        <TextField
-          label="Pseudo"
-          placeholder="Pseudo"
-          leading={
-            <FieldIcon>
-              <UserIcon />
-            </FieldIcon>
-          }
-          hint="Votre nom visible en jeu (3 à 20 lettres, chiffres ou « _ »)."
-          autoCapitalize="none"
-          autoComplete="username"
-          {...field('username')}
-          style={[field('username').style, AFTER_ICON]}
-        />
+      <View style={[styles.row, { gap, marginBottom: gap * 1.5 }]}>
+        <Column>
+          <TextField
+            label="Pseudo"
+            placeholder="Pseudo"
+            leading={
+              <FieldIcon>
+                <UserIcon />
+              </FieldIcon>
+            }
+            hint="Votre nom visible en jeu (3 à 20 lettres, chiffres ou « _ »)."
+            autoCapitalize="none"
+            autoComplete="username"
+            {...field('username')}
+            style={[field('username').style, AFTER_ICON]}
+          />
+        </Column>
+        <Column>
+          {/* Parrainage (D-161) : facultatif, vérifié par le serveur avant la création du compte. */}
+          <TextField
+            label="Code de parrainage"
+            placeholder="Code de parrainage (facultatif)"
+            hint="Facultatif. Le code personnel de la personne qui vous a invité."
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={12}
+            {...field('referralCode')}
+          />
+        </Column>
       </View>
       <LoginButton title="Continuer" onPress={onNext} />
     </>

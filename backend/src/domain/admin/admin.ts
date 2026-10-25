@@ -100,6 +100,13 @@ export const AUDIT_ACTIONS = [
   'COMPLAINT_PRIORITY_CHANGED',
   // Récupération d'un compte joueur par l'assistance (D-135, migration 0054).
   'PLAYER_ACCOUNT_RECOVERY',
+  // Parrainage (D-161, migration 0056).
+  'REFERRAL_RULES_UPDATED',
+  'REFERRAL_CAMPAIGN_SUSPENDED',
+  'REFERRAL_CAMPAIGN_ACTIVATED',
+  'REFERRAL_ATTRIBUTION_REVIEWED',
+  'REFERRAL_REEVALUATION_REQUESTED',
+  'REFERRAL_REFERRER_VIEWED',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -117,6 +124,8 @@ export const AUDIT_TARGET_TYPES = [
   'PAYOUT_BENEFICIARY',
   'TREASURY',
   'COMPLAINT',
+  'REFERRAL_CAMPAIGN',
+  'REFERRAL_ATTRIBUTION',
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 

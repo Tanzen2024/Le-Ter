@@ -225,15 +225,21 @@ describe('Rejoindre une partie (D-073)', () => {
     expect(res.body.details).toEqual({ stake: 1_000, requiredBalance: 2_000 });
   });
 
-  it('solde passé sous le seuil après l’arrivée à la table : entrée dans la partie refusée', async () => {
+  it('solde passé sous le seuil avant l’arrivée : ni siège ni place dans la partie (D-153)', async () => {
     const A = await newPlayer(1_000);
     const B = await newPlayer(200);
     const { sessionId, gameId } = await createTable(A, 100);
-    await expectStatus(B.api.post(`/api/sessions/${sessionId}/join`), 200);
+    // Solde relu côté serveur au moment de l'arrivée, qui fait entrer dans la partie.
     await database.sql.query('UPDATE wallets SET balance = 150 WHERE user_id = $1', [B.userId]);
-    const res = await B.api.post(`/api/games/${gameId}/join`);
+    const res = await B.api.post(`/api/sessions/${sessionId}/join`);
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('INSUFFICIENT_BALANCE_FOR_STAKE');
+    const { body } = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
+    expect(body.game.players).toHaveLength(1);
+    const session = await expectStatus(A.api.get(`/api/sessions/${sessionId}`), 200);
+    expect(
+      (session.body.session.seats as { playerId: string | null }[]).map((s) => s.playerId),
+    ).not.toContain(B.userId);
   });
 
   it('participations concurrentes : une place, un seul joueur ; aucun jeton déplacé', async () => {

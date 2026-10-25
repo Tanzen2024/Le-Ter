@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { salon } from '../../constants/theme';
 import { ApiError, userErrorMessage } from '../../lib/api-client';
 import type { PaymentView } from '../../types/wallet';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -51,7 +52,7 @@ export function PaymentProgress({
           </Text>
         ) : (
           <>
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={salon.status.info.text} />
             <Text style={small}>Chargement du paiement…</Text>
           </>
         )}
@@ -68,7 +69,7 @@ export function PaymentProgress({
       testID="payment-progress"
       accessibilityLiveRegion="polite"
     >
-      {pending ? <ActivityIndicator color="#FFFFFF" /> : null}
+      {pending ? <ActivityIndicator color={salon.status.info.text} /> : null}
       <Text
         accessibilityRole={display.tone === 'error' ? 'alert' : 'header'}
         style={[
@@ -110,9 +111,10 @@ export function PaymentProgress({
 
 const styles = StyleSheet.create({
   column: { alignItems: 'center' },
-  title: { color: '#FFFFFF', textAlign: 'center' },
-  success: { color: '#F2C451' },
+  title: { color: salon.text, textAlign: 'center' },
+  // Paiement CONFIRMÉ par le serveur : jade, jamais le laiton des boutons d'action.
+  success: { color: salon.status.positive.text },
   error: { color: palette.error, textAlign: 'center', fontWeight: '600' },
-  gain: { color: '#F2C451', textAlign: 'center' },
-  small: { color: 'rgba(255, 255, 255, 0.78)', textAlign: 'center' },
+  gain: { color: salon.status.positive.text, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  small: { color: salon.textSoft, textAlign: 'center' },
 });

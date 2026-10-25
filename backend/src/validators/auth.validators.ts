@@ -1,5 +1,6 @@
 import { getCountries, parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/max';
 
+import { normalizeReferralCode, type ReferralSource } from '../domain/referrals/referral';
 import { BCRYPT_MAX_PASSWORD_BYTES } from '../services/auth/password.service';
 import { ValidationError } from './validation-error';
 
@@ -18,6 +19,13 @@ export interface RegisterInput {
   username: string;
   phone: string;
   password: string;
+  /**
+   * Code de parrainage facultatif (D-161), normalisé ; null : aucun. Son existence est
+   * vérifiée par le service, au moment de la création du compte.
+   */
+  referralCode?: string | null;
+  /** Origine déclarée par l'application (lien ou saisie) : audit seulement, jamais une preuve. */
+  referralSource?: ReferralSource;
 }
 
 /**
@@ -72,11 +80,28 @@ export function parseRegisterInput(body: unknown): RegisterInput {
     fields.confirmPassword = 'Les mots de passe ne correspondent pas.';
   }
 
+  // Parrainage facultatif (D-161) : vide = aucun code ; forme impossible = refus explicite.
+  const rawReferral = text(source.referralCode);
+  const referralCode = rawReferral === '' ? null : normalizeReferralCode(rawReferral);
+  if (rawReferral !== '' && referralCode === null) {
+    fields.referralCode = 'Code de parrainage invalide : 8 lettres ou chiffres.';
+  }
+  const referralSource: ReferralSource = source.referralSource === 'LINK' ? 'LINK' : 'MANUAL';
+
   if (Object.keys(fields).length > 0) {
     throw new ValidationError(fields);
   }
   // confirmPassword n'est utilisé que pour la comparaison : il n'est pas renvoyé.
-  return { firstName, lastName, email, username: rawUsername, phone, password };
+  return {
+    firstName,
+    lastName,
+    email,
+    username: rawUsername,
+    phone,
+    password,
+    // Champs de parrainage présents seulement quand un code est fourni.
+    ...(referralCode !== null && { referralCode, referralSource }),
+  };
 }
 
 export function parseLoginInput(body: unknown): LoginInput {

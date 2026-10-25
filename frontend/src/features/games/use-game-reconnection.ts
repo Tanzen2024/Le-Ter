@@ -3,13 +3,15 @@ import { useCallback, useState } from 'react';
 
 import { ApiError } from '../../lib/api-client';
 import { useAppForeground } from '../../lib/app-lifecycle';
-import type { ReconnectionState } from './ReconnectionPanel';
 
 /**
  * Échecs CONSÉCUTIFS de relecture avant de proposer « Réessayer » (la relecture automatique
  * continue toutes les 3 s). Compté sur les réponses réelles, jamais sur une durée.
  */
 export const FAILURES_BEFORE_RETRY_PROMPT = 3;
+
+/** Restauration en cours, ou échec durable (le serveur reste injoignable). */
+export type ReconnectionState = 'restoring' | 'failed';
 
 /** Serveur injoignable ou indisponible (réseau coupé, redémarrage) : rien n'est perdu. */
 export function isConnectivityError(error: unknown): boolean {
@@ -86,7 +88,7 @@ export function useGameReconnection(
 
 /**
  * Contenu de l'écran d'une partie. Les DONNÉES passent avant l'erreur : une relecture
- * échouée (réseau coupé) garde la table affichée sous le panneau « Reconnexion » au lieu de la
+ * échouée (réseau coupé) garde la table affichée sous l'indicateur « Reconnexion » au lieu de la
  * remplacer par un message ; sans données, un serveur injoignable propose de réessayer (la
  * partie continue côté serveur) ; un refus (non membre, introuvable) affiche son message,
  * sans navigation forcée.

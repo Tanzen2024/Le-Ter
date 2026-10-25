@@ -46,6 +46,22 @@ export function passwordProblem(password: string): string | undefined {
   return undefined;
 }
 
+/** Code de parrainage (D-161), même normalisation que le serveur : majuscules, sans espace ni tiret. */
+export function normalizeReferralInput(value: string): string {
+  return value.toUpperCase().replace(/[\s-]/g, '');
+}
+
+const REFERRAL_PATTERN = /^[A-HJ-NP-Z2-9]{8}$/;
+
+/** Facultatif : seule une forme impossible est refusée ici ; son existence est jugée par le serveur. */
+export function referralCodeProblem(value: string): string | undefined {
+  const code = normalizeReferralInput(value);
+  if (!code) return undefined;
+  return REFERRAL_PATTERN.test(code)
+    ? undefined
+    : 'Code de parrainage invalide : 8 lettres ou chiffres.';
+}
+
 export function validateIdentityStep(
   values: Pick<RegisterPayload, IdentityField>,
 ): FieldErrors<IdentityField> {

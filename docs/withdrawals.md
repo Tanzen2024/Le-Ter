@@ -1,6 +1,7 @@
 # Retraits Mobile Money (compte de jeu → Mobile Money)
 
-Décision : **D-075** (`docs/decisions.md`). Socle : **D-040** (compte de jeu), **D-050** (CinetPay).
+Décisions : **D-075** (`docs/decisions.md`), **D-163** (opérateur déduit par le serveur, remplace
+D-075 sur ce seul point). Socle : **D-040** (compte de jeu), **D-050** (CinetPay).
 
 Le compte de jeu reste la **seule source de vérité**. Un retrait débite les jetons à sa
 création (transaction `withdrawal` en attente) et n'est réglé que sur un statut **final relu
@@ -12,12 +13,38 @@ chez CinetPay**. Un échec confirmé est remboursé **une seule fois**.
 |---|---|
 | Montant | entier de jetons, **≥ 1 000**, ≤ 1 500 000 (plafond d'un transfert CinetPay, SDK officiel) |
 | Conversion | **1 jeton = 1 FCFA** (XAF) |
-| Destinataire | **numéro d'inscription** (`users.phone`), jamais un numéro saisi ; +237 seulement |
-| Opérateurs | `OM_CM` (Orange Money), `MTN_CM` (MTN Mobile Money) : les seuls opérateurs CinetPay en XAF |
+| Identité | compte de l'identité authentifiée (JWT), jamais un identifiant du corps de la requête |
+| Destinataire | **numéro d'inscription** (`users.phone`) de ce compte, jamais un numéro saisi ; +237 seulement |
+| Opérateur | **déduit par le serveur** du numéro d'inscription (D-163, voir « Opérateur ») ; jamais choisi par le joueur |
+| Opérateurs autorisés | `OM_CM` (Orange Money), `MTN_CM` (MTN Mobile Money) : les seuls opérateurs CinetPay en XAF (`WITHDRAWAL_OPERATORS`) |
 | Frais Le Ter | aucun. Les frais du transfert (`fee_amount`) sont à la charge du compte marchand CinetPay ; ils sont enregistrés s'ils sont renvoyés, visibles par l'administration |
 | Téléphone vérifié | non exigé (R-34 ouverte, aucune vérification SMS n'existe) |
 | Compte | `users.status = 'active'` exigé |
 | Délai de réception | non documenté par CinetPay : jamais affiché |
+
+## Opérateur (D-163)
+
+1. Le compte est celui de l'identité authentifiée ; le destinataire est son numéro d'inscription.
+2. Le serveur déduit l'opérateur de ce numéro par la règle déjà utilisée pour les achats :
+   `withdrawalOperatorOfPhone` (`domain/wallet/withdrawal.ts`) vérifie le format `+237` + 9
+   chiffres, appelle `operatorOfPhone` (plan de numérotation camerounais, D-090), puis exige que
+   l'opérateur obtenu figure dans `WITHDRAWAL_OPERATORS`.
+3. Le champ `operator` envoyé par le client est **ignoré** : `parseWithdrawalInput` ne renvoie
+   que `{ tokens }`, sans lire ni valider `operator`. Les applications déjà installées peuvent
+   continuer à l'envoyer ; il ne détermine jamais l'opérateur utilisé. Aucune bascule vers un
+   autre opérateur en cas de doute.
+4. Refus, **avant toute écriture** (aucune réservation de jetons, aucun envoi) :
+   numéro invalide, hors +237 ou opérateur indéterminable → `422 WITHDRAWAL_PHONE_UNSUPPORTED` ;
+   opérateur identifié mais non autorisé au retrait → `422 WITHDRAWAL_OPERATOR_UNSUPPORTED`.
+5. L'opérateur déduit est enregistré sur le retrait (`withdrawals.operator`) et transmis à
+   CinetPay (`payment_method`).
+6. Les contrôles de montant et l'idempotence restent ceux de D-075 ; le rejeu compare la clé et
+   le montant, pas l'opérateur (voir « Cycle de vie »).
+7. La politique (`GET /api/wallet/withdrawals`) applique la même règle : `msisdnSupported` est
+   vrai seulement si le numéro est +237 ET si son opérateur déduit est autorisé.
+8. Les retraits créés **avant** cette correction conservent l'opérateur enregistré à leur
+   création ; ils n'ont pas été modifiés, et leurs envois différés ou relectures l'utilisent
+   toujours.
 
 ## Fournisseur : API de transfert CinetPay v1
 
@@ -41,16 +68,21 @@ le `notify_token`, la clé et le mot de passe ne sont jamais journalisés.
 ## Cycle de vie
 
 ```text
-POST /api/wallet/withdrawals { tokens, operator }        (JWT + Idempotency-Key)
-  1. validation (≥ 1 000, entier, opérateur)                         400
-  2. Idempotency-Key déjà vue → même retrait (rejeu)                 200/202
-  3. transferts activés ? compte actif ? numéro +237 ?               503 / 403 / 422
+POST /api/wallet/withdrawals { tokens }                 (JWT + Idempotency-Key)
+     (un champ `operator`, envoyé par d'anciens clients, est IGNORÉ : D-163)
+  1. validation (≥ 1 000, entier ; aucun autre champ lu)             400
+  2. Idempotency-Key déjà vue + même montant → même retrait (rejeu)  200/202
+     même clé, autre montant                                         409 IDEMPOTENCY_KEY_REUSED
+  3. transferts activés ? compte actif ?                             503 / 403
+     opérateur DÉDUIT du numéro d'inscription : numéro +237 et
+     opérateur identifié ?                                           422 WITHDRAWAL_PHONE_UNSUPPORTED
+     opérateur autorisé au retrait ?                                 422 WITHDRAWAL_OPERATOR_UNSUPPORTED
   4. UNE transaction SQL :
        verrou du portefeuille (FOR UPDATE)
        → quota compté sous ce verrou                                 429 WITHDRAWAL_LIMIT_REACHED
        → solde DISPONIBLE (solde − réservé tournois)                 409 INSUFFICIENT_BALANCE
        → wallet_transactions (withdrawal, pending) + débit
-       → withdrawals (CREATED, merchant_transaction_id = LW + 26 hex)
+       → withdrawals (CREATED, operator déduit, merchant_transaction_id = LW + 26 hex)
   5. envoi revendiqué (UPDATE conditionnel), POST /v1/transfer :
        accepté      → PROCESSING (référence, empreinte du notify_token)
        non envoyé   → envoi non compté (échec AVANT POST /v1/transfer), retenté plus tard
@@ -58,7 +90,8 @@ POST /api/wallet/withdrawals { tokens, operator }        (JWT + Idempotency-Key)
                       sur ce seul message (D-076)
        existe déjà  → statut relu
        incertain    → reste CREATED (erreur notée), relu plus tard
-  ← 202 { withdrawal: { id, reference, status, … }, balance, replayed }
+  ← 202 { withdrawal: { id, reference, status, operator, operatorLabel, msisdn (masqué), … },
+          balance, replayed }
 ```
 
 | Statut | Sens | Solde |
@@ -169,8 +202,8 @@ jamais `Infinity` (contrainte SQL : `null` ou entier ≥ 1).
 
 | Route | Accès | Réponse |
 |---|---|---|
-| `POST /api/wallet/withdrawals` | JWT, Idempotency-Key, 10/min/joueur | `202 { withdrawal, balance, replayed }` ; `200` si déjà final ; `400`, `403 WITHDRAWAL_NOT_ALLOWED`, `409 INSUFFICIENT_BALANCE` / `IDEMPOTENCY_KEY_REUSED`, `422 WITHDRAWAL_PHONE_UNSUPPORTED`, `429 WITHDRAWAL_LIMIT_REACHED`, `503 MOBILE_MONEY_UNAVAILABLE` |
-| `GET /api/wallet/withdrawals` | JWT | `{ withdrawals (50 derniers), policy (minimum, opérateurs, numéro masqué, quota restant) }` |
+| `POST /api/wallet/withdrawals` | JWT, Idempotency-Key, 10/min/joueur | `202 { withdrawal, balance, replayed }` ; `200` si déjà final ; `400`, `403 WITHDRAWAL_NOT_ALLOWED`, `409 INSUFFICIENT_BALANCE` / `IDEMPOTENCY_KEY_REUSED`, `422 WITHDRAWAL_PHONE_UNSUPPORTED` / `WITHDRAWAL_OPERATOR_UNSUPPORTED`, `429 WITHDRAWAL_LIMIT_REACHED`, `503 MOBILE_MONEY_UNAVAILABLE` |
+| `GET /api/wallet/withdrawals` | JWT | `{ withdrawals (50 derniers), policy (minimum, opérateurs, numéro masqué, `msisdnSupported` selon D-163, quota restant) }` |
 | `GET /api/wallet/withdrawals/:id` | JWT, propriétaire | `{ withdrawal }` (relu chez CinetPay si ouvert, 15 s min.) ; `404` identique sinon |
 | `POST /api/withdrawals/cinetpay/notify` | public, 120/min/IP | `200 { received, status }` ; `400` ; `401 NOTIFICATION_REJECTED` ; `404` ; `409` ; `502` |
 | `GET /api/admin/withdrawals` | admin | liste paginée ; filtres `status`, `from`, `to`, `q` (référence), `userId` |
@@ -203,7 +236,8 @@ Les identifiants sont ceux des achats (`CINETPAY_API_KEY`, `CINETPAY_API_PASSWOR
 
 ## Données (migrations `0031_withdrawals.sql`, `0032_withdrawal_refund_reviews.sql`)
 
-`withdrawals` : `id`, `user_id`, `wallet_transaction_id` (UNIQUE), `provider`, `operator`,
+`withdrawals` : `id`, `user_id`, `wallet_transaction_id` (UNIQUE), `provider`, `operator` (déduit
+par le serveur depuis D-163),
 `msisdn_masked` (jamais le numéro complet), `tokens`, `amount`, `currency`, `status`,
 `merchant_transaction_id` (UNIQUE), `provider_reference` (UNIQUE), `provider_status`,
 `fee_amount`, `notify_token_hash` (SHA-256), `failure_code`, `last_error_code`,
@@ -221,10 +255,14 @@ Aucun transfert réel : fournisseur simulé (`FakeTransfers`) et `fetch` simulé
   concurrence, FAILED non compté, paramètres invalides, audit), double clic, réponse ambiguë,
   aucun renvoi par défaut, renvoi activé avec la même référence, destinataire modifié, échec et
   succès uniques, notifications (valide, répétée, falsifiée), redémarrage, journaux sans numéro
-  ni jeton, historique et solde cohérents, administration.
+  ni jeton, historique et solde cohérents, administration ; opérateur déduit du numéro
+  d'inscription (D-163) : opérateur du client ignoré (autre opérateur, inconnu, absent), numéro
+  non pris en charge refusé sans réservation, rejeu avec un autre opérateur.
 - `backend/tests/unit/payments/cinetpay-transfer.test.ts` : contrat `POST /v1/transfer`,
   `GET /v1/transfer/{id}`, classement des réponses.
 - `backend/tests/unit/wallet/withdrawal-rules.test.ts`, `cinetpay-env.test.ts`.
+- `backend/tests/unit/withdrawals/withdrawal-operator.test.ts` : déduction de l'opérateur,
+  opérateur non autorisé, erreurs 422, `operator` du client jamais lu (D-163).
 - `frontend/src/features/wallet/WithdrawalPanel.test.tsx`, `withdrawal-state.test.ts`.
 - `administration/tests/withdrawal-limit.test.ts`.
 

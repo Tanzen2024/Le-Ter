@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 
+import { gameTheme, motion } from '../../../constants/theme';
+import { playSound } from '../../../services/audio-service';
 import type { DealBatch, GameView } from '../../../types/game';
 import type { LobbyMetrics } from '../../lobby/lobby-metrics';
 import { CARD_RATIO, CardBack, CardFace, PublicRow, ROW_STEP } from './Cards';
 import { settledCardsOf, type PublicPlay } from './presentation-plan';
+import { useReducedMotion } from './turn-signal';
 import {
   arrangeSeats,
   handWidthOf,
@@ -32,20 +35,21 @@ const DEAL_FLIGHT_MS = 360;
  * Les cartes d'un tour restent sur la table jusqu'à la dernière ; elles sont rangées chez
  * leur joueur ce délai après la dernière carte du tour.
  */
-export const TRICK_CLEAR_DELAY_MS = 2000;
+export const TRICK_CLEAR_DELAY_MS = 1000;
 const PLAYED_CARD_MOVE_MS = 450;
 /** Fap-Fap : rangement un peu plus vif (-22 %) ; GARAM TIA garde `PLAYED_CARD_MOVE_MS`. */
 export const FAP_FAP_PLAYED_CARD_MOVE_MS = 350;
+/** Onde de laiton sous une carte qui vient d'être posée (visuel seulement). */
+const RIPPLE_MS = 460;
 
 /**
  * Orientation d'une carte posée au centre (degrés, sens horaire) : droite DEVANT le joueur qui
- * l'a jouée, le haut de la carte tourné vers le centre de la table, et vue ainsi par tous.
- * Moi (bas) : droite ; en face : renversée ; à gauche : haut vers la droite ; à droite : haut
- * vers la gauche.
+ * l'a jouée, vue ainsi par tous (captures de référence). Moi (bas) et en face (haut) :
+ * droites ; à gauche : haut vers la droite ; à droite : haut vers la gauche.
  */
 export const SPOT_ANGLE: Record<SeatSide, number> = {
   bottom: 0,
-  top: 180,
+  top: 0,
   left: 90,
   right: -90,
 };
@@ -239,7 +243,6 @@ export function PlayedCardsZone({ zone, label }: { zone: PlayedZone; label: stri
           width={row.cardWidth}
           step={row.step}
           reverse={row.reverse}
-          upsideDown={zone.side === 'top'}
           style={(({ left, top }) => ({ left, top }))(publicRowBox(row, cardIds.length))}
         />
       ) : null}
@@ -578,7 +581,15 @@ export function useDealProgress(sequence: DealBatch[], active: boolean, onDone: 
   };
 }
 
-/** Un lot en vol : `count` dos de carte partent du centre ensemble vers leur joueur. */
+/** Vol d'un lot avec « réduire les animations » : trajet direct et bref, sans rotation. */
+const DEAL_FLIGHT_REDUCED_MS = 120;
+
+/**
+ * Un lot en vol : `count` dos de carte partent du centre ensemble vers leur joueur, lancés
+ * comme par un croupier : légère courbe (la carte s'élève puis retombe), rotation qui se
+ * redresse à l'arrivée, petit grossissement à mi-course, ombre plus portée en l'air. Visuel
+ * seulement : l'arrivée (`onLanded`) ne fait que compter le lot déjà distribué par le serveur.
+ */
 export function DealFlight({
   batch,
   from,
@@ -592,16 +603,30 @@ export function DealFlight({
   width: number;
   onLanded: () => void;
 }) {
+  const reduced = useReducedMotion();
   const [progress] = useState(() => new Animated.Value(0));
+  // Un souffle par LOT lancé (jamais par carte) : la distribution du serveur est jouée une
+  // seule fois par partie (`dealAnimated`), une reconnexion ne la rejoue donc pas.
   useEffect(() => {
-    Animated.timing(progress, {
+    playSound('cardDeal');
+  }, []);
+  useEffect(() => {
+    const animation = Animated.timing(progress, {
       toValue: 1,
-      duration: DEAL_FLIGHT_MS,
+      duration: reduced ? DEAL_FLIGHT_REDUCED_MS : DEAL_FLIGHT_MS,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-    }).start(({ finished }) => finished && onLanded());
-  }, [progress, onLanded]);
+    });
+    animation.start(({ finished }) => finished && onLanded());
+    return () => animation.stop();
+  }, [progress, onLanded, reduced]);
   const height = width * CARD_RATIO;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  // Hauteur de la courbe : proportionnelle à la distance, plafonnée (jamais hors de l'écran).
+  const arc = reduced ? 0 : Math.min(Math.hypot(dx, dy) * 0.12, height * 0.9);
+  // Sens de la rotation de départ : la carte tourne vers son joueur.
+  const spin = reduced ? 0 : dx >= 0 ? -14 : 14;
   return (
     <Animated.View
       style={[
@@ -612,15 +637,24 @@ export function DealFlight({
           top: from.y - height / 2,
           transform: [
             {
-              translateX: progress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, to.x - from.x],
-              }),
+              translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [0, dx] }),
             },
             {
               translateY: progress.interpolate({
+                inputRange: [0, 0.5, 1],
+                outputRange: [0, dy / 2 - arc, dy],
+              }),
+            },
+            {
+              scale: progress.interpolate({
+                inputRange: [0, 0.5, 1],
+                outputRange: reduced ? [1, 1, 1] : [0.82, 1.08, 1],
+              }),
+            },
+            {
+              rotate: progress.interpolate({
                 inputRange: [0, 1],
-                outputRange: [0, to.y - from.y],
+                outputRange: [`${spin}deg`, '0deg'],
               }),
             },
           ],
@@ -634,6 +668,7 @@ export function DealFlight({
           width={width}
           style={[
             styles.absolute,
+            styles.dealShadow,
             {
               left: i * width * 0.22,
               transform: [{ rotate: `${(i - 1) * 6}deg` }],
@@ -693,8 +728,11 @@ export function PlayedCardSpotlight({
   targetWidth: number;
   onSettled: (cardId: string) => void;
 }) {
+  const reduced = useReducedMotion();
   const [appear] = useState(() => new Animated.Value(instant ? 1 : 0));
   const [move] = useState(() => new Animated.Value(0));
+  // Onde d'arrivée (0 → 1) : la carte est désormais dans l'état du serveur.
+  const [ripple] = useState(() => new Animated.Value(1));
   // Délai d'apparition figé à la création : une nouvelle valeur ne rejoue jamais l'apparition.
   const [initialDelay] = useState(delayMs);
   const [shown, setShown] = useState(false);
@@ -703,14 +741,41 @@ export function PlayedCardSpotlight({
     const timer = setTimeout(() => {
       onReveal?.(cardId);
       setShown(true);
-      animation = Animated.timing(appear, { toValue: 1, duration: 220, useNativeDriver: true });
+      // Carte posée : elle est dans l'état du serveur (coup confirmé). Les cartes déjà sur la
+      // table à l'ouverture de l'écran n'ont pas de mise en avant, donc aucun son.
+      playSound('cardPlace');
+      const arrival = Animated.timing(appear, {
+        toValue: 1,
+        duration: motion.cardMove,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+      if (reduced) {
+        animation = arrival;
+      } else {
+        ripple.setValue(0);
+        animation = Animated.parallel([
+          arrival,
+          Animated.timing(ripple, {
+            toValue: 1,
+            duration: RIPPLE_MS,
+            delay: instant ? 0 : motion.cardMove - motion.drop,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]);
+      }
       animation.start();
     }, initialDelay);
     return () => {
       clearTimeout(timer);
       animation?.stop();
+      // Onde interrompue : jamais d'anneau resté visible.
+      ripple.setValue(1);
     };
-  }, [appear, cardId, initialDelay, onReveal]);
+    // `instant` et `reduced` sont lus à l'apparition seulement (jamais rejouée).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appear, ripple, cardId, initialDelay, onReveal]);
   useEffect(() => {
     if (!shown || !release) return;
     let animation: Animated.CompositeAnimation | undefined;
@@ -747,16 +812,24 @@ export function PlayedCardSpotlight({
               }),
             },
             {
-              translateY: move.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, to.y - from.y],
-              }),
+              // Trajet vers la zone du joueur, plus la courte descente de la carte posée.
+              translateY: Animated.add(
+                move.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, to.y - from.y],
+                }),
+                appear.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [reduced ? 0 : -height * 0.12, 0],
+                }),
+              ),
             },
             {
               scale: Animated.multiply(
                 appear.interpolate({
                   inputRange: [0, 1],
-                  outputRange: [0.85, 1],
+                  // Posée d'un peu au-dessus de la table : légèrement plus grande, puis à plat.
+                  outputRange: [reduced ? 1 : 1.14, 1],
                 }),
                 move.interpolate({
                   inputRange: [0, 1],
@@ -767,14 +840,32 @@ export function PlayedCardSpotlight({
             {
               rotate: move.interpolate({
                 inputRange: [0, 1],
-                // Joueur d'en face : sa carte reste renversée dans sa rangée (`PublicRow`).
-                outputRange: [`${angle}deg`, angle === SPOT_ANGLE.top ? `${angle}deg` : '0deg'],
+                // Toutes les cartes sont droites dans les rangées de cartes jouées.
+                outputRange: [`${angle}deg`, '0deg'],
               }),
             },
           ],
         },
       ]}
     >
+      {/* Onde de laiton sous la carte à son arrivée, puis effacée (décorative). */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.ripple,
+          {
+            left: -width * 0.1,
+            top: -width * 0.1,
+            width: width * 1.2,
+            height: height + width * 0.2,
+            borderRadius: width * 0.16,
+            opacity: ripple.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.85, 0] }),
+            transform: [
+              { scale: ripple.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.28] }) },
+            ],
+          },
+        ]}
+      />
       <View style={styles.spotGlow}>
         <CardFace cardId={cardId} width={width} />
       </View>
@@ -785,14 +876,25 @@ export function PlayedCardSpotlight({
 const styles = StyleSheet.create({
   absolute: { position: 'absolute' },
   passThrough: { pointerEvents: 'none' },
-  // Même matière que les barres des joueurs : vert très sombre translucide.
+  // Logement creusé dans la pièce : fond sombre, ombre intérieure, filet de laiton estompé.
+  // Les cartes rangées y ressortent (ivoire sur noir) sans concurrencer la table.
   playedZone: {
-    borderRadius: 7,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.25)',
-    backgroundColor: 'rgba(4, 30, 12, 0.55)',
-    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.25)',
+    borderColor: gameTheme.brass.hairline,
+    backgroundColor: 'rgba(0, 0, 0, 0.34)',
+    boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(214, 178, 94, 0.08)',
   },
+  // Carte en l'air pendant la distribution : ombre plus large et plus douce.
+  dealShadow: { boxShadow: '0 8px 14px rgba(0, 0, 0, 0.45)' },
+  // Onde de laiton sous une carte qui vient d'être posée (confirmée par le serveur).
+  ripple: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: gameTheme.brass.bright,
+    boxShadow: `0 0 10px ${gameTheme.focusGlow}`,
+  },
+  // Carte posée sur la table : halo clair du modèle de référence.
   spotGlow: {
     borderRadius: 8,
     boxShadow: '0 0 18px rgba(255, 220, 140, 0.55)',

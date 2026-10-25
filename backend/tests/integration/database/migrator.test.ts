@@ -56,6 +56,13 @@ describe('runMigrations', () => {
       'platform_payout_beneficiaries',
       'platform_payout_events',
       'platform_payouts',
+      // Parrainage (D-161, migration 0056).
+      'referral_attributions',
+      'referral_campaigns',
+      'referral_codes',
+      'referral_evaluation_queue',
+      'referral_rewards',
+      'referral_rule_versions',
       'refresh_tokens',
       'schema_migrations',
       'session_decision_rounds',

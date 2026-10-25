@@ -9,6 +9,7 @@ import type { GeolocationService } from '../services/detection/geolocation.servi
 import type { GameService } from '../services/game/game.service';
 import type { SessionService } from '../services/sessions/session.service';
 import type { PaymentService } from '../services/payments/payment.service';
+import type { ReferralService } from '../services/referrals/referral.service';
 import type { NotificationService } from '../services/notifications/notification.service';
 import type { TournamentService } from '../services/tournaments/tournament.service';
 import type { WalletService } from '../services/wallet/wallet.service';
@@ -31,6 +32,7 @@ import { createGeolocationRouter } from './geolocation.routes';
 import { healthRouter } from './health.routes';
 import { createSessionRouter } from './session.routes';
 import { createPaymentRouter, type PaymentRouterOptions } from './payment.routes';
+import { createReferralAdminRouter, createReferralRouter } from './referral.routes';
 import { createNotificationRouter } from './notification.routes';
 import { createTournamentAdminRouter, createTournamentRouter } from './tournament.routes';
 import { createWalletRouter, DEFAULT_WALLET_WRITE_LIMIT } from './wallet.routes';
@@ -85,6 +87,8 @@ export interface ApiRouterDependencies {
   notifications?: NotificationService;
   /** Réclamations et assistant automatisé (D-114) ; absents, 503. */
   complaints?: ComplaintRouterDependencies;
+  /** Parrainage (D-161) ; absent, /referrals et /admin/referrals répondent 503. */
+  referrals?: ReferralService;
 }
 
 export function createApiRouter({
@@ -110,6 +114,7 @@ export function createApiRouter({
   tournaments,
   notifications,
   complaints,
+  referrals,
 }: ApiRouterDependencies): Router {
   const router = Router();
   router.use('/health', healthRouter);
@@ -277,6 +282,20 @@ export function createApiRouter({
     auth && complaints
       ? createComplaintAdminRouter(complaints.complaints, auth, logger)
       : complaintsUnavailable(),
+  );
+  // Parrainage (D-161) : section d'« Assistance » et administration.
+  const referralsUnavailable = () =>
+    createUnavailableRouter(
+      'REFERRALS_UNAVAILABLE',
+      'Le parrainage n’est pas disponible : base ou authentification non configurée.',
+    );
+  router.use(
+    '/referrals',
+    auth && referrals ? createReferralRouter(referrals, auth, logger) : referralsUnavailable(),
+  );
+  router.use(
+    '/admin/referrals',
+    auth && referrals ? createReferralAdminRouter(referrals, auth, logger) : referralsUnavailable(),
   );
   return router;
 }

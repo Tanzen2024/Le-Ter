@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { tablePalette as palette } from '../../components/table/TableDecor';
+import { salon } from '../../constants/theme';
 import { userErrorMessage } from '../../lib/api-client';
 import type { ComplaintDraft, SupportMessage } from '../../types/complaint';
 import { PanelButton } from '../lobby/LobbyUi';
@@ -152,20 +153,31 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   warning: { color: palette.gold },
   error: { color: palette.error },
-  bubble: { borderRadius: 10, maxWidth: '88%' },
-  mine: { alignSelf: 'flex-end', backgroundColor: palette.jade },
+  bubble: { borderRadius: 14, maxWidth: '88%' },
+  mine: {
+    alignSelf: 'flex-end',
+    borderBottomRightRadius: 4,
+    borderWidth: 1,
+    borderColor: salon.emerald.border,
+    backgroundColor: salon.emerald.fill,
+    experimental_backgroundImage: salon.emerald.gradient,
+  },
   theirs: {
     alignSelf: 'flex-start',
-    backgroundColor: palette.panel,
+    borderBottomLeftRadius: 4,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
+    borderColor: salon.surface.border,
   },
-  author: { color: palette.gold, fontWeight: '700' },
-  content: { color: palette.cream },
+  author: { color: salon.brass.text, fontWeight: '700' },
+  content: { color: salon.text },
   verified: {
-    borderRadius: 6,
-    backgroundColor: 'rgba(31, 156, 156, 0.18)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: salon.status.positive.border,
+    backgroundColor: salon.status.positive.fill,
     gap: 2,
   },
-  verifiedTitle: { color: palette.teal, fontWeight: '700' },
+  verifiedTitle: { color: salon.status.positive.text, fontWeight: '700' },
 });

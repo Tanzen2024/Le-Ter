@@ -13,6 +13,7 @@ const SIGN: Record<string, string> = {
   tournament_entry: '−',
   game_winnings: '+',
   game_stake: '−',
+  referral_reward: '+',
 };
 
 export const transactionColumns: Column<WalletTransaction>[] = [

@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { StatusBadge as SalonStatusBadge } from '../../components/ui/SalonParts';
+import { gameTheme, salon, type SalonTone } from '../../constants/theme';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import type { ComplaintStatus } from '../../types/complaint';
 
@@ -121,22 +123,30 @@ export function Chip({
   );
 }
 
-const STATUS_COLORS: Record<ComplaintStatus, string> = {
-  OPEN: palette.teal,
-  AI_ANALYSIS: palette.teal,
-  WAITING_FOR_PLAYER: palette.goldDeep,
-  IN_REVIEW: palette.teal,
-  RESOLVED: '#3FD06A',
-  REJECTED: palette.danger,
-  CLOSED: '#7A7065',
+/**
+ * Ton du statut RÉEL d'une réclamation (présentation seule) : laiton quand le joueur doit
+ * répondre, jade une fois résolue, rouge si rejetée, bleu tant qu'elle est traitée.
+ */
+const STATUS_TONE: Record<ComplaintStatus, SalonTone> = {
+  OPEN: 'info',
+  AI_ANALYSIS: 'info',
+  WAITING_FOR_PLAYER: 'attention',
+  IN_REVIEW: 'info',
+  RESOLVED: 'positive',
+  REJECTED: 'critical',
+  CLOSED: 'neutral',
 };
 
 export function StatusBadge({ status, label }: { status: ComplaintStatus; label: string }) {
   const m = useLobbyMetrics();
+  const fonts = useTableFonts();
   return (
-    <View style={[styles.badge, { backgroundColor: STATUS_COLORS[status] }]}>
-      <Text style={[styles.badgeText, { fontSize: m.smallSize * 0.9 }]}>{label}</Text>
-    </View>
+    <SalonStatusBadge
+      label={label}
+      tone={STATUS_TONE[status]}
+      size={Math.round(m.smallSize * 0.9)}
+      fontFamily={fonts.button}
+    />
   );
 }
 
@@ -152,22 +162,24 @@ export function formatDateTime(iso: string, locale: string): string {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
-    backgroundColor: palette.panel,
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: gameTheme.shadow.plate,
   },
-  heading: { color: palette.gold },
-  body: { color: palette.cream },
-  muted: { opacity: 0.7 },
+  heading: { color: salon.brass.text, letterSpacing: 0.4 },
+  body: { color: salon.text },
+  muted: { color: salon.textSoft },
   input: {
-    color: palette.cream,
+    color: salon.text,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderColor: gameTheme.brass.hairline,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
   },
   multiline: { textAlignVertical: 'top' },
   chip: {
@@ -178,14 +190,11 @@ const styles = StyleSheet.create({
     marginRight: 6,
     marginBottom: 6,
   },
-  chipSelected: { backgroundColor: palette.jade, borderColor: palette.gold },
-  chipText: { color: palette.cream },
-  chipTextSelected: { color: palette.gold, fontWeight: '700' },
-  badge: {
-    alignSelf: 'flex-start',
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+  chipSelected: {
+    borderColor: salon.brass.border,
+    backgroundColor: salon.brass.fill,
+    experimental_backgroundImage: salon.brass.gradient,
   },
-  badgeText: { color: '#FFFFFF', fontWeight: '700' },
+  chipText: { color: salon.textSoft },
+  chipTextSelected: { color: salon.ink, fontWeight: '700' },
 });

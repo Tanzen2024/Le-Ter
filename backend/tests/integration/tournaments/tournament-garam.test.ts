@@ -74,6 +74,24 @@ afterEach(async () => {
   await database.reset();
 });
 
+/**
+ * Mène la manche à son résultat par ses échéances réelles. Les parties suivent l'horloge de
+ * test (`gameClock`), figée : un timer réel trouverait l'échéance non atteinte et se réarmerait
+ * sans fin. On avance donc l'horloge jusqu'à l'échéance persistée (tirage automatique,
+ * « Je passe », D-136, D-145), puis on la traite par le chemin même du timer. Borné.
+ */
+async function playOutGaramDeadlines(gameId: GameId, maxDeadlines = 20): Promise<void> {
+  for (let i = 0; i < maxDeadlines; i++) {
+    const game = await stack.games.findGame(gameId);
+    if (!game || game.status !== 'in_progress') return;
+    if (!game.turnDeadlineAt) throw new Error(`partie ${gameId} en cours sans échéance`);
+    stack.clock.set(game.turnDeadlineAt);
+    await stack.games.handleTurnTimeout(gameId);
+    await stack.games.idle();
+  }
+  throw new Error(`partie ${gameId} non terminée après ${maxDeadlines} échéances`);
+}
+
 async function startedGaramTournament(garamVariant: 15 | 16 | 17 | 18): Promise<Tournament> {
   const t = await stack.tournaments.createAsAdmin(
     admin,
@@ -120,6 +138,8 @@ describe('tournoi GARAM TIA (D-127)', () => {
     await stack.games.startGame(gameId, ana.pid);
     await stack.games.playCard(gameId, ana.pid, 'COEUR-9');
     await stack.games.playCard(gameId, ben.pid, 'COEUR-3');
+    // Tirage : aucune carte du terre (trois 11) n'est prenable ; ana puis ben passent.
+    await playOutGaramDeadlines(gameId);
     await stack.tournaments.idle();
 
     const done = await stack.games.findGame(gameId);

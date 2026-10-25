@@ -63,13 +63,13 @@ export function isBelowGaramThreshold(total: number, variant: GaramVariant): boo
 }
 
 /**
- * Temps de décision d'un joueur de GARAM TIA pour jouer sa première carte (D-127, D-143) :
- * 25 s AFFICHÉES par joueur (compte à rebours 25 → 0
+ * Temps de décision d'un joueur de GARAM TIA pour jouer sa première carte (D-127, D-143, D-153) :
+ * 20 s AFFICHÉES par joueur (compte à rebours 20 → 0
  * sur le téléphone du joueur attendu), plus la marge réseau invisible commune de 3 s (D-098 :
  * l'écran atteint 0 trois secondes avant l'échéance du serveur, qui reste seul juge). Propre
  * à GARAM : le temps de tour de Fap-Fap (TURN_DURATION_MS) est inchangé.
  */
-export const GARAM_DISPLAYED_TURN_MS = 25_000;
+export const GARAM_DISPLAYED_TURN_MS = 20_000;
 export const GARAM_TURN_DURATION_MS = GARAM_DISPLAYED_TURN_MS + 3_000;
 
 /**
@@ -84,23 +84,23 @@ export const GARAM_AUTO_DRAW_STEP_MS = 800;
 
 /**
  * Délai avant la toute PREMIÈRE carte tirée de la manche, à la fin du premier tour : les écrans
- * laissent d'abord le tour visible (2 s), le rangent chez chaque joueur (450 ms), puis
+ * laissent d'abord le tour visible (1 s, D-151), le rangent chez chaque joueur (450 ms), puis
  * marquent une pause lisible (`GARAM_DRAW_START_PAUSE_MS` côté téléphone, 1 s) avant que la
- * 1re carte du terre ne parte. Sans ce délai, le serveur tirait pendant que les cartes du tour
- * étaient encore au centre de la table.
+ * 1re carte du terre ne parte : ≈ 2,45 s, d'où 2,5 s (D-153 : 3,5 s auparavant). Sans ce délai,
+ * le serveur tirait pendant que les cartes du tour étaient encore au centre de la table.
  */
-export const GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS = 3_500;
+export const GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS = 2_500;
 
 /**
  * « Je passe » (D-145) : un joueur qui reçoit la main sans pouvoir prendre aucune carte du
  * terre garde son tour ce délai DE PLUS que l'attente normale avant sa 1re carte, le temps que
  * toute la table lise l'annonce ; le serveur clôt alors son tirage et passe la main.
- * - contrôleur : 3,5 s + 4 s = 7,5 s depuis la fin du premier tour ; les écrans rangent le tour
- *   (2,45 s), annoncent le contrôle (1,8 s), puis affichent « Je passe » ≈ 3,25 s ;
- * - joueur suivant : 0,8 s + 4 s ; la dernière carte du joueur précédent se pose (0,8 s), puis
- *   « Je passe » s'affiche ≈ 4 s (D-148 : 5 s auparavant).
+ * - contrôleur : 2,5 s + 2,5 s = 5 s depuis la fin du premier tour ; les écrans rangent le tour
+ *   (1,45 s), annoncent le contrôle (1,2 s), puis affichent « Je passe » ≈ 2,35 s ;
+ * - joueur suivant : 0,8 s + 2,5 s ; la dernière carte du joueur précédent se pose (0,8 s),
+ *   puis « Je passe » s'affiche ≈ 2,5 s (D-153 ; 4 s auparavant, D-148 ; 5 s à l'origine).
  */
-export const GARAM_PASS_NOTICE_MS = 4_000;
+export const GARAM_PASS_NOTICE_MS = 2_500;
 
 /**
  * Main spéciale déclarée automatiquement (D-137) : une main spéciale unique n'est plus un choix

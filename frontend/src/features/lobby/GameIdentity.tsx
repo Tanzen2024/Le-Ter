@@ -3,19 +3,21 @@ import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Path, Polygon, Rect, Text as SvgText } from 'react-native-svg';
 
 import { tablePalette } from '../../components/table/TableDecor';
+import { gameTheme } from '../../constants/theme';
 import type { GameType } from '../../types/session';
 
 /**
  * Emblèmes de l'accueil, la SEULE source de l'identité graphique des jeux et des tournois :
- * - Fap-Fap : éventail de 5 dos de cartes cuivrés (les 5 plis) et médaillon aux 5 points ;
+ * - Fap-Fap : éventail de 5 dos de cartes ébène (les 5 plis) et médaillon aux 5 points ;
  * - Garam Tia : 3 cartes FACE visible en escalier (la main de 3 : 3, As de pique, 7) et jeton « 21 » ;
- * - Tournois : trophée doré entre un dos cuivré « L » (Fap-Fap) et un 3 de cœur (Garam Tia).
+ * - Tournois : trophée doré entre un dos ébène « L » (Fap-Fap) et un 3 de cœur (Garam Tia).
  * Dessins vectoriels permanents (aucune donnée de partie, de joueur ni de tournoi), dans un
  * carré de 100 × 100 : nets à toute taille. Purement graphiques : aucun nom de jeu en texte.
  */
 
-const COPPER = '#A4521E';
-const COPPER_DEEP = '#7A3A12';
+/** Dos de carte : laque ébène à filet de laiton, comme les cartes décoratives du salon. */
+const COPPER = '#1C2B26';
+const COPPER_DEEP = gameTheme.lacquer.solid;
 const IVORY = tablePalette.cream;
 const RED = '#C8312B';
 /** Encre des enseignes noires (pique). */
@@ -23,7 +25,7 @@ const INK = '#1B1B1B';
 const GOLD = tablePalette.gold;
 const GOLD_DEEP = tablePalette.goldDeep;
 const BRONZE = '#8A5A10';
-const FELT = '#0A2114';
+const FELT = gameTheme.felt.base;
 
 /** `size` absent : l'emblème remplit son conteneur (carré centré). */
 type EmblemSize = { size?: number };
@@ -38,7 +40,7 @@ function Emblem({ size, children }: EmblemSize & { children: ReactNode }) {
 }
 
 /**
- * Dos de carte cuivré, cadre doré (rappel des cartes L de la table), lettre facultative en haut
+ * Dos de carte ébène, cadre doré (rappel des cartes L de la table), lettre facultative en haut
  * (éventail) ou au centre (`centered`, carte seule).
  */
 function CardBack({

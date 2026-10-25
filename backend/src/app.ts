@@ -18,6 +18,7 @@ import type { GeolocationService } from './services/detection/geolocation.servic
 import type { GameService } from './services/game/game.service';
 import type { SessionService } from './services/sessions/session.service';
 import type { PaymentService } from './services/payments/payment.service';
+import type { ReferralService } from './services/referrals/referral.service';
 import type { NotificationService } from './services/notifications/notification.service';
 import type { TournamentService } from './services/tournaments/tournament.service';
 import type { WalletService } from './services/wallet/wallet.service';
@@ -66,6 +67,8 @@ export interface AppDependencies {
   admin?: Omit<AdminRouterDependencies, 'auth' | 'logger'>;
   /** Réclamations et assistant (D-114) ; absents, /api/complaints et /api/support : 503. */
   complaints?: ComplaintRouterDependencies;
+  /** Parrainage (D-161) ; absent, /api/referrals et /api/admin/referrals : 503. */
+  referrals?: ReferralService;
   /**
    * Proxys de confiance (`TRUST_PROXY`) : absent = aucun (req.ip = pair TCP). Ne jamais
    * l'activer sans connaître l'infrastructure réelle (X-Forwarded-For falsifiable).
@@ -99,6 +102,7 @@ export function createApp({
   notifications,
   admin,
   complaints,
+  referrals,
   trustProxy,
 }: AppDependencies = {}): Express {
   const app = express();
@@ -136,6 +140,7 @@ export function createApp({
       notifications,
       admin,
       complaints,
+      referrals,
     }),
   );
 

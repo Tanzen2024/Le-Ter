@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { gameTheme, salon } from '../../constants/theme';
 import { ApiError, isAlreadyPlaying } from '../../lib/api-client';
 import { useCurrentUser } from '../auth/hooks';
 import { MAX_PLAYER_CHOICES, type MaxPlayers } from '../games/hooks';
@@ -613,7 +614,7 @@ function ColumnTitle({ children }: { children: string }) {
   );
 }
 
-/** Champ gris arrondi de la maquette ; désactivé, il est estompé. */
+/** Champ en creux à filet de laiton ; désactivé, il est estompé. */
 function PanelInput({
   style,
   editable = true,
@@ -625,7 +626,7 @@ function PanelInput({
     <TextInput
       ref={ref}
       editable={editable}
-      placeholderTextColor="rgba(235, 235, 235, 0.6)"
+      placeholderTextColor={salon.textFaint}
       autoCorrect={false}
       style={[
         styles.field,
@@ -671,7 +672,7 @@ function SquareButton({
       ]}
     >
       {busy ? (
-        <ActivityIndicator color="#FFD84A" />
+        <ActivityIndicator color={salon.brass.text} />
       ) : (
         <Text allowFontScaling={false} style={[styles.squareGlyph, { fontSize: size * 0.6 }]}>
           {glyph}
@@ -717,22 +718,21 @@ const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   centeredRow: { justifyContent: 'center', flexWrap: 'wrap' },
   pressed: { opacity: 0.75 },
-  columnTitle: { color: '#FFFFFF', textAlign: 'center' },
-  label: { color: '#FFFFFF' },
+  columnTitle: { color: salon.brass.text, textAlign: 'center', letterSpacing: 1.2 },
+  label: { color: salon.textSoft },
   field: {
-    borderRadius: 7,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.35)',
-    backgroundColor: '#555555',
-    experimental_backgroundImage: 'linear-gradient(180deg, #666666 0%, #4A4A4A 100%)',
+    borderColor: gameTheme.brass.hairline,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
+    boxShadow: 'inset 0 1px 3px rgba(0, 0, 0, 0.5)',
   },
   input: {
     flex: 1,
     minWidth: 0,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 0,
-    color: '#FFFFFF',
-    fontStyle: 'italic',
+    color: salon.text,
     fontWeight: '600',
   },
   disabledField: { opacity: 0.6 },
@@ -742,8 +742,8 @@ const styles = StyleSheet.create({
   // ligne que si même leur largeur minimale ne tient pas.
   variants: { flex: 1, minWidth: 0, flexWrap: 'wrap' },
   variant: { flexGrow: 1, flexBasis: 0 },
-  selected: { borderColor: palette.gold, backgroundColor: 'rgba(242, 196, 81, 0.28)' },
-  capacityText: { color: '#FFFFFF' },
+  selected: { borderColor: gameTheme.brass.main, backgroundColor: 'rgba(214, 178, 94, 0.2)' },
+  capacityText: { color: salon.text },
   searchIcon: { position: 'absolute', right: 4, alignItems: 'center', justifyContent: 'center' },
   lens: { borderColor: palette.gold },
   handle: {
@@ -754,20 +754,21 @@ const styles = StyleSheet.create({
   square: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.4)',
-    backgroundColor: palette.jade,
-    experimental_backgroundImage: 'linear-gradient(180deg, #2FB27A 0%, #1E9064 60%, #157150 100%)',
+    borderColor: salon.emerald.border,
+    backgroundColor: salon.emerald.fill,
+    experimental_backgroundImage: salon.emerald.gradient,
+    boxShadow: '0 2px 5px rgba(0, 0, 0, 0.4)',
   },
-  squareGlyph: { color: '#FFD84A', fontWeight: '900', includeFontPadding: false },
-  header: { color: '#FFFFFF', textAlign: 'center' },
+  squareGlyph: { color: salon.brass.text, fontWeight: '900', includeFontPadding: false },
+  header: { color: salon.textFaint, textAlign: 'center', letterSpacing: 0.6 },
   left: { textAlign: 'left' },
   centered: { textAlign: 'center' },
   stakeCell: { justifyContent: 'center', gap: 3 },
   lockCell: { textAlign: 'center' },
   dimmed: { opacity: 0.6 },
-  cell: { color: '#FFFFFF' },
+  cell: { color: salon.text },
   list: {
     flexGrow: 1,
     gap: 6,
@@ -779,15 +780,15 @@ const styles = StyleSheet.create({
   emptyIcon: {
     alignItems: 'center',
     justifyContent: 'center',
-    opacity: 0.85,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.25)',
-    backgroundColor: 'rgba(23, 128, 110, 0.22)',
+    borderColor: salon.highlight,
+    backgroundColor: 'rgba(214, 178, 94, 0.08)',
+    boxShadow: 'inset 0 0 12px rgba(214, 178, 94, 0.12)',
   },
-  emptyTitle: { color: palette.cream, textAlign: 'center' },
+  emptyTitle: { color: salon.text, textAlign: 'center' },
   emptyHint: {
     maxWidth: 320,
-    color: 'rgba(247, 241, 225, 0.68)',
+    color: salon.textSoft,
     textAlign: 'center',
     fontWeight: '400',
   },

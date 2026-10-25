@@ -361,5 +361,5 @@ const styles = StyleSheet.create({
     experimental_backgroundImage: 'linear-gradient(180deg, #2FB27A 0%, #1E9064 60%, #157150 100%)',
   },
   sendDisabled: { opacity: 0.45 },
-  sendGlyph: { color: '#FFD84A', fontSize: 18, fontWeight: '900' },
+  sendGlyph: { color: '#F2D27A', fontSize: 18, fontWeight: '900' },
 });

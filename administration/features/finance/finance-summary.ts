@@ -65,6 +65,7 @@ const DIRECTION: Record<WalletKind, 'credit' | 'debit'> = {
   withdrawal: 'debit',
   game_winnings: 'credit',
   game_stake: 'debit',
+  referral_reward: 'credit',
 };
 
 /**
@@ -85,6 +86,7 @@ const KIND_LABEL: Record<WalletKind, string> = {
   tournament_prize: 'Gains de tournoi',
   game_stake: 'Mises de partie',
   game_winnings: 'Gains de partie',
+  referral_reward: 'Récompenses de parrainage',
 };
 
 export interface MovementLine {

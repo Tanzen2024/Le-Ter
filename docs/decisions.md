@@ -4202,7 +4202,7 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Date** : 2026-10-20 · **Statut** : demandée par le propriétaire du projet.
 - **Règle** : un composant secondaire ouvert (panneau Profil, Réglages, Boutique, Partie
   privée, GARAM, dépôt, sélecteur de date/heure, confirmation d'inscription à un tournoi,
-  consentement à la géolocalisation, reconnexion, avertissement de modération, remerciement
+  consentement à la géolocalisation, avertissement de modération, remerciement
   de fin de tournoi…) est SEUL visible et SEUL interactif jusqu'à sa fermeture. Aucun élément
   de l'écran précédent (FAP-FAP, GARAM TIA, cartes décoratives, HUD, table de jeu…) ne reste
   visible derrière lui ni touchable.
@@ -4216,7 +4216,7 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Hors champ** : les éléments qui font partie de la table de jeu elle-même (bilan de fin de
   partie au centre, vote de mise GARAM, chat latéral de la partie) ne sont pas des composants
   secondaires exclusifs : les masquer cacherait la table pendant le tour (minuteur de 20 s,
-  D-064).
+  D-064). La reconnexion n'en est plus un non plus : indicateur flottant (D-152).
 
 ## D-126 — Fap-Fap et GARAM TIA : jeux indépendants, configurations de plateforme communes
 
@@ -4634,7 +4634,7 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Tempo** (`backend/src/domain/garam/garam-rules.ts`) :
   - avant la toute première carte de la manche, à la fin du premier tour :
     `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` = 3,5 s. Les écrans montrent d'abord le tour complet
-    (2 s, `TRICK_CLEAR_DELAY_MS`), le rangent chez chaque joueur (450 ms), puis marquent une
+    (1 s, `TRICK_CLEAR_DELAY_MS`, D-151), le rangent chez chaque joueur (450 ms), puis marquent une
     pause lisible (`GARAM_DRAW_START_PAUSE_MS` = 1 s) ; aucune carte du terre ne part tant
     que les cartes du premier tour ne sont pas rangées ;
   - avant la première carte d'un joueur suivant : `GARAM_AUTO_DRAW_FIRST_MS` = 800 ms ;
@@ -4946,3 +4946,336 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
   lien vers `/reclamations`.
 - **Tests** : `complaints-admin-attention.test.ts`, `admin-attention.test.ts` (backend) ;
   `topbar-notifications.test.tsx`, `dashboard-hydration.test.tsx` (administration).
+
+## D-151 — Table : cartes d'un tour rangées plus vite
+
+- **Date** : 2026-10-24 · **Statut** : demandée par le propriétaire du projet (attente trop
+  longue avant que les cartes jouées rejoignent la zone des cartes déjà jouées) · **Ne
+  change pas** : l'état métier, les règles, les échéances du serveur.
+- **Délai** : `TRICK_CLEAR_DELAY_MS` passe de 2 s à 1 s (`frontend/.../table/TableCards.tsx`),
+  pour Fap-Fap et GARAM TIA. Les cartes d'un tour restent sur la table jusqu'à la dernière,
+  puis rejoignent la zone de leur joueur 1 s après elle. Visuel seulement.
+- **GARAM TIA** : `GARAM_AUTO_DRAW_AFTER_FIRST_ROUND_MS` (3,5 s, serveur) est inchangé ;
+  le tour est rangé plus tôt, la première carte du terre part toujours à l'échéance serveur.
+- **Tests** : `table-timings.test.ts`, `played-card.test.tsx`, `garam-round-flow.test.tsx`.
+
+## D-152 — Application mobile : indicateur flottant de latence et de reconnexion
+
+- **Date** : 2026-10-24 · **Statut** : demandée par le propriétaire du projet (le panneau
+  « Reconnexion » remplaçait l'écran en cours) · **Remplace** : pour la reconnexion seulement,
+  la règle du composant secondaire exclusif (D-126) · **Ne change pas** : les API, le temps
+  réel, les règles, les stores métier, la reprise de la partie active, la relecture de la
+  partie (`useActiveGameRestorer`, `useGameReconnection`).
+- **Composant** : `frontend/src/features/games/ConnectionIndicator.tsx`, petit panneau
+  flottant (fond sombre translucide, fin liseré, icône de synchronisation qui tourne
+  lentement, fondu d'entrée et de sortie), en haut de l'écran sous les barres système.
+  L'écran courant reste monté, visible et en place : aucun voile, aucune navigation.
+- **États** (toujours réels, jamais une durée ni un pourcentage) :
+  - attente imperceptible : rien (seuil `CONNECTION_REVEAL_DELAY_MS` = 400 ms) ;
+  - action longue (`useLongPendingAction` : une mutation sans réponse depuis plus de
+    600 ms) : « Traitement en cours… » ;
+  - reconnexion (recherche de la partie active, relecture de la partie en échec ou périmée) :
+    « Reconnexion en cours… » ;
+  - échec durable : message compréhensible, « Réessayer » et action de repli
+    (« Continuer » ou « Accueil ») ;
+  - connexion rétablie : le panneau s'efface de lui-même.
+- **Interactions** : le panneau ne capte aucun appui, sauf ses boutons en cas d'échec. Sur la
+  table de jeu, pendant une reconnexion réelle, la table reste visible mais inerte (aucun coup
+  sur un état périmé) ; une simple action en attente ne bloque rien. Ailleurs (lobby…), les
+  commandes restent utilisables : celles qui exigent le serveur gèrent leur propre erreur.
+- **Messages techniques** : jamais à l'écran (ni code comme `TIMEOUT`, ni URL, ni JSON). Ils
+  restent dans le journal réseau (`logNetworkIssue`, terminal Metro) ; la bulle LogBox de
+  développement les ignore (`LogBox.ignoreLogs(['[réseau]'])`).
+- **Tests** : `connection-indicator.test.tsx` (indicateur, lobby),
+  `game-reconnection-overlay.test.tsx` (table de jeu), `use-game-reconnection.test.tsx`.
+
+## D-153 — Rejoindre une table : siège et place dans la partie en une fois
+
+- **Date** : 2026-10-24 · **Statut** : tranchée par le propriétaire du projet (« il rejoint la
+  table et, si une partie a déjà commencé, il attend la partie suivante ») · **Modifie** :
+  D-033, D-034 (arrivée dans une session) · **Ne change pas** : capacité 2/3/4 et sièges fixes
+  (D-034), une session et une partie actives par joueur (D-034, R-18), mise et solde (D-073),
+  démarrage (D-031), J1 (D-033), règles des jeux.
+- **Avant** : `POST /api/sessions/:id/join` ne prenait que le siège ; l'application appelait
+  ensuite `POST /api/games/:id/join`. Si ce second appel n'aboutissait pas (réseau mobile,
+  application fermée), le joueur occupait un siège sans être dans la partie.
+- **Désormais** :
+  - **table en attente** : rejoindre la table place AUSSI le joueur dans la partie, en UNE
+    transaction (`SessionRepository.join` : verrou de la partie puis de la session, même ordre
+    que le départ). Un refus de l'un annule l'autre : partie pleine, joueur déjà dans une autre
+    partie active (R-18), mise ou solde insuffisants (contrôlés avant la transaction, comme
+    `joinGame`). Le second appel de l'application reste accepté et sans effet ;
+  - **partie déjà commencée** (ou manche GARAM rejouée) : le joueur prend son siège et attend la
+    partie suivante (inchangé) ;
+  - **partie suivante créée à la main** (`POST /sessions/:id/games`) : les joueurs assis la
+    rejoignent toujours par `POST /games/:id/join` (FIRST_PLAYER_NOT_IN_GAME inchangé).
+- **Priorité des refus** : déjà assis à une autre table → `ALREADY_IN_SESSION` (contrôle de
+  session d'abord) ; sinon, contrôles de la partie.
+- **Tournois** : l'arrivée à une table de tournoi en attente prend siège et place en une fois ;
+  un conflit sur l'écriture de la partie n'enregistre rien et renvoie `TOURNAMENT_BUSY`
+  (nouvel essai possible), comme le conflit persistant de l'entrée dans la partie.
+- **Technique** : `GameService.assertCanJoinWaitingGame` (contrôles asynchrones de `joinGame`),
+  `buildWaitingGameArrival` (pur, sous verrou, horloge des parties) et
+  `announceWaitingGameArrival` (diffusion `game:player_joined` après enregistrement) ; ajout du
+  joueur commun à `joinGame` (`seatInWaitingGame`). Aucune migration.
+- **Tests** : `open-tables-api.test.ts` ; mises en place adaptées (les joueurs « assis hors
+  partie » arrivent désormais une fois la partie commencée) dans `session-api.test.ts`,
+  `game-stake-api.test.ts` et `tournament-two-instances.test.ts`.
+
+## D-154 — Table de jeu : salon Art déco (refonte visuelle, LOT 1)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet (refonte
+  visuelle ambitieuse de la table et du design system) · **Ne change pas** : les règles, les
+  API, le temps réel, les échéances, les stores, la disposition de la table (`diameter`,
+  anneau `centerCircles`, zone de dépôt, positions des cartes et des plaques, collisions).
+- **Salle** (`features/games/table/TableSurface.tsx`, `FeltBackdrop`) : pénombre vert nuit,
+  faisceau d'une lampe suspendue, double cadre de laiton à coins coupés, losanges aux milieux
+  des bords, éventails Art déco dans les coins, vignettage renforcé.
+- **Table** (`WoodTable`, Fap-Fap et GARAM TIA) : rail de cuir sang-de-bœuf rembourré,
+  surpiqué et clouté de laiton ; fine bande de noyer à filet de laiton ; feutre émeraude
+  imprimé (double filet, losanges, soleil de rayons autour de l'anneau) ; anneau gravé en
+  creux bordé de deux filets ; flaque de lumière chaude autour de la table.
+- **Design system** (`constants/theme.ts`, `gameTheme`) : nouvelles matières `leather`,
+  `lamp`, `print` ; valeurs existantes inchangées (écrans du salon non touchés).
+- **Commandes de la table** : médaillons ronds à couronne de laiton ; pictogrammes vectoriels
+  (`lucide-react-native` : sortie, réglages, chat) à la place des emoji ; plaques et solde à
+  double filet. Libellés d'accessibilité inchangés.
+- **Tests** : `game-table.test.tsx` (anneau gravé), suites de la table et de GARAM TIA.
+
+## D-155 — Indicateur de chargement : au centre, sur une carte opaque, avec une barre
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet (« Traitement en
+  cours… » ne doit jamais être sur un autre texte ; l'écran reste visible ; le texte apparaît au
+  centre et montre l'évolution du chargement) · **Modifie** : D-152 (placement et rendu de
+  l'indicateur) · **Ne change pas** : quand l'indicateur apparaît (seuil de 400 ms, états réels),
+  ses messages, ses boutons d'échec, l'écran laissé en place et touchable.
+- **Placement** : au centre de l'écran (zone sûre), sur une carte OPAQUE (laque, filet de laiton)
+  au lieu d'un panneau semi-transparent en haut : aucun texte de l'écran ne transparaît sous le
+  message. Aucun voile : autour de la carte, l'écran reste visible.
+- **Progression** : sous le message (« Traitement en cours… », « Reconnexion en cours… »), une
+  barre de chargement INDÉTERMINÉE (segment de laiton qui parcourt le rail) : le serveur ne
+  fournit aucun pourcentage, aucun n'est inventé. Immobile avec « réduire les animations ».
+  L'échec durable garde son message et ses boutons, sans barre.
+- **Partout** : même composant (`ConnectionIndicator`) au-dessus des écrans connectés et de la
+  table de jeu.
+- **Tests** : `connection-indicator.test.tsx`.
+
+## D-156 — Cartes premium et main du joueur (refonte visuelle, LOT 2)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Ne change
+  pas** : la mise en page des faces (valeur, symboles, tailles, positions, couleurs par
+  famille), la lisibilité (aucune opacité ni filtre sur une carte en main), les règles, la
+  décision du serveur sur les cartes jouables, la trajectoire d'une carte lâchée.
+- **Face** (`table/Cards.tsx`) : reflet satiné, filet doré intérieur très fin, ombre de
+  contact puis ombre portée (carte épaisse posée sur le feutre).
+- **Dos** : soleil de 24 rayons dans le médaillon, éventails Art déco aux quatre coins du
+  cadre, vernis satiné. Bordeaux, or et monogramme « L » inchangés.
+- **Main** (`DraggableCard`, Fap-Fap et GARAM TIA) : pendant mon tour, chaque carte que le
+  SERVEUR déclare jouable sort de la main (`READY_RAISE` = 8 % de sa hauteur, `motion.select`),
+  avec une lumière chaude sur son haut ; une carte non autorisée garde son voile sombre, plus
+  dense vers le bas. Lâchée sur la table, la carte retombe pendant son trajet et finit
+  exactement sur sa place ; avec « réduire les animations », changement immédiat.
+- **Tests** : `card-landing.test.tsx` (carte sortie, retombée pendant le trajet),
+  `card-face.test.tsx`, `card-legibility.test.tsx`, `game-table.test.tsx`.
+
+## D-157 — Joueurs, avatars et chrono (refonte visuelle, LOT 3)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Ne change
+  pas** : les pseudos (réels, jamais inventés), les états annoncés aux lecteurs d'écran,
+  l'échéance du tour (lue sur le serveur, D-034, D-064), la disposition des plaques.
+- **Avatars** (`table/TableParts.tsx`) : jeton de laiton crénelé (huit encoches ivoire), cœur
+  de pierre et monogramme. Teinte dérivée du pseudo RÉEL (`avatarToneOf`, six pierres de
+  `gameTheme.avatarTones`), stable d'une partie à l'autre ; libellé neutre : teinte neutre et
+  silhouette. Aucune photo n'est fournie par le serveur, aucune n'est inventée. Anneaux d'état
+  inchangés (jade : moi ; or : joueur attendu ou gagnant).
+- **Plaques et compteur « Tour n/5 »** : double filet de laiton.
+- **Chrono** (`TimerDial`, Fap-Fap et GARAM TIA) : douze index de montre et perle claire en
+  tête de l'arc ; toujours un seul arc continu.
+- **Tests** : `seat-avatar.test.tsx`.
+
+## D-158 — Retours du geste et allumage de la table (LOT 4)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Ne change
+  pas** : la décision du serveur sur les cartes jouables, la commande envoyée, la mesure de
+  la zone de dépôt au lâcher, la trajectoire d'atterrissage.
+- **Zone de dépôt survolée** : la carte glissée annonce son entrée et sa sortie de la zone
+  (`DraggableCard.onHoverChange`) ; au-dessus, la zone passe en trait plein et lumière dense
+  (« lâchez ici »). Fap-Fap et GARAM TIA.
+- **Carte non autorisée touchée** (pendant mon tour, absente de `playableCardIds`) : petite
+  secousse sur place (`RESTRICTED_NUDGE_MS`), aucun glissé, rien n'est envoyé. Hors de mon
+  tour, la carte ne répond pas au toucher (inchangé).
+- **Carte devenue injouable en plein glissé** (coup automatique) : elle revient en main.
+- **Allumage** : à l'arrivée sur la table, la flaque de lumière de la lampe s'allume en fondu
+  (`LAMP_ON_MS`, décor seulement, jamais les cartes).
+- « Réduire les animations » : aucun de ces mouvements.
+- **Tests** : `card-landing.test.tsx`.
+
+## D-159 — Fin de partie (LOT 5)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Ne change
+  pas** : le résultat, le bilan, les boutons, la ronde Poursuivre/Quitter (D-034), la boîte du
+  panneau (largeur, flux).
+- **Panneau de fin** (`GameOverPanel`) : double filet de laiton ; filet Art déco sous le
+  titre ; soleil de rayons d'or derrière le contenu quand le SERVEUR annonce ma victoire ;
+  montant coloré selon son signe (gain jade, perte corail), libellé accessible inchangé.
+- Les panneaux d'attente et de vote de mise GARAM utilisent la plaque à double filet (D-154).
+- **Tests** : `game-over-panel.test.tsx`.
+
+## D-160 — Performance et accessibilité de la refonte (LOT 6)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet.
+- **Mémoïsation** : `WoodTable`, le décor de la salle et `CardFace` ne se redessinent plus à
+  chaque mise à jour de la partie (temps réel, chrono) quand leurs props ne changent pas.
+- **Accessibilité** : décors masqués aux lecteurs d'écran ; libellés des commandes inchangés ;
+  tous les mouvements ajoutés respectent « réduire les animations » ; aucune opacité sur une
+  carte en main (lisibilité, `card-legibility.test.tsx`).
+
+## D-161 — Programme de parrainage : code personnel, qualification individuelle, paliers progressifs
+
+- **Date** : 2026-10-25 · **Statut** : demandé par le propriétaire du projet · **Ne change
+  pas** : le paiement (CinetPay, D-050), le règlement des achats (`settleWalletTransaction`), le
+  calcul du compte de jeu, les règles des jeux. Le parrainage OBSERVE le registre existant.
+- **Règles (campagne `LE_TER_REFERRAL`, valeurs par défaut)** : 10 filleuls qualifiés par
+  palier ; un filleul est qualifié quand SES achats confirmés cumulés (`wallet_transactions`
+  `deposit` réglé `succeeded`, sur son propre compte) atteignent 1 000 jetons, sans compensation
+  entre filleuls ; 5 000 jetons par palier complet (10 → 5 000, 20 → 10 000, 30 → 15 000 au
+  total…), sans plafond. Seule la tranche du nouveau palier est créditée.
+- **Attribution** : le code personnel (8 caractères tirés au hasard, sans 0/O/1/I, stable,
+  `referral_codes`) est la preuve. Il est vérifié avant la création du compte puis revérifié
+  sous verrou ; compte et attribution sont écrits dans UNE transaction. La base exige que le
+  compte du filleul ait été créé par cette même transaction (`xmin`) : un compte existant ne
+  devient jamais filleul. Un parrain par filleul et par campagne (UNIQUE), pas
+  d'auto-parrainage (CHECK), parrain verrouillé (aucune mise à jour ni suppression). Code
+  inconnu : 422 `INVALID_REFERRAL_CODE`, aucun compte créé. Aucun code : inscription inchangée.
+- **Lien et APK** : `REFERRAL_DOWNLOAD_URL` (https, `backend/.env`) + `?ref=CODE` ; lien direct
+  `leter://register?ref=CODE` (schéma existant `leter`) qui préremplit le champ « Code de
+  parrainage ». AUCUN deferred deep linking n'existe : après téléchargement et installation de
+  l'APK, le code n'est pas transmis à l'application ; la saisie manuelle avant la création du
+  compte est le mécanisme de secours. Variable vide : aucun lien de téléchargement fabriqué.
+- **Crédit** : un achat confirmé d'un filleul inscrit son parrain dans
+  `referral_evaluation_queue` par un déclencheur, DANS la transaction du règlement (boîte
+  d'envoi durable : redémarrage, notification rejouée, plusieurs instances). Le service
+  (`ReferralService`, tous les `REFERRAL_TICK_MS`, et à la lecture de la section par le joueur)
+  relit le registre sous verrou du parrain (`referral_codes … FOR UPDATE`), pose les
+  qualifications (définitives, avec version des règles et cumul constaté) et crédite chaque
+  palier dû : écriture `wallet_transactions` `referral_reward` (clé
+  `referral-reward:<campagne>:<parrain>:<palier>`, unique sur toute la table), solde, ligne
+  `referral_rewards` (UNIQUE par parrain et palier,
+  immuable) et notification `REFERRAL_REWARD_CREDITED`, en une transaction. Un déclencheur
+  différé refuse tout crédit `referral_reward` sans palier enregistré du même joueur, montant et
+  clé. Une demande de la file n'est retirée que si son `seq` n'a pas changé.
+- **Versions des règles** : `referral_rule_versions` en ajout seul ; le palier n+1 exige « seuil
+  du palier n + taille de palier en vigueur » : une modification ne réécrit jamais un palier ni
+  une qualification acquis. Tout changement relance l'évaluation de tous les parrains.
+- **Suspension** : nouvelles inscriptions par code refusées (422
+  `REFERRAL_CAMPAIGN_SUSPENDED`) ; aucun palier crédité ; paliers atteints en attente,
+  crédités à la reprise. Les récompenses acquises et l'historique sont conservés.
+- **Comptage et contrôle** : un filleul qualifié compte s'il n'est ni « en vérification » ni
+  « écarté » par l'administration et si son compte est actif. Une récompense déjà créditée n'est
+  JAMAIS reprise automatiquement. Aucun signal (IP, appareil) ne déclare seul une fraude.
+- **Application** : champ facultatif « Code de parrainage » à l'étape 1 de l'inscription ;
+  onglet « Parrainage » permanent d'« Aide et réclamations » (`?tab=referral`, aucune nouvelle
+  route) : code, copie, partage, filleuls (pseudo public, progression plafonnée au seuil : le
+  montant acheté au-delà n'est pas révélé), paliers, récompenses, état de la campagne ; bandeau
+  discret à l'accueil à partir de la notification serveur, marquée lue à l'ouverture.
+- **API** : `GET /api/referrals/me` ; administration `/api/admin/referrals/*` (vue d'ensemble,
+  parrains, détail audité, règles, statut, contrôle d'une attribution, réévaluation), rôle admin
+  et session d'administration, champs inconnus refusés, toute écriture auditée
+  (`REFERRAL_*`). Aucune route ne crédite un montant choisi.
+- **Backoffice** : rubrique « Parrainage » (`/parrainage`, `/parrainage/[id]`).
+- **Migration** : `0056_referral_program.sql` (ajouts seulement ; `npm run db:migrate`).
+- **Points à valider** : voir `docs/TODO.md` (R-42 à R-44).
+- **Tests** : `tests/integration/referrals/referral-program.test.ts`,
+  `tests/unit/referrals/referral-rules.test.ts` (backend) ; `RegisterScreen.test.tsx`,
+  `referrals.test.tsx` (application) ; `tests/referrals.test.tsx` (administration).
+
+## D-162 — Profil tenu sans défiler (paysage)
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet (« on ne scroll
+  pas pour faire apparaître les autres éléments ») · **Ne change pas** : les données affichées
+  (lecture seule, /api/auth/me), le changement de mot de passe (POST /api/auth/password), le
+  code de récupération (D-135), la déconnexion, l'aide (D-114).
+- **Mise en page** (`lobby/ProfilePanel.tsx`), deux colonnes :
+  - à gauche, la carte du joueur : le même jeton qu'à la table (teinte du pseudo réel,
+    D-157), pseudo, ID, confirmation « Mot de passe modifié. », puis « Aide et réclamations »
+    et « Déconnexion » ;
+  - à droite, les informations en tuiles (Prénom | Nom, Pays | Téléphone, Email), puis la
+    sécurité en deux tuiles côte à côte (Mot de passe, Code de récupération).
+- **Modifier** : le formulaire du mot de passe (`PasswordChangeForm`, compact : mot de passe
+  actuel, puis nouveau et confirmation côte à côte) ou le code de récupération en cours
+  PREND LA PLACE des informations au lieu de s'ajouter dessous ; elles reviennent à
+  l'annulation. La saisie en cours n'est jamais perdue.
+- Le défilement du panneau reste en dernier recours (clavier ouvert, très petit écran).
+- **Tests** : `ProfilePanel.test.tsx`, `PasswordChangeForm.test.tsx`.
+
+## D-163 — Retraits : opérateur déduit par le serveur du numéro d'inscription
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet (correction de
+  sécurité) · **Remplace** : pour la détermination de l'opérateur des retraits SEULEMENT, la
+  règle de D-075 « le joueur choisit seulement l'opérateur ». D-075 reste en vigueur pour tout
+  le reste (montant, quota, cycle, issue incertaine, réconciliation, administration) ·
+  **Ne change pas** : le destinataire (numéro d'inscription, D-040), le montant minimum et
+  maximum, le quota, la réservation des jetons, les statuts, les références marchandes,
+  l'idempotence, le rapprochement (D-076).
+- **Contexte** : l'opérateur envoyé par l'application (`operator` du corps de
+  `POST /api/wallet/withdrawals`) était repris tel quel et transmis à CinetPay, sans être
+  recoupé avec le numéro du compte. Un client pouvait donc imposer un opérateur différent de
+  celui de son numéro.
+- **Règles** :
+  1. Le compte est celui de l'identité authentifiée (JWT), jamais un identifiant du corps.
+  2. Le destinataire est le numéro d'inscription enregistré sur ce compte.
+  3. Le serveur déduit l'opérateur de ce numéro par les règles camerounaises déjà utilisées pour
+     les achats (`operatorOfPhone`, plan de numérotation de D-090).
+  4. L'opérateur déduit doit appartenir aux opérateurs autorisés pour le retrait
+     (`WITHDRAWAL_OPERATORS` : `OM_CM`, `MTN_CM`).
+  5. Le champ `operator` envoyé par le client est ignoré : il n'est ni lu, ni validé, ni
+     comparé ; il n'a aucune autorité métier (les applications déjà installées peuvent
+     continuer à l'envoyer). Aucune bascule vers un autre opérateur en cas de doute.
+  6. Numéro invalide ou opérateur indéterminable → 422 `WITHDRAWAL_PHONE_UNSUPPORTED` ;
+     opérateur identifié mais non autorisé → 422 `WITHDRAWAL_OPERATOR_UNSUPPORTED`. Dans les deux
+     cas, le refus a lieu avant toute écriture : aucune réservation de jetons, aucun envoi.
+  7. L'idempotence reste applicable : même Idempotency-Key et même montant → même retrait
+     (`replayed`), quel que soit l'`operator` envoyé ; autre montant → 409
+     `IDEMPOTENCY_KEY_REUSED`. L'opérateur, déduit par le serveur, n'entre plus dans la
+     comparaison.
+- **Politique** (`GET /api/wallet/withdrawals`) : `msisdnSupported` applique la même règle
+  (numéro +237 ET opérateur déduit autorisé), pour que l'application ne propose pas un retrait
+  que le serveur refuserait. L'application ne propose plus de choix d'opérateur.
+- **Retraits existants** : les retraits créés avant cette correction conservent l'opérateur
+  enregistré à leur création ; ils n'ont pas été modifiés, et leurs envois différés ou relectures
+  l'utilisent toujours.
+- **Code** : `domain/wallet/withdrawal.ts` (`withdrawalOperatorOfPhone`,
+  `WithdrawalOperatorNotAllowedError`), `validators/withdrawal.validators.ts`,
+  `services/withdrawals/withdrawal.service.ts`, `middleware/api-errors.ts`.
+- **Tests** : `tests/unit/withdrawals/withdrawal-operator.test.ts`,
+  `tests/unit/wallet/withdrawal-rules.test.ts`, `tests/integration/withdrawals/withdrawal-api.test.ts`
+  (bloc « Opérateur déduit du numéro d'inscription »).
+
+## D-164 — Fap-Fap : halo et annonce du contrôle comme GARAM TIA
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet (« mettre
+  exactement le même halo qu'il y a dans Garam sur Fap-Fap », les deux différences) ·
+  **Modifie** : le halo de tour de 5 s et le halo de contrôle de 3 s de Fap-Fap ·
+  **Ne change pas** : les règles, le contrôle décidé par le serveur (D-035), le chrono.
+- **Contrôle** : Fap-Fap emploie la MÊME fonction que GARAM TIA (`useControlNotice`) :
+  halo `ControlGlow` sur la plaque du joueur qui obtient le contrôle (`play.controllerId`
+  du serveur) et annonce « Vous prenez le contrôle » / « <pseudo> prend le contrôle », le
+  temps de `GARAM_CONTROL_NOTICE_MS` (1,2 s). L'annonce est posée sous l'anneau gravé.
+- **Halo de tour** : retiré de Fap-Fap (GARAM TIA n'en a pas). Le chrono, les barres des
+  plaques et le bandeau « C'est ton tour ! » signalent toujours le joueur attendu.
+- **Tests** : `control-notice.test.tsx`.
+
+## D-165 — GARAM TIA : égalité à 21, les trois 7 gagnent
+
+- **Date** : 2026-10-25 · **Statut** : tranchée par le propriétaire du projet (« à
+  l'affichage final des cartes, même si deux joueurs ou plus ont le même nombre 21, celui
+  qui a le chiffre 7 trois fois gagne ») · **Modifie** : §3.15 (égalité au plus grand total)
+  pour le seul total 21 · **Ne change pas** : les deux As gardés battent tout (D-130), les
+  mains spéciales sur les 3 cartes reçues (D-130, dont THREE_SEVENS), toute autre égalité
+  (manche nulle et proposition de doubler la mise), le Koraté.
+- **Règle** (serveur, `finishRound` de `garam-engine.ts`) : à la fin normale, si plusieurs
+  joueurs sont à égalité au plus grand total et que ce total vaut 21, celui dont les cartes
+  révélées (gardées) comptent trois 7 gagne (`GARAM_BEST_SCORE`). Le paquet n'a que quatre 7 :
+  un seul joueur peut les avoir ; sans lui, l'égalité à 21 reste une manche nulle.
+- L'application affiche le gagnant renvoyé par le serveur ; elle ne recalcule rien.
+- **Tests** : `garam-engine.test.ts` (« égalité à 21 : trois 7 révélés gagnent »).

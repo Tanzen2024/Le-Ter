@@ -38,6 +38,13 @@ export interface RegisterPayload {
   phone: string;
   password: string;
   confirmPassword: string;
+  /**
+   * Code de parrainage facultatif (D-161) : vide = aucun. Le serveur le vérifie avant de créer
+   * le compte ; un code refusé bloque l'inscription (aucun rattachement silencieux).
+   */
+  referralCode?: string;
+  /** Code venu d'un lien d'invitation (prérempli) ou saisi : information d'audit seulement. */
+  referralSource?: 'LINK' | 'MANUAL';
 }
 
 /** Connexion par email, ou par pays + numéro national (D-135). */

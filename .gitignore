@@ -33,6 +33,8 @@ frontend/.expo/
 frontend/dist/
 frontend/web-build/
 frontend/expo-env.d.ts
+# Sources WAV de travail de la musique, régénérées par scripts/generate-music.mjs
+frontend/audio-src/
 # Dossiers natifs générés (Continuous Native Generation)
 frontend/ios/
 frontend/android/

@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import Svg, { Path, Rect } from 'react-native-svg';
 
-import { colors, spacing } from '../../constants/theme';
+import { colors, gameTheme, salon, spacing } from '../../constants/theme';
 import { findPhoneCountry, flagEmoji, searchPhoneCountries } from '../../lib/phone-countries';
 import { PickerAction, pickerColors, PickerModal, PickerTrigger } from './PickerModal';
 
@@ -255,11 +255,11 @@ const styles = StyleSheet.create({
   // Mêmes valeurs que la ligne `table` de TextField (connexion).
   tableRow: {
     borderWidth: 1.5,
-    borderColor: 'rgba(242, 196, 81, 0.55)',
-    backgroundColor: 'rgba(4, 24, 13, 0.55)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
   },
   tableRowError: { borderColor: '#FF8A7A' },
-  tableText: { fontSize: 15, color: '#F7F1E1' },
+  tableText: { fontSize: 15, color: salon.text },
   // Indicatif au début du champ `login` de TextField, séparé de la saisie par un filet.
   inline: { alignSelf: 'stretch', flexShrink: 0 },
   inlineRow: {
@@ -272,7 +272,7 @@ const styles = StyleSheet.create({
     paddingLeft: 14,
     paddingRight: 10,
     borderRightWidth: 1,
-    borderRightColor: 'rgba(242, 196, 81, 0.25)',
+    borderRightColor: gameTheme.brass.hairline,
   },
   // Indicatif dans son propre cadre, à gauche du champ : mêmes bordure et fond que `login`.
   framed: { flexShrink: 0 },
@@ -282,14 +282,14 @@ const styles = StyleSheet.create({
     paddingLeft: 12,
     borderWidth: 1,
     borderRightWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.32)',
-    borderRightColor: 'rgba(242, 196, 81, 0.32)',
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+    borderColor: gameTheme.brass.hairline,
+    borderRightColor: gameTheme.brass.hairline,
+    borderRadius: salon.radius.control,
+    backgroundColor: 'rgba(0, 0, 0, 0.36)',
   },
-  inlineText: { fontSize: 16, fontWeight: '600', color: '#F7F1E1' },
+  inlineText: { fontSize: 16, fontWeight: '600', color: salon.text },
   inlineFlag: { fontSize: 18 },
-  inlineIcon: { fontSize: 14, color: '#F2C451' },
+  inlineIcon: { fontSize: 14, color: salon.brass.text },
   error: {
     color: colors.danger,
     fontSize: 12.5,

@@ -1,11 +1,9 @@
 import {
-  isWithdrawalOperator,
   MAX_WITHDRAWAL_TOKENS,
   MIN_WITHDRAWAL_TOKENS,
   WITHDRAWAL_LIMIT_MAX_COUNT,
   WITHDRAWAL_LIMIT_MAX_PERIOD_MINUTES,
   type WithdrawalLimit,
-  type WithdrawalOperator,
 } from '../domain/wallet/withdrawal';
 import { ValidationError } from './validation-error';
 
@@ -15,15 +13,14 @@ const field = (body: unknown, key: string): unknown =>
     : undefined;
 
 /**
- * Demande de retrait (D-075) : `{ tokens, operator }`. `tokens` est un NOMBRE entier (une
- * chaîne, `null`, une valeur absente, décimale, non finie ou hors bornes est refusée, jamais
- * convertie) d'au moins 1 000 jetons. Tout autre champ (`phone`, `userId`, `balance`…) est
- * ignoré : le destinataire est le numéro d'inscription, l'identité vient du JWT.
+ * Demande de retrait (D-075) : `{ tokens }`. `tokens` est un NOMBRE entier (une chaîne,
+ * `null`, une valeur absente, décimale, non finie ou hors bornes est refusée, jamais
+ * convertie) d'au moins 1 000 jetons. Tout autre champ (`operator`, `phone`, `userId`,
+ * `balance`…) est ignoré : le destinataire est le numéro d'inscription, son opérateur est
+ * déduit par le serveur, l'identité vient du JWT. `operator`, encore envoyé par les
+ * applications installées, n'est donc ni lu ni validé : il ne peut rien imposer.
  */
-export function parseWithdrawalInput(body: unknown): {
-  tokens: number;
-  operator: WithdrawalOperator;
-} {
+export function parseWithdrawalInput(body: unknown): { tokens: number } {
   const fields: Record<string, string> = {};
   const tokens = field(body, 'tokens');
   if (typeof tokens !== 'number' || !Number.isSafeInteger(tokens)) {
@@ -33,12 +30,8 @@ export function parseWithdrawalInput(body: unknown): {
   } else if (tokens > MAX_WITHDRAWAL_TOKENS) {
     fields.tokens = `Le retrait maximum est de ${MAX_WITHDRAWAL_TOKENS} jetons.`;
   }
-  const operator = field(body, 'operator');
-  if (!isWithdrawalOperator(operator)) {
-    fields.operator = 'Opérateur Mobile Money non pris en charge.';
-  }
   if (Object.keys(fields).length > 0) throw new ValidationError(fields);
-  return { tokens: tokens as number, operator: operator as WithdrawalOperator };
+  return { tokens: tokens as number };
 }
 
 /**

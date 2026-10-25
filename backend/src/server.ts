@@ -26,6 +26,8 @@ import type { TournamentService } from './services/tournaments/tournament.servic
 import type { ChatService } from './services/chat/chat.service';
 import { createChatService } from './services/chat/create-chat-service';
 import { createComplaintServices } from './services/complaints/create-complaint-services';
+import { readReferralEnv } from './config/referral-env';
+import { createReferralService } from './services/referrals/create-referral-service';
 import { createPaymentServices } from './services/payments/create-payment-service';
 import {
   createPaymentHealthReport,
@@ -318,9 +320,17 @@ async function main(): Promise<void> {
     );
   }
 
+  // Parrainage (D-161) : file d'évaluation relue dans PostgreSQL au démarrage, puis à intervalle.
+  const referrals = sql && auth ? createReferralService({ sql, logger, env: readReferralEnv() }) : undefined;
+  if (referrals) {
+    referrals.start();
+    logger.info('Parrainage disponible');
+  }
+
   const server = createApp({
     logger,
     auth,
+    referrals,
     admin,
     trustProxy: env.trustProxy,
     games,
@@ -395,6 +405,7 @@ async function main(): Promise<void> {
     withdrawalReconciler?.stop();
     platformFinance?.executor.stop();
     complaintServices?.analyzer.stop();
+    referrals?.stop();
     stopPositionRetention?.();
     timers?.cancelAll();
     games?.cancelStartTimers();

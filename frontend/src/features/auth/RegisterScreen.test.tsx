@@ -16,8 +16,11 @@ jest.mock('./session', () => ({
   signOut: jest.fn(),
   withAccessToken: jest.fn(),
 }));
+// Paramètres du lien d'invitation (D-161) : aucun par défaut.
+let mockSearchParams: Record<string, string> = {};
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), replace: jest.fn(), canGoBack: () => false },
+  useLocalSearchParams: () => mockSearchParams,
 }));
 
 const api = authApi as jest.Mocked<typeof authApi>;
@@ -66,7 +69,10 @@ afterEach(async () => {
   clients.splice(0).forEach((c) => c.clear());
   jest.restoreAllMocks();
 });
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockSearchParams = {};
+});
 
 describe('inscription (R-15) : champs, validation et parcours inchangés', () => {
   it('étape 1 : champs obligatoires, messages par champ, on reste à l’étape 1', async () => {
@@ -259,5 +265,67 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
       expect(screen.getByLabelText(label)).toBeTruthy();
     expect(screen.getByText('Continuer')).toBeTruthy();
     expect(screen.getByText('Se connecter')).toBeTruthy();
+  });
+});
+
+describe('code de parrainage (D-161)', () => {
+  it('reste facultatif : aucun champ de parrainage envoyé sans code', async () => {
+    api.register.mockResolvedValue({ user: {}, recoveryCode: 'LT-7K4P-92XM-0A1B' } as never);
+    await renderScreen();
+    expect(screen.getByLabelText('Code de parrainage').props.value).toBe('');
+    await fillIdentity();
+    await fillCredentials();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    const payload = api.register.mock.calls[0]![0];
+    expect(payload).not.toHaveProperty('referralCode');
+    expect(payload).not.toHaveProperty('referralSource');
+  });
+
+  it('prérempli depuis le lien leter://register?ref=CODE et envoyé avec l’origine LINK', async () => {
+    mockSearchParams = { ref: 'abcd-efgh' };
+    api.register.mockResolvedValue({ user: {}, recoveryCode: 'LT-7K4P-92XM-0A1B' } as never);
+    await renderScreen();
+    expect(screen.getByLabelText('Code de parrainage').props.value).toBe('ABCDEFGH');
+    await fillIdentity();
+    await fillCredentials();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    expect(api.register).toHaveBeenCalledWith(
+      expect.objectContaining({ referralCode: 'ABCDEFGH', referralSource: 'LINK' }),
+    );
+  });
+
+  it('saisi à la main avant la création du compte : origine MANUAL', async () => {
+    api.register.mockResolvedValue({ user: {}, recoveryCode: 'LT-7K4P-92XM-0A1B' } as never);
+    await renderScreen();
+    await type('Code de parrainage', 'k7m9 p2qr');
+    await fillIdentity();
+    await fillCredentials();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    expect(api.register).toHaveBeenCalledWith(
+      expect.objectContaining({ referralCode: 'K7M9P2QR', referralSource: 'MANUAL' }),
+    );
+  });
+
+  it('forme impossible refusée avant l’envoi', async () => {
+    await renderScreen();
+    await type('Code de parrainage', '12');
+    await fillIdentity();
+    expect(screen.getByText('Code de parrainage invalide : 8 lettres ou chiffres.')).toBeTruthy();
+    expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
+  });
+
+  it('code refusé par le serveur : retour à l’étape 1, message sous le champ, aucun compte', async () => {
+    const message = 'Ce code de parrainage est inconnu. Vérifiez-le ou laissez le champ vide.';
+    api.register.mockRejectedValue(
+      new ApiError(422, 'INVALID_REFERRAL_CODE', message, { referralCode: message }),
+    );
+    await renderScreen();
+    await type('Code de parrainage', 'ABCDEFGH');
+    await fillIdentity();
+    await fillCredentials();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
+    expect(screen.queryByTestId('recovery-code-card')).toBeNull();
   });
 });

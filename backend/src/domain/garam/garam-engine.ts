@@ -79,7 +79,7 @@ import {
 
 export interface GaramContext {
   now: Date;
-  /** Durée d'un tour : GARAM_TURN_DURATION_MS (25 s affichées + 3 s de marge, D-143). */
+  /** Durée d'un tour : GARAM_TURN_DURATION_MS (20 s affichées + 3 s de marge, D-143, D-153). */
   turnDurationMs?: number;
   /** Tirage automatique (D-136) : délai avant la 1re carte d'un joueur, puis entre deux cartes. */
   autoDrawFirstMs?: number;
@@ -686,18 +686,31 @@ export function playGaramAutomatically(
 // ---------------------------------------------------------------------------
 
 /**
+ * Trois 7 parmi les cartes révélées (gardées) du joueur. Le paquet n'a que quatre 7 : un seul
+ * joueur peut les avoir.
+ */
+function keepsThreeSevens(play: GaramPlay, playerId: PlayerId): boolean {
+  return keptCards(play, playerId).filter((c) => garamCard(c).value === GARAM_SEVEN).length >= 3;
+}
+
+/**
  * Fin normale : révélation, totaux, gagnant = le joueur aux deux As gardés s'il existe (il bat
  * tout autre total, D-130 ; seul total possible au-dessus de 21 : 22), sinon le plus grand
- * total (≤ 21). Égalité au plus grand total → manche nulle. Koraté (D-127, D-130) : chaque
- * PERDANT dont le total est STRICTEMENT inférieur à la variante X (15, 16, 17 ou 18) est noté
- * pour le règlement ; il ne change jamais le gagnant.
+ * total (≤ 21). Égalité à 21 : le joueur qui révèle trois 7 gagne (D-165). Toute autre égalité
+ * au plus grand total → manche nulle. Koraté (D-127, D-130) : chaque PERDANT dont le total est
+ * STRICTEMENT inférieur à la variante X (15, 16, 17 ou 18) est noté pour le règlement ; il ne
+ * change jamais le gagnant.
  */
 function finishRound(game: Game, play: GaramPlay, now: Date): GameEventDraft[] {
   const scores = Object.fromEntries(play.order.map((id) => [id, garamKeptTotal(play, id)]));
   const twoAces = play.order.filter((id) => keepsTwoAces(play, id));
   const valid = play.order.filter((id) => (scores[id] as number) <= GARAM_SCORE_LIMIT);
   const best = Math.max(...valid.map((id) => scores[id] as number));
-  const leaders = twoAces.length > 0 ? twoAces : valid.filter((id) => scores[id] === best);
+  let leaders = twoAces.length > 0 ? twoAces : valid.filter((id) => scores[id] === best);
+  if (twoAces.length === 0 && best === GARAM_SCORE_LIMIT && leaders.length > 1) {
+    const sevens = leaders.filter((id) => keepsThreeSevens(play, id));
+    if (sevens.length === 1) leaders = sevens;
+  }
   const hands = structuredClone(play.hands);
   if (leaders.length !== 1) {
     return tieRound(game, play, { kind: 'SCORE', playerIds: leaders, scores, hands }, now);

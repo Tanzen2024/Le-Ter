@@ -184,7 +184,7 @@ function Star({
           width: size,
           height: size,
           borderRadius: size / 2,
-          boxShadow: `0 0 ${size * 3}px ${size}px rgba(255, 196, 90, 0.55)`,
+          boxShadow: `0 0 ${size * 3}px ${size}px rgba(242, 210, 122, 0.45)`,
           opacity,
         },
       ]}
@@ -194,18 +194,18 @@ function Star({
 
 const styles = StyleSheet.create({
   passThrough: { pointerEvents: 'none' },
-  // Reflet bordeaux / marron chaud derrière le panneau.
+  // Lueur émeraude derrière le panneau : la lumière de la table, au fond de la pièce.
   glow: {
     position: 'absolute',
     experimental_backgroundImage:
-      'radial-gradient(closest-side, rgba(168, 58, 22, 0.42) 0%, rgba(110, 26, 14, 0.28) 45%, rgba(60, 10, 6, 0) 100%)',
+      'radial-gradient(closest-side, rgba(42, 138, 98, 0.32) 0%, rgba(20, 84, 60, 0.2) 45%, rgba(6, 17, 13, 0) 100%)',
   },
   // Halo doré : grand arc fin sous le panneau.
   arc: {
     position: 'absolute',
     borderWidth: 1.5,
-    borderColor: 'rgba(242, 196, 81, 0.22)',
-    boxShadow: '0 0 24px 2px rgba(242, 160, 60, 0.18)',
+    borderColor: 'rgba(214, 178, 94, 0.22)',
+    boxShadow: '0 0 24px 2px rgba(214, 178, 94, 0.12)',
   },
-  star: { position: 'absolute', backgroundColor: '#FFE7A8' },
+  star: { position: 'absolute', backgroundColor: '#F8E6B4' },
 });

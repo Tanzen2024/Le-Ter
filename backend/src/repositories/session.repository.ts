@@ -39,6 +39,15 @@ export interface LeaveWrite extends LeaveTransition {
 }
 
 /**
+ * Ce qu'une arrivée enregistre, en UNE transaction (D-153) : la session et, si elle en a
+ * une, sa partie en attente avec le nouveau joueur. Jamais un siège sans place dans la partie.
+ */
+export interface JoinWrite extends SessionTransition {
+  /** Partie en attente à enregistrer, avec la version lue sous verrou. */
+  savedGame?: { game: Game; expectedVersion: number };
+}
+
+/**
  * Table ouverte que l'on peut rejoindre (liste « Rechercher une partie ») : session ouverte,
  * partie EN ATTENTE, au moins un siège libre. Aucune carte, aucune donnée de compte hormis le
  * pseudo (nom visible en jeu) du créateur de la partie.
@@ -146,6 +155,14 @@ export interface SessionRepository extends SessionSeatLookup {
     sessionId: SessionId,
     change: (context: LeaveContext) => R,
   ): Promise<R>;
+
+  /**
+   * Arrivée d'un joueur (D-153), en UNE transaction : mêmes verrous et même ordre que
+   * `leave` (partie active PUIS session), puis session et partie en attente enregistrées
+   * ensemble. Une partie refusée (R-18 : joueur déjà dans une autre partie active) annule
+   * aussi le siège.
+   */
+  join<R extends JoinWrite>(sessionId: SessionId, change: (context: LeaveContext) => R): Promise<R>;
 
   /** Historique des parties de la session, les plus anciennes d'abord (sans aucune carte). */
   listGames(sessionId: SessionId): Promise<SessionGameSummary[]>;

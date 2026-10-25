@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
+  Keyboard,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,6 +23,7 @@ import {
   type Period,
 } from '../../lib/date-time';
 import { useLanguage, useMessages } from '../../lib/i18n';
+import { AnchoredPopover, type Rect } from './AnchoredPopover';
 import { PickerAction, pickerColors, PickerModal, PickerTrigger } from './PickerModal';
 
 const ITEM_HEIGHT = 36;
@@ -35,6 +37,8 @@ const PERIODS: Period[] = ['AM', 'PM'];
  * Champ Heure : colonnes Heures, Minutes et, en anglais, AM/PM. Le français affiche 24 h
  * (`20:00`), l'anglais 12 h (`08:00 PM`) ; la valeur transmise reste toujours `HH:MM` sur
  * 24 h. Le choix n'est appliqué qu'à la validation.
+ * `presentation` : `modal` (fenêtre seule à l'écran, D-126) ou `popover` (horloge accrochée
+ * au champ, l'écran courant reste visible, D-164).
  */
 export function TimePickerField({
   label,
@@ -45,6 +49,7 @@ export function TimePickerField({
   style,
   textStyle,
   testID,
+  presentation = 'modal',
 }: {
   label: string;
   value: string;
@@ -54,20 +59,32 @@ export function TimePickerField({
   style?: StyleProp<ViewStyle>;
   textStyle?: StyleProp<TextStyle>;
   testID?: string;
+  presentation?: 'modal' | 'popover';
 }) {
   const t = useMessages().pickers;
   const { clock } = DATE_TIME_LOCALES[useLanguage()];
   const current = parseFormTime(value);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ClockTime>(current ?? { hours: 0, minutes: 0 });
+  const [anchor, setAnchor] = useState<Rect>();
+  const trigger = useRef<View>(null);
+  const popover = presentation === 'popover';
   // Paysage : 3 à 5 lignes visibles selon la hauteur de l'écran (titre, aperçu, actions).
+  // Accrochée, l'horloge pose aperçu et actions à côté des colonnes : seules ces dernières
+  // comptent en hauteur.
   const rows = Math.max(
     3,
-    Math.min(5, Math.floor((useWindowDimensions().height - 190) / ITEM_HEIGHT)),
+    Math.min(5, Math.floor((useWindowDimensions().height - (popover ? 110 : 190)) / ITEM_HEIGHT)),
   );
 
   const show = () => {
     setDraft(current ?? { hours: 0, minutes: 0 });
+    if (popover) {
+      Keyboard.dismiss();
+      trigger.current?.measureInWindow((x, y, width, height) =>
+        setAnchor({ x, y, width, height }),
+      );
+    }
     setOpen(true);
   };
   const confirm = () => {
@@ -75,6 +92,59 @@ export function TimePickerField({
     setOpen(false);
   };
   const { hour, period } = to12Hour(draft.hours);
+
+  const preview = (
+    <Text accessibilityLiveRegion="polite" style={styles.preview} testID="time-picker-preview">
+      {formatDisplayTime(draft, clock)}
+    </Text>
+  );
+  const columns = (
+    <View style={styles.columns}>
+      {clock === '24h' ? (
+        <Column
+          title={t.hours}
+          rows={rows}
+          items={HOURS_24}
+          selected={draft.hours}
+          format={pad}
+          onSelect={(hours) => setDraft((d) => ({ ...d, hours }))}
+        />
+      ) : (
+        <Column
+          title={t.hours}
+          rows={rows}
+          items={HOURS_12}
+          selected={hour}
+          format={pad}
+          onSelect={(h) => setDraft((d) => ({ ...d, hours: from12Hour(h, period) }))}
+        />
+      )}
+      <Column
+        title={t.minutes}
+        rows={rows}
+        items={MINUTES}
+        selected={draft.minutes}
+        format={pad}
+        onSelect={(minutes) => setDraft((d) => ({ ...d, minutes }))}
+      />
+      {clock === '12h' ? (
+        <Column
+          title={t.period}
+          rows={rows}
+          items={PERIODS}
+          selected={period}
+          format={String}
+          onSelect={(p) => setDraft((d) => ({ ...d, hours: from12Hour(hour, p) }))}
+        />
+      ) : null}
+    </View>
+  );
+  const actions = (
+    <>
+      <PickerAction title={t.cancel} onPress={() => setOpen(false)} />
+      <PickerAction title={t.confirm} onPress={confirm} primary />
+    </>
+  );
 
   return (
     <>
@@ -86,64 +156,41 @@ export function TimePickerField({
         placeholder={placeholder}
         icon="🕐"
         onPress={show}
+        active={popover && open}
+        ref={trigger}
         invalid={invalid}
         style={style}
         textStyle={textStyle}
       />
-      <PickerModal
-        visible={open}
-        title={label}
-        onClose={() => setOpen(false)}
-        actions={
-          <>
-            <PickerAction title={t.cancel} onPress={() => setOpen(false)} />
-            <PickerAction title={t.confirm} onPress={confirm} primary />
-          </>
-        }
-      >
-        <Text accessibilityLiveRegion="polite" style={styles.preview} testID="time-picker-preview">
-          {formatDisplayTime(draft, clock)}
-        </Text>
-        <View style={styles.columns}>
-          {clock === '24h' ? (
-            <Column
-              title={t.hours}
-              rows={rows}
-              items={HOURS_24}
-              selected={draft.hours}
-              format={pad}
-              onSelect={(hours) => setDraft((d) => ({ ...d, hours }))}
-            />
-          ) : (
-            <Column
-              title={t.hours}
-              rows={rows}
-              items={HOURS_12}
-              selected={hour}
-              format={pad}
-              onSelect={(h) => setDraft((d) => ({ ...d, hours: from12Hour(h, period) }))}
-            />
-          )}
-          <Column
-            title={t.minutes}
-            rows={rows}
-            items={MINUTES}
-            selected={draft.minutes}
-            format={pad}
-            onSelect={(minutes) => setDraft((d) => ({ ...d, minutes }))}
-          />
-          {clock === '12h' ? (
-            <Column
-              title={t.period}
-              rows={rows}
-              items={PERIODS}
-              selected={period}
-              format={String}
-              onSelect={(p) => setDraft((d) => ({ ...d, hours: from12Hour(hour, p) }))}
-            />
-          ) : null}
-        </View>
-      </PickerModal>
+      {popover ? (
+        <AnchoredPopover
+          visible={open}
+          anchor={anchor}
+          label={label}
+          closeLabel={t.close}
+          onClose={() => setOpen(false)}
+          testID="time-picker-popover"
+        >
+          {/* Colonnes à gauche ; aperçu et actions empilés à droite (paysage, écran bas). */}
+          <View style={styles.compact}>
+            {columns}
+            <View style={styles.side}>
+              {preview}
+              <View style={styles.sideActions}>{actions}</View>
+            </View>
+          </View>
+        </AnchoredPopover>
+      ) : (
+        <PickerModal
+          visible={open}
+          title={label}
+          onClose={() => setOpen(false)}
+          actions={actions}
+        >
+          {preview}
+          {columns}
+        </PickerModal>
+      )}
     </>
   );
 }
@@ -210,6 +257,9 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   columns: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
+  compact: { flexDirection: 'row', alignItems: 'stretch', gap: 12 },
+  side: { justifyContent: 'space-between', gap: 10, minWidth: 104 },
+  sideActions: { gap: 6 },
   column: {
     width: 72,
     borderRadius: 10,
@@ -226,7 +276,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: pickerColors.line,
   },
-  item: { height: ITEM_HEIGHT, alignItems: 'center', justifyContent: 'center' },
+  // Valeur choisie : pastille arrondie, en retrait des bords de la colonne.
+  item: {
+    height: ITEM_HEIGHT,
+    marginHorizontal: 4,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   itemSelected: { backgroundColor: pickerColors.selected },
   itemText: { color: pickerColors.text, fontSize: 16, fontWeight: '600' },
   itemTextSelected: { color: pickerColors.selectedText },

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
@@ -26,6 +27,7 @@ import {
   type CalendarDate,
 } from '../../lib/date-time';
 import { useLanguage, useMessages } from '../../lib/i18n';
+import { AnchoredPopover, type Rect } from './AnchoredPopover';
 import { PickerAction, pickerColors, PickerModal, PickerTrigger } from './PickerModal';
 
 type Month = { year: number; month: number };
@@ -34,6 +36,8 @@ type Month = { year: number; month: number };
  * Champ Date avec calendrier (jour, mois, année). La valeur reste `JJ/MM/AAAA` quelle que
  * soit la langue ; l'affichage, les noms des mois et des jours suivent la langue de l'app.
  * `minDate` / `maxDate` : jours hors bornes grisés et non sélectionnables.
+ * `presentation` : `modal` (fenêtre seule à l'écran, D-126) ou `popover` (calendrier accroché
+ * au champ, l'écran courant reste visible, D-164).
  */
 export function DatePickerField({
   label,
@@ -46,6 +50,7 @@ export function DatePickerField({
   style,
   textStyle,
   testID,
+  presentation = 'modal',
 }: {
   label: string;
   value: string;
@@ -57,21 +62,32 @@ export function DatePickerField({
   style?: StyleProp<ViewStyle>;
   textStyle?: StyleProp<TextStyle>;
   testID?: string;
+  presentation?: 'modal' | 'popover';
 }) {
   const t = useMessages().pickers;
   const { locale, firstWeekday } = DATE_TIME_LOCALES[useLanguage()];
   const selected = parseFormDate(value);
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<Month>(() => selected ?? minDate ?? todayOf());
+  const [anchor, setAnchor] = useState<Rect>();
+  const trigger = useRef<View>(null);
+  const popover = presentation === 'popover';
   const { height } = useWindowDimensions();
   // Paysage : en-tête + 6 semaines (7 rangées) doivent tenir avec le titre, les jours et les
-  // actions (~150 dp en tout) ; au-delà, la fenêtre défile (jamais une rangée coupée).
-  const cell = Math.max(28, Math.min(40, Math.floor((height - 150) / 7)));
+  // actions (~150 dp en tout) ; au-delà, la fenêtre défile (jamais une rangée coupée). Sans
+  // titre ni actions, le calendrier accroché tient entier dans l'écran (~70 dp de plus).
+  const cell = popover
+    ? Math.max(26, Math.min(34, Math.floor((height - 80) / 8)))
+    : Math.max(28, Math.min(40, Math.floor((height - 150) / 7)));
   // Flèches plus étroites qu'un jour : le mois et l'année tiennent sur UNE ligne entre elles.
   const navWidth = Math.round(cell * 0.8);
 
   const show = () => {
     setShown(selected ?? minDate ?? todayOf());
+    if (popover) {
+      Keyboard.dismiss();
+      trigger.current?.measureInWindow((x, y, width, h) => setAnchor({ x, y, width, height: h }));
+    }
     setOpen(true);
   };
   const outOfRange = (date: CalendarDate) =>
@@ -111,6 +127,80 @@ export function DatePickerField({
     </Pressable>
   );
 
+  // Une seule colonne de 7 jours, sans espace entre les rangées : rien ne déborde.
+  const calendar = (
+    <View style={{ width: cell * 7 }}>
+      <View style={styles.header}>
+        {nav('«', t.previousYear, -12)}
+        {nav('‹', t.previousMonth, -1)}
+        <Text
+          accessibilityLiveRegion="polite"
+          // Toujours sur une ligne : sur un petit écran, le texte rétrécit au lieu d'être coupé.
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.6}
+          style={styles.month}
+          testID="date-picker-month"
+        >
+          {formatMonthTitle(shown.year, shown.month, locale)}
+        </Text>
+        {nav('›', t.nextMonth, 1)}
+        {nav('»', t.nextYear, 12)}
+      </View>
+      <View style={styles.week}>
+        {weekdayLabels(locale, firstWeekday).map((day, i) => (
+          <Text
+            key={i}
+            style={[styles.weekday, { width: cell }]}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          >
+            {day}
+          </Text>
+        ))}
+      </View>
+      {monthGrid(shown.year, shown.month, firstWeekday).map((week, w) => (
+        <View key={w} style={styles.week}>
+          {week.map((day, i) => {
+            if (day === null) return <View key={i} style={{ width: cell, height: cell }} />;
+            const date = { ...shown, day };
+            const disabled = outOfRange(date);
+            const isSelected = selected !== undefined && compareDates(date, selected) === 0;
+            const isToday = compareDates(date, today) === 0;
+            const long = formatLongDate(date, locale);
+            return (
+              <Pressable
+                key={i}
+                accessibilityRole="button"
+                accessibilityLabel={disabled ? t.unavailableDay(long) : long}
+                accessibilityState={{ disabled, selected: isSelected }}
+                disabled={disabled}
+                onPress={() => pick(date)}
+                style={({ pressed }) => [
+                  styles.day,
+                  { width: cell, height: cell, borderRadius: cell / 2 },
+                  isToday && styles.today,
+                  isSelected && styles.selected,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.dayText,
+                    disabled && styles.dayDisabled,
+                    isSelected && styles.selectedText,
+                  ]}
+                >
+                  {day}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+
   return (
     <>
       <PickerTrigger
@@ -121,89 +211,34 @@ export function DatePickerField({
         placeholder={placeholder}
         icon="📅"
         onPress={show}
+        active={popover && open}
+        ref={trigger}
         invalid={invalid}
         style={style}
         textStyle={textStyle}
       />
-      <PickerModal
-        visible={open}
-        title={label}
-        onClose={() => setOpen(false)}
-        scroll
-        actions={<PickerAction title={t.cancel} onPress={() => setOpen(false)} />}
-      >
-        {/* Une seule colonne de 7 jours, sans espace entre les rangées : rien ne déborde. */}
-        <View style={{ width: cell * 7 }}>
-          <View style={styles.header}>
-            {nav('«', t.previousYear, -12)}
-            {nav('‹', t.previousMonth, -1)}
-            <Text
-              accessibilityLiveRegion="polite"
-              // Toujours sur une ligne : sur un petit écran, le texte rétrécit au lieu d'être coupé.
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.6}
-              style={styles.month}
-              testID="date-picker-month"
-            >
-              {formatMonthTitle(shown.year, shown.month, locale)}
-            </Text>
-            {nav('›', t.nextMonth, 1)}
-            {nav('»', t.nextYear, 12)}
-          </View>
-          <View style={styles.week}>
-            {weekdayLabels(locale, firstWeekday).map((day, i) => (
-              <Text
-                key={i}
-                style={[styles.weekday, { width: cell }]}
-                accessibilityElementsHidden
-                importantForAccessibility="no"
-              >
-                {day}
-              </Text>
-            ))}
-          </View>
-          {monthGrid(shown.year, shown.month, firstWeekday).map((week, w) => (
-            <View key={w} style={styles.week}>
-              {week.map((day, i) => {
-                if (day === null) return <View key={i} style={{ width: cell, height: cell }} />;
-                const date = { ...shown, day };
-                const disabled = outOfRange(date);
-                const isSelected = selected !== undefined && compareDates(date, selected) === 0;
-                const isToday = compareDates(date, today) === 0;
-                const long = formatLongDate(date, locale);
-                return (
-                  <Pressable
-                    key={i}
-                    accessibilityRole="button"
-                    accessibilityLabel={disabled ? t.unavailableDay(long) : long}
-                    accessibilityState={{ disabled, selected: isSelected }}
-                    disabled={disabled}
-                    onPress={() => pick(date)}
-                    style={({ pressed }) => [
-                      styles.day,
-                      { width: cell, height: cell, borderRadius: cell / 2 },
-                      isToday && styles.today,
-                      isSelected && styles.selected,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.dayText,
-                        disabled && styles.dayDisabled,
-                        isSelected && styles.selectedText,
-                      ]}
-                    >
-                      {day}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </PickerModal>
+      {popover ? (
+        <AnchoredPopover
+          visible={open}
+          anchor={anchor}
+          label={label}
+          closeLabel={t.close}
+          onClose={() => setOpen(false)}
+          testID="date-picker-popover"
+        >
+          {calendar}
+        </AnchoredPopover>
+      ) : (
+        <PickerModal
+          visible={open}
+          title={label}
+          onClose={() => setOpen(false)}
+          scroll
+          actions={<PickerAction title={t.cancel} onPress={() => setOpen(false)} />}
+        >
+          {calendar}
+        </PickerModal>
+      )}
     </>
   );
 }

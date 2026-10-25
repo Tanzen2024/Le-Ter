@@ -1,22 +1,10 @@
-import { Wallet, X } from 'lucide-react-native';
-import { useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
-import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
+import { gameTheme, salon } from '../../constants/theme';
 import { ApiError } from '../../lib/api-client';
 import type { DirectPayOperator, PaymentView, WalletTransactionView } from '../../types/wallet';
-import { useBackToClose } from '../games/table/GameOverlays';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { openPaymentPage, useWallet, useWalletOperation } from './hooks';
 import {
@@ -26,6 +14,7 @@ import {
   formatFcfa,
 } from './payment-state';
 import { PaymentProgress } from './PaymentProgress';
+import { AmountField } from './TokenAmountField';
 
 /**
  * Identité du moyen de paiement. Le projet ne contient AUCUN logo officiel MTN ou Orange Money :
@@ -50,21 +39,17 @@ const OPERATORS: Record<
   },
 };
 
-/** Charte Le-Ter, en version douce : vert profond, or et bordeaux en accents. */
+/**
+ * Charte du salon (Ébène & Laiton, constants/theme) : laque sombre, laiton et sang-de-bœuf en
+ * accents. Les couleurs des opérateurs (ci-dessus) restent celles de leurs marques.
+ */
 const COLORS = {
-  cardTop: '#163C2B',
-  cardBottom: '#0E271C',
-  cardBorder: 'rgba(242, 196, 81, 0.18)',
-  gold: '#F2C451',
-  goldSoft: 'rgba(242, 196, 81, 0.14)',
-  bordeaux: '#8C2F3D',
-  bordeauxSoft: 'rgba(140, 47, 61, 0.22)',
-  surface: 'rgba(255, 255, 255, 0.055)',
-  surfaceBorder: 'rgba(255, 255, 255, 0.10)',
-  text: '#F6F2E8',
-  muted: 'rgba(246, 242, 232, 0.62)',
+  gold: gameTheme.brass.bright,
+  bordeauxSoft: 'rgba(142, 31, 47, 0.26)',
+  text: salon.text,
+  muted: salon.textSoft,
   ink: '#151515',
-  info: 'rgba(242, 196, 81, 0.12)',
+  info: salon.status.info.fill,
 } as const;
 
 type Notice = { tone: 'error' | 'pending'; text: string };
@@ -110,32 +95,43 @@ function noticeOf(error: unknown): Notice {
 }
 
 /**
- * Recharger mon portefeuille (D-085, D-087, D-090, D-091) : le joueur saisit SEULEMENT le
- * montant. Le moyen de paiement est déduit par le serveur du numéro d'inscription
- * (`paymentOperator`) : un seul bouton, à ses couleurs. L'application n'envoie que le montant ;
- * le serveur choisit le paiement direct puis, sur un refus certain, la page CinetPay (jamais deux
- * paiements). Aucun crédit affiché avant le statut relu sur le serveur (`PaymentProgress`).
+ * Acheter des jetons (D-085, D-087, D-090, D-091), dans le panneau unique « Mes jetons » : le
+ * joueur saisit SEULEMENT le montant. Le moyen de paiement est déduit par le serveur du numéro
+ * d'inscription (`paymentOperator`) : un seul bouton, à ses couleurs. L'application n'envoie que
+ * le montant ; le serveur choisit le paiement direct puis, sur un refus certain, la page CinetPay
+ * (jamais deux paiements). Aucun crédit affiché avant le statut relu sur le serveur
+ * (`PaymentProgress`).
  */
-export function DepositSheet({
+export function DepositPane({
+  input,
+  onInput,
   onClose,
   onDone,
+  onLockChange,
 }: {
+  /** Montant saisi (chiffres), partagé avec « Retirer » dans le panneau. */
+  input: string;
+  onInput: (value: string) => void;
   onClose: () => void;
   onDone: (transaction: WalletTransactionView) => void;
+  /** Achat en cours ou suivi affiché : le choix Acheter / Retirer est verrouillé. */
+  onLockChange: (locked: boolean) => void;
 }) {
   const m = useLobbyMetrics();
-  const fonts = useTableFonts();
   const wallet = useWallet();
   const operation = useWalletOperation('deposit');
-  const [input, setInput] = useState('');
   const [payment, setPayment] = useState<PaymentView>();
   const [notice, setNotice] = useState<Notice>();
   // Achat en cours (montant + clé d'idempotence de l'appui) : un repli vers la page CinetPay
   // est une nouvelle demande du MÊME achat, jamais un second paiement (D-134).
   const [intent, setIntent] = useState<{ tokens: number; key: string }>();
+  // Issue inconnue faute de réseau : le nouvel essai du MÊME montant réutilise la même clé,
+  // le serveur ne crée donc jamais un second paiement si le premier était parti.
+  const [retryKey, setRetryKey] = useState<string>();
   // Paiement direct clos sans débit : repli automatique en cours vers la page CinetPay.
   const [fallingBack, setFallingBack] = useState<string>();
-  useBackToClose(onClose);
+  // Verrou synchrone : deux appuis avant le prochain rendu n'envoient qu'une demande.
+  const inFlight = useRef(false);
 
   const limits = wallet.data?.depositLimits ?? DEFAULT_DEPOSIT_LIMITS;
   // Opérateur décidé par le serveur ; `null` : numéro non pris en charge ; absent : chargement.
@@ -145,25 +141,30 @@ export function DepositSheet({
   const processing = operation.isPending;
   // Vérification en cours : pas de nouvelle demande tant que le joueur n'a pas changé le montant.
   const verifying = notice?.tone === 'pending';
-
-  // Une seule colonne centrée, compacte, quelle que soit l'orientation.
-  const width = Math.min(460, m.width - m.safe.left - m.safe.right - 32);
-  const maxHeight = m.height - m.safe.top - m.safe.bottom - 16;
-  const field = Math.max(52, Math.round(m.controlHeight * 1.15));
-  const title = Math.round(m.bodySize * 1.1);
   const small = { fontSize: m.smallSize };
+  const field = Math.max(50, Math.round(m.controlHeight * 1.1));
+
+  const locked = processing || payment !== undefined;
+  useEffect(() => onLockChange(locked), [locked, onLockChange]);
 
   /** Une Idempotency-Key par intention ; montant revalidé, moyen choisi par le serveur. */
   const pay = () => {
-    if (processing || unavailable || verifying || !operator || !check.ok) return;
+    if (inFlight.current || processing || unavailable || verifying || !operator || !check.ok) {
+      return;
+    }
+    inFlight.current = true;
     setNotice(undefined);
     operation.reset();
-    const key = operation.newKey();
+    const key =
+      retryKey && intent?.key === retryKey && intent.tokens === check.amount
+        ? retryKey
+        : operation.newKey();
     setIntent({ tokens: check.amount, key });
     operation.mutate(
       { tokens: check.amount, key },
       {
         onSuccess: (result) => {
+          setRetryKey(undefined);
           if (!result.payment) {
             onDone(result.transaction);
             return;
@@ -171,7 +172,13 @@ export function DepositSheet({
           setPayment(result.payment);
           if (result.payment.paymentUrl) void openPaymentPage(result.payment.paymentUrl);
         },
-        onError: (err) => setNotice(noticeOf(err)),
+        onError: (err) => {
+          setRetryKey(err instanceof ApiError && err.status === 0 ? key : undefined);
+          setNotice(noticeOf(err));
+        },
+        onSettled: () => {
+          inFlight.current = false;
+        },
       },
     );
   };
@@ -208,216 +215,165 @@ export function DepositSheet({
       ? `Sur la page CinetPay, choisissez ${DIRECT_PAY_OPERATOR_LABELS[operator]}.`
       : undefined;
 
-  const amountBlock = (
-    <View style={styles.block}>
-      <Text nativeID="deposit-amount-label" style={[styles.label, styles.centered, small]}>
-        Montant de la recharge (FCFA)
-      </Text>
-      <View
-        style={[
-          styles.field,
-          { height: field },
-          !check.ok && check.reason !== 'empty' && styles.fieldError,
-        ]}
-      >
-        <TextInput
-          value={input}
-          onChangeText={(value) => {
-            if (processing) return;
-            operation.reset();
-            setNotice(undefined);
-            setInput(value);
-          }}
-          keyboardType="number-pad"
-          inputMode="numeric"
-          maxLength={9}
-          editable={!processing && !unavailable && operator !== null}
-          placeholder="0"
-          placeholderTextColor="rgba(246, 242, 232, 0.28)"
-          accessibilityLabel="Montant de la recharge (FCFA)"
-          accessibilityLabelledBy="deposit-amount-label"
-          returnKeyType="done"
-          onSubmitEditing={pay}
-          style={[styles.input, fontOf(fonts.button), { fontSize: m.bodySize * 1.45 }]}
-        />
-        <Text style={[styles.suffix, fontOf(fonts.button), { fontSize: m.bodySize }]}>FCFA</Text>
+  if (payment) {
+    return (
+      <View style={styles.block} testID="deposit-progress">
+        {pageHint ? (
+          <View style={[styles.chip, styles.chipInfo]}>
+            <Text style={[styles.chipText, small]}>{pageHint}</Text>
+          </View>
+        ) : null}
+        {fallingBack ? (
+          <View style={styles.row} testID="deposit-page-fallback">
+            <ActivityIndicator color={COLORS.gold} size="small" />
+            <Text style={[styles.muted, small]}>
+              Paiement direct indisponible : ouverture de la page de paiement CinetPay…
+            </Text>
+          </View>
+        ) : (
+          <PaymentProgress
+            key={payment.id}
+            paymentId={payment.id}
+            initial={payment}
+            doneLabel="Terminé"
+            onDone={onClose}
+            onFinal={fallBackToPage}
+          />
+        )}
+        {notice ? (
+          <View style={[styles.chip, styles.chipWarning]}>
+            <Text accessibilityRole="alert" style={[styles.chipText, small]}>
+              {notice.text}
+            </Text>
+          </View>
+        ) : null}
       </View>
+    );
+  }
+
+  return (
+    <View style={styles.block}>
+      <AmountField
+        label="Montant de la recharge (FCFA)"
+        unit="FCFA"
+        value={input}
+        maxDigits={9}
+        invalid={!check.ok && check.reason !== 'empty'}
+        editable={!processing && !unavailable && operator !== null}
+        height={field}
+        onChange={(value) => {
+          if (processing) return;
+          operation.reset();
+          setNotice(undefined);
+          onInput(value);
+        }}
+        onSubmit={pay}
+      />
       {/* Limites non affichées : seul un montant refusé est signalé. */}
       {!check.ok && check.message ? (
-        <Text accessibilityRole="alert" style={[styles.errorText, styles.centered, small]}>
+        <Text accessibilityRole="alert" style={[styles.errorText, small]}>
           {check.message}
         </Text>
       ) : null}
-    </View>
-  );
-
-  const payBlock = (
-    <View style={styles.block}>
       {operator ? (
-        <PayButton
+        <OperatorButton
           operator={operator}
-          height={Math.max(54, field)}
-          fontFamily={fonts.button}
-          textSize={m.bodySize}
+          label={`Payer avec ${DIRECT_PAY_OPERATOR_LABELS[operator]}`}
+          detail={check.ok ? formatFcfa(check.amount) : undefined}
+          accessibilityLabel={
+            check.ok
+              ? `Payer ${check.amount} francs CFA avec ${DIRECT_PAY_OPERATOR_LABELS[operator]}`
+              : undefined
+          }
+          height={Math.max(52, field)}
           disabled={unavailable || processing || verifying || !check.ok}
           loading={processing}
-          amount={check.ok ? check.amount : undefined}
           onPress={pay}
         />
       ) : operator === null ? (
-        <View style={[styles.chip, styles.chipWarning]}>
-          <Text accessibilityRole="alert" style={[styles.chipText, small]}>
-            Le numéro de votre compte n’est pas un numéro MTN Mobile Money ou Orange Money du
-            Cameroun : aucun paiement n’est possible. Contactez l’assistance pour faire vérifier ou
-            mettre à jour votre numéro.
-          </Text>
-        </View>
+        <AccountNumberNotice />
       ) : (
         <ActivityIndicator color={COLORS.gold} />
       )}
-    </View>
-  );
-
-  return (
-    <ExclusiveOverlay style={styles.backdrop}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.center}
-      >
-        <View
-          accessibilityViewIsModal
-          testID="deposit-sheet"
-          style={[styles.card, { width, maxHeight }]}
-        >
-          <View style={styles.header}>
-            <View style={styles.headerIcon}>
-              <Wallet size={Math.round(title * 1.05)} color={COLORS.gold} strokeWidth={1.8} />
-            </View>
-            <Text
-              accessibilityRole="header"
-              numberOfLines={1}
-              style={[styles.title, fontOf(fonts.button), { fontSize: title }]}
-            >
-              Recharger mon portefeuille
+      <View style={styles.status} accessibilityLiveRegion="polite">
+        {unavailable ? (
+          <View style={[styles.chip, styles.chipInfo]}>
+            <Text style={[styles.chipText, small]}>
+              Paiement Mobile Money momentanément indisponible.
             </Text>
-            <Pressable
-              onPress={onClose}
-              accessibilityRole="button"
-              accessibilityLabel="Fermer"
-              hitSlop={10}
-              style={({ pressed }) => [styles.close, pressed && styles.pressed]}
-            >
-              <X size={Math.round(title * 0.95)} color={COLORS.muted} strokeWidth={2} />
-            </Pressable>
           </View>
-
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
-            {payment ? (
-              <View style={styles.block} testID="deposit-progress">
-                {pageHint ? (
-                  <View style={[styles.chip, styles.chipInfo]}>
-                    <Text style={[styles.chipText, small]}>{pageHint}</Text>
-                  </View>
-                ) : null}
-                {fallingBack ? (
-                  <View style={styles.row} testID="deposit-page-fallback">
-                    <ActivityIndicator color={COLORS.gold} size="small" />
-                    <Text style={[styles.muted, small]}>
-                      Paiement direct indisponible : ouverture de la page de paiement CinetPay…
-                    </Text>
-                  </View>
-                ) : (
-                  <PaymentProgress
-                    key={payment.id}
-                    paymentId={payment.id}
-                    initial={payment}
-                    doneLabel="Fermer"
-                    onDone={onClose}
-                    onFinal={fallBackToPage}
-                  />
-                )}
-                {notice && payment ? (
-                  <View style={[styles.chip, styles.chipWarning]}>
-                    <Text accessibilityRole="alert" style={[styles.chipText, small]}>
-                      {notice.text}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            ) : (
-              <>
-                {amountBlock}
-                {payBlock}
-                <View style={styles.status} accessibilityLiveRegion="polite">
-                  {unavailable ? (
-                    <View style={[styles.chip, styles.chipInfo]}>
-                      <Text style={[styles.chipText, small]}>
-                        Paiement Mobile Money momentanément indisponible.
-                      </Text>
-                    </View>
-                  ) : notice ? (
-                    <View
-                      style={[
-                        styles.chip,
-                        notice.tone === 'error' ? styles.chipWarning : styles.chipInfo,
-                      ]}
-                    >
-                      <Text
-                        accessibilityRole={notice.tone === 'error' ? 'alert' : 'text'}
-                        style={[styles.chipText, small]}
-                      >
-                        {notice.text}
-                      </Text>
-                    </View>
-                  ) : processing ? (
-                    <View style={styles.row}>
-                      <ActivityIndicator color={COLORS.gold} size="small" />
-                      <Text style={[styles.muted, small]}>Initialisation du paiement…</Text>
-                    </View>
-                  ) : null}
-                </View>
-              </>
-            )}
-          </ScrollView>
-        </View>
-      </KeyboardAvoidingView>
-    </ExclusiveOverlay>
+        ) : notice ? (
+          <View
+            style={[styles.chip, notice.tone === 'error' ? styles.chipWarning : styles.chipInfo]}
+          >
+            <Text
+              accessibilityRole={notice.tone === 'error' ? 'alert' : 'text'}
+              style={[styles.chipText, small]}
+            >
+              {notice.text}
+            </Text>
+          </View>
+        ) : processing ? (
+          <View style={styles.row}>
+            <ActivityIndicator color={COLORS.gold} size="small" />
+            <Text style={[styles.muted, small]}>Initialisation du paiement…</Text>
+          </View>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
-/** L'unique bouton de paiement : pilule aux couleurs de l'opérateur déduit par le serveur. */
-function PayButton({
+/**
+ * Numéro d'inscription hors Mobile Money pris en charge : aucune opération possible depuis le
+ * panneau ; le numéro se fait régulariser par l'assistance (jamais modifié ici).
+ */
+export function AccountNumberNotice({ operation = 'paiement' }: { operation?: 'paiement' | 'retrait' }) {
+  const m = useLobbyMetrics();
+  return (
+    <View style={[styles.chip, styles.chipWarning]}>
+      <Text accessibilityRole="alert" style={[styles.chipText, { fontSize: m.smallSize }]}>
+        {`Le numéro de votre compte n’est pas un numéro MTN Mobile Money ou Orange Money du Cameroun : aucun ${operation} n’est possible. Contactez l’assistance pour faire vérifier ou mettre à jour votre numéro.`}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Bouton principal d'une opération (acheter, retirer) : pilule aux couleurs de l'opérateur que
+ * le SERVEUR a déduit du numéro d'inscription. Aucun autre opérateur n'est proposé.
+ */
+export function OperatorButton({
   operator,
+  label,
+  detail,
+  accessibilityLabel,
   height,
-  fontFamily,
-  textSize,
   disabled,
   loading,
-  amount,
   onPress,
 }: {
   operator: DirectPayOperator;
+  label: string;
+  /** Seconde ligne (montant saisi). */
+  detail?: string;
+  accessibilityLabel?: string;
   height: number;
-  fontFamily?: string;
-  textSize: number;
   disabled: boolean;
   loading: boolean;
-  amount?: number;
   onPress: () => void;
 }) {
+  const m = useLobbyMetrics();
+  const fonts = useTableFonts();
   const brand = OPERATORS[operator];
-  const label = `Payer avec ${DIRECT_PAY_OPERATOR_LABELS[operator]}`;
   const badge = Math.round(height * 0.66);
+  const textSize = m.bodySize;
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={
-        amount !== undefined
-          ? `Payer ${amount} francs CFA avec ${DIRECT_PAY_OPERATOR_LABELS[operator]}`
-          : label
-      }
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityState={{ disabled, busy: loading }}
       style={({ pressed }) => [
         styles.payButton,
@@ -436,7 +392,7 @@ function PayButton({
           allowFontScaling={false}
           style={[
             styles.badgeText,
-            fontOf(fontFamily),
+            fontOf(fonts.button),
             { color: brand.badgeText, fontSize: badge * 0.32 },
           ]}
         >
@@ -446,13 +402,13 @@ function PayButton({
       <View style={styles.payText}>
         <Text
           numberOfLines={1}
-          style={[styles.payLabel, fontOf(fontFamily), { fontSize: textSize }]}
+          style={[styles.payLabel, fontOf(fonts.button), { fontSize: textSize }]}
         >
           {label}
         </Text>
-        {amount !== undefined ? (
+        {detail !== undefined ? (
           <Text numberOfLines={1} style={[styles.payAmount, { fontSize: textSize * 0.8 }]}>
-            {formatFcfa(amount)}
+            {detail}
           </Text>
         ) : null}
       </View>
@@ -462,63 +418,9 @@ function PayButton({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { alignItems: 'stretch', justifyContent: 'flex-start' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  card: {
-    overflow: 'hidden',
-    borderRadius: 26,
-    backgroundColor: COLORS.cardBottom,
-    experimental_backgroundImage: `linear-gradient(165deg, ${COLORS.cardTop} 0%, ${COLORS.cardBottom} 100%)`,
-    borderWidth: 1,
-    borderColor: COLORS.cardBorder,
-    boxShadow: '0 18px 48px rgba(0, 0, 0, 0.42)',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 6,
-  },
-  headerIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.goldSoft,
-    // Accent bordeaux discret de la charte.
-    borderWidth: 1,
-    borderColor: COLORS.bordeauxSoft,
-  },
-  title: { flex: 1, color: COLORS.text, letterSpacing: 0.2 },
-  close: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.surface,
-  },
-  content: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 20, gap: 14 },
-  block: { gap: 8, paddingTop: 8 },
-  label: { color: COLORS.muted, fontWeight: '600', letterSpacing: 0.2 },
+  block: { gap: 10 },
   muted: { color: COLORS.muted },
-  errorText: { color: palette.error, fontWeight: '600' },
-  field: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 18,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: COLORS.surfaceBorder,
-    backgroundColor: COLORS.surface,
-  },
-  fieldError: { borderColor: palette.error },
-  input: { flex: 1, paddingVertical: 0, textAlign: 'center', color: COLORS.text },
-  centered: { textAlign: 'center' },
-  suffix: { color: COLORS.muted, marginLeft: 8 },
+  errorText: { color: palette.error, fontWeight: '600', textAlign: 'center' },
   payButton: {
     alignSelf: 'stretch',
     flexDirection: 'row',

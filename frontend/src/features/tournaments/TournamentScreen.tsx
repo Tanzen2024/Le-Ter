@@ -19,8 +19,11 @@ import {
   tablePalette,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { EmptyState, SectionTitle, StatusBadge } from '../../components/ui/SalonParts';
+import { gameTheme, salon } from '../../constants/theme';
 import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
 import type { TournamentView } from '../../types/tournament';
+import { useReducedMotion } from '../games/table/turn-signal';
 import { useLobbyMetrics, type LobbyMetrics } from '../lobby/lobby-metrics';
 import { LobbyShell } from '../lobby/LobbyShell';
 import { useMyTournaments, useTournamentList } from './hooks';
@@ -117,13 +120,18 @@ function FrameContent({
   const fonts = useTableFonts();
   const { bannerHeight, bannerTop, contentTop, width } = computeFrame(m);
   const [appear] = useState(() => new Animated.Value(0));
+  const reduced = useReducedMotion();
   useEffect(() => {
+    if (reduced) {
+      appear.setValue(1);
+      return;
+    }
     Animated.timing(appear, {
       toValue: 1,
       duration: 260,
       useNativeDriver: true,
     }).start();
-  }, [appear]);
+  }, [appear, reduced]);
 
   const actionHeight = action ? Math.round(clamp(m.height * 0.075, 30, 44)) : 0;
   const top = contentTop + (action ? actionHeight + m.gap * 0.5 : 0);
@@ -240,7 +248,6 @@ function TournamentList({ area }: { area: TournamentArea }) {
   const proposedByMe = new Set(myProposals.data?.map((p) => p.tournamentId));
   // Retour d'une table de tournoi après « Annuler la recherche ».
   const { searchCancelled } = useLocalSearchParams<{ searchCancelled?: string }>();
-  const label = [styles.section, fontOf(fonts.button), { fontSize: m.smallSize }];
 
   if (isPending) {
     return (
@@ -296,12 +303,7 @@ function TournamentList({ area }: { area: TournamentArea }) {
         </Text>
       ) : null}
       {upcoming.length === 0 ? (
-        <View style={[styles.emptyBox, { padding: m.gap * 1.5 }]}>
-          <Text style={{ fontSize: Math.round(m.bodySize * 1.8) }}>🏆</Text>
-          <Text style={[styles.emptyText, fontOf(fonts.button), { fontSize: m.bodySize }]}>
-            {t.list.empty}
-          </Text>
-        </View>
+        <EmptyState glyph="🏆" title={t.list.empty} size={m.bodySize} fontFamily={fonts.button} />
       ) : null}
       {groups.map((group, index) => (
         <View
@@ -309,9 +311,9 @@ function TournamentList({ area }: { area: TournamentArea }) {
           testID={`tournament-group-${group.key}`}
           style={{ gap: Math.round(m.gap * 0.7), marginTop: index > 0 ? m.gap * 0.5 : 0 }}
         >
-          <Text accessibilityRole="header" style={label}>
+          <SectionTitle size={m.smallSize} fontFamily={fonts.button}>
             {t.list.groups[group.key]}
-          </Text>
+          </SectionTitle>
           {group.tournaments.map((tournament) => (
             <TournamentCard
               key={tournament.tournamentId}
@@ -380,6 +382,13 @@ export function TournamentCard({
         pressed && styles.pressed,
       ]}
     >
+      {highlighted ? (
+        <View
+          style={styles.rail}
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+        />
+      ) : null}
       <View style={styles.cardBody}>
         <View style={styles.row}>
           <Text
@@ -389,26 +398,21 @@ export function TournamentCard({
             {period.date}
           </Text>
           <StatusChip tournament={tournament} size={m.smallSize} fontFamily={fonts.button} />
-          <View style={[styles.badge, registered ? styles.badgeOn : styles.badgeOff]}>
-            <Text
-              numberOfLines={1}
-              style={[styles.badgeText, fontOf(fonts.button), { fontSize: m.smallSize - 1 }]}
-            >
-              {registered ? t.registered : t.list.notRegistered}
-            </Text>
-          </View>
+          <StatusBadge
+            label={registered ? t.registered : t.list.notRegistered}
+            tone={registered ? 'positive' : 'neutral'}
+            size={m.smallSize - 1}
+            fontFamily={fonts.button}
+          />
           {approvedProposal ? (
-            <View
+            <StatusBadge
               testID={`tournament-approved-proposal-${tournament.tournamentId}`}
-              style={[styles.badge, styles.approvedBadge]}
-            >
-              <Text
-                numberOfLines={1}
-                style={[styles.approvedText, fontOf(fonts.button), { fontSize: m.smallSize - 1 }]}
-              >
-                {t.list.approvedProposal}
-              </Text>
-            </View>
+              label={t.list.approvedProposal}
+              tone="positive"
+              size={m.smallSize - 1}
+              fontFamily={fonts.button}
+              style={styles.pushRight}
+            />
           ) : null}
         </View>
         <Text numberOfLines={1} style={meta}>{`🕐 ${t.period(period.start, period.end)}`}</Text>
@@ -438,7 +442,7 @@ export function TournamentCard({
   );
 }
 
-/** Carte bleue inclinée et jeton violet aux extrémités du bandeau. */
+/** Carte ébène inclinée et jeton de laiton aux extrémités du bandeau. */
 function BannerOrnament({
   size,
   side,
@@ -515,13 +519,14 @@ const styles = StyleSheet.create({
   banner: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 4,
+    borderRadius: salon.radius.control,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-    backgroundColor: 'rgba(8, 14, 8, 0.72)',
-    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.45)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: gameTheme.lacquer.surface,
+    boxShadow: gameTheme.shadow.panel,
   },
-  bannerTitle: { color: '#FFFFFF' },
+  bannerTitle: { color: salon.text, letterSpacing: 1.2 },
   actionRow: {
     position: 'absolute',
     flexDirection: 'row',
@@ -538,97 +543,74 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: tablePalette.gold,
-    backgroundColor: '#06170D',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
   },
-  proposeText: { color: tablePalette.gold },
+  proposeText: { color: salon.brass.text },
   actions: { flexDirection: 'row', gap: 10, alignItems: 'center' },
-  pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
-  section: {
-    color: tablePalette.gold,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    opacity: 0.9,
-  },
+  pressed: { opacity: 0.86, transform: [{ scale: 0.98 }] },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 14,
+    overflow: 'hidden',
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.22)',
-    backgroundColor: 'rgba(8, 30, 18, 0.88)',
-    experimental_backgroundImage:
-      'linear-gradient(180deg, rgba(16, 48, 29, 0.92) 0%, rgba(8, 28, 17, 0.92) 100%)',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.45)',
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: gameTheme.shadow.plate,
   },
-  cardHighlighted: { borderColor: 'rgba(242, 196, 81, 0.75)' },
-  cardMuted: { opacity: 0.78 },
-  cardBody: { flex: 1, gap: 3, minWidth: 0 },
+  // Tournoi sur lequel le joueur peut agir : filet de laiton et rail lumineux à gauche.
+  cardHighlighted: { borderColor: gameTheme.brass.main },
+  rail: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    experimental_backgroundImage: 'linear-gradient(180deg, #F6DC8E 0%, #D6B25E 50%, #8C6A2A 100%)',
+  },
+  cardMuted: { opacity: 0.72 },
+  cardBody: { flex: 1, gap: 4, minWidth: 0 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  date: { flexShrink: 1, color: tablePalette.gold, letterSpacing: 0.5 },
-  meta: { color: tablePalette.cream, opacity: 0.92 },
+  date: { flexShrink: 1, color: salon.text, letterSpacing: 0.5 },
+  meta: { color: salon.textSoft },
   facts: { flexDirection: 'row', flexWrap: 'wrap' },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 1,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  badgeOn: {
-    borderColor: 'rgba(242, 196, 81, 0.7)',
-    backgroundColor: 'rgba(242, 196, 81, 0.14)',
-  },
-  badgeOff: { borderColor: 'rgba(247, 241, 225, 0.25)' },
-  badgeText: { color: tablePalette.cream },
-  // Ton « Approuvé » de Mes propositions (jade), liseré doré : lisible au premier regard.
-  approvedBadge: {
-    marginLeft: 'auto',
-    borderColor: tablePalette.gold,
-    backgroundColor: tablePalette.jade,
-  },
-  approvedText: { color: '#FFFFFF', fontWeight: '700' },
+  pushRight: { marginLeft: 'auto' },
   arrow: {
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.6)',
-    backgroundColor: 'rgba(242, 196, 81, 0.12)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(214, 178, 94, 0.08)',
   },
-  arrowGlyph: { color: tablePalette.gold, fontWeight: '700', marginTop: -2 },
-  emptyBox: {
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.22)',
-    backgroundColor: 'rgba(8, 30, 18, 0.7)',
-  },
-  emptyText: { color: tablePalette.cream, textAlign: 'center' },
-  notice: { color: tablePalette.cream, opacity: 0.85, textAlign: 'center' },
+  arrowGlyph: { color: salon.brass.text, fontWeight: '700', marginTop: -2 },
+  emptyText: { color: salon.textSoft, textAlign: 'center' },
+  notice: { color: salon.textSoft, textAlign: 'center' },
   ornament: { position: 'absolute' },
   blueCard: {
     position: 'absolute',
     top: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    borderColor: '#E8F1FF',
-    backgroundColor: '#2C64B8',
-    experimental_backgroundImage: 'linear-gradient(160deg, #4D8FE0 0%, #2C64B8 55%, #1B4588 100%)',
-    boxShadow: '0 3px 6px rgba(0, 0, 0, 0.5)',
+    borderColor: gameTheme.brass.main,
+    backgroundColor: gameTheme.lacquer.solid,
+    experimental_backgroundImage: 'linear-gradient(160deg, #1D2C27 0%, #0E1815 50%, #060B09 100%)',
+    boxShadow: gameTheme.shadow.plate,
   },
-  blueLetter: { color: '#E8F1FF', includeFontPadding: false },
+  blueLetter: { color: gameTheme.brass.bright, includeFontPadding: false },
   chip: {
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
     borderStyle: 'dashed',
-    borderColor: '#F1E4FA',
-    backgroundColor: '#7B3FA6',
-    boxShadow: '0 2px 5px rgba(0, 0, 0, 0.5)',
+    borderColor: gameTheme.ivory,
+    backgroundColor: gameTheme.emerald.main,
+    boxShadow: gameTheme.shadow.plate,
   },
   chipCenter: {
-    backgroundColor: '#E2B23F',
+    backgroundColor: gameTheme.brass.main,
     borderWidth: 1,
-    borderColor: '#5B2580',
+    borderColor: gameTheme.brass.deep,
   },
 });

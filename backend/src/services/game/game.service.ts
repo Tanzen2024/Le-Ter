@@ -247,6 +247,39 @@ export type GameFinishedListener = (game: Game) => void;
 export type PlayersWithdrawnListener = (game: Game, playerIds: PlayerId[]) => void;
 
 /**
+ * Place un joueur dans une partie en attente (déjà vérifiée joignable) : rang de partie le
+ * plus petit libre (un joueur parti libère le sien, R-19), jamais un rang déjà pris ; place
+ * de table = siège de session (D-033). Commun à `joinGame` et à l'arrivée par la session.
+ */
+function seatInWaitingGame(
+  game: Game,
+  playerId: PlayerId,
+  tablePosition: number | undefined,
+  now: Date,
+): GameEventDraft[] {
+  const seat = firstFreeGameSeat(game);
+  game.players.push({
+    playerId,
+    seat,
+    ...(tablePosition !== undefined && { tablePosition }),
+    joinedAt: now,
+  });
+  // Table de tournoi : l'arrivée du 2e joueur fait partir l'échéance de démarrage
+  // (D-065) ; les arrivées suivantes ne la repoussent pas.
+  syncStartDeadline(game, now);
+  return [
+    {
+      type: 'game:player_joined',
+      payload: {
+        playerId,
+        seat,
+        ...(game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt.toISOString() }),
+      },
+    },
+  ];
+}
+
+/**
  * Point d'entrée unique de toute modification d'une partie.
  *
  * Garanties :
@@ -515,28 +548,63 @@ export class GameService {
         }
         tablePosition = seat;
       }
-      // Rang dans la partie : le plus petit libre (un joueur parti d'une partie en attente
-      // libère le sien, R-19) ; jamais un rang déjà pris.
-      const seat = firstFreeGameSeat(game);
-      game.players.push({
-        playerId,
-        seat,
-        ...(tablePosition !== undefined && { tablePosition }),
-        joinedAt: now,
-      });
-      // Table de tournoi : l'arrivée du 2e joueur fait partir l'échéance de démarrage
-      // (D-065) ; les arrivées suivantes ne la repoussent pas.
-      syncStartDeadline(game, now);
-      return [
-        {
-          type: 'game:player_joined',
-          payload: {
-            playerId,
-            seat,
-            ...(game.startDeadlineAt && { startDeadlineAt: game.startDeadlineAt.toISOString() }),
-          },
-        },
-      ];
+      return seatInWaitingGame(game, playerId, tablePosition, now);
+    });
+  }
+
+  /**
+   * Vérifications d'une arrivée dans la partie EN ATTENTE faite par la session (D-153), les
+   * mêmes que `joinGame` : participation, puis mise et solde relus côté serveur (D-073).
+   * Asynchrone : SessionService l'appelle AVANT sa transaction ; l'état de la partie est
+   * revérifié sous verrou par `buildWaitingGameArrival`.
+   */
+  async assertCanJoinWaitingGame(game: Game, playerId: PlayerId): Promise<void> {
+    if (!(await this.deps.participationPolicy.canJoin(playerId, structuredClone(game)))) {
+      throw new ParticipationRefusedError(game.id, playerId);
+    }
+    await this.deps.stakePolicy?.assertCanStake(playerId, structuredClone(game));
+  }
+
+  /**
+   * Construit, sans rien enregistrer, la partie EN ATTENTE après l'arrivée d'un joueur dans
+   * sa session (D-153) : siège de session et place dans la partie sont pris ENSEMBLE, jamais
+   * l'un sans l'autre. `null` : la partie n'accueille personne (déjà démarrée : le joueur
+   * attend la suivante ; manche GARAM rejouée ; déjà membre). Partie pleine : refus, la
+   * session n'est pas enregistrée non plus. Pure et synchrone : SessionService l'appelle sous
+   * le verrou de la partie et de la session, et l'enregistre dans la même transaction.
+   */
+  buildWaitingGameArrival(
+    current: Game,
+    arrival: { playerId: PlayerId; tablePosition: number },
+  ): { game: Game; events: GameEventDraft[] } | null {
+    if (current.status !== 'waiting' || current.garamStakeVote) {
+      return null;
+    }
+    if (current.players.some((p) => p.playerId === arrival.playerId)) {
+      return null;
+    }
+    if (current.players.length >= current.maxPlayers) {
+      throw new GameFullError(current.id);
+    }
+    // Horloge des parties, comme `joinGame` : l'échéance de démarrage (D-065) en dépend.
+    const now = this.clock();
+    const game = structuredClone(current);
+    const events = seatInWaitingGame(game, arrival.playerId, arrival.tablePosition, now);
+    game.version = current.version + 1;
+    game.updatedAt = now;
+    return { game, events };
+  }
+
+  /** Après l'enregistrement d'une arrivée (D-153) : diffusion dans la salle de la partie. */
+  announceWaitingGameArrival(game: Game, events: GameEventDraft[], actorId: PlayerId): void {
+    this.publish(game, events, actorId);
+    this.syncStartTimer(game);
+    this.deps.logger.info('WAITING_GAME_PLAYER_JOINED', {
+      gameId: game.id,
+      sessionId: game.sessionId,
+      playerId: actorId,
+      version: game.version,
+      players: game.players.length,
     });
   }
 

@@ -3,8 +3,7 @@ import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '../../components/ui/Button';
-import { colors, radius, spacing } from '../../constants/theme';
-import { authPalette } from './AuthScreen';
+import { gameTheme, salon, spacing } from '../../constants/theme';
 
 /**
  * Code de récupération affiché UNE fois (D-135) : à l'inscription, après une
@@ -54,7 +53,12 @@ export function RecoveryCodeCard({
       <Text style={[styles.text, styles.warning]}>
         Ce code ne sera plus affiché après cette étape.
       </Text>
-      <Button title="Copier le code" variant="secondary" onPress={() => void copy()} />
+      <Button
+        title="Copier le code"
+        variant="secondary"
+        appearance="salon"
+        onPress={() => void copy()}
+      />
       {copied ? (
         <Text style={styles.text} accessibilityLiveRegion="polite">
           {copied === 'ok'
@@ -62,30 +66,36 @@ export function RecoveryCodeCard({
             : 'Copie impossible : recopiez le code à la main.'}
         </Text>
       ) : null}
-      <Button title={confirmTitle} onPress={onConfirm} loading={confirming} />
+      <Button title={confirmTitle} appearance="salon" onPress={onConfirm} loading={confirming} />
     </View>
   );
 }
 
+// Posée sur les écrans sombres (inscription, mot de passe oublié, Profil) : texte clair, code
+// gravé en laiton dans un creux, avertissement bien visible.
 const styles = StyleSheet.create({
   card: {
     gap: spacing.sm,
     padding: spacing.md,
-    borderRadius: radius.md,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: colors.gold,
-    backgroundColor: authPalette.goldSoft,
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(214, 178, 94, 0.08)',
   },
-  title: { color: authPalette.ink, fontSize: 16, fontWeight: '700' },
+  title: { color: salon.text, fontSize: 16, fontWeight: '700' },
   code: {
-    color: colors.felt,
+    color: gameTheme.brass.bright,
     fontSize: 24,
     fontWeight: '800',
     letterSpacing: 2,
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
     paddingVertical: spacing.sm,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
   },
-  text: { color: authPalette.muted, fontSize: 13 },
-  warning: { color: colors.danger, fontWeight: '600' },
+  text: { color: salon.textSoft, fontSize: 13 },
+  warning: { color: salon.status.critical.text, fontWeight: '600' },
 });

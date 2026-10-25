@@ -5,7 +5,7 @@ import { Alert } from 'react-native';
 
 import { en } from '../../lib/i18n/en';
 import { fr } from '../../lib/i18n/fr';
-import { registerSoundPlayer } from '../../services/audio-service';
+import { registerMusicPlayer, registerSoundPlayer } from '../../services/audio-service';
 import { DEFAULT_PREFERENCES, usePreferencesStore } from '../../stores/preferences-store';
 import { SettingsPanel } from './SettingsPanel';
 
@@ -130,5 +130,35 @@ describe('SettingsPanel', () => {
     await render(<SettingsPanel onClose={jest.fn()} />);
     expect(isSelected('Turn sound off')).toBe(true);
     expect(isSelected('Select English')).toBe(true);
+  });
+
+  describe('disposition sans défilement : deux colonnes et barre du bas', () => {
+    afterEach(() => registerMusicPlayer(null));
+
+    it('sans piste musicale : colonne Musique absente ; langue et Assistance toujours présentes', async () => {
+      registerMusicPlayer(null);
+      await render(<SettingsPanel onClose={jest.fn()} />);
+      expect(screen.queryByText('Musique')).toBeNull();
+      expect(screen.queryByLabelText('Activer la musique de partie')).toBeNull();
+      expect(screen.getByLabelText('Volume des effets : fort')).toBeTruthy();
+      expect(screen.getByText('Langues')).toBeTruthy();
+      expect(screen.getByRole('button', { name: "Ouvrir l'assistance" })).toBeTruthy();
+    });
+
+    it('avec une piste : colonne Musique et ses trois volumes, réglages distincts des effets', async () => {
+      registerMusicPlayer({ setScene: jest.fn(), hasMusic: () => true });
+      await render(<SettingsPanel onClose={jest.fn()} />);
+      expect(screen.getByText('Musique')).toBeTruthy();
+      for (const level of ['doux', 'moyen', 'fort']) {
+        expect(screen.getByLabelText(`Volume de la musique : ${level}`)).toBeTruthy();
+        expect(screen.getByLabelText(`Volume des effets : ${level}`)).toBeTruthy();
+      }
+      const effectsBefore = usePreferencesStore.getState().effectsVolume;
+      await fireEvent.press(screen.getByLabelText('Volume de la musique : doux'));
+      expect(usePreferencesStore.getState().musicVolume).toBe('low');
+      expect(isSelected('Volume de la musique : doux')).toBe(true);
+      expect(usePreferencesStore.getState().effectsVolume).toBe(effectsBefore);
+      expect(screen.getByRole('button', { name: "Ouvrir l'assistance" })).toBeTruthy();
+    });
   });
 });

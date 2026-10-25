@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { fontOf, tablePalette as palette, useTableFonts } from '../../../components/table/TableDecor';
+import { gameTheme } from '../../../constants/theme';
 import { ApiError } from '../../../lib/api-client';
 import { useMessages } from '../../../lib/i18n';
 import type { GameView, PlayerInGame } from '../../../types/game';
@@ -19,8 +20,9 @@ import { PanelButton } from '../../lobby/LobbyUi';
 import { DraggableCard, type DropZone } from '../DraggableCard';
 import { playerLabel } from '../format';
 import { useGameAction } from '../hooks';
+import { useRefusalSound } from '../game-sounds';
 import { flightState, handWithFlight, type CardFlight } from '../table/card-flight';
-import { CARD_RATIO, CardBack, CardFace, PublicRow } from '../table/Cards';
+import { CARD_RATIO, CardBack, CardFace, fanWidth, PublicRow } from '../table/Cards';
 import {
   DealFlight,
   playedRowIn,
@@ -35,6 +37,7 @@ import {
   arrangeSeats,
   type GameTableLayout,
   type Rect,
+  type SeatSide,
 } from '../table/table-layout';
 import {
   ControlGlow,
@@ -53,6 +56,7 @@ import {
   GARAM_DRAW_FLIGHT_MS,
   GARAM_DRAW_FLIGHT_REDUCED_MS,
   GARAM_TWO_ACES_SCORE,
+  freeSlotBetween,
   garamCenterGeometry,
   garamHandStep,
   garamHandWidth,
@@ -101,14 +105,17 @@ export function GaramPlayArea({
   onResultShown: () => void;
   /**
    * Panneau central commun aux deux jeux (attente, résultat). `presenting` : la fin de manche
-   * est encore présentée sur la table, le panneau de résultat attend.
+   * est encore présentée sur la table, le panneau de résultat attend. `slot` : place libre
+   * du panneau de fin, entre les cartes et les totaux des joueurs.
    */
-  center: (presenting: boolean) => ReactNode;
+  center: (presenting: boolean, slot?: Rect) => ReactNode;
 }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const t = useMessages().gameOver;
   const act = useGameAction(game.gameId);
+  // Action refusée par le serveur : son d'erreur bref (LOT 5).
+  useRefusalSound(act.error);
   const { cx, tableCy: cy, diameter, plateWidth: pw, plateHeight: ph } = layout;
   const seats = arrangeSeats(game);
   const garam = game.garam;
@@ -125,6 +132,8 @@ export function GaramPlayArea({
   const dropRef = useRef<View>(null);
   const dropZone = useRef<DropZone | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Carte glissée au-dessus de la zone : « lâchez ici » (visuel seulement).
+  const [hovering, setHovering] = useState(false);
   const measureDropZone = useCallback(() => {
     dropRef.current?.measureInWindow((x, y, width, height) => {
       dropZone.current = { x, y, width, height };
@@ -179,11 +188,17 @@ export function GaramPlayArea({
     cards: new Set(firstCards.map((p) => p.cardId)),
   }));
   if (settled.gameId !== game.gameId) {
-    setSettled({ gameId: game.gameId, cards: new Set(firstCards.map((p) => p.cardId)) });
+    setSettled({
+      gameId: game.gameId,
+      cards: new Set(firstCards.map((p) => p.cardId)),
+    });
   }
   const settle = useCallback(
     (cardId: string) =>
-      setSettled((prev) => ({ gameId: prev.gameId, cards: new Set(prev.cards).add(cardId) })),
+      setSettled((prev) => ({
+        gameId: prev.gameId,
+        cards: new Set(prev.cards).add(cardId),
+      })),
     [],
   );
   const order = garam?.order ?? [];
@@ -270,13 +285,111 @@ export function GaramPlayArea({
     return { shown, hidden, drawn: flights.shownOf(id) };
   };
 
+  /**
+   * Place du panneau de fin : entre les zones de départ dévoilées, les totaux, les plaques et
+   * les cartes classées de tous les joueurs (et les contrôles des coins hauts), pour que le
+   * panneau ne masque jamais les cartes ni les scores.
+   */
+  const resultSlot = (): Rect => {
+    const sides: Record<SeatSide, Rect[]> = {
+      top: [],
+      bottom: [],
+      left: [],
+      right: [],
+    };
+    const chipRect = (c: { x: number; y: number }): Rect => {
+      const width = totalChipWidth(m.smallSize);
+      return {
+        left: c.x - width / 2,
+        top: c.y - m.smallSize,
+        width,
+        height: m.smallSize * 2.4,
+      };
+    };
+    for (const { side, player } of seats) {
+      const z = zones(side);
+      const rects = sides[side];
+      rects.push({
+        left: z.plate.left,
+        top: z.plate.top,
+        width: pw,
+        height: ph,
+      });
+      if (!player) continue;
+      rects.push(rowsOf(side).classifiedRect);
+      if (player.playerId === game.viewerId || !z.backs) continue;
+      const cards = seatCardsOf(player.playerId);
+      const count = cards.hidden + cards.drawn.length;
+      const fan = seatHandLayout(z.backs, sw, count);
+      const width = fanWidth(count, sw, fan.step);
+      rects.push({
+        left: fan.left,
+        top: z.backs.top,
+        width,
+        height: sw * CARD_RATIO,
+      });
+      if (scoreOf(player.playerId) !== undefined) {
+        rects.push(
+          chipRect(
+            totalBesideFan(
+              fan.left,
+              width,
+              z.backs.top + (sw * CARD_RATIO) / 2,
+              side === 'right' ? 'left' : 'right',
+              m.smallSize,
+              layout.gap,
+            ),
+          ),
+        );
+      }
+    }
+    const handWidth = garamHandWidth(zoneCards.length, layout);
+    sides.bottom.push({
+      left: handLeft,
+      top: handTop,
+      width: handWidth,
+      height: layout.cardHeight,
+    });
+    if (scoreOf(game.viewerId) !== undefined) {
+      sides.bottom.push(
+        chipRect(
+          totalBesideFan(
+            handLeft,
+            handWidth,
+            handTop + layout.cardHeight / 2,
+            'left',
+            m.smallSize,
+            layout.gap,
+          ),
+        ),
+      );
+    }
+    sides.left.push(layout.corners.left);
+    sides.right.push(layout.corners.right);
+    return freeSlotBetween(
+      sides,
+      {
+        left: m.safe.left,
+        top: m.safe.top,
+        width: m.width - m.safe.left - m.safe.right,
+        height: m.height - m.safe.top - m.safe.bottom,
+      },
+      layout.gap,
+    );
+  };
+
   return (
     <>
       <View
         accessibilityLabel="Aire de jeu"
         style={[
           styles.absolute,
-          { left: cx - diameter / 2, top: cy - diameter / 2, width: diameter, height: diameter },
+          {
+            left: cx - diameter / 2,
+            top: cy - diameter / 2,
+            width: diameter,
+            height: diameter,
+          },
         ]}
       >
         <WoodTable
@@ -292,6 +405,7 @@ export function GaramPlayArea({
         style={[
           styles.dropZone,
           dragging && styles.dropZoneActive,
+          dragging && hovering && styles.dropZoneOver,
           {
             left: cx - dropSize / 2,
             top: cy - dropSize / 2,
@@ -358,7 +472,7 @@ export function GaramPlayArea({
           from={geo.terreSlot(shownTotal, terreSize)}
           fromWidth={geo.terreWidth}
           {...flightTarget(flights.flying.playerId, flights.flying.index)}
-          upsideDown={sideOf(flights.flying.playerId) === 'top'}
+          upsideDown={false}
           onLanded={flights.land}
         />
       ) : null}
@@ -401,12 +515,18 @@ export function GaramPlayArea({
             {seatHand && cards
               ? [
                   ...(cards.shown
-                    ? cards.shown.map((cardId) => ({ cardId, kind: 'revealed' as const }))
+                    ? cards.shown.map((cardId) => ({
+                        cardId,
+                        kind: 'revealed' as const,
+                      }))
                     : Array.from({ length: cards.hidden }, (_, i) => ({
                         cardId: `back-${i}`,
                         kind: 'back' as const,
                       }))),
-                  ...cards.drawn.map((cardId) => ({ cardId, kind: 'drawn' as const })),
+                  ...cards.drawn.map((cardId) => ({
+                    cardId,
+                    kind: 'drawn' as const,
+                  })),
                 ].map(({ cardId, kind }, index) => {
                   const c = seatHand.center(index);
                   const place = {
@@ -414,7 +534,8 @@ export function GaramPlayArea({
                     top: c.y - (sw * CARD_RATIO) / 2,
                     zIndex: 3 + index,
                   };
-                  const upsideDown = side === 'top' ? styles.upsideDown : null;
+                  // Captures de référence : cartes du joueur d'en face droites, comme les autres.
+                  const upsideDown = null;
                   if (kind === 'back') {
                     return (
                       <CardBack
@@ -450,15 +571,21 @@ export function GaramPlayArea({
                   );
                 })
               : null}
-            {seatHand && total !== undefined && z.backs ? (
+            {seatHand && total !== undefined && z.backs && cards ? (
               <TotalChip
                 testID={`garam-total-${id}`}
                 total={total}
                 winner={stage.winner && game.result?.winnerId === id}
-                center={{
-                  x: z.backs.left + z.backs.width / 2,
-                  y: z.backs.top + sw * CARD_RATIO * 0.78,
-                }}
+                // À CÔTÉ des cartes dévoilées, jamais dessus : à droite pour le joueur d'en face,
+                // côté table pour les joueurs de gauche et de droite.
+                center={totalBesideFan(
+                  seatHand.left,
+                  fanWidth(cards.hidden + cards.drawn.length, sw, seatHand.step),
+                  z.backs.top + (sw * CARD_RATIO) / 2,
+                  side === 'right' ? 'left' : 'right',
+                  m.smallSize,
+                  layout.gap,
+                )}
                 fontFamily={fonts.button}
                 size={m.smallSize}
               />
@@ -466,7 +593,10 @@ export function GaramPlayArea({
             <SeatPlate
               state={
                 player
-                  ? garamSeatState(game, player, { controlShown, winnerShown: stage.winner })
+                  ? garamSeatState(game, player, {
+                      controlShown,
+                      winnerShown: stage.winner,
+                    })
                   : undefined
               }
               width={pw}
@@ -488,7 +618,6 @@ export function GaramPlayArea({
                   <PublicRow
                     cardIds={[classified]}
                     width={rows.classified.cardWidth}
-                    upsideDown={side === 'top'}
                     style={(({ left, top }) => ({ left, top }))(publicRowBox(rows.classified, 1))}
                   />
                 ) : null}
@@ -548,19 +677,20 @@ export function GaramPlayArea({
             </View>
           ))}
           {handCards.map((cardId, index) => {
-            const playable =
+            const myTurnNow =
               Boolean(inProgress) &&
               myHand.includes(cardId) &&
               !dealing &&
               !act.isPending &&
-              game.myActions.canPlayCard &&
-              game.myActions.playableCardIds.includes(cardId);
+              game.myActions.canPlayCard;
+            const playable = myTurnNow && game.myActions.playableCardIds.includes(cardId);
             return (
               <DraggableCard
                 key={cardId}
                 cardId={cardId}
                 width={layout.cardWidth}
                 pending={pendingCard === cardId}
+                restricted={myTurnNow && !playable}
                 held={flightCard === cardId}
                 landingTarget={landingTarget(index)}
                 onLanded={onLanded}
@@ -570,6 +700,7 @@ export function GaramPlayArea({
                   setDragging(active);
                   if (active) measureDropZone();
                 }}
+                onHoverChange={setHovering}
                 onDrop={(id) => {
                   setFlight({ cardId: id, index, landed: false });
                   act.send({ type: 'PLAY_CARD', cardId: id }, game.version);
@@ -583,7 +714,12 @@ export function GaramPlayArea({
           })}
           {/* Place réservée aux cartes tirées (positionnées en absolu ci-dessus). */}
           {myDrawnShown.length > 0 ? (
-            <View style={{ width: myDrawnShown.length * handStep, height: layout.cardHeight }} />
+            <View
+              style={{
+                width: myDrawnShown.length * handStep,
+                height: layout.cardHeight,
+              }}
+            />
           ) : null}
         </View>
       ) : null}
@@ -595,10 +731,15 @@ export function GaramPlayArea({
               testID={`garam-total-${game.viewerId}`}
               total={total}
               winner={stage.winner && game.result?.winnerId === game.viewerId}
-              center={{
-                x: handLeft + garamHandWidth(zoneCards.length, layout) / 2,
-                y: handTop + layout.cardHeight * 0.78,
-              }}
+              // À gauche de ma main dévoilée, jamais sur mes cartes.
+              center={totalBesideFan(
+                handLeft,
+                garamHandWidth(zoneCards.length, layout),
+                handTop + layout.cardHeight / 2,
+                'left',
+                m.smallSize,
+                layout.gap,
+              )}
               fontFamily={fonts.button}
               size={m.smallSize}
             />
@@ -630,7 +771,10 @@ export function GaramPlayArea({
                     x: layout.handLeft + layout.handSlotWidth / 2,
                     y: m.height - m.safe.bottom - layout.cardHeight / 2,
                   }
-                : { x: backs.left + backs.width / 2, y: backs.top + (sw * CARD_RATIO) / 2 };
+                : {
+                    x: backs.left + backs.width / 2,
+                    y: backs.top + (sw * CARD_RATIO) / 2,
+                  };
             return (
               <DealFlight
                 key={key}
@@ -656,7 +800,8 @@ export function GaramPlayArea({
               top:
                 garam.phase === 'FIRST_ROUND'
                   ? trickRect.top + trickRect.height + 2
-                  : geo.spot('top').y,
+                  : // Pendant le tirage : juste sous le terre (la carte d'en face est au-dessus).
+                    terreRect.top + terreRect.height + layout.gap,
               gap: m.gap * 0.4,
             },
           ]}
@@ -719,7 +864,12 @@ export function GaramPlayArea({
           style={[
             styles.absolute,
             styles.centerBand,
-            { left: cx - diameter * 0.4, width: diameter * 0.8, top: geo.spot('top').y },
+            // Sous le terre, au centre de la table (la carte d'en face est au-dessus du terre).
+            {
+              left: cx - diameter * 0.4,
+              width: diameter * 0.8,
+              top: terreRect.top + terreRect.height + layout.gap,
+            },
           ]}
         >
           <GlassBox style={[styles.banner, { padding: m.gap * 0.8, gap: m.gap * 0.3 }]}>
@@ -752,7 +902,7 @@ export function GaramPlayArea({
 
 
 
-      {/* Chrono numérique : SEULEMENT chez le joueur attendu (25 s affichées, D-143). Les
+      {/* Chrono numérique : SEULEMENT chez le joueur attendu (20 s affichées, D-153). Les
           adversaires ne voient que la barre dans sa plaque (`seatTurnFor`). */}
       {phase && remaining !== null && dialVisibleFor(phase, game.viewerId) ? (
         <View
@@ -781,19 +931,23 @@ export function GaramPlayArea({
         </View>
       ) : null}
 
-      {/* Fin de manche : la table s'assombrit sous le panneau de résultat, rendu en dernier et
-          au-dessus de toutes les cartes, pour que le message et le montant restent lisibles. */}
+      {/* Fin de manche : panneau de résultat rendu en dernier, dans la place libre entre les
+          cartes et les totaux des joueurs, qui restent visibles (ni masqués ni assombris). */}
       {resultShown ? (
         <View testID="garam-result-layer" pointerEvents="box-none" style={styles.resultLayer}>
-          <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.resultScrim]} />
-          {center(false)}
+          {center(false, resultSlot())}
         </View>
       ) : null}
     </>
   );
 }
 
-const rectStyle = (r: Rect) => ({ left: r.left, top: r.top, width: r.width, height: r.height });
+const rectStyle = (r: Rect) => ({
+  left: r.left,
+  top: r.top,
+  width: r.width,
+  height: r.height,
+});
 const framed = (r: Rect, pad: number) => ({
   left: r.left - pad,
   top: r.top - pad,
@@ -879,7 +1033,14 @@ function SpecialAnnounce({ style }: { style: StyleProp<TextStyle> }) {
       testID="garam-special-announce"
       style={{
         opacity: progress,
-        transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] }) }],
+        transform: [
+          {
+            scale: progress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.8, 1],
+            }),
+          },
+        ],
       }}
     >
       <GlassBox style={styles.chip}>
@@ -891,7 +1052,28 @@ function SpecialAnnounce({ style }: { style: StyleProp<TextStyle> }) {
   );
 }
 
-/** Total d'un joueur (calculé par le serveur), posé sur sa zone de départ dévoilée. */
+/** Largeur d'une étiquette « Total » (voir `TotalChip`). */
+const totalChipWidth = (size: number) => size * 5;
+
+/**
+ * Centre de l'étiquette « Total » posée À CÔTÉ d'un éventail de cartes (`left`, `width`), à
+ * mi-hauteur des cartes (`midY`), du côté demandé : elle ne recouvre jamais une carte.
+ */
+function totalBesideFan(
+  left: number,
+  width: number,
+  midY: number,
+  side: 'left' | 'right',
+  size: number,
+  gap: number,
+): { x: number; y: number } {
+  const half = totalChipWidth(size) / 2;
+  const x = side === 'right' ? left + width + gap * 0.5 + half : left - gap * 0.5 - half;
+  // `TotalChip` place le haut de l'étiquette à `y - size` : centrée sur `midY`.
+  return { x, y: midY + size * 0.2 };
+}
+
+/** Total d'un joueur (calculé par le serveur), posé à côté de sa zone de départ dévoilée. */
 function TotalChip({
   testID,
   total,
@@ -907,7 +1089,7 @@ function TotalChip({
   fontFamily: string | undefined;
   size: number;
 }) {
-  const width = size * 5;
+  const width = totalChipWidth(size);
   return (
     <View
       testID={testID}
@@ -1022,7 +1204,12 @@ function RevealIn({ children, style }: { children: ReactNode; style?: StyleProp<
         style={{
           opacity: progress,
           transform: [
-            { scaleX: progress.interpolate({ inputRange: [0, 1], outputRange: [0.1, 1] }) },
+            {
+              scaleX: progress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.1, 1],
+              }),
+            },
           ],
         }}
       >
@@ -1034,9 +1221,10 @@ function RevealIn({ children, style }: { children: ReactNode; style?: StyleProp<
 
 /**
  * Annonce du contrôle : le joueur qui le prend est mis en évidence quelques instants, une
- * seule fois par manche, quand les cartes du tour sont classées.
+ * seule fois par manche, quand les cartes du tour sont classées. Partagée avec Fap-Fap
+ * (D-164) : même halo et même annonce dans les deux jeux.
  */
-function useControlNotice(gameId: string, controllerId: string | undefined): string | undefined {
+export function useControlNotice(gameId: string, controllerId: string | undefined): string | undefined {
   const key = controllerId ? `${gameId}|${controllerId}` : null;
   const [shown, setShown] = useState<{ key: string | null; visible: boolean }>({
     key: null,
@@ -1184,17 +1372,28 @@ const styles = StyleSheet.create({
   absolute: { position: 'absolute' },
   // Couche du panneau de fin : plein écran, au-dessus des cartes (zIndex jusqu'à 30).
   resultLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 100, elevation: 100 },
-  resultScrim: { backgroundColor: 'rgba(0, 0, 0, 0.55)' },
   centerRow: { alignItems: 'center' },
   centerBand: { alignItems: 'center', justifyContent: 'center' },
   row: { flexDirection: 'row', alignItems: 'center' },
   centered: { alignItems: 'center', justifyContent: 'center' },
   hand: { position: 'absolute', flexDirection: 'row', alignItems: 'flex-end' },
-  dropZone: { position: 'absolute', borderWidth: 2, borderColor: 'transparent' },
+  dropZone: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
   dropZoneActive: {
-    borderColor: 'rgba(242, 196, 81, 0.85)',
-    backgroundColor: 'rgba(242, 196, 81, 0.14)',
-    boxShadow: '0 0 22px rgba(242, 196, 81, 0.5)',
+    borderColor: gameTheme.focus,
+    borderStyle: 'dashed',
+    backgroundColor: 'rgba(245, 200, 66, 0.12)',
+    boxShadow: `0 0 26px ${gameTheme.focusGlow}, inset 0 0 18px rgba(245, 200, 66, 0.25)`,
+  },
+  // Carte au-dessus de la zone : trait plein, lumière plus dense (« lâchez ici »).
+  dropZoneOver: {
+    borderWidth: 3,
+    borderStyle: 'solid',
+    backgroundColor: 'rgba(245, 200, 66, 0.24)',
+    boxShadow: `0 0 34px 6px ${gameTheme.focusGlow}, inset 0 0 26px rgba(255, 226, 140, 0.45)`,
   },
   // Zone « cartes du tour » : pointillé discret sur le bois.
   trickZone: {
@@ -1207,17 +1406,23 @@ const styles = StyleSheet.create({
   // Terre : bande sombre qui le détache des cartes du tour.
   terreZone: {
     borderRadius: 8,
-    backgroundColor: 'rgba(4, 30, 12, 0.35)',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.45)',
+    borderColor: gameTheme.brass.line,
+    boxShadow: 'inset 0 1px 6px rgba(0, 0, 0, 0.5)',
   },
-  terreCaption: { position: 'absolute', left: 0, right: 0, textAlign: 'center' },
+  terreCaption: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+  },
   // Carte classée du 1er tour : cadre neutre.
   classifiedFrame: {
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-    backgroundColor: 'rgba(4, 30, 12, 0.55)',
+    borderColor: gameTheme.brass.hairline,
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1226,7 +1431,10 @@ const styles = StyleSheet.create({
   upsideDown: { transform: [{ rotate: '180deg' }] },
   frameGhost: { textAlign: 'center' },
   ghostText: { color: 'rgba(255, 245, 225, 0.6)' },
-  flightGlow: { borderRadius: 8, boxShadow: '0 0 16px rgba(242, 196, 81, 0.6)' },
+  flightGlow: {
+    borderRadius: 8,
+    boxShadow: '0 0 16px rgba(242, 196, 81, 0.6)',
+  },
   chip: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 999 },
   winnerChip: { borderWidth: 1.5, borderColor: '#F5C842' },
   banner: { alignItems: 'center', borderRadius: 14 },

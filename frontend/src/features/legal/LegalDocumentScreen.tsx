@@ -101,7 +101,7 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   center: { alignItems: 'center', justifyContent: 'center' },
   header: { flexDirection: 'row', alignItems: 'center' },
-  title: { flex: 1, color: '#FFFFFF', letterSpacing: 1, ...titleShadow },
+  title: { flex: 1, color: '#F6EFDF', letterSpacing: 1.2, ...titleShadow },
   panel: {
     borderRadius: 8,
     borderWidth: 1.5,

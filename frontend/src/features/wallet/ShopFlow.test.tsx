@@ -59,14 +59,17 @@ const payment = (status: PaymentView['status']): PaymentView => ({
 
 const clients: QueryClient[] = [];
 
+let onClose: jest.Mock;
+
 async function openShop() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
   });
   clients.push(queryClient);
+  onClose = jest.fn();
   await render(
     <QueryClientProvider client={queryClient}>
-      <ShopFlow onClose={jest.fn()} />
+      <ShopFlow onClose={onClose} />
     </QueryClientProvider>,
   );
   return queryClient;
@@ -117,7 +120,7 @@ afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
 });
 
-describe('Boutique → Retirer', () => {
+describe('Mes jetons → Retirer', () => {
   it('retrait indisponible (serveur sans motif) : désactivé, aucun appel, solde intact', async () => {
     const queryClient = await openShop();
     expect(await screen.findByText(GENERIC)).toBeTruthy();
@@ -126,7 +129,7 @@ describe('Boutique → Retirer', () => {
     expect(withdraw.props.accessibilityState.disabled).toBe(true);
 
     fireEvent.press(withdraw);
-    // Toujours dans la Boutique : ni formulaire, ni demande, ni débit.
+    // Toujours sur « Acheter » : ni formulaire de retrait, ni demande, ni débit.
     expect(screen.queryByLabelText('Nombre de jetons à retirer')).toBeNull();
     expect(api.withdraw).not.toHaveBeenCalled();
     expect(balanceIn(queryClient)).toBe(0);
@@ -177,15 +180,16 @@ describe('Boutique → Retirer', () => {
     expect(withdraw.props.accessibilityState.disabled).toBe(true);
   });
 
-  it('mode test : bouton actif ET environnement de test annoncé', async () => {
+  it('mode test : onglet actif ET environnement de test annoncé côté retrait', async () => {
     api.get.mockResolvedValue({
       wallet: wallet({ withdrawalAvailable: true, withdrawalMode: 'sandbox', balance: 5000 }),
     });
     await openShop();
+    const withdraw = await screen.findByLabelText('Retirer des jetons vers Mobile Money');
+    await waitFor(() => expect(withdraw.props.accessibilityState.disabled).toBe(false));
+    fireEvent.press(withdraw);
     expect(await screen.findByText(TEST_MODE)).toBeTruthy();
     expect(screen.getByText('ENVIRONNEMENT DE TEST')).toBeTruthy();
-    const withdraw = screen.getByLabelText('Retirer des jetons vers Mobile Money');
-    expect(withdraw.props.accessibilityState.disabled).toBe(false);
   });
 
   it('production : aucun message d’indisponibilité ni de test', async () => {
@@ -222,7 +226,7 @@ describe('Recharger mon portefeuille', () => {
     mtn();
     await openShopDeposit();
     expect(await screen.findByText('Payer avec MTN Mobile Money')).toBeTruthy();
-    expect(screen.getByText('Recharger mon portefeuille')).toBeTruthy();
+    expect(screen.getByText('Mes jetons')).toBeTruthy();
     expect(screen.getAllByLabelText(AMOUNT_FIELD)).toHaveLength(1);
     expect(screen.queryByText('Orange Money')).toBeNull();
     expect(screen.queryByText(/Payer avec Orange Money/)).toBeNull();
@@ -422,18 +426,134 @@ describe('Recharger mon portefeuille', () => {
     expect(await screen.findByText('Initialisation du paiement…')).toBeTruthy();
     fireEvent.press(screen.getByLabelText('Payer 1000 francs CFA avec MTN Mobile Money'));
     fireEvent.changeText(screen.getByLabelText(AMOUNT_FIELD), '500');
-    expect(screen.getByLabelText(AMOUNT_FIELD).props.value).toBe('1000');
+    expect(screen.getByLabelText(AMOUNT_FIELD).props.value).toMatch(/^1\s000$/);
     expect(api.deposit).toHaveBeenCalledTimes(1);
     resolve(pendingDeposit(1000));
     await waitFor(() => expect(openAuthSession).toHaveBeenCalledTimes(1));
   });
 
-  it('« Fermer » revient à la Boutique sans rien créer', async () => {
+  it('« Fermer » ferme le panneau sans rien créer', async () => {
     mtn();
     await openShopDeposit();
     expect(await screen.findByText('Payer avec MTN Mobile Money')).toBeTruthy();
     fireEvent.press(screen.getByLabelText('Fermer'));
-    expect(await screen.findByLabelText('Acheter des jetons')).toBeTruthy();
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(api.deposit).not.toHaveBeenCalled();
+  });
+
+  it('coupure réseau (issue inconnue) : le nouvel essai du même montant réutilise la MÊME clé', async () => {
+    mtn();
+    api.deposit
+      .mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'Réseau.'))
+      .mockResolvedValueOnce(pendingDeposit(1000));
+    api.payment.mockResolvedValue({ payment: payment('PENDING') });
+    await openShopDeposit();
+    await payWith('MTN Mobile Money');
+    expect(
+      await screen.findByText('Impossible de contacter le service de paiement. Réessayez.'),
+    ).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Payer 1000 francs CFA avec MTN Mobile Money'));
+    await waitFor(() => expect(api.deposit).toHaveBeenCalledTimes(2));
+    expect(api.deposit.mock.calls.map((c) => c[2])).toEqual(['idem-key-0001', 'idem-key-0001']);
+  });
+});
+
+/**
+ * Panneau unique (`+L`) : solde disponible, choix Acheter / Retirer sur place, montant saisi à
+ * la main, sans montant proposé ni frais ni montant net.
+ */
+describe('Mes jetons : un seul panneau', () => {
+  const policy = {
+    available: true,
+    minTokens: 1000,
+    maxTokens: 1_500_000,
+    currency: 'XAF' as const,
+    tokensPerUnit: 1,
+    platformFeeTokens: 0,
+    operators: [{ code: 'MTN_CM' as const, label: 'MTN Mobile Money' }],
+    msisdn: '+23*******271',
+    msisdnSupported: true,
+    limit: { count: null, periodMinutes: null, used: 0, remaining: null, nextAvailableAt: null },
+  };
+  const ready = () => {
+    api.get.mockResolvedValue({
+      wallet: wallet({
+        balance: 5000,
+        reserved: 1000,
+        available: 4000,
+        withdrawalAvailable: true,
+        withdrawalMode: 'live',
+        paymentOperator: 'MTN_CM',
+      }),
+    });
+    api.withdrawals.mockResolvedValue({ withdrawals: [], policy });
+  };
+
+  it('solde DISPONIBLE, Acheter choisi, champ vide : aucun montant proposé, ni frais ni net', async () => {
+    ready();
+    await openShop();
+    expect(await screen.findByLabelText('Solde disponible : 4000 jetons')).toBeTruthy();
+    expect(await screen.findByText('Payer avec MTN Mobile Money')).toBeTruthy();
+    expect(screen.getByLabelText('Acheter des jetons').props.accessibilityState.selected).toBe(true);
+    expect(screen.getByLabelText(AMOUNT_FIELD).props.value).toBe('');
+    expect(screen.queryByText(/frais|net|commission/i)).toBeNull();
+    // Aucun bouton de montant : seuls la fermeture et l'unique bouton de paiement.
+    expect(screen.queryAllByRole('button').map((b) => b.props.accessibilityLabel)).toEqual([
+      'Fermer',
+      'Payer avec MTN Mobile Money',
+    ]);
+  });
+
+  it('Retirer sur place : même panneau, montant conservé, bouton du retrait, rien envoyé', async () => {
+    ready();
+    await openShop();
+    expect(await screen.findByText('Payer avec MTN Mobile Money')).toBeTruthy();
+    await typeAmount('2000');
+    const withdraw = screen.getByLabelText('Retirer des jetons vers Mobile Money');
+    await waitFor(() => expect(withdraw.props.accessibilityState.disabled).toBe(false));
+    fireEvent.press(withdraw);
+
+    expect(screen.getAllByTestId('token-sheet')).toHaveLength(1);
+    const field = await screen.findByLabelText('Nombre de jetons à retirer');
+    expect(field.props.value).toMatch(/^2\s000$/);
+    expect(screen.queryByLabelText(AMOUNT_FIELD)).toBeNull();
+    expect(await screen.findByLabelText('Continuer le retrait de 2000 jetons')).toBeTruthy();
+    // Même présentation que l'achat : bouton aux couleurs de l'opérateur du compte, numéro masqué.
+    expect(screen.getByText('Retirer vers MTN Mobile Money')).toBeTruthy();
+    expect(screen.getByText(/^2\s000 jetons · \+23\*{7}271$/)).toBeTruthy();
+    expect(screen.queryByText(/frais|net|commission/i)).toBeNull();
+    expect(api.withdraw).not.toHaveBeenCalled();
+    expect(api.deposit).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByLabelText('Acheter des jetons'));
+    expect(await screen.findByLabelText('Payer 2000 francs CFA avec MTN Mobile Money')).toBeTruthy();
+  });
+
+  it('achat lancé : le choix Acheter / Retirer est verrouillé pendant le suivi réel', async () => {
+    ready();
+    api.deposit.mockResolvedValue(pendingDeposit(1000));
+    api.payment.mockResolvedValue({ payment: payment('PENDING') });
+    await openShop();
+    await payWith('MTN Mobile Money');
+    expect(await screen.findByText('Paiement en cours...')).toBeTruthy();
+    expect(
+      screen.getByLabelText('Retirer des jetons vers Mobile Money').props.accessibilityState.disabled,
+    ).toBe(true);
+    // Retour à l'application : jamais une preuve de paiement, le statut reste celui du serveur.
+    expect(screen.queryByText('Paiement confirmé')).toBeNull();
+  });
+
+  it('fermeture puis réouverture : panneau neuf, sur Acheter, champ vide', async () => {
+    ready();
+    await openShop();
+    await typeAmount('1500');
+    fireEvent.press(screen.getByLabelText('Fermer'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    screen.unmount();
+    await openShop();
+    expect(
+      (await screen.findByLabelText('Acheter des jetons')).props.accessibilityState.selected,
+    ).toBe(true);
+    expect(screen.getByLabelText(AMOUNT_FIELD).props.value).toBe('');
   });
 });

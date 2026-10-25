@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { LogBox } from 'react-native';
 
 import {
   GENERIC_ERROR_MESSAGE,
@@ -51,6 +52,9 @@ export function logNetworkIssue(category: string, details: Record<string, unknow
 }
 
 if (__DEV__) {
+  // Diagnostics gardés dans le journal (terminal Metro), jamais affichés par-dessus l'écran :
+  // le joueur ne voit que l'indicateur de connexion (D-152), sans URL ni JSON.
+  LogBox.ignoreLogs(['[réseau]']);
   console.info(`[réseau] API : ${API_URL}`);
   if (/\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(API_URL)) {
     console.warn(

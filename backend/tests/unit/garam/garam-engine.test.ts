@@ -872,10 +872,10 @@ describe('présentation de la distribution (D-123)', () => {
     const confirmedAt = game.dealEndsAt as Date;
     completeGaramDeal(game, { now: confirmedAt });
     expect(game.turnStartedAt).toEqual(confirmedAt);
-    // 25 s affichées + 3 s de marge invisible (D-143) ; le temps de Fap-Fap est inchangé.
+    // 20 s affichées + 3 s de marge invisible (D-143, D-153) ; le temps de Fap-Fap est inchangé.
     expect(game.turnDeadlineAt!.getTime() - confirmedAt.getTime()).toBe(GARAM_TURN_DURATION_MS);
     expect(GARAM_TURN_DURATION_MS - GARAM_DISPLAYED_TURN_MS).toBe(3_000);
-    expect(GARAM_DISPLAYED_TURN_MS).toBe(25_000);
+    expect(GARAM_DISPLAYED_TURN_MS).toBe(20_000); // D-153 (25 s auparavant, D-143)
     expect(TURN_DURATION_MS).toBe(13_000);
   });
 });
@@ -1119,5 +1119,63 @@ describe('tirage automatique (D-136)', () => {
     const raw = JSON.stringify(seenByB);
     expect(raw).not.toContain('TREFLE-4');
     expect(raw).not.toContain('PIQUE-3');
+  });
+});
+
+describe('égalité à 21 : trois 7 révélés gagnent (D-165)', () => {
+  it('a révèle 7 + 7 + 7 = 21, b révèle 21 : a gagne, pas de manche nulle', () => {
+    const game = started(
+      [
+        ['COEUR-3', 'TREFLE-7', 'CARREAU-7'], // a garde 14, tirera le P7 : 21 avec trois 7
+        ['COEUR-4', 'TREFLE-10', 'CARREAU-11'], // b garde 10 + As = 21
+      ],
+      ['PIQUE-7', 'TREFLE-3', 'COEUR-5'],
+    );
+    playGaramCard(game, A, 'COEUR-3', ctx);
+    playGaramCard(game, B, 'COEUR-4', ctx); // b contrôle (4 > 3) ; 21 + 7 > 21 : « Je passe »
+    passControl(game);
+    drawGaramCard(game, A, ctx); // 14 + 7 = 21
+    passTurns(game);
+    expect(game.endReason).not.toBe('GARAM_TIE');
+    expect(game.garamTie).toBeUndefined();
+    expect(game.result).toMatchObject({
+      winnerId: A,
+      method: 'GARAM_BEST_SCORE',
+      scores: { a: 21, b: 21 },
+    });
+  });
+
+  it('égalité à 21 sans trois 7 : manche nulle, comme avant', () => {
+    const game = started(
+      [
+        ['COEUR-3', 'TREFLE-10', 'CARREAU-4'], // a garde 14, tirera le P7 : 21 sans trois 7
+        ['COEUR-4', 'TREFLE-9', 'PIQUE-5'], // b garde 14, tirera le C7 : 21
+      ],
+      ['PIQUE-7', 'COEUR-7', 'TREFLE-3'],
+    );
+    playGaramCard(game, A, 'COEUR-3', ctx);
+    playGaramCard(game, B, 'COEUR-4', ctx); // b contrôle et tire le premier
+    drawGaramCard(game, B, ctx); // 14 + 7 = 21
+    passTurns(game);
+    drawGaramCard(game, A, ctx); // 14 + 7 = 21
+    passTurns(game);
+    expect(game.endReason).toBe('GARAM_TIE');
+    expect(game.garamTie).toMatchObject({ kind: 'SCORE', playerIds: [A, B], scores: { a: 21, b: 21 } });
+  });
+
+  it('deux As gardés battent toujours tout, même trois 7 à 21 (D-130 inchangé)', () => {
+    const game = started(
+      [
+        ['COEUR-3', 'TREFLE-7', 'CARREAU-7'], // a : trois 7 = 21 après tirage
+        ['COEUR-4', 'TREFLE-11', 'CARREAU-11'], // b garde deux As (22)
+      ],
+      ['PIQUE-7', 'TREFLE-3', 'COEUR-5'],
+    );
+    playGaramCard(game, A, 'COEUR-3', ctx);
+    playGaramCard(game, B, 'COEUR-4', ctx);
+    passControl(game);
+    drawGaramCard(game, A, ctx);
+    passTurns(game);
+    expect(game.result).toMatchObject({ winnerId: B });
   });
 });

@@ -19,6 +19,7 @@ import { GARAM_VARIANT_REQUIRED } from '../domain/garam/garam-rules';
 
 import { toAdminApiError } from './admin-errors';
 import { toPlatformFinanceApiError } from './platform-finance-errors';
+import { toReferralApiError } from './referral-errors';
 import { toTournamentApiError } from './tournament-errors';
 
 import { InvalidCardError } from '../domain/cards/card';
@@ -38,6 +39,7 @@ import {
   WithdrawalLimitReachedError,
   WithdrawalNotFoundError,
   WithdrawalNotificationRejectedError,
+  WithdrawalOperatorNotAllowedError,
   WithdrawalPhoneUnsupportedError,
   WithdrawalProviderUnavailableError,
   WithdrawalRefundRefusedError,
@@ -224,6 +226,11 @@ export function toApiError(err: unknown): ApiError | undefined {
   if (adminError) {
     return adminError;
   }
+  // --- Parrainage (D-161) ----------------------------------------------------------
+  const referralError = toReferralApiError(err);
+  if (referralError) {
+    return referralError;
+  }
   // --- Retraits des revenus de la plateforme (D-078) -------------------------------
   const platformFinanceError = toPlatformFinanceApiError(err);
   if (platformFinanceError) {
@@ -354,6 +361,13 @@ export function toApiError(err: unknown): ApiError | undefined {
           used: err.used,
         },
       },
+    );
+  }
+  if (err instanceof WithdrawalOperatorNotAllowedError) {
+    return apiError(
+      422,
+      'WITHDRAWAL_OPERATOR_UNSUPPORTED',
+      'L’opérateur Mobile Money de votre numéro d’inscription n’est pas pris en charge pour le retrait.',
     );
   }
   if (err instanceof WithdrawalPhoneUnsupportedError) {

@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
+import { MessageCircle, Settings } from 'lucide-react-native';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, StyleSheet, Text, View } from 'react-native';
 
@@ -8,6 +9,7 @@ import {
   tablePalette as palette,
   useTableFonts,
 } from '../../../components/table/TableDecor';
+import { gameTheme } from '../../../constants/theme';
 import { displayedDeadline } from '../../../hooks/use-server-countdown';
 import { ApiError } from '../../../lib/api-client';
 import { useMessages } from '../../../lib/i18n';
@@ -20,8 +22,9 @@ import { walletKey } from '../../wallet/hooks';
 import { useLeaveSession, useSession, useSessionDecision } from '../../sessions/hooks';
 import type { SessionView } from '../../../types/session';
 import { DraggableCard, type DropZone } from '../DraggableCard';
-import { ReconnectionPanel } from '../ReconnectionPanel';
+import { ConnectionIndicator, type ConnectionStatus } from '../ConnectionIndicator';
 import { gameScreenContent, useGameReconnection } from '../use-game-reconnection';
+import { useLongPendingAction } from '../use-long-pending-action';
 import { playerLabel } from '../format';
 import { chatKeys } from '../../chat/hooks';
 import {
@@ -33,8 +36,9 @@ import {
   useStartGame,
 } from '../hooks';
 import { useGameUpdates, useTournamentSettlementUpdates } from '../game-updates';
+import { useGameMusic, useMyTurnSound, useRefusalSound, useResultSound } from '../game-sounds';
 import { TournamentTableWaiting } from './TournamentTableWaiting';
-import { GaramPlayArea, GaramStakeVotePanel } from '../garam/GaramPlayArea';
+import { GaramPlayArea, GaramStakeVotePanel, useControlNotice } from '../garam/GaramPlayArea';
 import { TournamentTableHud } from './TournamentTableHud';
 import { tournamentKeys, useTournamentSignals } from '../../tournaments/hooks';
 import { CARD_RATIO, HiddenHand } from './Cards';
@@ -48,7 +52,6 @@ import { useTableBalanceLabel } from './table-balance';
 import {
   DealFlight,
   FAP_FAP_PLAYED_CARD_MOVE_MS,
-  handZoneRect,
   PlayedCardSpotlight,
   PlayedCardsZone,
   SPOT_ANGLE,
@@ -67,19 +70,13 @@ import {
   handStepFor,
   handWidthOf,
   type GameTableLayout,
+  type Rect,
   type SeatSide,
 } from './table-layout';
 import { useTableDealing } from './deal-phase';
 import { seatTurnFor, useTurnPhase } from './turn-phase';
-import {
-  controllerOf,
-  playerOfControlSignal,
-  playerOfTurnKey,
-  turnKeyOf,
-  useControlSignal,
-  useTurnSignal,
-} from './turn-signal';
-import { FarewellHand, TurnActions, TurnGlow, TurnHud, useFarewell } from './TurnHud';
+import { controllerOf } from './turn-signal';
+import { FarewellHand, TurnActions, TurnHud, useFarewell } from './TurnHud';
 import {
   BalancePill,
   ControlGlow,
@@ -87,9 +84,11 @@ import {
   ExitGlyph,
   FeltBackdrop,
   GlassBox,
+  PanelEntrance,
   plateContentHeight,
   SeatPlate,
   SoftIconButton,
+  TABLE_ICON_COLOR,
   WoodTable,
   type SeatState,
 } from './TableParts';
@@ -105,7 +104,10 @@ import {
  * Tout ce qui est affiché vient du serveur (D-008) : aucun état, nom ou distance inventé.
  */
 export function GameTableScreen() {
-  const { gameId, reprise } = useLocalSearchParams<{ gameId: string; reprise?: string }>();
+  const { gameId, reprise } = useLocalSearchParams<{
+    gameId: string;
+    reprise?: string;
+  }>();
   const valid = isGameId(gameId);
   const game = useGame(valid ? gameId : '');
   // Carte acceptée par le serveur : nouvel état relu aussitôt chez tous les joueurs (D-101).
@@ -114,6 +116,7 @@ export function GameTableScreen() {
   useTournamentSettlementUpdates(valid ? gameId : '', game.data?.tournamentId);
   // Reprise après une absence : l'état est relu sur le serveur, jamais reconstruit localement.
   const reconnection = useGameReconnection(game, { resume: reprise === '1' });
+  const longAction = useLongPendingAction();
 
   const view = gameScreenContent({
     hasData: game.data !== undefined,
@@ -128,15 +131,6 @@ export function GameTableScreen() {
     // Une partie = un état d'écran : nouvelle partie (Poursuivre, égalité) → tout repart à neuf
     // (mains, cartes jouées, animations), jamais de cartes de l'ancienne partie.
     content = <GameTable key={game.data.gameId} game={game.data} receivedAt={game.dataUpdatedAt} />;
-  } else if (view === 'retry') {
-    // Serveur injoignable avant le premier état : la partie continue côté serveur ; on réessaie.
-    content = (
-      <ReconnectionPanel
-        state={game.isFetching ? 'restoring' : 'failed'}
-        onRetry={reconnection.retry}
-        secondary={{ title: 'Accueil', onPress: goHome }}
-      />
-    );
   } else if (view === 'message') {
     // Partie inaccessible (non membre, introuvable) : aucune navigation forcée.
     content = (
@@ -151,13 +145,26 @@ export function GameTableScreen() {
       </View>
     );
   }
+  // Indicateur flottant (D-152) au-dessus de la table, qui reste montée et visible :
+  // - serveur injoignable avant le premier état : la partie continue côté serveur ; on réessaie ;
+  // - table affichée (ou reprise en cours) mais état périmé : relecture sur le serveur ;
+  // - sinon, action longue en attente de réponse.
+  let status: ConnectionStatus | null = null;
+  if (view === 'retry') status = game.isFetching ? 'restoring' : 'failed';
+  else if (view === 'table' || view === 'restoring') status = reconnection.state;
+  if (status === null && longAction) status = 'pending';
+  // Reconnexion réelle : la table reste visible mais inerte (aucun coup sur un état périmé).
+  const offline = status === 'restoring' || status === 'failed';
   return (
     <FeltBackdrop>
-      {content}
-      {/* Table affichée (ou reprise en cours) mais état périmé : relecture sur le serveur. */}
-      {(view === 'table' || view === 'restoring') && reconnection.state ? (
-        <ReconnectionPanel state={reconnection.state} onRetry={reconnection.retry} />
-      ) : null}
+      <View testID="game-screen" style={styles.layer} pointerEvents={offline ? 'none' : 'auto'}>
+        {content}
+      </View>
+      <ConnectionIndicator
+        status={status}
+        onRetry={reconnection.retry}
+        secondary={view === 'retry' ? { title: 'Accueil', onPress: goHome } : undefined}
+      />
     </FeltBackdrop>
   );
 }
@@ -218,7 +225,9 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
       void queryClient.invalidateQueries({
         queryKey: chatKeys.history(game.gameId),
       });
-      void queryClient.invalidateQueries({ queryKey: gameKeys.detail(game.gameId) });
+      void queryClient.invalidateQueries({
+        queryKey: gameKeys.detail(game.gameId),
+      });
     }
   }, [queryClient, game.status, game.gameId]);
   // Fin (règlement, D-074) : le solde est relu au moment où le résultat est ANNONCÉ, pas
@@ -253,7 +262,10 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
   // directement (les panneaux ouverts se ferment d'abord, ils l'écoutent aussi).
   const backState = useRef({ panelOpen: false, leave: leaveTable });
   useEffect(() => {
-    backState.current = { panelOpen: overlay !== null || chatOpen, leave: leaveTable };
+    backState.current = {
+      panelOpen: overlay !== null || chatOpen,
+      leave: leaveTable,
+    };
   });
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -273,6 +285,10 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
   );
   // La distribution se joue SUR la table, sans écran intermédiaire.
   const dealing = useTableDealing(game, dealAnimated);
+  // Sons (LOT 5) : cloche quand le serveur me donne la main, puis son du résultat annoncé.
+  useMyTurnSound(game, dealing);
+  useResultSound(game, resultAnnounced);
+  useGameMusic(game, resultAnnounced);
 
   const controlsTop = m.safe.top;
   const chatTop = controlsTop + layout.control * 2 + layout.gap * 2;
@@ -287,7 +303,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
           dealing={dealing}
           onDealDone={finishDeal}
           onResultShown={onResultShown}
-          center={(presenting) => (
+          center={(presenting, slot) => (
             // Fin de manche présentée sur la table (révélation, totaux, gagnant, D-128) : le
             // panneau de résultat attend la fin de la présentation.
             <TableCenter
@@ -296,6 +312,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
               layout={layout}
               dealing={dealing}
               presenting={presenting}
+              slot={slot}
             />
           )}
         />
@@ -326,9 +343,7 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
           size={layout.control}
           onPress={() => setOverlay('settings')}
         >
-          <Text allowFontScaling={false} style={{ fontSize: layout.control * 0.46 }}>
-            ⚙️
-          </Text>
+          <Settings size={Math.round(layout.control * 0.48)} color={TABLE_ICON_COLOR} strokeWidth={2} />
         </SoftIconButton>
         {game.gameType === 'GARAM' ? (
           // Variante jouée (D-127), visible de tous pendant toute la partie (vue du serveur).
@@ -390,9 +405,11 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
             size={layout.control}
             onPress={() => setChatOpen((open) => !open)}
           >
-            <Text allowFontScaling={false} style={{ fontSize: layout.control * 0.46 }}>
-              💬
-            </Text>
+            <MessageCircle
+              size={Math.round(layout.control * 0.48)}
+              color={TABLE_ICON_COLOR}
+              strokeWidth={2}
+            />
           </SoftIconButton>
           {unread > 0 && !chatOpen ? (
             <View pointerEvents="none" style={styles.chatBadge}>
@@ -419,7 +436,10 @@ function GameTable({ game, receivedAt }: { game: GameView; receivedAt: number })
         <View
           style={[
             styles.absolute,
-            { top: controlsTop + layout.control + layout.gap, left: m.safe.left + layout.gap },
+            {
+              top: controlsTop + layout.control + layout.gap,
+              left: m.safe.left + layout.gap,
+            },
           ]}
         >
           <GlassBox style={styles.chip}>
@@ -532,6 +552,8 @@ function PlayArea({
 }) {
   const m = useLobbyMetrics();
   const act = useGameAction(game.gameId);
+  // Coup, fuite ou main spéciale refusés par le serveur : son d'erreur bref.
+  useRefusalSound(act.error);
   // La table et ce qui est posé dessus suivent son centre dessiné (`tableCy`).
   const { cx, tableCy: cy, diameter, plateWidth: pw, plateHeight: ph } = layout;
   const seats = arrangeSeats(game);
@@ -549,6 +571,8 @@ function PlayArea({
   const dropRef = useRef<View>(null);
   const dropZone = useRef<DropZone | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Carte glissée au-dessus de la zone : « lâchez ici » (visuel seulement).
+  const [hovering, setHovering] = useState(false);
   const measureDropZone = useCallback(() => {
     dropRef.current?.measureInWindow((x, y, width, height) => {
       dropZone.current = { x, y, width, height };
@@ -670,20 +694,13 @@ function PlayArea({
   });
   const phase = useTurnPhase(game, receivedAt, dealing || held);
 
-  // Halo lumineux de 5 s sur la zone du joueur qui DEVIENT actif (une fois par tour).
-  const signalKey = useTurnSignal(turnKeyOf(game, dealing));
-  const signaled = signalKey ? playerOfTurnKey(signalKey) : null;
-  const glowFor = (playerId: string, side: SeatSide, count: number) =>
-    signalKey && signaled === playerId ? (
-      <TurnGlow key={signalKey} rect={handZoneRect(side, count, layout, m)} />
-    ) : null;
-
-  // Halo de 3 s sur la plaque du joueur qui OBTIENT le contrôle (état officiel du serveur).
-  const controlSignal = useControlSignal(controllerOf(game, dealing));
-  const controlHolder = controlSignal ? playerOfControlSignal(controlSignal) : null;
+  // Contrôle, exactement comme GARAM TIA (D-164) : halo sur la plaque du joueur qui OBTIENT
+  // le contrôle (état officiel du serveur) et annonce « … prend le contrôle », le temps de
+  // `GARAM_CONTROL_NOTICE_MS`. Plus de halo de tour autour des cartes (Garam n'en a pas).
+  const controlNotice = useControlNotice(game.gameId, controllerOf(game, dealing));
   const controlGlow = (() => {
-    if (!controlSignal || !controlHolder) return null;
-    const side = seats.find((s) => s.player?.playerId === controlHolder)?.side;
+    if (!controlNotice) return null;
+    const side = seats.find((s) => s.player?.playerId === controlNotice)?.side;
     if (!side) return null;
     const z = zones(side);
     // Barre réelle (une ligne : le pseudo), posée en haut de son emplacement, ou en bas
@@ -692,7 +709,7 @@ function PlayArea({
     const top = side === 'bottom' ? z.plate.top + ph - height : z.plate.top;
     return (
       <ControlGlow
-        key={controlSignal}
+        key={`${game.gameId}:control`}
         rect={{ left: z.plate.left, top, width: pw, height }}
       />
     );
@@ -747,6 +764,7 @@ function PlayArea({
         style={[
           styles.dropZone,
           dragging && styles.dropZoneActive,
+          dragging && hovering && styles.dropZoneOver,
           {
             left: cx - dropSize / 2,
             top: cy - dropSize / 2,
@@ -778,6 +796,34 @@ function PlayArea({
         dealing={dealing}
         presenting={presenting || farewell}
       />
+      {/* Annonce du contrôle, comme GARAM TIA (D-164) : sous l'anneau gravé, sur le feutre
+          libre (les cartes jouées sont posées à 16 % du diamètre autour du centre). */}
+      {controlNotice ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.absolute,
+            styles.centerRow,
+            {
+              left: cx - diameter / 2,
+              width: diameter,
+              top: cy + layout.center.ring / 2 + layout.gap * 0.5,
+            },
+          ]}
+        >
+          <GlassBox style={styles.chip}>
+            <Text
+              testID="control-notice"
+              accessibilityLiveRegion="polite"
+              style={[styles.controlNotice, { fontSize: m.smallSize }]}
+            >
+              {controlNotice === game.viewerId
+                ? 'Vous prenez le contrôle'
+                : `${playerLabel(game, controlNotice)} prend le contrôle`}
+            </Text>
+          </GlassBox>
+        </View>
+      ) : null}
       {farewell ? <FarewellHand cx={cx} cy={cy} size={Math.round(diameter * 0.32)} /> : null}
       <TurnHud
         game={game}
@@ -797,7 +843,6 @@ function PlayArea({
         const hidden = player ? cardsOf(player.playerId) + notYetShown(player.playerId).length : 0;
         return (
           <Fragment key={seat}>
-            {player && !mine ? glowFor(player.playerId, side, hidden) : null}
             {player && !mine && z.backs && showHands ? (
               <HiddenHand count={hidden} width={sw} zone={z.backs} />
             ) : null}
@@ -824,23 +869,20 @@ function PlayArea({
       })}
 
       {/* Ma main, face visible, en bas : seules les cartes autorisées se glissent. */}
-      {showHands ? glowFor(game.viewerId, 'bottom', handCards.length) : null}
       {showHands ? (
         <View style={[styles.hand, { left: handLeft, bottom: m.safe.bottom }]}>
           {handCards.map((cardId, index) => {
             // Ma dernière carte, jouée par le système (5e tour) : pas de glisser-déposer.
-            const playable =
-              myHand.includes(cardId) &&
-              !dealing &&
-              !act.isPending &&
-              game.myActions.canPlayCard &&
-              game.myActions.playableCardIds.includes(cardId);
+            const myTurnNow =
+              myHand.includes(cardId) && !dealing && !act.isPending && game.myActions.canPlayCard;
+            const playable = myTurnNow && game.myActions.playableCardIds.includes(cardId);
             return (
               <DraggableCard
                 key={cardId}
                 cardId={cardId}
                 width={layout.cardWidth}
                 pending={pendingCard === cardId}
+                restricted={myTurnNow && !playable}
                 held={flightCard === cardId}
                 landingTarget={landingTarget(index)}
                 onLanded={onLanded}
@@ -850,6 +892,7 @@ function PlayArea({
                   setDraggedCard(active ? cardId : null);
                   onDragChange(active);
                 }}
+                onHoverChange={setHovering}
                 onDrop={(id) => {
                   setFlight({ cardId: id, index, landed: false });
                   act.send({ type: 'PLAY_CARD', cardId: id }, game.version);
@@ -927,6 +970,7 @@ function TableCenter({
   failure,
   dealing,
   presenting,
+  slot,
 }: {
   game: GameView;
   receivedAt: number;
@@ -935,6 +979,8 @@ function TableCenter({
   dealing: boolean;
   /** Cartes encore présentées (5e tour) : le résultat attend la dernière. */
   presenting: boolean;
+  /** Place libre du panneau de fin (GARAM TIA) : il ne masque ni cartes ni totaux. */
+  slot?: Rect;
 }) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
@@ -950,9 +996,11 @@ function TableCenter({
   if (game.status === 'waiting' && game.autoStart) {
     return (
       <View style={[styles.centerSlot, centered(diameter), { top: cy - radius, height: diameter }]}>
-        <GlassBox style={box}>
-          <TournamentTableWaiting game={game} receivedAt={receivedAt} start={start} />
-        </GlassBox>
+        <PanelEntrance>
+          <GlassBox style={box}>
+            <TournamentTableWaiting game={game} receivedAt={receivedAt} start={start} />
+          </GlassBox>
+        </PanelEntrance>
       </View>
     );
   }
@@ -960,9 +1008,11 @@ function TableCenter({
   if (game.status === 'waiting' && game.garamStakeVote) {
     return (
       <View style={[styles.centerSlot, centered(diameter), { top: cy - radius, height: diameter }]}>
-        <GlassBox style={box}>
-          <GaramStakeVotePanel game={game} />
-        </GlassBox>
+        <PanelEntrance>
+          <GlassBox style={box}>
+            <GaramStakeVotePanel game={game} />
+          </GlassBox>
+        </PanelEntrance>
       </View>
     );
   }
@@ -974,23 +1024,53 @@ function TableCenter({
     const startFailure = start.error instanceof ApiError ? start.error.message : undefined;
     return (
       <View style={[styles.centerSlot, centered(diameter), { top: cy - radius, height: diameter }]}>
-        <GlassBox style={box}>
-          <Text style={text}>
-            {missing > 0
-              ? `En attente de ${missing} joueur${missing > 1 ? 's' : ''}`
-              : 'Table complète'}
-          </Text>
-          {isCreator && canStart ? (
-            <PanelButton title="Démarrer" loading={start.isPending} onPress={start.start} />
-          ) : null}
-          {startFailure ? <Text style={[small, styles.error]}>{startFailure}</Text> : null}
-        </GlassBox>
+        <PanelEntrance>
+          <GlassBox style={box}>
+            <Text style={text}>
+              {missing > 0
+                ? `En attente de ${missing} joueur${missing > 1 ? 's' : ''}`
+                : 'Table complète'}
+            </Text>
+            {isCreator && canStart ? (
+              <PanelButton title="Démarrer" loading={start.isPending} onPress={start.start} />
+            ) : null}
+            {startFailure ? <Text style={[small, styles.error]}>{startFailure}</Text> : null}
+          </GlassBox>
+        </PanelEntrance>
       </View>
     );
   }
 
   if (game.status === 'finished') {
     if (presenting) return null;
+    if (slot) {
+      // Panneau posé dans la place libre ; trop étroite ou trop basse, il est réduit pour y
+      // tenir en entier, jamais sur les cartes ni les totaux.
+      const width = Math.min(Math.max(slot.width, 260), 440);
+      return (
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.centerSlot,
+            {
+              left: slot.left,
+              top: slot.top,
+              width: slot.width,
+              height: slot.height,
+            },
+          ]}
+        >
+          <GameOutcome
+            game={game}
+            width={width}
+            fit={{
+              height: slot.height,
+              scale: Math.min(1, slot.width / width),
+            }}
+          />
+        </View>
+      );
+    }
     // Panneau centré sur la table, sans déborder de l'écran (marge de 16 de chaque côté).
     const width = Math.min(Math.max(diameter * 0.85, 260), m.availableWidth - 32, 440);
     return (
@@ -1043,7 +1123,15 @@ function TableCenter({
  * choix « Poursuivre » de la ronde du serveur (D-034) ; ensuite la partie suivante se rejoint
  * d'ici même. La session qui enchaîne les parties reste technique : jamais nommée.
  */
-function GameOutcome({ game, width }: { game: GameView; width: number }) {
+function GameOutcome({
+  game,
+  width,
+  fit,
+}: {
+  game: GameView;
+  width: number;
+  fit?: { height: number; scale: number };
+}) {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const t = useMessages().gameOver;
@@ -1063,19 +1151,21 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
 
   if (tie) {
     return (
-      <GlassBox style={{ padding: m.gap, gap: m.gap * 0.6 }}>
-        <Text style={[styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.2 }]}>
-          {garamTie ? t.garamTieTitle : t.tieTitle}
-        </Text>
-        <Text style={[styles.smallText, { fontSize: m.smallSize }]}>
-          {garamTie
-            ? garamTie.kind === 'SCORE'
-              ? t.garamTieScore(tieBest)
-              : t.garamTieSpecial
-            : t.tieDetail}
-        </Text>
-        {replayId ? <PanelButton title={t.newDeal} onPress={() => openGame(replayId)} /> : null}
-      </GlassBox>
+      <PanelEntrance>
+        <GlassBox style={{ padding: m.gap, gap: m.gap * 0.6 }}>
+          <Text style={[styles.centerText, fontOf(fonts.button), { fontSize: m.bodySize * 1.2 }]}>
+            {garamTie ? t.garamTieTitle : t.tieTitle}
+          </Text>
+          <Text style={[styles.smallText, { fontSize: m.smallSize }]}>
+            {garamTie
+              ? garamTie.kind === 'SCORE'
+                ? t.garamTieScore(tieBest)
+                : t.garamTieSpecial
+              : t.tieDetail}
+          </Text>
+          {replayId ? <PanelButton title={t.newDeal} onPress={() => openGame(replayId)} /> : null}
+        </GlassBox>
+      </PanelEntrance>
     );
   }
 
@@ -1102,6 +1192,7 @@ function GameOutcome({ game, width }: { game: GameView; width: number }) {
     <GameOverPanel
       game={game}
       width={width}
+      fit={fit}
       awaitingMe={awaitingMe}
       canContinue={round?.canContinue}
       capAt={capAt}
@@ -1172,12 +1263,14 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#C62F37',
+    backgroundColor: gameTheme.ember,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.85)',
+    borderColor: gameTheme.ivory,
+    boxShadow: `0 0 6px ${gameTheme.emberGlow}`,
   },
   chatBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  layer: { flex: 1 },
   absolute: { position: 'absolute' },
   corner: { position: 'absolute', alignItems: 'flex-start' },
   cornerRight: { alignItems: 'flex-end' },
@@ -1185,17 +1278,25 @@ const styles = StyleSheet.create({
   reservedText: { color: 'rgba(255, 236, 200, 0.85)' },
   tableSlot: { position: 'absolute' },
   passThrough: { pointerEvents: 'none' },
-  // Intérieur de l'anneau gravé : invisible au repos (seul l'anneau se voit, comme sur la
-  // référence), souligné pendant le glisser-déposer.
+  // Intérieur de l'anneau gravé : invisible au repos (seul l'anneau se voit), allumé en or
+  // pendant le glisser-déposer pour désigner la cible.
   dropZone: {
     position: 'absolute',
     borderWidth: 2,
     borderColor: 'transparent',
   },
   dropZoneActive: {
-    borderColor: 'rgba(242, 196, 81, 0.85)',
-    backgroundColor: 'rgba(242, 196, 81, 0.14)',
-    boxShadow: '0 0 22px rgba(242, 196, 81, 0.5)',
+    borderColor: gameTheme.focus,
+    borderStyle: 'dashed',
+    backgroundColor: 'rgba(245, 200, 66, 0.12)',
+    boxShadow: `0 0 26px ${gameTheme.focusGlow}, inset 0 0 18px rgba(245, 200, 66, 0.25)`,
+  },
+  // Carte au-dessus de la zone : trait plein, lumière plus dense (« lâchez ici »).
+  dropZoneOver: {
+    borderWidth: 3,
+    borderStyle: 'solid',
+    backgroundColor: 'rgba(245, 200, 66, 0.24)',
+    boxShadow: `0 0 34px 6px ${gameTheme.focusGlow}, inset 0 0 26px rgba(255, 226, 140, 0.45)`,
   },
   centerSlot: {
     position: 'absolute',
@@ -1204,10 +1305,16 @@ const styles = StyleSheet.create({
   },
   centerRow: { alignItems: 'center' },
   centerText: { color: '#FFFFFF', textAlign: 'center' },
-  smallText: { color: 'rgba(255, 255, 255, 0.78)', textAlign: 'center' },
-  whisper: { color: 'rgba(255, 245, 225, 0.75)' },
+  smallText: { color: gameTheme.textSoft, textAlign: 'center' },
+  whisper: {
+    color: gameTheme.brass.line,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
   error: { color: palette.error },
   chip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999 },
-  variantText: { color: '#F5C842' },
+  // Même texte que l'annonce de GARAM TIA : petit, doré, centré.
+  controlNotice: { color: palette.gold, textAlign: 'center' },
+  variantText: { color: gameTheme.focus, letterSpacing: 0.5 },
   hand: { position: 'absolute', flexDirection: 'row', alignItems: 'flex-end' },
 });

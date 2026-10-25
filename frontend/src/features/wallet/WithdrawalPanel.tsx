@@ -1,10 +1,13 @@
-import { useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRef } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { fontOf, tablePalette as palette, titleShadow, useTableFonts } from '../../components/table/TableDecor';
+import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
+import { EmptyState, StatusBadge } from '../../components/ui/SalonParts';
+import { salon, type SalonTone } from '../../constants/theme';
 import type { WithdrawalOperator, WithdrawalView } from '../../types/wallet';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
-import { ChoiceGroup, Coin, InnerFrame, LobbyPanel, PanelButton } from '../lobby/LobbyUi';
+import { InnerFrame, PanelButton } from '../lobby/LobbyUi';
+import { AccountNumberNotice, OperatorButton } from './DepositSheet';
 import {
   newIdempotencyKey,
   useRequestWithdrawal,
@@ -12,102 +15,135 @@ import {
   useWithdrawal,
   useWithdrawals,
 } from './hooks';
-import { formatFcfa, formatTokens } from './payment-state';
+import { formatTokens } from './payment-state';
+import { AmountField } from './TokenAmountField';
 import {
   checkWithdrawalAmount,
   MIN_WITHDRAWAL_TOKENS,
-  quotaText,
   withdrawalAvailabilityNotice,
   withdrawalDisplay,
   withdrawalErrorMessage,
 } from './withdrawal-state';
 import { WithdrawalModeNotice } from './WithdrawalModeNotice';
 
-type Step =
+export type WithdrawalStep =
   | { name: 'form' }
   | { name: 'confirm'; tokens: number; operator: WithdrawalOperator; key: string }
   | { name: 'result'; withdrawal: WithdrawalView }
   | { name: 'history' };
 
 /**
- * Retirer (D-075) : compte de jeu → compte Mobile Money personnel (numéro d'inscription,
- * masqué). Saisie → confirmation (récapitulatif) → suivi du statut RÉEL relu sur le
- * serveur → historique. Aucun montant, frais, taux ou délai n'est inventé : seules les
- * valeurs renvoyées par le serveur sont affichées.
+ * Retirer (D-075), dans le panneau unique « Mes jetons », présenté comme l'achat : montant saisi,
+ * puis l'unique bouton aux couleurs de l'opérateur. Destinataire : TOUJOURS le numéro
+ * d'inscription (masqué), opérateur déduit par le serveur de ce numéro (`paymentOperator`),
+ * jamais choisi ni saisi. Confirmation sur place → statut RÉEL relu sur le serveur →
+ * historique. Ni frais ni montant net.
  */
-export function WithdrawalPanel({ onBack }: { onBack: () => void }) {
-  const m = useLobbyMetrics();
-  const [step, setStep] = useState<Step>({ name: 'form' });
-  const [input, setInput] = useState('');
-  const [operator, setOperator] = useState<WithdrawalOperator>();
-  const width = Math.max(500, m.width * 0.68);
+export function WithdrawalPane({
+  input,
+  onInput,
+  step,
+  onStep,
+}: {
+  /** Nombre de jetons saisi (chiffres), partagé avec « Acheter » dans le panneau. */
+  input: string;
+  onInput: (value: string) => void;
+  step: WithdrawalStep;
+  onStep: (step: WithdrawalStep) => void;
+}) {
   const sandbox = useSandboxWithdrawals();
-
-  const title =
-    step.name === 'history' ? 'Mes retraits' : step.name === 'confirm' ? 'Confirmer le retrait' : 'Retirer';
-  // Le X d'une étape intérieure revient à la saisie ; celui de la saisie, à la Boutique.
-  const close = step.name === 'form' ? onBack : () => setStep({ name: 'form' });
-
   return (
-    <LobbyPanel title={title} onClose={close} width={width}>
+    <>
       {sandbox ? (
-        <WithdrawalModeNotice notice={withdrawalAvailabilityNotice({ available: true, mode: 'sandbox' })} />
+        <WithdrawalModeNotice
+          notice={withdrawalAvailabilityNotice({ available: true, mode: 'sandbox' })}
+        />
       ) : null}
-      {step.name === 'form' ? (
-        <FormStep
-          input={input}
-          operator={operator}
-          onInput={setInput}
-          onOperator={setOperator}
-          onHistory={() => setStep({ name: 'history' })}
-          onContinue={(tokens, chosen) =>
-            // Une clé par intention confirmée : tout nouvel essai la réutilise.
-            setStep({ name: 'confirm', tokens, operator: chosen, key: newIdempotencyKey() })
-          }
-        />
-      ) : step.name === 'confirm' ? (
-        <ConfirmStep
-          tokens={step.tokens}
-          operator={step.operator}
-          idempotencyKey={step.key}
-          onEdit={() => setStep({ name: 'form' })}
-          onCreated={(withdrawal) => {
-            setInput('');
-            setStep({ name: 'result', withdrawal });
-          }}
-        />
-      ) : step.name === 'result' ? (
-        <ResultStep
-          initial={step.withdrawal}
-          onHistory={() => setStep({ name: 'history' })}
-          onDone={onBack}
-        />
-      ) : (
-        <HistoryStep onBack={() => setStep({ name: 'form' })} />
-      )}
-    </LobbyPanel>
+      <WithdrawalStepView input={input} onInput={onInput} step={step} onStep={onStep} />
+    </>
+  );
+}
+
+function WithdrawalStepView({
+  input,
+  onInput,
+  step,
+  onStep,
+}: {
+  input: string;
+  onInput: (value: string) => void;
+  step: WithdrawalStep;
+  onStep: (step: WithdrawalStep) => void;
+}) {
+  const toForm = () => onStep({ name: 'form' });
+
+  if (step.name === 'confirm') {
+    return (
+      <ConfirmStep
+        tokens={step.tokens}
+        operator={step.operator}
+        idempotencyKey={step.key}
+        onEdit={toForm}
+        onCreated={(withdrawal) => {
+          onInput('');
+          onStep({ name: 'result', withdrawal });
+        }}
+      />
+    );
+  }
+  if (step.name === 'result') {
+    return (
+      <ResultStep
+        initial={step.withdrawal}
+        onHistory={() => onStep({ name: 'history' })}
+        onDone={toForm}
+      />
+    );
+  }
+  if (step.name === 'history') return <HistoryStep onBack={toForm} />;
+  return (
+    <FormStep
+      input={input}
+      onInput={onInput}
+      onHistory={() => onStep({ name: 'history' })}
+      onContinue={(tokens, operator) =>
+        // Une clé par intention confirmée : tout nouvel essai la réutilise.
+        onStep({ name: 'confirm', tokens, operator, key: newIdempotencyKey() })
+      }
+    />
   );
 }
 
 /** Serveur en environnement de test (D-077) : transferts simulés, aucun argent réel. */
-function useSandboxWithdrawals(): boolean {
+export function useSandboxWithdrawals(): boolean {
   const wallet = useWallet();
   const withdrawals = useWithdrawals();
   return (wallet.data?.withdrawalMode ?? withdrawals.data?.policy.mode) === 'sandbox';
 }
 
+/**
+ * Opérateur du retrait : celui que le serveur a déduit du numéro d'inscription
+ * (`paymentOperator`), s'il fait partie des opérateurs de retrait. `null` : numéro non pris
+ * en charge ; `undefined` : encore en chargement.
+ */
+function useAccountOperator(): { code: WithdrawalOperator; label: string } | null | undefined {
+  const wallet = useWallet();
+  const withdrawals = useWithdrawals();
+  const policy = withdrawals.data?.policy;
+  if (!wallet.data || !policy) return undefined;
+  const code = wallet.data.paymentOperator;
+  if (!policy.msisdnSupported || !code) return null;
+  return policy.operators.find((o) => o.code === code) ?? null;
+}
+
 function FormStep({
   input,
-  operator,
   onInput,
-  onOperator,
   onHistory,
   onContinue,
 }: {
   input: string;
-  operator?: WithdrawalOperator;
   onInput: (value: string) => void;
-  onOperator: (operator: WithdrawalOperator) => void;
   onHistory: () => void;
   onContinue: (tokens: number, operator: WithdrawalOperator) => void;
 }) {
@@ -116,19 +152,17 @@ function FormStep({
   const wallet = useWallet();
   const withdrawals = useWithdrawals();
   const policy = withdrawals.data?.policy;
+  const operator = useAccountOperator();
   const available = wallet.data?.available ?? wallet.data?.balance;
   const check = checkWithdrawalAmount(input, {
     minTokens: policy?.minTokens ?? MIN_WITHDRAWAL_TOKENS,
     maxTokens: policy?.maxTokens ?? Number.MAX_SAFE_INTEGER,
     available,
   });
-  const quota = policy ? quotaText(policy.limit) : undefined;
   const quotaReached = policy?.limit.remaining === 0;
-  const blocked =
-    !policy || !policy.available || !policy.msisdnSupported || quotaReached;
-  const canContinue = check.ok && operator !== undefined && !blocked;
-  const field = Math.max(40, Math.round(m.controlHeight * 0.9));
-  const small = [styles.small, { fontSize: m.smallSize }];
+  const blocked = !policy || !policy.available || !operator || quotaReached;
+  const field = Math.max(50, Math.round(m.controlHeight * 1.1));
+  const msisdn = policy?.msisdn ?? wallet.data?.mobileMoneyNumber;
 
   const blockedMessage = !policy
     ? undefined
@@ -138,99 +172,80 @@ function FormStep({
           mode: policy.mode,
           reason: policy.unavailableReason,
         })?.message
-      : !policy.msisdnSupported
-        ? 'Votre numéro d’inscription n’est pas un numéro Mobile Money pris en charge (Cameroun, +237).'
-        : quotaReached
-          ? `Nombre maximal de retraits atteint.${
-              policy.limit.nextAvailableAt
-                ? ` Prochain retrait possible le ${formatDateTime(policy.limit.nextAvailableAt)}.`
-                : ''
-            }`
-          : undefined;
+      : quotaReached
+        ? `Nombre maximal de retraits atteint.${
+            policy.limit.nextAvailableAt
+              ? ` Prochain retrait possible le ${formatDateTime(policy.limit.nextAvailableAt)}.`
+              : ''
+          }`
+        : undefined;
 
   return (
-    <View style={{ gap: m.gap * 0.8 }}>
-      {withdrawals.isPending ? (
-        <ActivityIndicator color={palette.gold} />
-      ) : withdrawals.error ? (
+    <View style={styles.block}>
+      {withdrawals.error ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {withdrawalErrorMessage(withdrawals.error)}
         </Text>
       ) : null}
 
-      <Text style={[styles.label, fontOf(fonts.button), { fontSize: m.bodySize }]}>
-        Nombre de jetons à retirer
-      </Text>
-      <View style={[styles.fieldRow, { height: field }]}>
-        <TextInput
-          value={input}
-          onChangeText={(v) => onInput(v.replace(/[^0-9]/g, ''))}
-          keyboardType="number-pad"
-          maxLength={10}
-          placeholder={String(policy?.minTokens ?? MIN_WITHDRAWAL_TOKENS)}
-          placeholderTextColor="rgba(255, 255, 255, 0.45)"
-          accessibilityLabel="Nombre de jetons à retirer"
-          style={[
-            styles.input,
-            fontOf(fonts.button),
-            { height: field, borderRadius: field * 0.2, fontSize: m.bodySize * 1.3 },
-            !check.ok && check.reason !== 'empty' && styles.inputError,
-          ]}
-        />
-        <View style={[styles.inputCoin, { right: -field * 0.25 }]}>
-          <Coin size={Math.round(field * 1.1)} fontFamily={fonts.title} />
-        </View>
-      </View>
-      <Text style={small}>
-        {`Minimum ${formatTokens(policy?.minTokens ?? MIN_WITHDRAWAL_TOKENS)} · 1 jeton = 1 FCFA`}
-        {available !== undefined ? ` · Disponible : ${formatTokens(available)}` : ''}
-      </Text>
+      <AmountField
+        label="Nombre de jetons à retirer"
+        unit="jetons"
+        value={input}
+        maxDigits={10}
+        invalid={!check.ok && check.reason !== 'empty'}
+        editable={operator !== null}
+        height={field}
+        onChange={onInput}
+      />
       {!check.ok && check.message ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {check.message}
         </Text>
       ) : null}
 
-      <Text style={[styles.label, fontOf(fonts.button), { fontSize: m.bodySize }]}>Opérateur</Text>
-      <ChoiceGroup>
-        {(policy?.operators ?? []).map((o) => (
-          <PanelButton
-            key={o.code}
-            title={o.label}
-            selected={operator === o.code}
-            onPress={() => onOperator(o.code)}
-          />
-        ))}
-      </ChoiceGroup>
-      <Text style={small}>
-        {`Destinataire : ${policy?.msisdn ?? wallet.data?.mobileMoneyNumber ?? '…'} (votre numéro d’inscription)`}
-      </Text>
-      {quota ? <Text style={small}>{quota}</Text> : null}
+      {operator ? (
+        <OperatorButton
+          operator={operator.code}
+          label={`Retirer vers ${operator.label}`}
+          detail={check.ok ? `${formatTokens(check.tokens)} · ${msisdn ?? ''}` : msisdn}
+          accessibilityLabel={`Continuer le retrait${check.ok ? ` de ${check.tokens} jetons` : ''}`}
+          height={Math.max(52, field)}
+          disabled={!check.ok || blocked}
+          loading={false}
+          onPress={() => {
+            if (check.ok && !blocked) onContinue(check.tokens, operator.code);
+          }}
+        />
+      ) : operator === null ? (
+        <AccountNumberNotice operation="retrait" />
+      ) : withdrawals.error ? null : (
+        <ActivityIndicator color={palette.gold} />
+      )}
       {blockedMessage ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {blockedMessage}
         </Text>
       ) : null}
 
-      <View style={[styles.row, { gap: m.gap }]}>
-        <PanelButton title="Mes retraits" onPress={onHistory} />
-        <PanelButton
-          title="Continuer"
-          tone="danger"
-          accessibilityLabel={`Continuer le retrait${check.ok ? ` de ${check.tokens} jetons` : ''}`}
-          disabled={!canContinue}
-          onPress={() => {
-            if (check.ok && operator) onContinue(check.tokens, operator);
-          }}
-        />
-      </View>
+      <Pressable
+        onPress={onHistory}
+        accessibilityRole="button"
+        hitSlop={8}
+        style={({ pressed }) => [styles.link, pressed && styles.pressed]}
+      >
+        <Text style={[styles.linkText, fontOf(fonts.button), { fontSize: m.smallSize }]}>
+          Mes retraits
+        </Text>
+      </Pressable>
     </View>
   );
 }
 
 /**
- * Récapitulatif avant envoi. Pendant l'envoi, les boutons sont bloqués ; un nouvel essai
- * après une erreur réutilise la MÊME clé d'idempotence (jamais deux retraits).
+ * Confirmation sur place, en une ligne : jetons, opérateur et numéro d'inscription masqué.
+ * Pendant l'envoi, les boutons sont bloqués ; un nouvel essai après une erreur réutilise la
+ * MÊME clé d'idempotence (jamais deux retraits).
  */
 function ConfirmStep({
   tokens,
@@ -251,25 +266,11 @@ function ConfirmStep({
   const withdrawals = useWithdrawals();
   const request = useRequestWithdrawal();
   const policy = withdrawals.data?.policy;
-  const available = wallet.data?.available ?? wallet.data?.balance;
   const operatorLabel = policy?.operators.find((o) => o.code === operator)?.label ?? operator;
+  const msisdn = policy?.msisdn ?? wallet.data?.mobileMoneyNumber ?? '…';
   const sending = request.isPending;
   // Verrou synchrone : deux appuis avant le prochain rendu n'envoient qu'une demande.
   const inFlight = useRef(false);
-
-  const rows: [string, string][] = [
-    ['Jetons retirés', formatTokens(tokens)],
-    ['Montant envoyé', formatFcfa(tokens * (policy?.tokensPerUnit ?? 1))],
-    ['Frais Le Ter', policy?.platformFeeTokens ? formatTokens(policy.platformFeeTokens) : 'Aucun'],
-    ['Opérateur', operatorLabel],
-    ['Destinataire', policy?.msisdn ?? wallet.data?.mobileMoneyNumber ?? '…'],
-    ...(available !== undefined
-      ? ([['Disponible après le retrait', formatTokens(Math.max(available - tokens, 0))]] as [
-          string,
-          string,
-        ][])
-      : []),
-  ];
 
   const confirm = () => {
     if (sending || inFlight.current) return;
@@ -286,20 +287,15 @@ function ConfirmStep({
   };
 
   return (
-    <View style={{ gap: m.gap * 0.8 }}>
-      <InnerFrame style={{ gap: m.gap * 0.4 }}>
-        {rows.map(([label, value]) => (
-          <View key={label} style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { fontSize: m.smallSize * 1.05 }]}>{label}</Text>
-            <Text style={[styles.summaryValue, fontOf(fonts.button), { fontSize: m.bodySize }]}>
-              {value}
-            </Text>
-          </View>
-        ))}
-      </InnerFrame>
-      <Text style={[styles.small, { fontSize: m.smallSize }]}>
-        Les jetons sont réservés dès la confirmation. Si le transfert échoue, ils sont recrédités.
-        Les éventuels frais de votre opérateur ne sont pas connus de Le Ter.
+    <View style={styles.block}>
+      <Text
+        accessibilityRole="header"
+        style={[styles.heading, fontOf(fonts.button), { fontSize: m.bodySize * 1.05 }]}
+      >
+        Confirmer le retrait
+      </Text>
+      <Text style={[styles.summary, fontOf(fonts.button), { fontSize: m.bodySize }]}>
+        {`${formatTokens(tokens)} vers ${operatorLabel} ${msisdn}`}
       </Text>
       {request.error ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
@@ -325,6 +321,7 @@ function ConfirmStep({
   );
 }
 
+/** Statut RÉEL du retrait (un seul message d'état) et sa référence, utile à l'assistance. */
 function ResultStep({
   initial,
   onHistory,
@@ -346,7 +343,7 @@ function ResultStep({
     sandbox,
   );
   return (
-    <View style={{ gap: m.gap * 0.8, alignItems: 'center' }}>
+    <View style={[styles.block, { alignItems: 'center' }]}>
       <View
         accessibilityRole="alert"
         accessibilityLiveRegion="polite"
@@ -356,17 +353,16 @@ function ResultStep({
           {display.label}
         </Text>
         <Text style={[styles.small, { fontSize: m.smallSize }]}>{display.detail}</Text>
-        {display.tone === 'pending' ? <ActivityIndicator color={palette.gold} /> : null}
+        {display.tone === 'pending' ? (
+          <ActivityIndicator color={salon.status.info.text} />
+        ) : null}
       </View>
-      <Text style={[styles.small, { fontSize: m.smallSize }]}>
-        {`${formatTokens(withdrawal.tokens)} → ${withdrawal.operatorLabel} ${withdrawal.msisdn}`}
-      </Text>
       <Text selectable style={[styles.reference, { fontSize: m.smallSize }]}>
         {`Référence : ${withdrawal.reference}`}
       </Text>
       <View style={[styles.row, { gap: m.gap }]}>
         <PanelButton title="Mes retraits" onPress={onHistory} />
-        <PanelButton title="Retour à la Boutique" onPress={onDone} />
+        <PanelButton title="Terminé" onPress={onDone} />
       </View>
     </View>
   );
@@ -379,7 +375,13 @@ function HistoryStep({ onBack }: { onBack: () => void }) {
   const items = query.data?.withdrawals ?? [];
   const sandbox = useSandboxWithdrawals();
   return (
-    <View style={{ gap: m.gap * 0.6 }}>
+    <View style={styles.block}>
+      <Text
+        accessibilityRole="header"
+        style={[styles.heading, fontOf(fonts.button), { fontSize: m.bodySize * 1.05 }]}
+      >
+        Mes retraits
+      </Text>
       {query.isPending ? (
         <ActivityIndicator color={palette.gold} />
       ) : query.error ? (
@@ -387,7 +389,12 @@ function HistoryStep({ onBack }: { onBack: () => void }) {
           {withdrawalErrorMessage(query.error)}
         </Text>
       ) : items.length === 0 ? (
-        <Text style={[styles.small, { fontSize: m.smallSize }]}>Aucun retrait pour le moment.</Text>
+        <EmptyState
+          glyph="🏦"
+          title="Aucun retrait pour le moment."
+          size={m.smallSize}
+          fontFamily={fonts.button}
+        />
       ) : (
         <View accessibilityRole="list" style={{ gap: m.gap * 0.5 }}>
           {items.map((w) => {
@@ -398,9 +405,12 @@ function HistoryStep({ onBack }: { onBack: () => void }) {
                   <Text style={[styles.summaryValue, fontOf(fonts.button), { fontSize: m.bodySize }]}>
                     {formatTokens(w.tokens)}
                   </Text>
-                  <Text style={[styles.badge, toneText(display.tone), { fontSize: m.smallSize }]}>
-                    {display.label}
-                  </Text>
+                  <StatusBadge
+                    label={display.label}
+                    tone={STATUS_TONE[display.tone]}
+                    size={m.smallSize}
+                    fontFamily={fonts.button}
+                  />
                 </View>
                 <Text style={[styles.small, styles.left, { fontSize: m.smallSize }]}>
                   {`${formatDateTime(w.createdAt)} · ${w.operatorLabel} ${w.msisdn}`}
@@ -425,46 +435,40 @@ function formatDateTime(iso: string): string {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-const toneStyle = (tone: 'pending' | 'success' | 'error') =>
-  tone === 'success' ? styles.success : tone === 'error' ? styles.failure : styles.pending;
-const toneText = (tone: 'pending' | 'success' | 'error') =>
-  tone === 'success' ? styles.successText : tone === 'error' ? styles.failureText : styles.pendingText;
+/**
+ * Ton d'un retrait selon son état RÉEL : en cours (bleu), confirmé (jade), échoué (rouge).
+ * Jamais le laiton des actions : un retrait confirmé ne se confond pas avec un bouton.
+ */
+const STATUS_TONE: Record<'pending' | 'success' | 'error', SalonTone> = {
+  pending: 'info',
+  success: 'positive',
+  error: 'critical',
+};
+const toneStyle = (tone: 'pending' | 'success' | 'error') => {
+  const colors = salon.status[STATUS_TONE[tone]];
+  return { borderColor: colors.border, backgroundColor: colors.fill };
+};
 
 const styles = StyleSheet.create({
+  block: { gap: 10 },
   row: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap' },
-  label: { color: '#FFFFFF', textAlign: 'center', ...titleShadow },
-  small: { color: 'rgba(255, 255, 255, 0.78)', textAlign: 'center' },
+  heading: { color: salon.text, textAlign: 'center' },
+  small: { color: salon.textSoft, textAlign: 'center' },
   left: { textAlign: 'left' },
   error: { color: palette.error, textAlign: 'center', fontWeight: '600' },
-  fieldRow: { alignSelf: 'center', width: '70%', flexDirection: 'row', alignItems: 'center' },
-  input: {
-    flex: 1,
-    textAlign: 'center',
-    paddingVertical: 0,
-    color: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    backgroundColor: 'rgba(255, 255, 255, 0.16)',
-  },
-  inputError: { borderColor: palette.error },
-  inputCoin: { position: 'absolute' },
+  link: { alignSelf: 'center', paddingVertical: 2 },
+  linkText: { color: salon.brass.text, textDecorationLine: 'underline' },
+  pressed: { opacity: 0.75 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
-  summaryLabel: { color: 'rgba(255, 255, 255, 0.75)' },
-  summaryValue: { color: '#FFFFFF' },
+  summary: { color: salon.text, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  summaryValue: { color: salon.text, fontVariant: ['tabular-nums'] },
   status: {
     alignSelf: 'stretch',
     alignItems: 'center',
     gap: 4,
-    borderRadius: 10,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
   },
-  statusTitle: { color: '#FFFFFF' },
-  pending: { borderColor: 'rgba(255, 255, 255, 0.2)', backgroundColor: 'rgba(255, 255, 255, 0.08)' },
-  success: { borderColor: 'rgba(242, 196, 81, 0.5)', backgroundColor: 'rgba(242, 196, 81, 0.12)' },
-  failure: { borderColor: 'rgba(230, 80, 80, 0.5)', backgroundColor: 'rgba(230, 80, 80, 0.12)' },
-  badge: { fontWeight: '700' },
-  pendingText: { color: 'rgba(255, 255, 255, 0.85)' },
-  successText: { color: palette.gold },
-  failureText: { color: palette.error },
-  reference: { color: 'rgba(255, 255, 255, 0.65)', textAlign: 'center', fontVariant: ['tabular-nums'] },
+  statusTitle: { color: salon.text },
+  reference: { color: salon.textFaint, textAlign: 'center', fontVariant: ['tabular-nums'] },
 });

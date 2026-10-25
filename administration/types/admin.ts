@@ -309,7 +309,8 @@ export type WalletKind =
   | 'tournament_entry'
   | 'tournament_prize'
   | 'game_stake'
-  | 'game_winnings';
+  | 'game_winnings'
+  | 'referral_reward';
 export type WalletStatus = 'pending' | 'succeeded' | 'failed';
 export type ReservationStatus = 'ACTIVE' | 'CAPTURED' | 'RELEASED' | 'EXPIRED';
 export type PaymentStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED';

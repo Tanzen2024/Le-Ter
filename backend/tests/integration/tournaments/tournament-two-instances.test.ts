@@ -90,31 +90,30 @@ it('arrivées simultanées sur deux instances : tables de 4, chaque place de ses
   }
 });
 
-it('écriture perdue sur la version (autre instance) : relecture et nouvel essai, place obtenue', async () => {
+it('table en attente : siège et place dans la partie en une fois (D-153), sans second appel', async () => {
   const first = await a.tournaments.join(tournament.id, players[0]!);
-  const joinGame = b.games.joinGame.bind(b.games);
-  const spy = jest
-    .spyOn(b.games, 'joinGame')
-    .mockImplementationOnce((gameId) => Promise.reject(new GameVersionConflictError(gameId, 1, 2)))
-    .mockImplementation(joinGame);
+  const spy = jest.spyOn(b.games, 'joinGame');
 
   const seat = await b.tournaments.join(tournament.id, players[1]!);
   expect(seat.gameId).toBe(first.gameId);
-  expect(spy).toHaveBeenCalledTimes(2);
+  // La place est prise par l'arrivée elle-même, sous le verrou de la partie et de la session.
+  expect(spy).not.toHaveBeenCalled();
   expect(await gamePlayers(first.gameId)).toEqual([pid(0), pid(1)]);
   expect(await activeSeats(1)).toBe(1);
 });
 
-it('conflit persistant : TOURNAMENT_BUSY, place de session libérée, partie inchangée, nouvel essai possible', async () => {
+it('conflit sur la partie à l’arrivée : TOURNAMENT_BUSY, ni siège ni place, nouvel essai possible', async () => {
   const first = await a.tournaments.join(tournament.id, players[0]!);
   const spy = jest
-    .spyOn(b.games, 'joinGame')
-    .mockImplementation((gameId) => Promise.reject(new GameVersionConflictError(gameId, 1, 2)));
+    .spyOn(b.games, 'buildWaitingGameArrival')
+    .mockImplementation((game) => {
+      throw new GameVersionConflictError(game.id, 1, 2);
+    });
 
   await expect(b.tournaments.join(tournament.id, players[1]!)).rejects.toBeInstanceOf(
     TournamentBusyError,
   );
-  expect(spy).toHaveBeenCalledTimes(3);
+  expect(spy).toHaveBeenCalled();
   expect(await gamePlayers(first.gameId)).toEqual([pid(0)]);
   expect(await activeSeats(1)).toBe(0);
 

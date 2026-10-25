@@ -9,6 +9,7 @@ import {
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { salon } from '../../constants/theme';
 import { complaintsApi } from '../../services/complaints-api';
 import { useAuthStore } from '../../stores/auth-store';
 import { leaveLegalDocument } from '../legal/LegalDocumentScreen';
@@ -270,8 +271,8 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   top: { alignItems: 'stretch' },
-  title: { flex: 1, color: '#FFFFFF', letterSpacing: 1, ...titleShadow },
+  title: { flex: 1, color: salon.text, letterSpacing: 1.2, ...titleShadow },
   message: { gap: 2 },
-  author: { color: palette.gold, fontWeight: '700' },
+  author: { color: salon.brass.text, fontWeight: '700' },
   error: { color: palette.error },
 });

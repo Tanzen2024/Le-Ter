@@ -1,9 +1,11 @@
+import { operatorOfPhone } from '../payments/payment';
 import type { UserId } from '../users/user';
 
 /**
  * Retrait Mobile Money (D-075) : jetons du compte de jeu → compte Mobile Money personnel du
- * joueur, c'est-à-dire son numéro d'INSCRIPTION (D-040), jamais un numéro saisi. Le joueur
- * choisit seulement l'opérateur.
+ * joueur, c'est-à-dire son numéro d'INSCRIPTION (D-040), jamais un numéro saisi. L'opérateur
+ * est DÉDUIT par le serveur de ce numéro (`withdrawalOperatorOfPhone`) : un opérateur envoyé
+ * par le client n'est jamais pris en compte.
  *
  * Le transfert passe par l'API de transfert CinetPay v1 (`POST /v1/transfer`), distincte de
  * la collecte. Seul un statut FINAL relu chez CinetPay règle un retrait ; une acceptation de
@@ -37,6 +39,31 @@ export const isWithdrawalOperator = (value: unknown): value is WithdrawalOperato
 /** Numéro d'inscription utilisable pour un transfert CinetPay en XAF : +237 et 9 chiffres. */
 export const isSupportedWithdrawalPhone = (phone: string): boolean =>
   /^\+237\d{9}$/.test(phone);
+
+export type WithdrawalOperatorResolution =
+  | { ok: true; operator: WithdrawalOperator }
+  /** Numéro hors +237, ou opérateur indéterminable d'après le plan de numérotation. */
+  | { ok: false; reason: 'PHONE_UNSUPPORTED' }
+  /** Opérateur identifié, mais pas parmi les opérateurs de retrait autorisés. */
+  | { ok: false; reason: 'OPERATOR_NOT_ALLOWED' };
+
+/**
+ * Opérateur d'un retrait, déduit du numéro d'INSCRIPTION par la règle existante du plan de
+ * numérotation camerounais (`operatorOfPhone`, D-090), puis vérifié contre les opérateurs de
+ * retrait autorisés. Aucune bascule vers un autre opérateur en cas de doute : refus.
+ */
+export function withdrawalOperatorOfPhone(
+  phone: string,
+  allowed: readonly WithdrawalOperator[] = WITHDRAWAL_OPERATORS,
+): WithdrawalOperatorResolution {
+  if (!isSupportedWithdrawalPhone(phone)) return { ok: false, reason: 'PHONE_UNSUPPORTED' };
+  const operator = operatorOfPhone(phone);
+  if (!operator) return { ok: false, reason: 'PHONE_UNSUPPORTED' };
+  if (!isWithdrawalOperator(operator) || !allowed.includes(operator)) {
+    return { ok: false, reason: 'OPERATOR_NOT_ALLOWED' };
+  }
+  return { ok: true, operator };
+}
 
 /**
  * - CREATED : débité ; transfert pas encore accepté, ou issue de l'envoi inconnue (jamais
@@ -154,6 +181,14 @@ export class WithdrawalPhoneUnsupportedError extends Error {
   constructor() {
     super('Numéro Mobile Money non pris en charge pour le retrait');
     this.name = 'WithdrawalPhoneUnsupportedError';
+  }
+}
+
+/** Opérateur du numéro d'inscription identifié, mais non autorisé pour les retraits. */
+export class WithdrawalOperatorNotAllowedError extends Error {
+  constructor() {
+    super('Opérateur Mobile Money non autorisé pour le retrait');
+    this.name = 'WithdrawalOperatorNotAllowedError';
   }
 }
 

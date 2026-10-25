@@ -14,27 +14,32 @@ import {
   type ViewStyle,
 } from 'react-native';
 
+import { gameTheme, salon } from '../../constants/theme';
 import { playSound } from '../../services/audio-service';
 
 /**
- * Identité visuelle « table de jeu » de Le Ter (écran de connexion, accueil, tournois…) :
- * fond rouge/brun éclairé, cercle de feutre vert cerclé d'or, cartes L décoratives, boutons
- * pilule turquoise. Un seul jeu de couleurs et de formes pour tous les écrans.
+ * Identité visuelle des écrans autour du jeu (connexion, accueil, tournois…), « Ébène &
+ * Laiton » déclinée en salon (`salon`, constants/theme) : pièce vert nuit éclairée d'en haut,
+ * feutre émeraude cerclé de noyer et de laiton, cartes décoratives ébène, bouton principal en
+ * laiton. Un seul jeu de couleurs et de formes pour tous les écrans.
+ *
+ * `gold`, `cream` et `error` gardent leurs valeurs : la table de jeu les emploie aussi.
  */
 export const tablePalette = {
-  backdrop: '#2A0705',
+  backdrop: salon.backdrop,
   cream: '#F7F1E1',
   gold: '#F2C451',
-  goldDeep: '#D9961F',
-  teal: '#1F9C9C',
+  goldDeep: gameTheme.brass.deep,
+  /** Accent et statut « en cours » sur fond sombre (jade lisible). */
+  teal: gameTheme.self,
   error: '#FFB3A6',
-  /** Boutons secondaires des panneaux (Modifier, Créer, ON…) : vert-turquoise et texte doré. */
-  jade: '#17806E',
-  /** Bouton de fermeture, Déconnexion, retour. */
-  danger: '#D42A33',
+  /** Actions secondaires des panneaux (Modifier, Créer, ON…) : laque émeraude. */
+  jade: gameTheme.emerald.main,
+  /** Départ, refus, suppression : sang-de-bœuf. */
+  danger: gameTheme.oxblood.main,
   /** Surfaces sombres posées sur le fond (HUD, panneaux). */
-  panel: 'rgba(16, 7, 5, 0.86)',
-  panelBorder: 'rgba(255, 226, 190, 0.22)',
+  panel: salon.surface.fill,
+  panelBorder: salon.surface.border,
 } as const;
 
 /**
@@ -72,16 +77,21 @@ export function fontOf(family: string | undefined): TextStyle {
   return { fontFamily: family, fontWeight: family ? undefined : '800' };
 }
 
-/** Fond plein écran rouge/brun, éclairé au centre. */
+/** Fond plein écran : la pièce vert nuit, éclairée d'en haut, frise de laiton en filigrane. */
 export function TableBackdrop({ children }: { children: ReactNode }) {
-  return <View style={styles.root}>{children}</View>;
+  return (
+    <View style={styles.root}>
+      <View style={[StyleSheet.absoluteFill, styles.passThrough, styles.vignette]} />
+      {children}
+    </View>
+  );
 }
 
 /**
- * Cercle de feutre cerclé d'or.
- * - `classic` : feutre vert profond et anneau épais (connexion) ;
- * - `bright` : feutre vert vif, anneau fin et emblème L gravé (tournois) ;
- * - `deep` : feutre vert profond, anneau fin et emblème L gravé (boutique).
+ * Cercle de feutre émeraude, cerclé de noyer incrusté de laiton (comme la table de jeu).
+ * - `classic` : feutre profond et anneau épais (connexion) ;
+ * - `bright` : feutre éclairé, anneau fin et emblème L gravé (tournois) ;
+ * - `deep` : feutre profond, anneau fin et emblème L gravé (boutique).
  */
 export function FeltCircle({
   diameter,
@@ -107,7 +117,8 @@ export function FeltCircle({
           width: diameter,
           height: diameter,
           borderRadius: diameter / 2,
-          boxShadow: `0 0 ${Math.round(diameter * 0.09)}px ${Math.round(diameter * 0.025)}px rgba(255, 150, 30, 0.5)`,
+          // Pas de halo orangé : la table est posée dans la pénombre, éclairée d'en haut.
+          boxShadow: `0 ${Math.round(diameter * 0.04)}px ${Math.round(diameter * 0.1)}px rgba(0, 0, 0, 0.6), 0 0 ${Math.round(diameter * 0.12)}px rgba(214, 178, 94, 0.12)`,
         },
       ]}
     >
@@ -191,7 +202,7 @@ export function DecorativeCards({
 }
 
 /**
- * Dos de carte Le Ter (brun cuivré, cadre doré, médaillon L). Positionné en absolu.
+ * Dos de carte décoratif Le Ter (laque ébène, cadre et médaillon L en laiton). Positionné en absolu.
  * `letter` et `medallionRatio` : autre lettre, médaillon agrandi pour rester lisible sur une
  * petite carte (cartes L E T E R de la connexion) ; par défaut, le dos habituel.
  */
@@ -259,7 +270,7 @@ export function TatamiCard({
   );
 }
 
-/** Bouton pilule de la maquette (turquoise par défaut). */
+/** Bouton pilule de l'action principale d'un écran : laiton, texte ébène. */
 export function PillButton({
   title,
   onPress,
@@ -305,7 +316,7 @@ export function PillButton({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={tablePalette.cream} />
+        <ActivityIndicator color={salon.ink} />
       ) : (
         <Text numberOfLines={1} style={[styles.buttonText, fontOf(fontFamily), { fontSize }]}>
           {title}
@@ -326,83 +337,78 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     overflow: 'hidden',
-    backgroundColor: tablePalette.backdrop,
+    backgroundColor: salon.backdrop,
+    experimental_backgroundImage: salon.backdropLight,
+  },
+  // Frise de laiton à peine visible en bas de la pièce, et bords assombris.
+  vignette: {
     experimental_backgroundImage:
-      'radial-gradient(ellipse at center, #C25E14 0%, #8E2512 30%, #5A0E0B 58%, #240504 100%)',
+      'linear-gradient(180deg, rgba(0, 0, 0, 0) 62%, rgba(214, 178, 94, 0.05) 86%, rgba(0, 0, 0, 0.35) 100%)',
   },
   passThrough: { pointerEvents: 'none' },
+  // Noyer incrusté d'un filet de laiton, comme le plateau de la table de jeu.
   ring: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#E2A72E',
-    experimental_backgroundImage:
-      'linear-gradient(160deg, #F8D873 0%, #E2A72E 30%, #C9861A 55%, #E9B23A 80%, #F6CF5E 100%)',
+    backgroundColor: gameTheme.rim.base,
+    experimental_backgroundImage: gameTheme.rim.wood,
+    borderWidth: 1.5,
+    borderColor: gameTheme.brass.line,
   },
-  ringBright: {
-    backgroundColor: '#F09A1C',
-    experimental_backgroundImage:
-      'linear-gradient(160deg, #F7C04A 0%, #F09A1C 35%, #E07E10 60%, #F5AE2E 100%)',
-  },
+  ringBright: { borderColor: gameTheme.brass.main },
   felt: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#0E3B22',
-    experimental_backgroundImage:
-      'radial-gradient(circle at 50% 35%, #22703F 0%, #145030 35%, #0B3A1F 65%, #072A15 100%)',
-    boxShadow: 'inset 0 0 22px 4px rgba(0, 0, 0, 0.55)',
+    backgroundColor: gameTheme.felt.base,
+    experimental_backgroundImage: gameTheme.felt.surface,
+    borderWidth: 1,
+    borderColor: gameTheme.brass.hairline,
+    boxShadow: `inset 0 0 22px 4px ${gameTheme.felt.shade}`,
   },
   feltBright: {
-    backgroundColor: '#3C9426',
     experimental_backgroundImage:
-      'radial-gradient(circle at 50% 45%, #5BB338 0%, #45A02C 40%, #2F8020 75%, #1F6016 100%)',
-    boxShadow: 'inset 0 0 26px 6px rgba(0, 40, 0, 0.55)',
+      'radial-gradient(circle at 50% 34%, #33A274 0%, #23805A 36%, #16613F 70%, #0C452C 100%)',
   },
-  feltLine: { borderWidth: 1, borderColor: 'rgba(0, 0, 0, 0.28)' },
-  emblem: { alignItems: 'center', justifyContent: 'center', borderColor: 'rgba(20, 70, 10, 0.5)' },
-  emblemLetter: { color: 'rgba(20, 70, 10, 0.5)', includeFontPadding: false },
+  feltLine: { borderWidth: 1, borderColor: gameTheme.brass.faint },
+  emblem: { alignItems: 'center', justifyContent: 'center', borderColor: gameTheme.brass.hairline },
+  emblemLetter: { color: 'rgba(214, 178, 94, 0.32)', includeFontPadding: false },
   card: {
     position: 'absolute',
-    borderColor: tablePalette.goldDeep,
-    backgroundColor: '#A9572A',
-    experimental_backgroundImage: 'linear-gradient(160deg, #C27237 0%, #A2532A 45%, #7E3A1C 100%)',
-    boxShadow: '0 6px 14px rgba(0, 0, 0, 0.5)',
+    borderColor: gameTheme.brass.deep,
+    backgroundColor: gameTheme.lacquer.solid,
+    experimental_backgroundImage: 'linear-gradient(160deg, #1D2C27 0%, #0E1815 50%, #060B09 100%)',
+    boxShadow: gameTheme.shadow.panel,
   },
   cardFrame: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderColor: 'rgba(232, 170, 60, 0.75)',
+    borderColor: gameTheme.brass.line,
   },
   diamond: {
     position: 'absolute',
-    backgroundColor: tablePalette.goldDeep,
+    backgroundColor: gameTheme.brass.main,
     transform: [{ rotate: '45deg' }],
   },
   medallion: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#6E3218',
-    borderColor: tablePalette.goldDeep,
+    backgroundColor: '#0A1210',
+    borderColor: gameTheme.brass.main,
   },
-  cardLetter: { color: tablePalette.gold, fontWeight: '700', includeFontPadding: false },
+  cardLetter: { color: gameTheme.brass.bright, fontWeight: '700', includeFontPadding: false },
   button: {
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    backgroundColor: tablePalette.teal,
-    experimental_backgroundImage: 'linear-gradient(180deg, #2DB3B1 0%, #1C9396 55%, #17797F 100%)',
-    boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
+    borderWidth: 1,
+    borderColor: salon.brass.border,
+    backgroundColor: salon.brass.fill,
+    experimental_backgroundImage: salon.brass.gradient,
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 244, 205, 0.55)',
   },
-  buttonPressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
-  inactive: { opacity: 0.6 },
-  buttonText: {
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-    textShadowColor: 'rgba(0, 0, 0, 0.35)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
+  buttonPressed: { opacity: 0.88, transform: [{ scale: 0.98 }] },
+  inactive: { opacity: 0.5 },
+  buttonText: { color: salon.ink, letterSpacing: 0.8 },
 });

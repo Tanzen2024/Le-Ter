@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
-import { colors } from '../../constants/theme';
+import { EmptyState, SectionTitle } from '../../components/ui/SalonParts';
+import { colors, gameTheme, salon } from '../../constants/theme';
 import { usePullToRefresh } from '../../hooks/use-pull-to-refresh';
 import { ApiError } from '../../lib/api-client';
 import type {
@@ -114,7 +115,6 @@ function HistoryList() {
   const { data, isPending, isError, refetch, hasNextPage, fetchNextPage } = query;
   const pull = usePullToRefresh(refetch);
   const items = data?.pages.flatMap((p) => p.tournaments) ?? [];
-  const text = [styles.text, fontOf(fonts.button), { fontSize: m.bodySize }];
 
   if (isPending) return <Loading />;
   if (isError && items.length === 0) {
@@ -137,18 +137,12 @@ function HistoryList() {
         />
       }
       ListHeaderComponent={
-        <Text
-          accessibilityRole="header"
-          style={[styles.section, fontOf(fonts.button), { fontSize: m.smallSize }]}
-        >
+        <SectionTitle size={m.smallSize} fontFamily={fonts.button}>
           {t.results.title}
-        </Text>
+        </SectionTitle>
       }
       ListEmptyComponent={
-        <View style={[styles.box, { padding: m.gap * 1.5 }]}>
-          <Text style={{ fontSize: Math.round(m.bodySize * 1.8) }}>🏆</Text>
-          <Text style={text}>{t.results.empty}</Text>
-        </View>
+        <EmptyState glyph="🏆" title={t.results.empty} size={m.bodySize} fontFamily={fonts.button} />
       }
       ListFooterComponent={
         hasNextPage ? (
@@ -641,80 +635,71 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 16,
   },
-  text: { color: tablePalette.cream, textAlign: 'center' },
-  section: {
-    color: tablePalette.gold,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    opacity: 0.9,
-  },
-  box: {
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.22)',
-    backgroundColor: 'rgba(8, 30, 18, 0.7)',
-  },
+  text: { color: salon.textSoft, textAlign: 'center' },
   card: {
-    borderRadius: 14,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.35)',
-    backgroundColor: 'rgba(8, 30, 18, 0.88)',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.45)',
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: gameTheme.shadow.plate,
   },
   pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  date: { flexShrink: 1, color: tablePalette.gold, letterSpacing: 0.5 },
-  rankBadge: { marginLeft: 'auto', color: tablePalette.cream },
-  meta: { color: tablePalette.cream, opacity: 0.92 },
+  date: { flexShrink: 1, color: salon.text, letterSpacing: 0.5 },
+  rankBadge: { marginLeft: 'auto', color: salon.brass.text },
+  meta: { color: salon.textSoft },
   titleBlock: { alignItems: 'center', gap: 2 },
   mine: {
-    borderRadius: 12,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: tablePalette.gold,
-    backgroundColor: 'rgba(23, 128, 110, 0.28)',
+    borderColor: gameTheme.brass.main,
+    backgroundColor: 'rgba(214, 178, 94, 0.07)',
+    boxShadow: 'inset 0 1px 0 rgba(246, 239, 223, 0.06)',
   },
-  mineTitle: { color: tablePalette.gold },
+  mineTitle: { color: salon.brass.text },
   facts: { flexDirection: 'row', flexWrap: 'wrap' },
   fact: {
-    borderRadius: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.22)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
     alignItems: 'center',
   },
-  factLabel: { color: tablePalette.cream, opacity: 0.72, textAlign: 'center' },
-  factValue: { color: tablePalette.cream, textAlign: 'center' },
+  factLabel: { color: salon.textFaint, textAlign: 'center' },
+  factValue: { color: salon.text, textAlign: 'center', fontVariant: ['tabular-nums'] },
   factGain: { backgroundColor: '#D4F7DC', borderWidth: 1, borderColor: '#7FD99A' },
   factGainLabel: { color: '#1B5E34', opacity: 1 },
   factGainValue: { color: '#14532D', fontWeight: '700' },
   tableHead: {
     flexDirection: 'row',
     // Opaque : les lignes défilent SOUS l'en-tête épinglé.
-    backgroundColor: 'rgba(42, 7, 5, 0.96)',
+    backgroundColor: '#0B1411',
     alignItems: 'center',
     gap: 8,
     paddingVertical: 4,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(242, 196, 81, 0.35)',
+    borderBottomColor: gameTheme.brass.line,
   },
-  headCell: { color: tablePalette.gold, opacity: 0.85 },
+  headCell: { color: salon.brass.text, letterSpacing: 0.4 },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(247, 241, 225, 0.15)',
+    borderBottomColor: salon.surface.wellBorder,
   },
-  cell: { color: tablePalette.cream },
+  cell: { color: salon.text, fontVariant: ['tabular-nums'] },
   playerCell: { flexDirection: 'row', alignItems: 'center' },
   playerName: { flex: 0, flexShrink: 1 },
   suffix: { flex: 0, flexShrink: 0 },
   medal: { fontSize: 18 },
-  rewardedRow: { backgroundColor: 'rgba(242, 196, 81, 0.08)' },
+  rewardedRow: { backgroundColor: 'rgba(214, 178, 94, 0.07)' },
+  // Ma ligne : repère jade du joueur connecté (comme à la table), jamais l'or du gagnant.
   meRow: {
-    backgroundColor: 'rgba(31, 122, 76, 0.55)',
+    backgroundColor: 'rgba(67, 196, 158, 0.16)',
     borderLeftWidth: 3,
-    borderLeftColor: tablePalette.gold,
+    borderLeftColor: gameTheme.self,
   },
-  meText: { color: '#FFFFFF', fontWeight: '700' },
+  meText: { color: salon.text, fontWeight: '700' },
 });

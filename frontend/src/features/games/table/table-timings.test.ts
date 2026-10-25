@@ -10,7 +10,7 @@ describe('durées de la table', () => {
   it('durées d’animation : halo du joueur actif 5 s (visuel seul), autres inchangées', () => {
     expect(TURN_SIGNAL_MS).toBe(5_000);
     expect(DEAL_STEP_MS).toBe(420);
-    // Cartes d'un tour rangées 2 s après la dernière carte du tour.
-    expect(TRICK_CLEAR_DELAY_MS).toBe(2_000);
+    // Cartes d'un tour rangées 1 s après la dernière carte du tour (D-151, 2 s auparavant).
+    expect(TRICK_CLEAR_DELAY_MS).toBe(1_000);
   });
 });

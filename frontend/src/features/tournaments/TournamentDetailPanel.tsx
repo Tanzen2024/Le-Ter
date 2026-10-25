@@ -15,6 +15,8 @@ import {
 
 import { fontOf, PillButton, tablePalette, useTableFonts } from '../../components/table/TableDecor';
 import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
+import { StatusBadge } from '../../components/ui/SalonParts';
+import { gameTheme, salon, type SalonTone } from '../../constants/theme';
 import { ApiError, userErrorMessage } from '../../lib/api-client';
 import type { TournamentView } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -38,6 +40,7 @@ import {
   hasResults,
   isFull,
   remainingBeforeStartMs,
+  type TournamentStatusKey,
   rewardMedal,
   rewardedRanks,
   tournamentStatusKey,
@@ -864,6 +867,8 @@ function TournamentNotices({ textStyle }: { textStyle: StyleProp<TextStyle> }) {
         n.type !== 'MODERATION_WARNING' &&
         // Réclamations (D-114) : bandeau dédié à l'accueil (ComplaintNotice).
         (n.type as string) !== 'COMPLAINT_UPDATE' &&
+        // Parrainage (D-161) : bandeau dédié à l'accueil (ReferralNotice).
+        (n.type as string) !== 'REFERRAL_REWARD_CREDITED' &&
         // Remerciement de fin de tournoi (D-117) : message dédié (TournamentThanksNotice).
         n.type !== 'TOURNAMENT_THANK_YOU',
     )
@@ -927,25 +932,33 @@ export function StatusChip({
   const t = useTournamentMessages();
   const key = tournamentStatusKey(tournament);
   return (
-    <View
+    <StatusBadge
       testID="tournament-status"
-      style={[
-        styles.chip,
-        (key === 'IN_PROGRESS' || key === 'OPEN' || key === 'PRE_REGISTRATION') && styles.chipLive,
-        key === 'CANCELLED' && styles.chipMuted,
-      ]}
-    >
-      <Text
-        numberOfLines={1}
-        adjustsFontSizeToFit={fit}
-        minimumFontScale={fit ? 0.6 : undefined}
-        style={[styles.chipText, fontOf(fontFamily), { fontSize: size - 1 }]}
-      >
-        {t.status[key]}
-      </Text>
-    </View>
+      label={t.status[key]}
+      tone={STATUS_TONE[key]}
+      live={key === 'IN_PROGRESS'}
+      size={size - 1}
+      fontFamily={fontFamily}
+      fit={fit}
+    />
   );
 }
+
+/**
+ * Ton de chaque statut RÉEL (présentation seule) : laiton pour ce sur quoi le joueur peut agir,
+ * jade pour ce qui se joue, bleu pour les transitions, neutre pour le reste, rouge pour l'annulé.
+ */
+const STATUS_TONE: Record<TournamentStatusKey, SalonTone> = {
+  PRE_REGISTRATION: 'attention',
+  OPEN: 'attention',
+  UPCOMING: 'neutral',
+  CLOSED: 'neutral',
+  STARTING: 'info',
+  IN_PROGRESS: 'positive',
+  CLOSING: 'info',
+  COMPLETED: 'neutral',
+  CANCELLED: 'critical',
+};
 
 const styles = StyleSheet.create({
   summary: { alignItems: 'center' },
@@ -954,10 +967,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     borderRadius: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
   },
-  factLabel: { color: tablePalette.cream, opacity: 0.72, textAlign: 'center' },
-  factValue: { color: tablePalette.cream, textAlign: 'center' },
+  factLabel: { color: salon.textFaint, textAlign: 'center', letterSpacing: 0.3 },
+  factValue: { color: salon.text, textAlign: 'center', fontVariant: ['tabular-nums'] },
   /** Filet discret : sépare MON inscription des caractéristiques du tournoi. */
   status: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -967,27 +982,19 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     maxWidth: 560,
     borderRadius: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.18)',
+    borderWidth: 1,
+    borderColor: salon.status.info.border,
+    backgroundColor: salon.status.info.fill,
   },
   reservationText: {
-    color: tablePalette.cream,
-    opacity: 0.88,
+    color: salon.textSoft,
     textAlign: 'center',
   },
   centerText: { textAlign: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: '100%' },
-  date: { flexShrink: 1, color: tablePalette.gold, letterSpacing: 0.5 },
-  meta: { color: tablePalette.cream, opacity: 0.92, textAlign: 'center' },
-  chip: {
-    paddingHorizontal: 8,
-    paddingVertical: 1,
-    borderRadius: 999,
-    backgroundColor: 'rgba(247, 241, 225, 0.12)',
-  },
-  chipLive: { backgroundColor: 'rgba(31, 122, 76, 0.75)' },
-  chipMuted: { backgroundColor: 'rgba(212, 42, 51, 0.35)' },
-  chipText: { color: tablePalette.cream },
-  detailText: { color: tablePalette.cream, textAlign: 'center' },
+  date: { flexShrink: 1, color: salon.text, letterSpacing: 0.5 },
+  meta: { color: salon.textSoft, textAlign: 'center' },
+  detailText: { color: salon.text, textAlign: 'center' },
   error: { color: tablePalette.error, textAlign: 'center' },
   fullNotice: {
     gap: 4,
@@ -995,10 +1002,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.45)',
-    backgroundColor: 'rgba(242, 196, 81, 0.10)',
+    borderColor: salon.status.attention.border,
+    backgroundColor: salon.status.attention.fill,
   },
-  fullTitle: { color: tablePalette.gold, textAlign: 'center' },
+  fullTitle: { color: salon.status.attention.text, textAlign: 'center' },
   linkButton: {
     alignSelf: 'center',
     paddingVertical: 6,
@@ -1006,7 +1013,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
   },
-  link: { color: tablePalette.gold, textDecorationLine: 'underline' },
+  link: { color: salon.brass.text, textDecorationLine: 'underline' },
   registered: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1014,16 +1021,19 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(31, 156, 156, 0.55)',
-    backgroundColor: 'rgba(23, 128, 110, 0.28)',
+    borderColor: salon.status.positive.border,
+    backgroundColor: salon.status.positive.fill,
   },
+  // Inscription CONFIRMÉE par le serveur : jade (jamais le laiton d'un bouton).
   registeredIcon: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: tablePalette.jade,
+    backgroundColor: salon.emerald.fill,
+    borderWidth: 1,
+    borderColor: salon.status.positive.border,
   },
-  registeredCheck: { color: tablePalette.gold, fontWeight: '700' },
-  registeredText: { flexShrink: 1, color: tablePalette.cream },
+  registeredCheck: { color: salon.status.positive.text, fontWeight: '700' },
+  registeredText: { flexShrink: 1, color: salon.text },
   backdrop: {
     flex: 1,
     alignItems: 'center',
@@ -1034,21 +1044,23 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 460,
     maxHeight: '100%',
-    borderRadius: 14,
+    borderRadius: salon.radius.panel,
     borderWidth: 1,
-    borderColor: tablePalette.panelBorder,
-    backgroundColor: '#1B0D09',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: salon.surface.shadow,
   },
   dialogTitle: {
-    color: tablePalette.gold,
+    color: salon.text,
     textAlign: 'center',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
-  dialogName: { color: tablePalette.cream, textAlign: 'center' },
-  dialogText: { color: tablePalette.cream },
+  dialogName: { color: salon.brass.text, textAlign: 'center' },
+  dialogText: { color: salon.text },
   dialogRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
-  dialogLabel: { opacity: 0.75 },
-  dialogValue: { fontWeight: '700' },
+  dialogLabel: { color: salon.textSoft },
+  dialogValue: { fontWeight: '700', fontVariant: ['tabular-nums'] },
   dialogActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -1058,11 +1070,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: tablePalette.panelBorder,
+    borderColor: gameTheme.brass.line,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dialogCancelText: { color: tablePalette.cream },
+  dialogCancelText: { color: salon.textSoft },
   dialogConfirm: { flexGrow: 1, flexShrink: 1, maxWidth: 260 },
   pressed: { opacity: 0.75 },
   inactive: { opacity: 0.5 },
@@ -1081,11 +1093,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.55)',
-    backgroundColor: 'rgba(31, 122, 76, 0.35)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(20, 101, 77, 0.35)',
+    boxShadow: '0 0 18px rgba(67, 196, 158, 0.25)',
   },
   matchTitle: {
-    color: tablePalette.gold,
+    color: salon.text,
     textAlign: 'center',
     letterSpacing: 0.5,
   },

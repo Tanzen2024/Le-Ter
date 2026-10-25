@@ -130,7 +130,7 @@ const FINISHED = view(
   },
 );
 
-const center = jest.fn((_presenting: boolean): React.ReactNode => null);
+const center = jest.fn((_presenting: boolean, _slot?: unknown): React.ReactNode => null);
 const client = new QueryClient();
 const table = (game: GameView) => (
   <QueryClientProvider client={client}>
@@ -334,13 +334,13 @@ describe('manche complète, sans victoire immédiate', () => {
 
     // Étape 13 — panneau de fin (Continuer / Sortir), la table reste lisible derrière.
     await wait(GARAM_WINNER_HOLD_MS);
-    expect(center).toHaveBeenLastCalledWith(false);
+    expect(center).toHaveBeenLastCalledWith(false, expect.objectContaining({ width: expect.any(Number) }));
     expect(screen.getByTestId('garam-total-b', { includeHiddenElements: true })).toBeTruthy();
   });
 
   it('reconnexion sur une manche terminée : état final d’emblée, aucune animation rejouée', async () => {
     await render(table(FINISHED));
-    expect(center).toHaveBeenLastCalledWith(false);
+    expect(center).toHaveBeenLastCalledWith(false, expect.objectContaining({ width: expect.any(Number) }));
     expect(label('Bob : cartes dévoilées, 0 tirée du terre')).toBeTruthy();
     expect(label('Mes cartes : 2 en main, 1 tirée du terre')).toBeTruthy();
     expect(screen.queryByTestId('garam-draw-flight', { includeHiddenElements: true })).toBeNull();
@@ -513,7 +513,7 @@ describe('égalité et tour suivant', () => {
     expect(screen.getByTestId('garam-total-b', { includeHiddenElements: true })).toHaveTextContent('Total 21');
     expect(center).toHaveBeenLastCalledWith(true);
     await wait(GARAM_TIE_HOLD_MS);
-    expect(center).toHaveBeenLastCalledWith(false);
+    expect(center).toHaveBeenLastCalledWith(false, expect.objectContaining({ width: expect.any(Number) }));
   });
 
   it('manche suivante : la table repart de zéro (aucune carte de la manche précédente)', async () => {

@@ -1,8 +1,10 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { EmptyState } from '../../components/ui/SalonParts';
+import { gameTheme, salon, type SalonTone } from '../../constants/theme';
 import { DatePickerField } from '../../components/ui/DatePickerField';
 import { TimePickerField } from '../../components/ui/TimePickerField';
 import { ApiError, userErrorMessage } from '../../lib/api-client';
@@ -47,35 +49,67 @@ type Tab = 'new' | 'mine';
  * Proposer un tournoi (route /tournament/propose, D-054) : formulaire et suivi de mes
  * propositions. Le serveur décide de tout (limites, approbation, statut) ; l'écran ne fait
  * que mettre en forme la saisie et afficher ses réponses.
+ *
+ * Tenu sans défiler en paysage, clavier fermé : champs regroupés en lignes compactes, et
+ * « Enregistrer le brouillon » / « Proposer » dans la zone d'actions du panneau, hors du
+ * défilement, toujours visible (même clavier ouvert). La saisie est conservée en passant
+ * d'un onglet à l'autre.
  */
 export function ProposeTournamentScreen() {
   const back = () => (router.canGoBack() ? router.back() : router.replace('/tournament'));
   const [tab, setTab] = useState<Tab>('new');
   const m = useLobbyMetrics();
+  const form = useProposalForm({ onSaved: () => setTab('mine') });
   return (
     <LobbyShell onBack={back}>
-      <LobbyPanel title="Proposer un tournoi" onClose={back} width={Math.max(560, m.width * 0.72)}>
-        <View style={[styles.tabs, { marginBottom: m.gap }]}>
+      <LobbyPanel
+        title="Proposer un tournoi"
+        onClose={back}
+        width={Math.max(560, m.width * 0.72)}
+        footer={tab === 'new' ? form.actions : undefined}
+      >
+        <View style={[styles.tabs, { marginBottom: m.gap * 0.5 }]}>
           <ChoiceGroup>
             <PanelButton
+              compact
               title="Nouvelle proposition"
               selected={tab === 'new'}
               onPress={() => setTab('new')}
             />
             <PanelButton
+              compact
               title="Mes propositions"
               selected={tab === 'mine'}
               onPress={() => setTab('mine')}
             />
           </ChoiceGroup>
         </View>
-        {tab === 'new' ? <ProposalForm onSaved={() => setTab('mine')} /> : <MyProposals />}
+        {tab === 'new' ? form.fields : <MyProposals />}
       </LobbyPanel>
     </LobbyShell>
   );
 }
 
+/** Formulaire autonome : les champs puis la zone d'actions (tests, autres conteneurs). */
 export function ProposalForm({ onSaved }: { onSaved: () => void }) {
+  const m = useLobbyMetrics();
+  const form = useProposalForm({ onSaved });
+  return (
+    <View style={{ gap: m.gap * 0.6 }}>
+      {form.fields}
+      {form.actions}
+    </View>
+  );
+}
+
+/**
+ * Formulaire de proposition : renvoie les champs et, séparément, les actions, pour que
+ * l'écran pose ces dernières dans la zone d'actions de son panneau.
+ */
+export function useProposalForm({ onSaved }: { onSaved: () => void }): {
+  fields: ReactNode;
+  actions: ReactNode;
+} {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const t = useTournamentMessages();
@@ -122,6 +156,8 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
   };
 
   const send = (submit: boolean) => {
+    // Une seule demande à la fois : un second appui pendant l'envoi est sans effet.
+    if (propose.isPending) return;
     const parsed = toTournamentPayload(values, undefined, rules);
     if (!parsed.ok) {
       setErrors(parsed.errors);
@@ -144,110 +180,128 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
     );
   };
 
+  // Compact : libellés au-dessus de champs un peu moins hauts, petits espacements ; les
+  // espaces s'élargissent seulement sur les écrans hauts (tablette).
+  const roomy = m.height >= 600;
+  const inputHeight = roomy ? Math.max(40, m.controlHeight * 0.85) : Math.max(34, m.controlHeight * 0.8);
+  const rowGap = roomy ? m.gap * 0.8 : m.gap * 0.45;
   const label = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
+  const errorText = [styles.error, { fontSize: m.smallSize }];
+  const fieldError = (message: string | undefined) =>
+    message ? (
+      <Text style={errorText} numberOfLines={2}>
+        {message}
+      </Text>
+    ) : null;
   const field = (
     key: TournamentTextField,
     title: string,
     props: TextInputProps = {},
   ) => (
     <View style={styles.field}>
-      <Text style={label}>{title}</Text>
+      {/* Libellé entier, réduit sur une ligne s'il le faut, jamais abrégé. */}
+      <Text style={label} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        {title}
+      </Text>
       <PanelInput
         accessibilityLabel={title}
         value={values[key]}
         onChangeText={set(key)}
         invalid={Boolean(errors[key])}
+        height={inputHeight}
         {...props}
       />
-      {errors[key] ? (
-        <Text style={[styles.error, { fontSize: m.smallSize }]}>{errors[key]}</Text>
-      ) : null}
+      {fieldError(errors[key])}
     </View>
   );
 
-  // Sélecteurs Date et Heure : même apparence que les champs texte du panneau.
+  // Sélecteurs Date et Heure : même apparence que les champs texte du panneau ; calendrier et
+  // horloge s'ouvrent accrochés à leur champ, sur l'écran courant (D-164).
   const pickerStyle = (key: 'date' | 'startTime') => [
     styles.input,
-    { height: Math.max(40, m.controlHeight * 0.85) },
+    { height: inputHeight },
     Boolean(errors[key]) && styles.inputInvalid,
   ];
   const pickerText = [styles.pickerText, { fontSize: m.smallSize }];
-  const fieldError = (key: 'date' | 'startTime') =>
-    errors[key] ? (
-      <Text style={[styles.error, { fontSize: m.smallSize }]}>{errors[key]}</Text>
-    ) : null;
 
-  return (
-    <InnerFrame style={{ gap: m.gap * 0.7 }}>
-      <View style={styles.gameField}>
-        <Text style={label}>Jeu du tournoi *</Text>
-        <ChoiceGroup>
-          {TOURNAMENT_GAMES.map((game) => (
-            <PanelButton
-              key={game.value}
-              title={game.label}
-              selected={values.gameType === game.value}
-              onPress={() => setGame(game.value)}
-            />
-          ))}
-        </ChoiceGroup>
-        {errors.gameType ? (
-          <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
-            {errors.gameType}
-          </Text>
-        ) : null}
-      </View>
-      {values.gameType === 'GARAM' ? (
-        <View style={styles.gameField}>
-          <Text style={label}>Variante *</Text>
+  const fields = (
+    <View style={{ gap: rowGap }}>
+      {/* Jeu (et variante GARAM TIA) : libellé devant le choix, sur une seule ligne. */}
+      <View style={[styles.row, styles.wrap, { columnGap: m.gap * 1.2, rowGap }]}>
+        <View style={[styles.inline, { gap: m.gap * 0.5 }]}>
+          <Text style={label}>Jeu du tournoi *</Text>
           <ChoiceGroup>
-            {GARAM_VARIANTS.map((variant) => (
+            {TOURNAMENT_GAMES.map((game) => (
               <PanelButton
-                key={variant}
-                title={garamVariantLabel(variant)}
-                selected={values.garamVariant === variant}
-                onPress={() => setVariant(variant)}
+                key={game.value}
+                compact
+                title={game.label}
+                selected={values.gameType === game.value}
+                onPress={() => setGame(game.value)}
               />
             ))}
           </ChoiceGroup>
-          {errors.garamVariant ? (
-            <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
-              {errors.garamVariant}
-            </Text>
-          ) : null}
         </View>
+        {values.gameType === 'GARAM' ? (
+          <View style={[styles.inline, { gap: m.gap * 0.5 }]}>
+            <Text style={label}>Variante *</Text>
+            <ChoiceGroup>
+              {GARAM_VARIANTS.map((variant) => (
+                <PanelButton
+                  key={variant}
+                  compact
+                  title={garamVariantLabel(variant)}
+                  selected={values.garamVariant === variant}
+                  onPress={() => setVariant(variant)}
+                />
+              ))}
+            </ChoiceGroup>
+          </View>
+        ) : null}
+      </View>
+      {errors.gameType || errors.garamVariant ? (
+        <Text accessibilityRole="alert" style={errorText}>
+          {errors.gameType ?? errors.garamVariant}
+        </Text>
       ) : null}
-      <View style={[styles.row, { gap: m.gap }]}>
+
+      <View style={[styles.row, styles.top, { gap: m.gap }]}>
         <View style={styles.field}>
-          <Text style={label}>{t.form.date}</Text>
+          <Text style={label} numberOfLines={1}>
+            {t.form.date}
+          </Text>
           <DatePickerField
             label={t.form.date}
             value={values.date}
             onChange={set('date')}
             minDate={todayOf()}
+            presentation="popover"
             invalid={Boolean(errors.date)}
             style={pickerStyle('date')}
             textStyle={pickerText}
           />
-          {fieldError('date')}
+          {fieldError(errors.date)}
         </View>
         <View style={styles.field}>
-          <Text style={label}>{t.form.startTime}</Text>
+          <Text style={label} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+            {t.form.startTime}
+          </Text>
           <TimePickerField
             label={t.form.startTime}
             value={values.startTime}
             onChange={set('startTime')}
+            presentation="popover"
             invalid={Boolean(errors.startTime)}
             style={pickerStyle('startTime')}
             textStyle={pickerText}
           />
-          {fieldError('startTime')}
+          {fieldError(errors.startTime)}
         </View>
         {field('durationMinutes', 'Durée (minutes)', {
           keyboardType: 'number-pad',
         })}
       </View>
-      <View style={[styles.row, { gap: m.gap }]}>
+      <View style={[styles.row, styles.top, { gap: m.gap }]}>
         {field('entryFee', 'Participation (FCFA)', {
           keyboardType: 'number-pad',
         })}
@@ -260,26 +314,27 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
         })}
       </View>
 
-      <View style={styles.field}>
-        <Text style={label}>{`Rangs récompensés : ${values.shares.length}`}</Text>
-        <View style={[styles.row, { gap: m.gap * 0.5 }]}>
+      {/* Rangs récompensés : réglage et parts sur une même ligne (elle passe à la ligne si
+          les rangs sont nombreux), total à la fin. */}
+      <View style={{ gap: 2 }}>
+        <View style={[styles.row, styles.wrap, { gap: m.gap * 0.5 }]}>
+          <Text style={label}>{`Rangs récompensés : ${values.shares.length}`}</Text>
           <PanelButton
+            compact
             title="−"
             accessibilityLabel="Un rang récompensé de moins"
             disabled={values.shares.length <= 1}
             onPress={() => setRanks(values.shares.length - 1)}
           />
           <PanelButton
+            compact
             title="+"
             accessibilityLabel="Un rang récompensé de plus"
             disabled={values.shares.length >= MAX_RANKS}
             onPress={() => setRanks(values.shares.length + 1)}
           />
-          <Text style={label}>{`Total : ${sharesTotal(values.shares)} %`}</Text>
-        </View>
-        <View style={[styles.row, styles.wrap, { gap: m.gap * 0.5 }]}>
           {values.shares.map((share, index) => (
-            <View key={index} style={styles.share}>
+            <View key={index} style={[styles.inline, styles.share, { gap: 4 }]}>
               <Text style={label}>{`${index + 1}${index === 0 ? 'er' : 'e'} (%)`}</Text>
               <PanelInput
                 accessibilityLabel={`Part du rang ${index + 1} (%)`}
@@ -287,34 +342,51 @@ export function ProposalForm({ onSaved }: { onSaved: () => void }) {
                 onChangeText={setShare(index)}
                 keyboardType="decimal-pad"
                 invalid={Boolean(errors.shares)}
+                height={inputHeight}
+                style={styles.shareInput}
               />
             </View>
           ))}
+          <Text style={label}>{`Total : ${sharesTotal(values.shares)} %`}</Text>
         </View>
-        {errors.shares ? (
-          <Text style={[styles.error, { fontSize: m.smallSize }]}>{errors.shares}</Text>
-        ) : null}
+        {fieldError(errors.shares)}
       </View>
 
       <Text style={[styles.hint, fontOf(fonts.button), { fontSize: m.smallSize }]}>
         Votre proposition sera vérifiée par l’administration avant publication. Les inscrits
         réservent la participation ; elle n’est débitée qu’au démarrage du tournoi.
       </Text>
+    </View>
+  );
+
+  // Zone d'actions : « Proposer », action principale (émeraude cerclée de laiton) ;
+  // « Enregistrer le brouillon », secondaire. Erreur générale juste au-dessus des boutons.
+  const actions = (
+    <View style={{ gap: m.gap * 0.4 }}>
       {generalError ? (
-        <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
+        <Text accessibilityRole="alert" numberOfLines={2} style={errorText}>
           {generalError}
         </Text>
       ) : null}
       <View style={[styles.row, styles.actions, { gap: m.gap }]}>
         <PanelButton
           title="Enregistrer le brouillon"
+          tone="quiet"
           onPress={() => send(false)}
           disabled={propose.isPending}
+          loading={propose.isPending && propose.variables?.submit === false}
         />
-        <PanelButton title="Proposer" onPress={() => send(true)} loading={propose.isPending} />
+        <PanelButton
+          title="Proposer"
+          tone="primary"
+          onPress={() => send(true)}
+          disabled={propose.isPending}
+          loading={propose.isPending && propose.variables?.submit !== false}
+        />
       </View>
-    </InnerFrame>
+    </View>
   );
+  return { fields, actions };
 }
 
 export function MyProposals() {
@@ -327,7 +399,14 @@ export function MyProposals() {
   if (isPending) return <Text style={text}>Chargement…</Text>;
   if (error) return <Text style={[styles.error, { fontSize: m.smallSize }]}>{userErrorMessage(error)}</Text>;
   if (!data?.length) {
-    return <Text style={text}>Vous n’avez encore proposé aucun tournoi.</Text>;
+    return (
+      <EmptyState
+        glyph="📝"
+        title="Vous n’avez encore proposé aucun tournoi."
+        size={m.smallSize}
+        fontFamily={fonts.button}
+      />
+    );
   }
   return (
     <View style={{ gap: m.gap * 0.6 }}>
@@ -412,16 +491,21 @@ function ProposalRow({
 }
 
 /** Champ sombre des panneaux (même apparence que « Partie privée »). */
-function PanelInput({ invalid, style, ...props }: TextInputProps & { invalid?: boolean }) {
+function PanelInput({
+  invalid,
+  height,
+  style,
+  ...props
+}: TextInputProps & { invalid?: boolean; height?: number }) {
   const m = useLobbyMetrics();
   return (
     <TextInput
-      placeholderTextColor="rgba(235, 235, 235, 0.6)"
+      placeholderTextColor={salon.textFaint}
       autoCorrect={false}
       aria-invalid={invalid}
       style={[
         styles.input,
-        { height: Math.max(40, m.controlHeight * 0.85), fontSize: m.smallSize },
+        { height: height ?? Math.max(40, m.controlHeight * 0.85), fontSize: m.smallSize },
         invalid && styles.inputInvalid,
         style,
       ]}
@@ -430,11 +514,17 @@ function PanelInput({ invalid, style, ...props }: TextInputProps & { invalid?: b
   );
 }
 
-const TONES: Record<ProposalTone, { backgroundColor: string }> = {
-  neutral: { backgroundColor: 'rgba(247, 241, 225, 0.16)' },
-  pending: { backgroundColor: '#8A6A12' },
-  success: { backgroundColor: tablePalette.jade },
-  danger: { backgroundColor: tablePalette.danger },
+/** Ton du statut RÉEL d'une proposition (présentation seule), mêmes couleurs que les badges. */
+const toneOf = (tone: SalonTone) => ({
+  color: salon.status[tone].text,
+  borderColor: salon.status[tone].border,
+  backgroundColor: salon.status[tone].fill,
+});
+const TONES: Record<ProposalTone, ReturnType<typeof toneOf>> = {
+  neutral: toneOf('neutral'),
+  pending: toneOf('attention'),
+  success: toneOf('positive'),
+  danger: toneOf('critical'),
 };
 
 const styles = StyleSheet.create({
@@ -442,32 +532,34 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center' },
   wrap: { flexWrap: 'wrap' },
   between: { justifyContent: 'space-between' },
+  top: { alignItems: 'flex-start' },
+  inline: { flexDirection: 'row', alignItems: 'center' },
   actions: { justifyContent: 'flex-end', flexWrap: 'wrap' },
-  field: { flex: 1, minWidth: 120, gap: 4 },
-  gameField: { alignItems: 'flex-start', gap: 4 },
-  share: { width: 72, gap: 2 },
-  label: { color: '#FFFFFF' },
-  hint: { color: tablePalette.cream, opacity: 0.85 },
-  name: { color: tablePalette.gold, flexShrink: 1 },
+  field: { flex: 1, minWidth: 0, gap: 2 },
+  share: { flexShrink: 0 },
+  shareInput: { width: 52, paddingHorizontal: 6, textAlign: 'center' },
+  label: { color: salon.textSoft },
+  hint: { color: salon.textFaint },
+  name: { color: salon.text, flexShrink: 1 },
   badge: {
-    color: '#FFFFFF',
-    paddingHorizontal: 8,
+    paddingHorizontal: 9,
     paddingVertical: 2,
     borderRadius: 999,
+    borderWidth: 1,
     overflow: 'hidden',
   },
   input: {
-    borderRadius: 7,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.35)',
-    backgroundColor: '#555555',
-    experimental_backgroundImage: 'linear-gradient(180deg, #666666 0%, #4A4A4A 100%)',
-    paddingHorizontal: 10,
+    borderColor: gameTheme.brass.hairline,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
+    boxShadow: 'inset 0 1px 3px rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 12,
     paddingVertical: 0,
-    color: '#FFFFFF',
+    color: salon.text,
     fontWeight: '600',
   },
   inputInvalid: { borderColor: tablePalette.error },
-  pickerText: { color: '#FFFFFF', fontWeight: '600' },
+  pickerText: { color: salon.text, fontWeight: '600' },
   error: { color: tablePalette.error },
 });

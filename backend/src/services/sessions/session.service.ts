@@ -40,6 +40,7 @@ import { determineFirstPlayer, nextDealer } from '../../domain/sessions/table-or
 import { garamRevealPresentationMs } from '../../domain/garam/garam-rules';
 import { DuplicateCreationKeyError } from '../../repositories/game.repository';
 import type {
+  JoinWrite,
   LeaveWrite,
   OpenTableSummary,
   SessionContext,
@@ -468,13 +469,15 @@ export class SessionService {
   }
 
   /**
-   * Rejoindre une session ouverte (sans effet si déjà présent) : premier siège vacant.
-   * Le joueur ne rejoint JAMAIS la partie en cours ; il attend la suivante.
-   */
-  /**
-   * Arriver dans une session. Partie privée protégée (D-039) : le mot de passe est vérifié
-   * pour tout joueur qui n'y est pas déjà présent (le hash est fixé à la création, une
-   * vérification avant le verrou suffit).
+   * Arriver dans une session (D-153) : premier siège vacant ET, si la table attend son
+   * démarrage, place dans sa partie, en UNE transaction : jamais un siège sans place dans la
+   * partie (le second appel du client, `POST /games/:id/join`, reste sans effet). Partie déjà
+   * en cours : le joueur attend la suivante (siège seul). Sans effet si déjà présent ; un
+   * joueur assis mais absent de la partie en attente (ancien état) y est placé.
+   *
+   * Avant le verrou : admission de la table, mot de passe (D-039, hash fixé à la création)
+   * et, pour la partie en attente, les mêmes contrôles que `joinGame` (participation, mise et
+   * solde, D-073). Un refus n'enregistre ni le siège ni la place.
    */
   async joinSession(
     sessionId: SessionId,
@@ -495,9 +498,70 @@ export class SessionService {
         throw new SessionPasswordInvalidError(sessionId);
       }
     }
-    return this.mutate(sessionId, 'JOIN_SESSION', playerId, meta, ({ session }, now) =>
-      joinSession(session, playerId, now),
+    const last = current ? await this.deps.sessions.findLastGame(sessionId) : null;
+    const waiting = last?.status === 'waiting' ? await this.deps.games.findGame(last.gameId) : null;
+    // Déjà assis à une autre table : la règle de session (D-034, ALREADY_IN_SESSION) refuse
+    // l'arrivée sous verrou, avant tout contrôle de la partie.
+    const elsewhere = (await this.deps.sessions.findActiveByPlayer(playerId)).some(
+      (s) => s.id !== sessionId,
     );
+    if (waiting && !elsewhere && !waiting.players.some((p) => p.playerId === playerId)) {
+      await this.deps.games.assertCanJoinWaitingGame(waiting, playerId);
+    }
+
+    const log = this.deps.logger.child({
+      sessionId,
+      playerId,
+      action: 'JOIN_SESSION',
+      requestId: meta.requestId,
+    });
+    const now = this.clock();
+    let refusal: unknown;
+    let gameEvents: GameEventDraft[] = [];
+    try {
+      const result = await this.deps.sessions.join(sessionId, (ctx): JoinWrite => {
+        // D'abord la ronde de décision (comme toute mutation) : enregistrée même si
+        // l'arrivée est ensuite refusée.
+        const synced = this.syncRound(ctx.session, ctx.lastGame, now);
+        try {
+          const done = joinSession(synced.session, playerId, now);
+          const write: JoinWrite = {
+            session: done.session,
+            events: [...synced.events, ...done.events],
+          };
+          const seat = done.session.players.find((p) => p.playerId === playerId && p.active)?.seat;
+          if (ctx.waitingGame && seat !== undefined) {
+            const built = this.deps.games.buildWaitingGameArrival(ctx.waitingGame, {
+              playerId,
+              tablePosition: seat,
+            });
+            if (built) {
+              gameEvents = built.events;
+              write.savedGame = { game: built.game, expectedVersion: ctx.waitingGame.version };
+            }
+          }
+          return write;
+        } catch (err) {
+          refusal = err;
+          gameEvents = [];
+          return synced;
+        }
+      });
+      this.afterCommit(result, playerId, log);
+      if (refusal) {
+        throw refusal;
+      }
+      if (result.savedGame) {
+        this.deps.games.announceWaitingGameArrival(result.savedGame.game, gameEvents, playerId);
+      }
+      if (result.events.length > 0) {
+        log.info('session command applied', { version: result.session.version });
+      }
+      return result.session;
+    } catch (err) {
+      this.logRejection(log, err);
+      throw err;
+    }
   }
 
   /**

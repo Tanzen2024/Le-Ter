@@ -21,6 +21,8 @@ import {
   WithdrawalAccountBlockedError,
   WithdrawalNotFoundError,
   WithdrawalNotificationRejectedError,
+  withdrawalOperatorOfPhone,
+  WithdrawalOperatorNotAllowedError,
   WithdrawalPhoneUnsupportedError,
   WithdrawalProviderUnavailableError,
   WithdrawalRefundRefusedError,
@@ -283,27 +285,35 @@ export class WithdrawalService {
         label: WITHDRAWAL_OPERATOR_LABELS[code],
       })),
       msisdn: user ? maskPhone(user.phone) : '',
-      msisdnSupported: user ? isSupportedWithdrawalPhone(user.phone) : false,
+      // Même règle que la demande : numéro +237 ET opérateur déduit autorisé au retrait.
+      msisdnSupported: user ? withdrawalOperatorOfPhone(user.phone).ok : false,
       limit: { ...limit, used, remaining, nextAvailableAt },
     };
   }
 
   /**
-   * Demande de retrait. Précondition : `tokens` et `operator` validés par le contrôleur
-   * (`parseWithdrawalInput`). Même Idempotency-Key : même retrait, aucune nouvelle écriture.
+   * Demande de retrait. Précondition : `tokens` validé par le contrôleur
+   * (`parseWithdrawalInput`). Destinataire : le numéro d'inscription du compte authentifié ;
+   * opérateur : DÉDUIT ici de ce numéro, jamais fourni par le client. Même Idempotency-Key :
+   * même retrait, aucune nouvelle écriture.
    */
   async request(
     userId: UserId,
-    input: { tokens: number; operator: WithdrawalOperator },
+    input: { tokens: number },
     idempotencyKey: string,
   ): Promise<WithdrawalResult> {
     const replayed = await this.replay(userId, input, idempotencyKey);
     if (replayed) return replayed;
-    // Toutes les conditions sont vérifiées AVANT toute écriture.
+    // Toutes les conditions sont vérifiées AVANT toute écriture (aucune réservation sinon).
     if (!this.available) throw new MobileMoneyUnavailableError();
     const user = await this.deps.users.findById(userId);
     if (!user || user.status !== 'active') throw new WithdrawalAccountBlockedError();
-    if (!isSupportedWithdrawalPhone(user.phone)) throw new WithdrawalPhoneUnsupportedError();
+    const resolved = withdrawalOperatorOfPhone(user.phone);
+    if (!resolved.ok) {
+      throw resolved.reason === 'OPERATOR_NOT_ALLOWED'
+        ? new WithdrawalOperatorNotAllowedError()
+        : new WithdrawalPhoneUnsupportedError();
+    }
 
     const now = this.clock();
     const withdrawal: Withdrawal = {
@@ -311,7 +321,7 @@ export class WithdrawalService {
       userId,
       walletTransactionId: randomUUID(),
       provider: 'cinetpay',
-      operator: input.operator,
+      operator: resolved.operator,
       msisdnMasked: maskPhone(user.phone),
       tokens: input.tokens,
       amount: amountForWithdrawal(input.tokens),
@@ -587,16 +597,19 @@ export class WithdrawalService {
 
   // --- Interne ---------------------------------------------------------------------------------
 
-  /** Même Idempotency-Key : même retrait ; autre opération ou autres paramètres : refus. */
+  /**
+   * Même Idempotency-Key : même retrait ; autre opération ou autre montant : refus. L'opérateur
+   * n'entre pas dans la comparaison : il est déduit par le serveur, jamais fourni par le client.
+   */
   private async replay(
     userId: UserId,
-    input: { tokens: number; operator: WithdrawalOperator },
+    input: { tokens: number },
     idempotencyKey: string,
   ): Promise<WithdrawalResult | undefined> {
     const transaction = await this.deps.wallets.findByIdempotencyKey(userId, idempotencyKey);
     if (!transaction) return undefined;
     const existing = await this.deps.withdrawals.findByIdempotencyKey(userId, idempotencyKey);
-    if (!existing || existing.tokens !== input.tokens || existing.operator !== input.operator) {
+    if (!existing || existing.tokens !== input.tokens) {
       throw new IdempotencyKeyReusedError();
     }
     return {

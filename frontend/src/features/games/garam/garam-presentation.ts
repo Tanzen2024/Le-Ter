@@ -72,12 +72,15 @@ export const GARAM_DRAW_BREATH_MS = 280;
  */
 export const GARAM_DRAW_START_PAUSE_MS = 1_000;
 /** Annonce « X prend le contrôle », une fois les cartes du tour classées. */
-export const GARAM_CONTROL_NOTICE_MS = 1_800;
+export const GARAM_CONTROL_NOTICE_MS = 1_200; // D-153 (1,8 s auparavant)
 
 // --- Géométrie du centre de la table (en diamètres de table, depuis le centre dessiné) ---
 
-/** Rang du terre : en haut de la table, au-dessus des cartes du tour. */
-export const GARAM_TERRE_Y = -0.29;
+/**
+ * Rang du terre : avancé vers le centre de la table (demande du propriétaire), juste au-dessus
+ * du centre ; la carte du joueur d'en face se pose entre lui et le terre.
+ */
+export const GARAM_TERRE_Y = -0.1;
 /**
  * Pas du rang du terre (part d'une largeur de carte) : de gauche à droite, la tête (1re carte
  * posée) au-dessus de la suivante, qui n'en cache que 6 % (le bord gauche) : la valeur et la
@@ -89,14 +92,16 @@ export const GARAM_TERRE_MAX_CARD = 0.11;
 /** Centre de la zone « cartes du tour », sous le terre. */
 export const GARAM_TRICK_Y = 0.07;
 /**
- * Place de la carte jouée par chaque siège, depuis le centre de la zone du tour : devant son
- * joueur, sans jamais toucher le terre ni la carte d'un autre.
+ * Place de la carte jouée par chaque siège, depuis le centre de la zone du tour : JUSTE DEVANT
+ * son joueur, près du bord de la table de son côté (en face : entre sa plaque et le terre),
+ * sans jamais toucher le terre ni la carte d'un autre.
  */
 export const GARAM_SPOT_OFFSET: Record<SeatSide, { x: number; y: number }> = {
-  bottom: { x: 0, y: 0.125 },
-  top: { x: 0, y: -0.11 },
-  left: { x: -0.17, y: 0.005 },
-  right: { x: 0.17, y: 0.005 },
+  // Ma carte : entre le terre et ma main, avec un espace net au-dessus de mes cartes non jouées.
+  bottom: { x: 0, y: 0.07 },
+  top: { x: 0, y: -0.38 },
+  left: { x: -0.27, y: 0.005 },
+  right: { x: 0.27, y: 0.005 },
 };
 
 export interface GaramCenterGeometry {
@@ -146,8 +151,10 @@ export function garamCenterGeometry(
     }),
     spot,
     spotRect,
+    // Cadre « cartes du tour » : sous le terre. La carte du joueur d'en face, posée devant lui
+    // au-dessus du terre, reste hors du cadre (sinon il engloberait le terre).
     trickRect: (w) => {
-      const rects = (['bottom', 'top', 'left', 'right'] as const).map((s) => spotRect(s, w));
+      const rects = (['bottom', 'left', 'right'] as const).map((s) => spotRect(s, w));
       const pad = w * 0.12;
       const left = Math.min(...rects.map((r) => r.left)) - pad;
       const top = Math.min(...rects.map((r) => r.top)) - pad;
@@ -287,9 +294,11 @@ export function pendingDraws(
     ...Object.keys(garam.drawn).filter((id) => !garam.drawOrder.includes(id)),
   ];
   return order.flatMap((playerId) =>
-    (garam.drawn[playerId] ?? [])
-      .slice(shown[playerId] ?? 0)
-      .map((cardId, i) => ({ playerId, cardId, index: (shown[playerId] ?? 0) + i })),
+    (garam.drawn[playerId] ?? []).slice(shown[playerId] ?? 0).map((cardId, i) => ({
+      playerId,
+      cardId,
+      index: (shown[playerId] ?? 0) + i,
+    })),
   );
 }
 
@@ -318,7 +327,12 @@ export function useGaramDrawFlights(
     open: enabled,
   }));
   if (state.gameId !== gameId) {
-    setState({ gameId, shown: drawnCounts(garam), flying: null, open: enabled });
+    setState({
+      gameId,
+      shown: drawnCounts(garam),
+      flying: null,
+      open: enabled,
+    });
   }
   const pending = pendingDraws(garam, state.shown);
   const next = pending[0];
@@ -397,7 +411,12 @@ export function garamRevealSchedule(
   tie: boolean,
 ): { at: number; stage: GaramRevealStage }[] {
   if (tie) {
-    const all = { revealed: [...order], scores: true, winner: true, done: false };
+    const all = {
+      revealed: [...order],
+      scores: true,
+      winner: true,
+      done: false,
+    };
     return [
       { at: 0, stage: all },
       { at: GARAM_TIE_HOLD_MS, stage: { ...all, done: true } },
@@ -405,13 +424,21 @@ export function garamRevealSchedule(
   }
   const steps = order.map((_, i) => ({
     at: GARAM_REVEAL_PAUSE_MS + i * GARAM_REVEAL_STEP_MS,
-    stage: { revealed: order.slice(0, i + 1), scores: false, winner: false, done: false },
+    stage: {
+      revealed: order.slice(0, i + 1),
+      scores: false,
+      winner: false,
+      done: false,
+    },
   }));
   const afterReveal = GARAM_REVEAL_PAUSE_MS + order.length * GARAM_REVEAL_STEP_MS;
   const all = [...order];
   return [
     ...steps,
-    { at: afterReveal, stage: { revealed: all, scores: true, winner: false, done: false } },
+    {
+      at: afterReveal,
+      stage: { revealed: all, scores: true, winner: false, done: false },
+    },
     {
       at: afterReveal + GARAM_SCORE_HOLD_MS,
       stage: { revealed: all, scores: true, winner: true, done: false },
@@ -423,7 +450,12 @@ export function garamRevealSchedule(
   ];
 }
 
-const NOTHING: GaramRevealStage = { revealed: [], scores: false, winner: false, done: false };
+const NOTHING: GaramRevealStage = {
+  revealed: [],
+  scores: false,
+  winner: false,
+  done: false,
+};
 
 /**
  * Présentation de fin d'une manche, lancée quand la table est prête (`ready` : dernier tour
@@ -460,4 +492,24 @@ export function useGaramReveal(game: GameView, ready: boolean): GaramRevealStage
   }, [finished, ready, orderKey, tie, game.gameId]);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   return finished ? state.stage : NOTHING;
+}
+
+/**
+ * Place libre du panneau de fin : entre les éléments des sièges (cartes dévoilées, totaux,
+ * plaques, cartes classées), pour qu'il ne masque jamais les cartes ni les scores des joueurs.
+ * Chaque côté borne le panneau : le bas des éléments du haut, le haut de ceux du bas, le bord
+ * droit de ceux de gauche, le bord gauche de ceux de droite (`gap` de marge). Sans élément d'un
+ * côté, le bord de `bounds`.
+ */
+export function freeSlotBetween(sides: Record<SeatSide, Rect[]>, bounds: Rect, gap: number): Rect {
+  const top = Math.max(bounds.top, ...sides.top.map((r) => r.top + r.height + gap));
+  const bottom = Math.min(bounds.top + bounds.height, ...sides.bottom.map((r) => r.top - gap));
+  const left = Math.max(bounds.left, ...sides.left.map((r) => r.left + r.width + gap));
+  const right = Math.min(bounds.left + bounds.width, ...sides.right.map((r) => r.left - gap));
+  return {
+    left,
+    top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
 }

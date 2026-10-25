@@ -5,6 +5,7 @@ import {
   CreditCard,
   FileText,
   Gamepad2,
+  Gift,
   Landmark,
   LayoutDashboard,
   MessageSquareWarning,
@@ -46,6 +47,7 @@ export const NAV: NavGroup[] = [
       { href: '/tournois', label: 'Tournois', icon: Trophy },
       { href: '/anti-collusion', label: 'Anti-collusion', icon: ShieldAlert },
       { href: '/reclamations', label: 'Réclamations', icon: MessageSquareWarning },
+      { href: '/parrainage', label: 'Parrainage', icon: Gift },
     ],
   },
   {

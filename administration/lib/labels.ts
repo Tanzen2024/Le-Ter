@@ -56,6 +56,7 @@ export const WALLET_KIND: Record<string, string> = {
   tournament_prize: 'Gain de tournoi',
   game_stake: 'Mise de partie',
   game_winnings: 'Gain de partie',
+  referral_reward: 'Récompense de parrainage',
 };
 
 export const ACCOUNT_STATUS: Record<string, Entry> = {

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { tablePalette } from '../table/TableDecor';
+import { salon } from '../../constants/theme';
 
 /**
  * Règle de l'application (D-126) : un composant secondaire ouvert (panneau, boutique, fenêtre
@@ -52,8 +52,7 @@ const styles = StyleSheet.create({
     elevation: 100,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: tablePalette.backdrop,
-    experimental_backgroundImage:
-      'radial-gradient(ellipse at center, #C25E14 0%, #8E2512 30%, #5A0E0B 58%, #240504 100%)',
+    backgroundColor: salon.backdrop,
+    experimental_backgroundImage: salon.backdropLight,
   },
 });

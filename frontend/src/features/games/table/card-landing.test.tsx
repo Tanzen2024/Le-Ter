@@ -8,7 +8,13 @@ import {
   type PanResponderGestureState,
 } from 'react-native';
 
-import { CARD_LANDING_MS, DraggableCard, type LandingTarget } from '../DraggableCard';
+import {
+  CARD_LANDING_MS,
+  DraggableCard,
+  READY_RAISE,
+  type LandingTarget,
+} from '../DraggableCard';
+import { CARD_RATIO } from './Cards';
 import { flightState, handWithFlight } from './card-flight';
 import { PlayedCardSpotlight, SPOT_ANGLE } from './TableCards';
 
@@ -214,7 +220,8 @@ describe('carte jouée du serveur à la place de ma carte posée', () => {
 
   it.each([
     ['moi (bas)', 'bottom', '0deg'],
-    ['en face', 'top', '180deg'],
+    // Captures de référence : la carte du joueur d'en face est droite, comme la mienne.
+    ['en face', 'top', '0deg'],
     ['à gauche', 'left', '90deg'],
     ['à droite', 'right', '-90deg'],
   ] as const)('droite devant son joueur, vue ainsi par tous : %s', async (_label, side, rotate) => {
@@ -234,5 +241,91 @@ describe('carte jouée du serveur à la place de ma carte posée', () => {
     // Le fondu lui-même tourne sur le pilote natif (non simulé sous Jest) : il part de 0.
     await render(spotlight(false));
     expect(opacityOf()).toBe(0);
+  });
+});
+
+describe('carte jouable sortie de la main (LOT 2, visuel seulement)', () => {
+  /** Soulèvement de repos : la translation verticale qui suit celles du glissé et du refus. */
+  function raise() {
+    const style = StyleSheet.flatten(screen.getByRole('button').props.style) as {
+      transform: Record<string, number>[];
+    };
+    return style.transform.filter((t) => 'translateY' in t)[1]?.translateY as number;
+  }
+  const RAISE = -80 * CARD_RATIO * READY_RAISE;
+
+  it('jouable selon le serveur : sortie ; sinon, à sa place', async () => {
+    await render(card());
+    expect(raise()).toBeCloseTo(RAISE);
+    await screen.rerender(card({ enabled: false }));
+    await act(() => jest.advanceTimersByTime(500));
+    expect(raise()).toBeCloseTo(0);
+    await screen.rerender(card({ enabled: true }));
+    await act(() => jest.advanceTimersByTime(500));
+    expect(raise()).toBeCloseTo(RAISE);
+  });
+
+  it('lâchée sur la table : retombe pendant le trajet, la carte finit exactement sur sa place', async () => {
+    const onLanded = jest.fn();
+    await render(card({ onLanded }));
+    await dragAndRelease(40, -120, true);
+    // Comme à l'écran : la carte devient attendue (held) et envoyée (pending) en plein vol.
+    await screen.rerender(card({ onLanded, held: true, pending: true }));
+    await act(() => jest.advanceTimersByTime(CARD_LANDING_MS + 200));
+    expect(placement().y).toBeCloseTo(TARGET.dy);
+    expect(raise()).toBeCloseTo(0);
+    expect(onLanded).toHaveBeenCalledWith('PIQUE-8');
+  });
+});
+
+describe('retours du geste (LOT 4, visuel seulement)', () => {
+  const move = (dx: number, dy: number, inside: boolean) =>
+    act(() => config.onPanResponderMove?.(event, gesture(dx, dy, inside)));
+
+  it('survol de la zone annoncé une fois à l’entrée, une fois à la sortie, retiré au lâcher', async () => {
+    const onHoverChange = jest.fn();
+    await render(card({ onHoverChange }));
+    await act(() => config.onPanResponderGrant?.(event, gesture(0, 0, false)));
+    await move(10, -40, false);
+    await move(20, -80, true);
+    await move(25, -90, true);
+    await move(10, -40, false);
+    await move(30, -100, true);
+    expect(onHoverChange.mock.calls).toEqual([[true], [false], [true]]);
+    await act(() => config.onPanResponderRelease?.(event, gesture(30, -100, true)));
+    expect(onHoverChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('carte non autorisée touchée : petite secousse, aucun glissé, rien n’est envoyé', async () => {
+    const onDrop = jest.fn();
+    const onDragChange = jest.fn();
+    await render(card({ enabled: false, restricted: true, onDrop, onDragChange }));
+    expect(config.onStartShouldSetPanResponder?.(event, gesture(0, 0, false))).toBe(true);
+    await act(() => config.onPanResponderGrant?.(event, gesture(0, 0, false)));
+    await move(40, -120, true);
+    await act(() => config.onPanResponderRelease?.(event, gesture(40, -120, true)));
+    await act(() => jest.advanceTimersByTime(500));
+    expect(onDrop).not.toHaveBeenCalled();
+    expect(onDragChange).not.toHaveBeenCalled();
+    expect(placement().x).toBe(0);
+    expect(placement().y).toBe(0);
+  });
+
+  it('pas mon tour (ni jouable ni restreinte) : la carte ne répond pas au toucher', async () => {
+    await render(card({ enabled: false }));
+    expect(config.onStartShouldSetPanResponder?.(event, gesture(0, 0, false))).toBe(false);
+  });
+
+  it('plus jouable en plein glissé (coup automatique) : la carte revient quand même en main', async () => {
+    const onDragChange = jest.fn();
+    await render(card({ onDragChange }));
+    await act(() => config.onPanResponderGrant?.(event, gesture(0, 0, false)));
+    await move(40, -120, false);
+    await screen.rerender(card({ onDragChange, enabled: false }));
+    await act(() => config.onPanResponderRelease?.(event, gesture(40, -120, false)));
+    await act(() => jest.advanceTimersByTime(2_000));
+    expect(onDragChange).toHaveBeenLastCalledWith(false);
+    expect(placement().x).toBeCloseTo(0);
+    expect(placement().y).toBeCloseTo(0);
   });
 });

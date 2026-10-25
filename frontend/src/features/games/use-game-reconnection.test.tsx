@@ -1,14 +1,8 @@
 /// <reference types="jest" />
-import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react-native';
+import { act, cleanup, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 
 import { ApiError } from '../../lib/api-client';
-import {
-  RECONNECTION_FAILED_MESSAGE,
-  RECONNECTION_MESSAGE,
-  RECONNECTION_TITLE,
-  ReconnectionPanel,
-} from './ReconnectionPanel';
 import {
   FAILURES_BEFORE_RETRY_PROMPT,
   gameScreenContent,
@@ -141,33 +135,6 @@ describe('useGameReconnection', () => {
     expect(appStateHandlers).toHaveLength(1);
     await hook.unmount();
     expect(appStateHandlers).toHaveLength(0);
-  });
-});
-
-describe('ReconnectionPanel', () => {
-  it('restauration : titre et message exacts, aucun bouton', async () => {
-    await render(<ReconnectionPanel state="restoring" />);
-    expect(screen.getByText(RECONNECTION_TITLE)).toBeTruthy();
-    expect(screen.getByText('Veuillez patienter pendant la reconnexion.')).toBeTruthy();
-    expect(RECONNECTION_MESSAGE).toBe('Veuillez patienter pendant la reconnexion.');
-    expect(screen.queryByRole('button')).toBeNull();
-  });
-
-  it('échec : message explicite, Réessayer et action de repli', async () => {
-    const onRetry = jest.fn();
-    const onHome = jest.fn();
-    await render(
-      <ReconnectionPanel
-        state="failed"
-        onRetry={onRetry}
-        secondary={{ title: 'Accueil', onPress: onHome }}
-      />,
-    );
-    expect(screen.getByText(RECONNECTION_FAILED_MESSAGE)).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Réessayer' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Accueil' }));
-    expect(onRetry).toHaveBeenCalledTimes(1);
-    expect(onHome).toHaveBeenCalledTimes(1);
   });
 });
 

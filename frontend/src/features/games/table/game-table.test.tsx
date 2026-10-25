@@ -713,13 +713,13 @@ describe('style des cartes (référence)', () => {
 
   it('face : grand chiffre et symbole dans le coin haut gauche, couleur de la famille', async () => {
     await render(<CardFace cardId="PIQUE-8" width={90} />);
-    // Fond gris-blanc très clair à fine texture de losanges (dessin vectoriel, aucune image),
-    // contour gris clair, coins arrondis.
+    // Cartes premium (D-156) : fond ivoire (repli sous le dégradé texturé, dessin vectoriel,
+    // aucune image), tranche fine champagne, coins arrondis.
     expect(screen.getByLabelText('8 ♠')).toHaveStyle({
       width: 90,
       height: 135,
-      backgroundColor: '#F4F5F6',
-      borderColor: '#C3C6CB',
+      backgroundColor: '#F8F3E7',
+      borderColor: '#B9A47A',
       borderRadius: 90 * 0.08,
     });
     expect(screen.getByLabelText('8 ♠')).not.toHaveStyle({

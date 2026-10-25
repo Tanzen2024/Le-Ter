@@ -15,6 +15,7 @@ import {
 } from "../../../stores/preferences-store";
 import type { GameView } from "../../../types/game";
 import {
+  amountColor,
   EXIT_COUNTDOWN_SECONDS,
   GameOverPanel,
   signedAmount,
@@ -819,5 +820,45 @@ describe("useExitCountdown : un seul timer, jamais résiduel", () => {
     expect(jest.getTimerCount()).toBeLessThanOrEqual(baseline);
     await advance(30_000);
     expect(onExpire).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("présentation du résultat (LOT 5, visuel seulement)", () => {
+  const won = () =>
+    finishedGame({
+      result: {
+        winnerId: ME,
+        method: "CONTROL_AFTER_LAST_TRICK",
+        remainingOpponentIds: [OTHER],
+        fledPlayerIds: [],
+      },
+      mySettlement: { delta: 84, account: "WALLET" },
+    } as Partial<GameView>);
+
+  it("soleil de victoire seulement quand le serveur annonce ma victoire", async () => {
+    await render(<GameOverPanel {...panel({ game: won() }).props} />);
+    expect(screen.getByTestId("game-over-rays", { includeHiddenElements: true })).toBeTruthy();
+    await cleanup();
+    await render(<GameOverPanel {...panel().props} />);
+    expect(screen.queryByTestId("game-over-rays", { includeHiddenElements: true })).toBeNull();
+  });
+
+  it("filet sous le titre, gagnant ou non", async () => {
+    await render(<GameOverPanel {...panel().props} />);
+    expect(screen.getByTestId("game-over-rule", { includeHiddenElements: true })).toBeTruthy();
+  });
+
+  it("montant coloré selon le signe du bilan du serveur, libellé inchangé", async () => {
+    expect(amountColor(84)).not.toBe(amountColor(-84));
+    expect(amountColor(0)).toBe("#FFFFFF");
+    await render(<GameOverPanel {...panel().props} />);
+    expect(screen.getByText(signedAmount(-84))).toHaveStyle({ color: amountColor(-84) });
+  });
+
+  it("boîte du panneau inchangée (largeur, pas de position absolue)", async () => {
+    await render(<GameOverPanel {...panel({ game: won() }).props} />);
+    const style = StyleSheet.flatten(screen.getByTestId("game-over-panel").props.style);
+    expect(style).toMatchObject({ width: 320 });
+    expect(style.position).toBeUndefined();
   });
 });

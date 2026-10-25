@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
   Easing,
@@ -9,168 +9,60 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import { LogOut } from 'lucide-react-native';
+import Svg, { Circle, Defs, LinearGradient, Path, RadialGradient, Stop } from 'react-native-svg';
 
-import {
-  BRAND_INITIAL,
-  fontOf,
-  tablePalette as palette,
-  useTableFonts,
-} from '../../../components/table/TableDecor';
+import { fontOf, useTableFonts } from '../../../components/table/TableDecor';
+import { gameTheme, motion } from '../../../constants/theme';
 import { useLobbyMetrics } from '../../lobby/lobby-metrics';
+import { UNKNOWN_PLAYER_LABEL, UNKNOWN_SELF_LABEL } from '../format';
 import { distanceLabel, type DistanceView } from './distance';
 import { remainingFraction, type TurnPhase } from './turn-phase';
 import { CONTROL_SIGNAL_MS, useReducedMotion } from './turn-signal';
 
 /**
- * Pièces de l'aire de jeu, style « soft » : la table en bois domine, tout le reste est
- * translucide, fin et discret (transparences, bordures fines, ombres douces).
+ * Pièces de l'aire de jeu, direction « Ébène & Laiton » (`gameTheme`) : une pièce sombre où
+ * seule la table est éclairée ; plaques, HUD et panneaux en laque sombre à filet de laiton,
+ * en retrait des cartes. Présentation seulement : aucune pièce ne décide d'un état de jeu.
+ * La salle et la table elles-mêmes sont dessinées dans `TableSurface`.
  */
-
-/** Tapis vert éclairé au centre, avec un décor TATAMI estompé dans les coins. */
-export function FeltBackdrop({ children }: { children: ReactNode }) {
-  const { width, height } = useLobbyMetrics();
-  const disc = Math.round(height * 0.4);
-  const mat = Math.round(height * 0.62);
-  return (
-    <View style={styles.felt}>
-      <View
-        style={[StyleSheet.absoluteFill, styles.passThrough]}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      >
-        <PatternMat
-          size={mat}
-          style={{
-            right: -mat * 0.25,
-            top: -mat * 0.42,
-            transform: [{ rotate: '-12deg' }],
-          }}
-        />
-        <PatternMat
-          size={mat}
-          style={{
-            left: -mat * 0.45,
-            bottom: -mat * 0.3,
-            transform: [{ rotate: '38deg' }],
-          }}
-        />
-        <WoodDisc size={disc} style={{ left: width * 0.16, top: -disc * 0.62 }} />
-        <WoodDisc size={disc} style={{ left: -disc * 0.35, bottom: -disc * 0.4 }} />
-        <WoodDisc size={disc} style={{ right: -disc * 0.3, bottom: -disc * 0.45 }} />
-      </View>
-      {children}
-    </View>
-  );
-}
-
-/** Tapis à motifs géométriques (losanges imbriqués), en filigrane. */
-function PatternMat({ size, style }: { size: number; style: StyleProp<ViewStyle> }) {
-  return (
-    <View
-      style={[styles.mat, { width: size * 1.5, height: size, borderRadius: size * 0.06 }, style]}
-    >
-      {[0.7, 0.48, 0.26].map((ratio) => (
-        <View
-          key={ratio}
-          style={[
-            styles.matDiamond,
-            {
-              width: size * ratio,
-              height: size * ratio,
-              borderRadius: size * 0.03,
-            },
-          ]}
-        />
-      ))}
-    </View>
-  );
-}
-
-/** Disque de bois cerclé d'ocre (décor). */
-function WoodDisc({ size, style }: { size: number; style: StyleProp<ViewStyle> }) {
-  return (
-    <View
-      style={[
-        styles.disc,
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          borderWidth: size * 0.06,
-        },
-        style,
-      ]}
-    >
-      <View
-        style={[
-          styles.discInner,
-          {
-            width: size * 0.62,
-            height: size * 0.62,
-            borderRadius: size * 0.31,
-          },
-        ]}
-      />
-    </View>
-  );
-}
+export { FeltBackdrop, WoodTable } from './TableSurface';
 
 /**
- * Table ronde en bois : planches, liseré foncé, anneau gravé et monogramme L en filigrane.
- * `ring` / `ringBorder` : diamètre et trait de l'anneau gravé (proportions de la référence,
- * voir `centerCircles`).
+ * Entrée d'un panneau posé sur la table (attente, vote de mise, égalité) : fondu et léger
+ * zoom, rapides (`motion.panel`). Ne retarde ni ne bloque aucun bouton ; avec « réduire les
+ * animations », affichage direct.
  */
-export function WoodTable({
-  diameter,
-  ring = diameter * 0.54,
-  ringBorder = Math.max(3, diameter * 0.044),
-}: {
-  diameter: number;
-  ring?: number;
-  ringBorder?: number;
-}) {
-  const fonts = useTableFonts();
-  const planks = 9;
+export function PanelEntrance({ children }: { children: ReactNode }) {
+  const reduced = useReducedMotion();
+  const [entrance] = useState(() => new Animated.Value(0));
+  useEffect(() => {
+    if (reduced) {
+      entrance.setValue(1);
+      return;
+    }
+    const animation = Animated.timing(entrance, {
+      toValue: 1,
+      duration: motion.panel,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [entrance, reduced]);
   return (
-    <View
-      style={[
-        styles.table,
-        {
-          width: diameter,
-          height: diameter,
-          borderRadius: diameter / 2,
-          borderWidth: Math.max(3, diameter * 0.018),
-        },
-      ]}
+    <Animated.View
+      style={{
+        opacity: entrance,
+        transform: [{ scale: entrance.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1] }) }],
+      }}
     >
-      {Array.from({ length: planks - 1 }, (_, i) => (
-        <View key={i} style={[styles.plank, { top: ((i + 1) * diameter) / planks }]} />
-      ))}
-      <View style={[styles.tableLight, { borderRadius: diameter / 2 }]} />
-      <View
-        testID="table-ring"
-        style={[
-          styles.engraving,
-          {
-            width: ring,
-            height: ring,
-            borderRadius: ring / 2,
-            borderWidth: ringBorder,
-          },
-        ]}
-      >
-        <Text
-          allowFontScaling={false}
-          style={[styles.engravedLetter, fontOf(fonts.button), { fontSize: ring * 0.62 }]}
-        >
-          {BRAND_INITIAL}
-        </Text>
-      </View>
-    </View>
+      {children}
+    </Animated.View>
   );
 }
 
-/** Plaque translucide (état central de la table, messages). */
+/** Plaque de laque sombre à filet de laiton (état central de la table, messages). */
 export function GlassBox({
   children,
   style,
@@ -326,10 +218,154 @@ export function plateContentHeight(slotHeight: number, withDetail: boolean): num
 }
 
 /**
- * Barre d'un joueur, style de la table de référence : rectangle vert très sombre translucide,
- * coins arrondis, et SEULEMENT le pseudo, blanc, gras, centré. Le joueur attendu garde un
- * liseré doré fixe et discret (le halo lumineux de 5 s est posé sur ses cartes) ; J1 a une
- * pastille dorée à cheval sur le bord gauche, hors de la barre. Sans joueur : barre vide.
+ * Monogramme d'un joueur : première lettre de son pseudo RÉEL. Libellé neutre (pseudo absent,
+ * « Vous » / « Adversaire ») : aucun monogramme, une silhouette neutre à la place.
+ */
+export function monogramOf(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === UNKNOWN_SELF_LABEL || trimmed === UNKNOWN_PLAYER_LABEL) return null;
+  return Array.from(trimmed)[0]?.toLocaleUpperCase('fr') ?? null;
+}
+
+/**
+ * Teinte du jeton d'un joueur (index dans `gameTheme.avatarTones`), dérivée de son pseudo RÉEL :
+ * la même à chaque partie et sur chaque écran. Sans pseudo (libellé neutre) : teinte neutre.
+ */
+export function avatarToneOf(name: string): number {
+  const neutral = gameTheme.avatarTones.length - 1;
+  if (monogramOf(name) === null) return neutral;
+  let hash = 0;
+  for (const char of name.trim().toLocaleLowerCase('fr')) {
+    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  }
+  return hash % neutral;
+}
+
+/**
+ * Jeton : couronne de laiton crénelée (huit encoches ivoire) et cœur de pierre (repère 100).
+ * Remplit son parent ; partagé avec le profil (le même jeton qu'à la table).
+ */
+export function ChipArt({ tone }: { tone: number }) {
+  const [light, mid, deep] = gameTheme.avatarTones[tone] ?? gameTheme.avatarTones[0]!;
+  const edge = 46;
+  const notches = (2 * Math.PI * edge) / 16;
+  return (
+    <Svg width="100%" height="100%" viewBox="0 0 100 100" style={StyleSheet.absoluteFill}>
+      <Defs>
+        <LinearGradient id="chipRim" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#F7DE92" />
+          <Stop offset="0.5" stopColor="#C99A3E" />
+          <Stop offset="1" stopColor="#7C5A1E" />
+        </LinearGradient>
+        <RadialGradient id={`chipCore${tone}`} cx="38%" cy="32%" r="72%">
+          <Stop offset="0" stopColor={light} />
+          <Stop offset="0.55" stopColor={mid} />
+          <Stop offset="1" stopColor={deep} />
+        </RadialGradient>
+      </Defs>
+      <Circle cx="50" cy="50" r="50" fill="url(#chipRim)" />
+      <Circle
+        cx="50"
+        cy="50"
+        r={edge}
+        fill="none"
+        stroke="#F6EFDF"
+        strokeWidth="8"
+        strokeDasharray={`${notches * 0.55} ${notches * 1.45}`}
+        opacity={0.85}
+      />
+      <Circle cx="50" cy="50" r="38" fill={`url(#chipCore${tone})`} />
+      <Circle cx="50" cy="50" r="38" fill="none" stroke="rgba(0, 0, 0, 0.45)" strokeWidth="1.5" />
+      <Circle cx="50" cy="50" r="34" fill="none" stroke="#F2D27A" strokeWidth="0.8" opacity={0.6} />
+    </Svg>
+  );
+}
+
+/**
+ * Médaillon d'un joueur dans sa plaque : jeton de laiton crénelé, cœur de pierre à sa teinte
+ * (`avatarToneOf`) et monogramme gravé (aucune photo n'est fournie par le serveur, aucune n'est
+ * inventée). Anneau jade pour le joueur connecté, or vif pour le joueur attendu ou le gagnant.
+ * Décoratif : la plaque annonce déjà le pseudo.
+ */
+function SeatAvatar({
+  name,
+  size,
+  ring,
+}: {
+  name: string;
+  size: number;
+  ring: 'focus' | 'self' | 'plain';
+}) {
+  const fonts = useTableFonts();
+  const letter = monogramOf(name);
+  const ringColor =
+    ring === 'focus' ? gameTheme.focus : ring === 'self' ? gameTheme.self : 'rgba(0, 0, 0, 0.6)';
+  return (
+    <View
+      testID="seat-avatar"
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        styles.avatar,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderColor: ringColor,
+          borderWidth: ring === 'plain' ? 1 : Math.max(1.5, size * 0.07),
+        },
+        ring === 'focus' && styles.avatarFocus,
+      ]}
+    >
+      <ChipArt tone={avatarToneOf(name)} />
+      {letter ? (
+        <Text
+          allowFontScaling={false}
+          style={[styles.avatarLetter, fontOf(fonts.title), { fontSize: size * 0.42 }]}
+        >
+          {letter}
+        </Text>
+      ) : (
+        <Svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24">
+          <Circle cx="12" cy="8.5" r="4.2" fill={gameTheme.ivory} opacity={0.8} />
+          <Path d="M3.5 22 C4.5 15.5 19.5 15.5 20.5 22 Z" fill={gameTheme.ivory} opacity={0.8} />
+        </Svg>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Bref éclat de la plaque quand son joueur DEVIENT le joueur attendu (état du serveur) :
+ * léger gonflement et lueur d'or qui retombe. L'état actif reste lisible ensuite (contour
+ * or) ; avec « réduire les animations », aucun mouvement.
+ */
+function useActivePulse(active: boolean): Animated.Value {
+  const reduced = useReducedMotion();
+  const [pulse] = useState(() => new Animated.Value(0));
+  const was = useRef(active);
+  useEffect(() => {
+    const became = active && !was.current;
+    was.current = active;
+    if (!became || reduced) return;
+    pulse.setValue(0);
+    const animation = Animated.timing(pulse, {
+      toValue: 1,
+      duration: motion.turn + 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [active, reduced, pulse]);
+  return pulse;
+}
+
+/**
+ * Plaque d'un joueur : capsule de laque sombre, médaillon (monogramme) à gauche et SEULEMENT
+ * le pseudo, blanc, gras. Le joueur attendu prend un contour or vif et une lueur (le halo de
+ * 5 s est posé sur ses cartes) ; le joueur connecté se reconnaît à son anneau jade, jamais à
+ * l'or. Sans joueur : capsule vide en pointillé.
  *
  * La barre prend la hauteur d'une ligne (`plateContentHeight`), posée dans l'emplacement
  * `width` × `height` de la disposition : collée en haut (dos des cartes juste au-dessus) ou en
@@ -357,6 +393,7 @@ export function SeatPlate({
   const fonts = useTableFonts();
   const nameSize = Math.round(Math.max(12, height * 0.36));
   const plateHeight = plateContentHeight(height, false);
+  const pulse = useActivePulse(Boolean(state?.active && !state.dimmed));
   const slot = [
     styles.plateSlot,
     {
@@ -373,38 +410,82 @@ export function SeatPlate({
           testID="seat-plate"
           accessible
           accessibilityLabel="Siège sans joueur dans cette partie"
-          style={[styles.plate, styles.plateEmpty, { height: plateHeight }]}
+          style={[
+            styles.plate,
+            styles.plateEmpty,
+            { height: plateHeight, borderRadius: plateHeight / 2 },
+          ]}
         />
       </View>
     );
   }
+  const inset = Math.max(2, Math.round(plateHeight * 0.1));
+  const avatar = plateHeight - inset * 2;
+  const focus = (state.active && !state.dimmed) || state.winner;
   return (
     <View pointerEvents="box-none" style={slot}>
-      <View
-        testID="seat-plate"
-        accessible
-        accessibilityLabel={[state.name, state.firstPlayer ? 'premier joueur' : '', state.detail]
-          .filter(Boolean)
-          .join(', ')}
+      <Animated.View
         style={[
-          styles.plate,
-          state.active && styles.plateActive,
-          state.winner && styles.plateWinner,
-          state.dimmed && styles.plateDimmed,
-          { height: plateHeight, paddingHorizontal: plateHeight * 0.4 },
+          styles.plateMotion,
+          {
+            transform: [
+              { scale: pulse.interpolate({ inputRange: [0, 0.4, 1], outputRange: [1, 1.07, 1] }) },
+            ],
+          },
         ]}
       >
-        {turn && !state.dimmed ? <TurnProgressFill key={turn.key} turn={turn} /> : null}
-        {/* Pseudo long : il rétrécit un peu puis s'arrête en « … », la barre ne se déforme pas. */}
-        <Text
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.75}
-          style={[styles.plateName, fontOf(fonts.button), { fontSize: nameSize }]}
+        {/* Éclat du changement de tour, derrière la plaque. */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFill,
+            styles.plateFlare,
+            {
+              borderRadius: plateHeight / 2,
+              opacity: pulse.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 1, 0] }),
+            },
+          ]}
+        />
+        <View
+          testID="seat-plate"
+          accessible
+          accessibilityLabel={[state.name, state.firstPlayer ? 'premier joueur' : '', state.detail]
+            .filter(Boolean)
+            .join(', ')}
+          style={[
+            styles.plate,
+            state.local && styles.plateSelf,
+            state.active && styles.plateActive,
+            state.winner && styles.plateWinner,
+            state.dimmed && styles.plateDimmed,
+            {
+              height: plateHeight,
+              borderRadius: plateHeight / 2,
+              paddingLeft: inset,
+              paddingRight: plateHeight * 0.45,
+              gap: Math.max(4, plateHeight * 0.18),
+            },
+          ]}
         >
-          {state.name}
-        </Text>
-      </View>
+          {turn && !state.dimmed ? (
+            <TurnProgressFill key={turn.key} turn={turn} radius={plateHeight / 2} />
+          ) : null}
+          <SeatAvatar
+            name={state.name}
+            size={avatar}
+            ring={focus ? 'focus' : state.local ? 'self' : 'plain'}
+          />
+          {/* Pseudo long : il rétrécit un peu puis s'arrête en « … », la barre ne se déforme pas. */}
+          <Text
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.75}
+            style={[styles.plateName, fontOf(fonts.button), { fontSize: nameSize }]}
+          >
+            {state.name}
+          </Text>
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -420,7 +501,7 @@ export const URGENT_FRACTION = 0.3;
  * 10 s). Relancée seulement si l'échéance locale change (`localDeadline`, déjà stabilisée).
  * Or sur fond vert, bordeaux à la fin ; pilote natif (`scaleX`), aucun geste capté.
  */
-export function TurnProgressFill({ turn }: { turn: TurnPhase }) {
+export function TurnProgressFill({ turn, radius = 6 }: { turn: TurnPhase; radius?: number }) {
   const [progress] = useState(() => new Animated.Value(remainingFraction(turn, Date.now())));
   const { localDeadline, totalMs, timedOut } = turn;
   useEffect(() => {
@@ -446,7 +527,7 @@ export function TurnProgressFill({ turn }: { turn: TurnPhase }) {
       testID="turn-progress"
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
-      style={[StyleSheet.absoluteFill, styles.progressTrack]}
+      style={[StyleSheet.absoluteFill, styles.progressTrack, { borderRadius: radius }]}
     >
       <Animated.View
         testID="turn-progress-fill"
@@ -546,7 +627,7 @@ export function SoftIconButton({
       style={({ pressed }) => [
         styles.softButton,
         tone === 'danger' ? styles.softDanger : styles.softTeal,
-        { width: size, height: size, borderRadius: size * 0.26 },
+        { width: size, height: size, borderRadius: size / 2 },
         pressed && styles.softPressed,
       ]}
     >
@@ -555,18 +636,14 @@ export function SoftIconButton({
   );
 }
 
-/** Pictogramme « sortie » : flèche claire dans un cadre fin. */
+/** Couleur des pictogrammes des médaillons (`SoftIconButton`). */
+export const TABLE_ICON_COLOR = gameTheme.brass.bright;
+
+/** Pictogramme « sortie » : porte et flèche vers la gauche, vectoriels (même rendu partout). */
 export function ExitGlyph({ size }: { size: number }) {
   return (
-    <View
-      style={[
-        styles.exitFrame,
-        { width: size * 0.5, height: size * 0.5, borderRadius: size * 0.08 },
-      ]}
-    >
-      <Text allowFontScaling={false} style={[styles.exitArrow, { fontSize: size * 0.38 }]}>
-        ←
-      </Text>
+    <View style={styles.exitGlyph}>
+      <LogOut size={Math.round(size * 0.46)} color={gameTheme.ivory} strokeWidth={2.2} />
     </View>
   );
 }
@@ -590,7 +667,7 @@ export function BalancePill({ height, children }: { height: number; children: Re
   );
 }
 
-const glassBorder = 'rgba(255, 255, 255, 0.14)';
+const t = gameTheme;
 
 const styles = StyleSheet.create({
   glowLayer: { position: 'absolute', pointerEvents: 'none' },
@@ -619,97 +696,30 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 250, 220, 0.9)',
   },
-  passThrough: { pointerEvents: 'none' },
-  felt: {
-    flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#1F7430',
-    experimental_backgroundImage:
-      'radial-gradient(ellipse at 50% 45%, #44A548 0%, #2C8A37 32%, #1B6828 64%, #0D4518 100%)',
-  },
-  mat: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 0.4,
-    borderWidth: 1.5,
-    borderColor: 'rgba(200, 240, 160, 0.55)',
-    backgroundColor: 'rgba(10, 50, 20, 0.55)',
-  },
-  matDiamond: {
-    position: 'absolute',
-    borderWidth: 1.5,
-    borderColor: 'rgba(170, 225, 130, 0.5)',
-    transform: [{ rotate: '45deg' }],
-  },
-  disc: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 0.55,
-    borderColor: '#B6481E',
-    backgroundColor: '#8A5530',
-    experimental_backgroundImage: 'linear-gradient(170deg, #9C6238 0%, #7A4626 60%, #5E331A 100%)',
-    boxShadow: '0 6px 16px rgba(0, 0, 0, 0.35)',
-  },
-  discInner: { borderWidth: 2, borderColor: 'rgba(230, 150, 60, 0.45)' },
-  table: {
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderColor: '#5E2A0E',
-    backgroundColor: '#B85A24',
-    experimental_backgroundImage:
-      'radial-gradient(circle at 50% 38%, #E58A44 0%, #CB6A2C 38%, #A9521E 72%, #7A3612 100%)',
-    boxShadow: '0 14px 36px rgba(0, 0, 0, 0.5), inset 0 0 24px rgba(60, 20, 0, 0.45)',
-  },
-  tableLight: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    experimental_backgroundImage:
-      'radial-gradient(ellipse at 50% 30%, rgba(255, 210, 150, 0.28) 0%, rgba(255, 210, 150, 0) 60%)',
-  },
-  plank: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(70, 28, 6, 0.28)',
-  },
-  engraving: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderColor: 'rgba(80, 32, 8, 0.3)',
-    // Relief : ombre portée vers l'extérieur et liseré clair, l'anneau semble posé sur la table.
-    boxShadow:
-      '0 3px 8px rgba(40, 14, 0, 0.45), 0 0 0 1.5px rgba(255, 214, 160, 0.28), inset 0 2px 6px rgba(255, 220, 170, 0.18)',
-  },
-  engravedLetter: { color: 'rgba(80, 32, 8, 0.32)', includeFontPadding: false },
   glass: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 220, 170, 0.18)',
-    backgroundColor: 'rgba(40, 18, 8, 0.62)',
-    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.25)',
+    borderColor: t.lacquer.border,
+    backgroundColor: t.lacquer.fill,
+    experimental_backgroundImage: t.lacquer.surface,
+    // Double filet Art déco : liseré de laque puis filet de laiton à l'intérieur du bord.
+    boxShadow: `${t.shadow.panel}, inset 0 0 0 2px rgba(0, 0, 0, 0.45), inset 0 0 0 3px ${t.brass.faint}`,
   },
   plateSlot: { position: 'absolute' },
-  progressTrack: { borderRadius: 6, overflow: 'hidden' },
+  progressTrack: { overflow: 'hidden' },
   // Ancrée à gauche : la barre se vide de droite à gauche.
   progressFill: {
     transformOrigin: 'left',
-    backgroundColor: 'rgba(214, 160, 40, 0.55)',
+    backgroundColor: 'rgba(214, 160, 40, 0.5)',
     experimental_backgroundImage:
-      'linear-gradient(180deg, rgba(255, 214, 102, 0.62) 0%, rgba(190, 132, 24, 0.55) 100%)',
+      'linear-gradient(180deg, rgba(242, 210, 122, 0.55) 0%, rgba(176, 128, 36, 0.5) 100%)',
   },
   progressUrgent: {
     backgroundColor: 'rgba(150, 24, 36, 0.78)',
     experimental_backgroundImage:
-      'linear-gradient(180deg, rgba(198, 47, 55, 0.85) 0%, rgba(122, 20, 30, 0.8) 100%)',
+      'linear-gradient(180deg, rgba(226, 87, 76, 0.85) 0%, rgba(122, 20, 30, 0.8) 100%)',
   },
   progressEdge: {
     position: 'absolute',
@@ -719,31 +729,67 @@ const styles = StyleSheet.create({
     width: 2,
     backgroundColor: 'rgba(255, 240, 190, 0.9)',
   },
-  // Barre de pseudo de la référence : vert très sombre translucide, sans relief marqué.
+  plateMotion: { alignSelf: 'stretch' },
+  plateFlare: {
+    backgroundColor: 'rgba(245, 200, 66, 0.35)',
+    boxShadow: `0 0 18px 6px ${t.focusGlow}`,
+  },
+  // Capsule de laque sombre, filet de laiton : en retrait des cartes.
   plate: {
     alignSelf: 'stretch',
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 7,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.25)',
-    backgroundColor: 'rgba(4, 30, 12, 0.78)',
-    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.3)',
+    borderColor: t.lacquer.border,
+    backgroundColor: t.lacquer.fill,
+    experimental_backgroundImage: t.lacquer.surface,
+    // Filet de laiton intérieur, comme les plaques de la table (LOT 1).
+    boxShadow: `${t.shadow.plate}, inset 0 0 0 2px rgba(0, 0, 0, 0.45), inset 0 0 0 3px ${t.brass.faint}`,
   },
   plateEmpty: {
     opacity: 0.55,
     borderStyle: 'dashed',
-    borderColor: glassBorder,
+    borderColor: t.brass.hairline,
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    experimental_backgroundImage: undefined,
+    boxShadow: undefined,
   },
-  plateActive: { borderColor: palette.gold, borderWidth: 1.5 },
+  plateSelf: { borderColor: 'rgba(67, 196, 158, 0.45)' },
+  plateActive: {
+    borderColor: t.focus,
+    borderWidth: 2,
+    boxShadow: `0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 14px ${t.focusGlow}`,
+  },
   plateWinner: {
-    borderColor: palette.gold,
-    boxShadow: '0 0 14px rgba(242, 196, 81, 0.45)',
+    borderColor: t.focus,
+    borderWidth: 2,
+    boxShadow: `0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 20px 4px ${t.focusGlow}`,
   },
   plateDimmed: { opacity: 0.5 },
+  // Le jeton est dessiné par `ChipArt` ; la vue porte l'anneau d'état et l'ombre.
+  avatar: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: t.brass.deep,
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.6)',
+  },
+  avatarFocus: {
+    boxShadow: `0 0 10px 1px ${t.focusGlow}, 0 1px 3px rgba(0, 0, 0, 0.6)`,
+  },
+  avatarLetter: {
+    color: t.ivory,
+    includeFontPadding: false,
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1,
+  },
   plateName: {
+    flex: 1,
     color: '#FFFFFF',
-    // Lisible sur le vert comme sur le remplissage or ou bordeaux.
+    // Lisible sur la laque comme sur le remplissage or ou bordeaux.
     textShadowColor: 'rgba(0, 0, 0, 0.6)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
@@ -762,43 +808,41 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    backgroundColor: 'rgba(0, 0, 0, 0.36)',
-    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.25)',
+    borderColor: t.brass.hairline,
+    backgroundColor: 'rgba(6, 12, 10, 0.72)',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.35)',
   },
-  distanceIcon: { color: 'rgba(242, 196, 81, 0.85)', fontWeight: '700' },
-  distanceText: { color: 'rgba(255, 255, 255, 0.9)', fontWeight: '600' },
-  distanceUnknown: { color: 'rgba(255, 255, 255, 0.6)' },
+  distanceIcon: { color: t.brass.main, fontWeight: '700' },
+  distanceText: { color: t.textSoft, fontWeight: '600' },
+  distanceUnknown: { color: t.textFaint },
+  // Médaillon rond : couronne de laiton, filet intérieur, reflet en haut.
   softButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    boxShadow: '0 3px 8px rgba(0, 0, 0, 0.28)',
+    borderWidth: 1.5,
+    borderColor: t.brass.main,
+    boxShadow: `${t.shadow.plate}, inset 0 0 0 2px rgba(0, 0, 0, 0.55), inset 0 0 0 3px ${t.brass.hairline}, inset 0 2px 3px rgba(255, 240, 200, 0.18)`,
   },
   softDanger: {
-    backgroundColor: '#9E2329',
-    experimental_backgroundImage: 'linear-gradient(180deg, #B8323A 0%, #8E1E24 100%)',
+    backgroundColor: t.oxblood.main,
+    experimental_backgroundImage: t.oxblood.surface,
   },
   softTeal: {
-    backgroundColor: 'rgba(23, 128, 110, 0.85)',
-    experimental_backgroundImage:
-      'linear-gradient(180deg, rgba(38, 160, 140, 0.9) 0%, rgba(18, 110, 96, 0.9) 100%)',
+    backgroundColor: t.lacquer.solid,
+    experimental_backgroundImage: t.lacquer.surface,
   },
-  softPressed: { opacity: 0.8, transform: [{ scale: 0.95 }] },
-  exitFrame: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.85)',
-  },
-  exitArrow: { color: '#FFFFFF', fontWeight: '900', includeFontPadding: false },
+  softPressed: { opacity: 0.85, transform: [{ scale: 0.94 }] },
+  // La flèche de lucide pointe vers la droite : retournée, elle sort vers la gauche.
+  exitGlyph: { transform: [{ scaleX: -1 }] },
+  // Plaque de solde : laque encadrée de laiton, double filet comme les plaques de la table.
   balance: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderWidth: 1,
-    borderColor: glassBorder,
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+    borderWidth: 1.5,
+    borderColor: t.brass.line,
+    backgroundColor: t.lacquer.fill,
+    experimental_backgroundImage: t.lacquer.surface,
+    boxShadow: `${t.shadow.plate}, inset 0 0 0 2px rgba(0, 0, 0, 0.5), inset 0 0 0 3px ${t.brass.faint}`,
   },
 });

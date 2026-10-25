@@ -17,13 +17,14 @@ import {
 import {
   BRAND_INITIAL,
   fontOf,
-  tablePalette as palette,
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
 import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
+import { gameTheme, salon } from '../../constants/theme';
 import { useMessages } from '../../lib/i18n';
 import { playSound, type SoundName } from '../../services/audio-service';
+import { useReducedMotion } from '../games/table/turn-signal';
 import { useWallet } from '../wallet/hooks';
 import { useLobbyMetrics } from './lobby-metrics';
 
@@ -198,7 +199,7 @@ export function LobbyHud({
   );
 }
 
-/** Jeton « L » turquoise cerclé d'or (monnaie de la maquette). */
+/** Jeton « L » en laiton frappé (monnaie du jeu), le même sur la table et autour d'elle. */
 export function Coin({ size, fontFamily }: { size: number; fontFamily?: string }) {
   return (
     <View
@@ -222,7 +223,7 @@ export function Coin({ size, fontFamily }: { size: number; fontFamily?: string }
   );
 }
 
-/** Bouton carré arrondi du bas d'écran : turquoise (profil, réglages) ou rouge (retour). */
+/** Bouton carré arrondi du bas d'écran : laque à filet de laiton, sang-de-bœuf pour le retour. */
 export function IconButton({
   label,
   onPress,
@@ -265,19 +266,19 @@ export function EmojiIcon({ children }: { children: string }) {
   );
 }
 
-/** Flèche circulaire blanche du bouton retour. */
+/** Flèche du bouton retour. */
 export function BackGlyph() {
   const { iconButton } = useLobbyMetrics();
   return (
     <Text allowFontScaling={false} style={[styles.backGlyph, { fontSize: iconButton * 0.62 }]}>
-      ↺
+      ←
     </Text>
   );
 }
 
 /**
- * Panneau superposé (Profil, Réglages, Partie privée) : seul visible (D-126), plaque sombre bordée,
- * titre blanc centré, bouton de fermeture rouge. Le bouton retour Android et un appui hors du
+ * Panneau superposé (Profil, Réglages, Partie privée) : seul visible (D-126), laque sombre à
+ * filet de laiton, titre ivoire centré souligné d'un filet, bouton de fermeture rond. Le bouton retour Android et un appui hors du
  * panneau le ferment. Le contenu défile si la hauteur manque (petits smartphones).
  */
 export function LobbyPanel({
@@ -285,6 +286,7 @@ export function LobbyPanel({
   onClose,
   width,
   below,
+  footer,
   closeLabel,
   children,
 }: {
@@ -296,6 +298,12 @@ export function LobbyPanel({
   width: number;
   /** Plaque affichée sous le panneau (liens légaux des Réglages). */
   below?: ReactNode;
+  /**
+   * Zone d'actions du panneau (Enregistrer, Proposer, Déconnexion…) : posée SOUS le contenu
+   * défilant, séparée par un filet, toujours visible, même clavier ouvert (le contenu se réduit
+   * au-dessus d'elle, jamais elle).
+   */
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const m = useLobbyMetrics();
@@ -303,10 +311,16 @@ export function LobbyPanel({
   const t = useMessages();
   const closeName = closeLabel ?? t.common.close;
   const [appear] = useState(() => new Animated.Value(0));
+  const reduced = useReducedMotion();
 
   useEffect(() => {
+    // « Réduire les animations » : le panneau est aussitôt à sa place, sans zoom.
+    if (reduced) {
+      appear.setValue(1);
+      return;
+    }
     Animated.timing(appear, { toValue: 1, duration: 160, useNativeDriver: true }).start();
-  }, [appear]);
+  }, [appear, reduced]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -370,12 +384,17 @@ export function LobbyPanel({
               {
                 fontSize: m.panelTitleSize,
                 marginHorizontal: close + 4,
-                marginBottom: m.gap * 0.6,
+                marginBottom: m.gap * 0.5,
               },
             ]}
           >
             {title}
           </Text>
+          <View
+            style={[styles.titleRule, { marginBottom: m.gap * 0.8 }]}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          />
           <ScrollView
             style={styles.shrink}
             keyboardShouldPersistTaps="handled"
@@ -388,6 +407,14 @@ export function LobbyPanel({
           >
             {children}
           </ScrollView>
+          {footer ? (
+            <View
+              testID="panel-actions"
+              style={[styles.footer, { marginTop: m.gap * 0.6, paddingTop: m.gap * 0.6 }]}
+            >
+              {footer}
+            </View>
+          ) : null}
           {/* Bouton X déclaré APRÈS le contenu (et `elevation`) : au premier plan pour le
             toucher aussi, sur Android le contenu défilant ne capte jamais son appui. */}
           <Pressable
@@ -401,8 +428,11 @@ export function LobbyPanel({
               pressed && styles.pressedButton,
             ]}
           >
-            <Text style={[styles.closeText, fontOf(fonts.button), { fontSize: close * 0.62 }]}>
-              X
+            <Text
+              allowFontScaling={false}
+              style={[styles.closeText, { fontSize: Math.round(close * 0.42) }]}
+            >
+              ✕
             </Text>
           </Pressable>
         </Animated.View>
@@ -426,7 +456,10 @@ export function InnerFrame({
   return <View style={[styles.inner, { padding: gap }, style]}>{children}</View>;
 }
 
-/** Petit bouton rectangulaire des panneaux : texte doré sur jade, rouge, ou doré (sélection). */
+/**
+ * Petit bouton des panneaux : laque émeraude (action), sang-de-bœuf (départ, refus) ou laiton
+ * plein (option choisie d'un groupe).
+ */
 export function PanelButton({
   title,
   onPress,
@@ -436,10 +469,17 @@ export function PanelButton({
   loading = false,
   accessibilityLabel,
   sound = 'uiClick',
+  compact = false,
 }: {
   title: string;
   onPress: () => void;
-  tone?: 'jade' | 'danger';
+  /**
+   * `primary` : action principale d'un écran (émeraude, filet et lueur de laiton) ;
+   * `quiet` : action secondaire d'une zone d'actions (creux sombre, filet émeraude).
+   */
+  tone?: 'jade' | 'danger' | 'primary' | 'quiet';
+  /** Version resserrée (panneau Réglages tenu sans défilement en paysage). */
+  compact?: boolean;
   /** Son joué après l'action (si le son est activé à ce moment-là). */
   sound?: SoundName;
   /** Option d'un groupe (ON/OFF, langues) : l'option choisie est dorée. */
@@ -451,7 +491,9 @@ export function PanelButton({
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const inactive = disabled || loading;
-  const height = Math.max(36, Math.round(m.controlHeight * 0.9));
+  const height = compact
+    ? Math.max(32, Math.round(m.controlHeight * 0.78))
+    : Math.max(36, Math.round(m.controlHeight * 0.9));
   return (
     <Pressable
       onPress={() => {
@@ -467,19 +509,25 @@ export function PanelButton({
       style={({ pressed }) => [
         styles.panelButton,
         tone === 'danger' && styles.panelButtonDanger,
+        tone === 'primary' && styles.panelButtonPrimary,
+        tone === 'quiet' && styles.panelButtonQuiet,
         selected && styles.panelButtonSelected,
         { height, paddingHorizontal: height * 0.35 },
         pressed && styles.pressedButton,
         inactive && styles.inactive,
       ]}
     >
+      {/* Libellé long (« Aide et réclamations », anglais, tablette) : réduit sur une ligne,
+          jamais coupé. Sans effet sur un libellé qui tient déjà. */}
       <Text
         numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}
         style={[
           styles.panelButtonText,
           selected && styles.panelButtonTextSelected,
           fontOf(fonts.button),
-          { fontSize: Math.round(m.bodySize * 1.1) },
+          { fontSize: Math.round(m.bodySize * (compact ? 1 : 1.1)) },
         ]}
       >
         {loading ? '…' : title}
@@ -489,12 +537,19 @@ export function PanelButton({
 }
 
 /** Groupe d'options (ON/OFF, Français/English) posé sur une plaque sombre. */
-export function ChoiceGroup({ children }: { children: ReactNode }) {
+export function ChoiceGroup({
+  children,
+  style,
+}: {
+  children: ReactNode;
+  /** Placement dans la ligne qui l'accueille (ex. aligné à droite, jamais rétréci). */
+  style?: StyleProp<ViewStyle>;
+}) {
   const { gap } = useLobbyMetrics();
   return (
     <View
       accessibilityRole="radiogroup"
-      style={[styles.row, styles.choiceGroup, { gap, padding: gap * 0.5 }]}
+      style={[styles.row, styles.choiceGroup, { gap, padding: gap * 0.5 }, style]}
     >
       {children}
     </View>
@@ -505,30 +560,32 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center' },
   shrink: { flexShrink: 1 },
   pressed: { opacity: 0.75 },
-  pressedButton: { opacity: 0.85, transform: [{ scale: 0.96 }] },
-  inactive: { opacity: 0.55 },
+  pressedButton: { opacity: 0.86, transform: [{ scale: 0.96 }] },
+  inactive: { opacity: 0.5 },
   hudLeft: { position: 'absolute', alignItems: 'flex-start' },
   hudRight: { position: 'absolute' },
   nameBox: {
     justifyContent: 'center',
-    borderRadius: 10,
+    borderRadius: salon.radius.control,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
-    backgroundColor: palette.panel,
-    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.45)',
+    borderColor: salon.surface.border,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: gameTheme.lacquer.surface,
+    boxShadow: gameTheme.shadow.plate,
   },
-  name: { color: palette.cream, letterSpacing: 1 },
-  counter: { color: palette.gold, ...titleShadow },
+  name: { color: salon.text, letterSpacing: 1 },
+  counter: { color: salon.textSoft, ...titleShadow },
   coin: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderColor: palette.goldDeep,
-    backgroundColor: palette.teal,
-    experimental_backgroundImage: 'linear-gradient(180deg, #2DB3B1 0%, #1C9396 55%, #17797F 100%)',
-    boxShadow: '0 3px 8px rgba(0, 0, 0, 0.5)',
+    borderColor: gameTheme.brass.deep,
+    backgroundColor: gameTheme.brass.main,
+    experimental_backgroundImage:
+      'radial-gradient(circle at 35% 30%, #FBE7A6 0%, #E2C06F 38%, #B48D3E 78%, #8C6A2A 100%)',
+    boxShadow: '0 3px 8px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 240, 200, 0.45)',
   },
   coinLetter: {
-    color: palette.gold,
+    color: salon.ink,
     fontWeight: '700',
     includeFontPadding: false,
   },
@@ -536,28 +593,30 @@ const styles = StyleSheet.create({
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2FA43A',
+    backgroundColor: salon.emerald.fill,
+    experimental_backgroundImage: salon.emerald.gradient,
     borderWidth: 1.5,
-    borderColor: '#BDF5B0',
+    borderColor: gameTheme.brass.bright,
   },
-  plusText: { color: '#FFFFFF', fontWeight: '900', includeFontPadding: false },
-  balance: { color: palette.gold, ...titleShadow },
+  plusText: { color: salon.text, fontWeight: '900', includeFontPadding: false },
+  balance: { color: salon.brass.text, ...titleShadow },
   balanceColumn: { alignItems: 'flex-end' },
-  reserved: { color: palette.cream, opacity: 0.85, ...titleShadow },
+  reserved: { color: salon.textSoft, ...titleShadow },
   iconButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    backgroundColor: palette.teal,
-    experimental_backgroundImage: 'linear-gradient(180deg, #2DB3B1 0%, #1C9396 55%, #17797F 100%)',
-    boxShadow: '0 4px 8px rgba(0, 0, 0, 0.45)',
+    borderWidth: 1,
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: gameTheme.lacquer.surface,
+    boxShadow: gameTheme.shadow.plate,
   },
   iconButtonDanger: {
-    backgroundColor: palette.danger,
-    experimental_backgroundImage: 'linear-gradient(180deg, #EE4B4B 0%, #D42A33 55%, #A81C24 100%)',
+    borderColor: salon.oxblood.border,
+    backgroundColor: salon.oxblood.fill,
+    experimental_backgroundImage: salon.oxblood.gradient,
   },
-  backGlyph: { color: '#FFFFFF', fontWeight: '900', includeFontPadding: false },
+  backGlyph: { color: salon.text, fontWeight: '900', includeFontPadding: false },
   // Zone du panneau : tout l'écran utile, réduite par le clavier ouvert ; le panneau centré
   // s'y adapte (`flexShrink`), son contenu défile.
   keyboardArea: {
@@ -568,56 +627,79 @@ const styles = StyleSheet.create({
   },
   panel: {
     flexShrink: 1,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    borderColor: palette.panelBorder,
-    backgroundColor: palette.panel,
-    boxShadow: '0 10px 30px rgba(0, 0, 0, 0.6)',
+    borderRadius: salon.radius.panel,
+    borderWidth: 1,
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: `${salon.surface.shadow}, inset 0 1px 0 rgba(246, 239, 223, 0.06)`,
   },
-  panelTitle: { color: '#FFFFFF', textAlign: 'center', ...titleShadow },
+  panelTitle: { color: salon.text, textAlign: 'center', letterSpacing: 1.2 },
+  // Filet de laiton sous le titre, plus intense au centre.
+  titleRule: {
+    height: 1,
+    alignSelf: 'stretch',
+    experimental_backgroundImage:
+      'linear-gradient(90deg, rgba(214, 178, 94, 0) 0%, rgba(214, 178, 94, 0.6) 50%, rgba(214, 178, 94, 0) 100%)',
+  },
   close: {
     position: 'absolute',
     zIndex: 10,
     elevation: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: '#8E1A1F',
-    backgroundColor: palette.danger,
-    experimental_backgroundImage: 'linear-gradient(180deg, #F0484C 0%, #D42A33 60%, #B21F27 100%)',
-  },
-  closeText: { color: '#FFD84A', includeFontPadding: false },
-  inner: {
-    borderRadius: 6,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderColor: gameTheme.brass.hairline,
+    backgroundColor: 'rgba(246, 239, 223, 0.06)',
+  },
+  closeText: { color: salon.textSoft, fontWeight: '700', includeFontPadding: false },
+  // Zone d'actions : filet de laiton discret au-dessus, jamais dans le défilement.
+  footer: { borderTopWidth: 1, borderTopColor: gameTheme.brass.hairline },
+  inner: {
+    borderRadius: salon.radius.card,
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
   },
   panelButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.4)',
-    backgroundColor: palette.jade,
-    experimental_backgroundImage: 'linear-gradient(180deg, #23A088 0%, #17806E 60%, #106456 100%)',
-    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.4)',
+    borderColor: salon.emerald.border,
+    backgroundColor: salon.emerald.fill,
+    experimental_backgroundImage: salon.emerald.gradient,
+    boxShadow: '0 2px 5px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
   },
   panelButtonDanger: {
-    backgroundColor: palette.danger,
-    experimental_backgroundImage: 'linear-gradient(180deg, #EE4B4B 0%, #D42A33 60%, #A81C24 100%)',
+    borderColor: salon.oxblood.border,
+    backgroundColor: salon.oxblood.fill,
+    experimental_backgroundImage: salon.oxblood.gradient,
+  },
+  // Action principale : émeraude cerclée de laiton, légère lueur dorée.
+  panelButtonPrimary: {
+    borderWidth: 1.5,
+    borderColor: gameTheme.brass.main,
+    boxShadow: `0 2px 6px rgba(0, 0, 0, 0.45), 0 0 10px ${gameTheme.brass.faint}, inset 0 1px 0 rgba(255, 255, 255, 0.12)`,
+  },
+  // Action secondaire : creux sombre, filet émeraude ; ne concurrence pas l'action principale.
+  panelButtonQuiet: {
+    backgroundColor: salon.surface.well,
+    experimental_backgroundImage: undefined,
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.04)',
   },
   panelButtonSelected: {
-    backgroundColor: palette.gold,
-    experimental_backgroundImage: 'linear-gradient(180deg, #FFE27A 0%, #F2C451 60%, #D9A52E 100%)',
+    borderColor: salon.brass.border,
+    backgroundColor: salon.brass.fill,
+    experimental_backgroundImage: salon.brass.gradient,
   },
-  panelButtonText: { color: '#FFD84A' },
-  panelButtonTextSelected: { color: '#0F3D2E' },
+  panelButtonText: { color: salon.text, letterSpacing: 0.4 },
+  panelButtonTextSelected: { color: salon.ink },
   choiceGroup: {
-    borderRadius: 6,
+    borderRadius: salon.radius.control,
     borderWidth: 1,
-    borderColor: palette.panelBorder,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
   },
 });

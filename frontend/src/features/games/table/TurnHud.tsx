@@ -17,6 +17,7 @@ import {
   fontOf,
   useTableFonts,
 } from '../../../components/table/TableDecor';
+import { gameTheme, motion } from '../../../constants/theme';
 import { playSound } from '../../../services/audio-service';
 import type { GameView } from '../../../types/game';
 import { INSTANT_WIN_LABELS, playerLabel } from '../format';
@@ -36,9 +37,10 @@ import { TURN_SIGNAL_MS, useReducedMotion } from './turn-signal';
  */
 
 /**
- * Chrono circulaire de la référence : grand disque turquoise, cerclage doré net et arc de
- * progression continu (aucun point ni segment), chiffre blanc centré. `fraction` : part du
- * tour restante, de 0 à 1, lue sur l'échéance du serveur.
+ * Chrono circulaire, cadran de montre « Ébène & Laiton » : lunette de laiton, cadran d'ébène
+ * éclairé d'émeraude, gorge sombre (temps écoulé) et arc de progression continu (aucun point
+ * ni segment) or vif, braise dans les dernières secondes ; chiffre blanc centré. `fraction` :
+ * part du tour restante, de 0 à 1, lue sur l'échéance du serveur.
  */
 export function TimerDial({
   size,
@@ -49,10 +51,12 @@ export function TimerDial({
   fraction: number;
   urgent: boolean;
 }) {
-  const stroke = Math.max(3, size * 0.085);
-  const radius = (size - stroke) / 2;
+  const stroke = Math.max(3, size * 0.09);
+  const bezel = Math.max(1.5, size * 0.035);
+  const radius = (size - stroke) / 2 - bezel;
   const circumference = 2 * Math.PI * radius;
   const lit = Math.min(1, Math.max(0, fraction));
+  const c = size / 2;
   return (
     <Svg
       testID="timer-dial"
@@ -61,46 +65,95 @@ export function TimerDial({
       style={[StyleSheet.absoluteFill, styles.passThrough]}
     >
       <Defs>
-        <RadialGradient id="timerDisc" cx="50%" cy="38%" r="62%">
-          <Stop offset="0" stopColor="#3FC7BE" />
-          <Stop offset="0.6" stopColor="#1A9A94" />
-          <Stop offset="1" stopColor="#0E6F6C" />
+        <LinearGradient id="timerBezel" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#F7DE92" />
+          <Stop offset="0.5" stopColor="#C99A3E" />
+          <Stop offset="1" stopColor="#7C5A1E" />
+        </LinearGradient>
+        <RadialGradient id="timerDisc" cx="50%" cy="36%" r="64%">
+          <Stop offset="0" stopColor={urgent ? '#5A1E1A' : '#1F5A47'} />
+          <Stop offset="0.55" stopColor={urgent ? '#2E0E0C' : '#0F2E25'} />
+          <Stop offset="1" stopColor="#050B09" />
         </RadialGradient>
       </Defs>
-      {/* Disque turquoise. */}
-      <Circle cx={size / 2} cy={size / 2} r={radius} fill="url(#timerDisc)" />
-      {/* Cerclage doré sombre (temps écoulé), puis arc doré vif (temps restant). */}
+      {/* Lunette de laiton, puis cadran d'ébène. */}
+      <Circle cx={c} cy={c} r={c} fill="url(#timerBezel)" />
+      <Circle cx={c} cy={c} r={c - bezel} fill="url(#timerDisc)" />
+      {/* Gorge sombre (temps écoulé), puis arc or vif / braise (temps restant). */}
       <Circle
-        cx={size / 2}
-        cy={size / 2}
+        cx={c}
+        cy={c}
         r={radius}
         fill="none"
-        stroke="#8A6414"
+        stroke="rgba(0, 0, 0, 0.55)"
         strokeWidth={stroke}
       />
       <Circle
         testID="timer-arc"
-        cx={size / 2}
-        cy={size / 2}
+        cx={c}
+        cy={c}
         r={radius}
         fill="none"
-        stroke={urgent ? '#F0524F' : '#F5C842'}
+        stroke={urgent ? gameTheme.ember : gameTheme.focus}
         strokeWidth={stroke}
         strokeLinecap="round"
         strokeDasharray={`${circumference * lit} ${circumference}`}
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        transform={`rotate(-90 ${c} ${c})`}
       />
-      {/* Fin liseré clair intérieur pour la netteté du cerclage. */}
+      {/* Tête de l'arc : perle claire là où le temps s'écoule (dessin seulement). */}
+      {lit > 0 && lit < 1 ? (
+        <Circle
+          cx={c + radius * Math.cos(2 * Math.PI * lit - Math.PI / 2)}
+          cy={c + radius * Math.sin(2 * Math.PI * lit - Math.PI / 2)}
+          r={stroke * 0.42}
+          fill={urgent ? '#FFD9CF' : '#FFF4C8'}
+        />
+      ) : null}
+      {/* Fin liseré clair intérieur pour la netteté du cadran. */}
       <Circle
-        cx={size / 2}
-        cy={size / 2}
+        cx={c}
+        cy={c}
         r={radius - stroke / 2 - 0.75}
         fill="none"
-        stroke="rgba(255, 244, 200, 0.55)"
-        strokeWidth={1.2}
+        stroke="rgba(242, 210, 122, 0.35)"
+        strokeWidth={1}
       />
+      {/* Graduations de montre (douze index, ceux des quarts plus longs) : décor du cadran. */}
+      <Path d={dialTicks(c, radius - stroke / 2 - 2.5, size)} stroke="rgba(242, 210, 122, 0.5)" strokeWidth={1} />
     </Svg>
   );
+}
+
+/** Douze index du cadran, vers l'intérieur depuis le rayon `outer` (quarts plus longs). */
+function dialTicks(c: number, outer: number, size: number): string {
+  return Array.from({ length: 12 }, (_, i) => {
+    const a = (i * Math.PI) / 6;
+    const inner = outer - size * (i % 3 === 0 ? 0.08 : 0.045);
+    return `M${c + outer * Math.cos(a)} ${c + outer * Math.sin(a)} L${c + inner * Math.cos(a)} ${c + inner * Math.sin(a)}`;
+  }).join(' ');
+}
+
+/**
+ * Battement du chrono dans les dernières secondes : petite impulsion à chaque seconde
+ * affichée (jamais de clignotement). `seconds` vient de l'échéance du serveur ; avec
+ * « réduire les animations », aucun mouvement.
+ */
+function useUrgentBeat(seconds: number | null, urgent: boolean): Animated.Value {
+  const reduced = useReducedMotion();
+  const [beat] = useState(() => new Animated.Value(0));
+  useEffect(() => {
+    if (!urgent || reduced || seconds === null) return;
+    beat.setValue(1);
+    const animation = Animated.timing(beat, {
+      toValue: 0,
+      duration: motion.select + 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [beat, seconds, urgent, reduced]);
+  return beat;
 }
 
 /** Texte du bandeau de tour, uniquement à partir de l'état synchronisé. */
@@ -108,7 +161,8 @@ export function turnMessage(
   game: GameView,
   { dealing, lastTrick }: { dealing: boolean; lastTrick: boolean },
 ): string | null {
-  if (lastTrick) return '5ᵉ tour : cartes jouées automatiquement';
+  // 5e tour joué par le système : aucun bandeau, le compteur « Tour 5/5 » suffit.
+  if (lastTrick) return null;
   if (game.status !== 'in_progress' || !game.play) return null;
   if (dealing) return 'Distribution des cartes…';
   if (game.turnTimedOutAt) return 'Temps écoulé : coup automatique';
@@ -163,21 +217,29 @@ export function TurnHud({
     animation.start();
     return () => animation.stop();
   }, [dialOpacity, showDial]);
+  const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
+  const urgent = seconds !== null && seconds <= 3;
+  const beat = useUrgentBeat(seconds, urgent && showDial);
   // 5e tour : joué par le système, aucun compte à rebours (D-041).
   const lastTrick = game.status === 'finished' && presenting;
+  const text =
+    (game.status === 'in_progress' || lastTrick) && game.play
+      ? turnMessage(game, { dealing, lastTrick })
+      : null;
+  const banner = useBannerEntrance(text);
   if ((game.status !== 'in_progress' && !lastTrick) || !game.play) return null;
 
   const { ring, columnWidth, labelHeight, labelFontSize, message } = layout.hud;
-  const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
   const fraction =
     phase && remainingMs !== null
       ? remainingFraction(phase, phase.localDeadline - remainingMs)
       : lastTrick || dealing
         ? 1
         : 0;
-  const urgent = seconds !== null && seconds <= 3;
-  const text = turnMessage(game, { dealing, lastTrick });
   const trick = lastTrick ? 5 : game.play.trickNumber;
+  // Bandeau « C'est ton tour ! » : même joueur attendu que le chrono, accent or.
+  const mine =
+    !lastTrick && !dealing && (game.activePlayerId ?? game.play.nextPlayerId) === game.viewerId;
 
   return (
     <>
@@ -204,7 +266,16 @@ export function TurnHud({
           }
           style={[
             styles.ring,
-            { width: ring, height: ring, borderRadius: ring / 2, opacity: dialOpacity },
+            urgent && styles.ringUrgent,
+            {
+              width: ring,
+              height: ring,
+              borderRadius: ring / 2,
+              opacity: dialOpacity,
+              transform: [
+                { scale: beat.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] }) },
+              ],
+            },
           ]}
         >
           <TimerDial size={ring} fraction={fraction} urgent={urgent} />
@@ -240,19 +311,26 @@ export function TurnHud({
         </View>
       </View>
       {text ? (
-        <View
+        <Animated.View
           style={[
             styles.absolute,
             styles.passThrough,
             styles.message,
+            mine && styles.messageMine,
             {
               left: message.left,
               bottom: message.bottom,
               width: message.width,
               minHeight: message.height,
+              opacity: banner.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }),
+              transform: [
+                { translateX: banner.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) },
+              ],
             },
           ]}
         >
+          {/* Filet d'accent à gauche : or vif à mon tour, laiton sinon. */}
+          <View style={[styles.messageAccent, mine && styles.messageAccentMine]} />
           <Text
             testID="turn-message"
             accessibilityLiveRegion="polite"
@@ -261,10 +339,36 @@ export function TurnHud({
           >
             {text}
           </Text>
-        </View>
+        </Animated.View>
       ) : null}
     </>
   );
+}
+
+/**
+ * Entrée du bandeau de tour à chaque nouveau message (changement de joueur attendu, 5e tour…) :
+ * glissé court et fondu, sans jamais masquer le texte (opacité minimale 0,2). Le message
+ * lui-même vient de l'état synchronisé (`turnMessage`).
+ */
+function useBannerEntrance(text: string | null): Animated.Value {
+  const reduced = useReducedMotion();
+  const [entrance] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    if (!text || reduced) {
+      entrance.setValue(1);
+      return;
+    }
+    entrance.setValue(0);
+    const animation = Animated.timing(entrance, {
+      toValue: 1,
+      duration: motion.turn,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [entrance, text, reduced]);
+  return entrance;
 }
 
 /**
@@ -875,7 +979,11 @@ const styles = StyleSheet.create({
   ring: {
     alignItems: 'center',
     justifyContent: 'center',
-    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.45), 0 0 8px rgba(245, 200, 66, 0.35)',
+    boxShadow: `0 6px 14px rgba(0, 0, 0, 0.55), 0 0 10px ${gameTheme.brass.faint}`,
+  },
+  // Dernières secondes : lueur de braise douce autour du cadran (aucun clignotement).
+  ringUrgent: {
+    boxShadow: `0 6px 14px rgba(0, 0, 0, 0.55), 0 0 16px 3px ${gameTheme.emberGlow}`,
   },
   ringText: {
     color: '#FFFFFF',
@@ -888,21 +996,41 @@ const styles = StyleSheet.create({
   label: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
-    backgroundColor: 'rgba(6, 30, 14, 0.82)',
+    borderRadius: 999,
+    backgroundColor: gameTheme.lacquer.fill,
+    experimental_backgroundImage: gameTheme.lacquer.surface,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: gameTheme.brass.line,
+    boxShadow: `${gameTheme.shadow.plate}, inset 0 0 0 2px rgba(0, 0, 0, 0.45), inset 0 0 0 3px ${gameTheme.brass.faint}`,
   },
-  labelText: { color: '#FFFFFF', includeFontPadding: false },
-  // Bandeau de la référence : plaque vert très sombre translucide, texte blanc gras à gauche.
+  labelText: { color: gameTheme.brass.bright, includeFontPadding: false, letterSpacing: 0.5 },
+  // Bandeau de tour : laque sombre, filet de laiton, texte blanc gras à gauche.
   message: {
     justifyContent: 'center',
-    paddingHorizontal: 12,
+    paddingLeft: 16,
+    paddingRight: 12,
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: 'rgba(4, 30, 12, 0.78)',
-    boxShadow: '0 3px 8px rgba(0, 0, 0, 0.3)',
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: gameTheme.lacquer.border,
+    backgroundColor: gameTheme.lacquer.fill,
+    experimental_backgroundImage: gameTheme.lacquer.surface,
+    boxShadow: gameTheme.shadow.plate,
   },
+  messageMine: {
+    borderColor: gameTheme.focus,
+    boxShadow: `${gameTheme.shadow.plate}, 0 0 12px ${gameTheme.focusGlow}`,
+  },
+  messageAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    backgroundColor: gameTheme.brass.line,
+  },
+  messageAccentMine: { backgroundColor: gameTheme.focus },
   messageText: { color: '#FFFFFF', textAlign: 'left' },
   glowBloom: {
     position: 'absolute',

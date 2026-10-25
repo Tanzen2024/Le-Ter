@@ -144,3 +144,31 @@ describe('lecteur expo-audio', () => {
     expect(createAudioPlayer).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('volume des effets (Réglages)', () => {
+  it('appliqué aux lecteurs déjà ouverts et à ceux créés ensuite', () => {
+    registerSoundPlayer(createExpoSoundPlayer(createPlayer));
+    playSound('uiClick');
+    expect(handles[0].volume).toBe(1);
+    usePreferencesStore.getState().setEffectsVolume('low');
+    expect(handles[0].volume).toBeCloseTo(0.35);
+    playSound('cardPlace');
+    expect(handles[1].volume).toBeCloseTo(0.35);
+  });
+
+  it('son coupé : aucun son de table joué, quel que soit le volume', () => {
+    registerSoundPlayer(createExpoSoundPlayer(createPlayer));
+    usePreferencesStore.getState().setSoundEnabled(false);
+    for (const sound of ['cardDeal', 'cardPick', 'cardPlace', 'turnChime', 'resultWin', 'resultNeutral'] as const) {
+      expect(playSound(sound)).toBe(false);
+    }
+    expect(createPlayer).not.toHaveBeenCalled();
+  });
+
+  it('chaque son de table a son fichier et un seul lecteur, réutilisé', () => {
+    registerSoundPlayer(createExpoSoundPlayer(createPlayer));
+    for (let i = 0; i < 3; i += 1) playSound('cardDeal');
+    expect(createPlayer).toHaveBeenCalledTimes(1);
+    expect(handles[0].play).toHaveBeenCalledTimes(3);
+  });
+});

@@ -2,7 +2,7 @@ import { forwardRef, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 
-import { colors, radius, spacing } from '../../constants/theme';
+import { colors, gameTheme, radius, salon, spacing } from '../../constants/theme';
 
 interface TextFieldProps extends TextInputProps {
   label: string;
@@ -246,30 +246,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: 'rgba(242, 196, 81, 0.55)',
-    backgroundColor: 'rgba(4, 24, 13, 0.55)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(0, 0, 0, 0.38)',
   },
-  tableRowFocused: { borderColor: '#F2C451' },
+  tableRowFocused: { borderColor: gameTheme.brass.bright },
   tableRowError: { borderColor: '#FF8A7A' },
   tableInput: {
     flex: 1,
     alignSelf: 'stretch',
     paddingVertical: 0,
-    color: '#F7F1E1',
+    color: salon.text,
   },
-  tableToggleText: { color: '#F2C451' },
+  tableToggleText: { color: salon.brass.text },
   hint: { color: colors.textMuted, fontSize: 13, marginTop: spacing.xs },
   loginRow: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.32)',
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+    borderColor: gameTheme.brass.hairline,
+    borderRadius: salon.radius.control,
+    backgroundColor: 'rgba(0, 0, 0, 0.36)',
+    boxShadow: 'inset 0 1px 3px rgba(0, 0, 0, 0.45)',
   },
   loginRowFocused: {
-    borderColor: '#F2C451',
-    boxShadow: '0 0 0 3px rgba(242, 196, 81, 0.18)',
+    borderColor: gameTheme.brass.bright,
+    boxShadow: '0 0 0 3px rgba(214, 178, 94, 0.2)',
   },
   loginRowError: { borderColor: '#FF8A7A' },
   loginInput: {
@@ -279,7 +280,7 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     paddingHorizontal: 14,
     fontSize: 16,
-    color: '#F7F1E1',
+    color: salon.text,
   },
   loginContainer: { gap: 4 },
   loginMessage: { color: 'rgba(247, 241, 225, 0.7)', fontSize: 12.5, lineHeight: 17 },

@@ -38,7 +38,7 @@ import {
 import type { GameStakeLedger } from './game-stake-ledger';
 
 /** Index de la migration 0004. */
-const ONE_ACTIVE_GAME_INDEX = 'game_players_one_active_game_per_player';
+export const ONE_ACTIVE_GAME_INDEX = 'game_players_one_active_game_per_player';
 const CREATION_KEY_INDEX = 'games_creator_creation_key_idx';
 /** Index de la migration 0005 : une seule partie active par session. */
 const ONE_ACTIVE_GAME_PER_SESSION_INDEX = 'games_one_active_per_session';

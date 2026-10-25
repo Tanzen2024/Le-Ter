@@ -109,7 +109,7 @@ export interface WithdrawalAvailabilityNotice {
 }
 
 /**
- * Ce que la Boutique dit de l'état des retraits, TOUJOURS d'après le serveur (D-077) ;
+ * Ce que le panneau « Mes jetons » dit de l'état des retraits, TOUJOURS d'après le serveur (D-077) ;
  * `undefined` en production (rien à signaler). Les motifs de configuration ne sont jamais
  * détaillés au joueur.
  */

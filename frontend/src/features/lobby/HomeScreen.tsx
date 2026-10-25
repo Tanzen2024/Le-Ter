@@ -6,17 +6,19 @@ import {
   DecorativeCards,
   fontOf,
   PillButton,
-  tablePalette,
   titleShadow,
   useTableFonts,
 } from '../../components/table/TableDecor';
+import { gameTheme, salon } from '../../constants/theme';
 import { useMessages } from '../../lib/i18n';
 import { ComplaintNotice } from '../complaints/ComplaintNotice';
+import { ReferralNotice } from '../referrals/ReferralNotice';
 import { playSound } from '../../services/audio-service';
 import type { GameType } from '../../types/session';
 import { useOpenTableCount } from '../sessions/hooks';
 import { HomeTournamentSummary, useHomeTournament } from '../tournaments/HomeTournamentSummary';
 import { TournamentThanksNotice } from '../tournaments/TournamentThanksNotice';
+import { useReducedMotion } from '../games/table/turn-signal';
 import { GameIdentityIcon, TournamentEmblem } from './GameIdentity';
 import { computeHomeLayout, type HomeLayout } from './home-layout';
 import { useLobbyMetrics } from './lobby-metrics';
@@ -38,6 +40,7 @@ export function HomeScreen() {
     <LobbyShell decor={<HomeDecor />}>
       <ModeSelect />
       <ComplaintNotice />
+      <ReferralNotice />
       <TournamentThanksNotice />
       <ModerationNotice />
     </LobbyShell>
@@ -85,6 +88,7 @@ function ModeSelect() {
   const homeTournament = useHomeTournament();
   const [appear] = useState(() => new Animated.Value(0));
   const { panel } = useLocalSearchParams<{ panel?: string }>();
+  const reduced = useReducedMotion();
 
   // Arrivée demandée sur la création de partie (ex. « Non merci » à la géolocalisation) :
   // le panneau s'ouvre une fois, puis le paramètre est effacé pour ne pas le rouvrir.
@@ -95,12 +99,16 @@ function ModeSelect() {
   }, [panel, openPanel]);
 
   useEffect(() => {
+    if (reduced) {
+      appear.setValue(1);
+      return;
+    }
     Animated.timing(appear, {
       toValue: 1,
       duration: 260,
       useNativeDriver: true,
     }).start();
-  }, [appear]);
+  }, [appear, reduced]);
 
   return (
     <>
@@ -218,6 +226,7 @@ function ModeCard({
       >
         {title}
       </Text>
+      <View style={styles.modeRule} accessibilityElementsHidden importantForAccessibility="no" />
       {action}
       {body ? (
         <View style={[styles.body, { marginVertical: Math.round(c.bodySpacing * 0.5) }]}>
@@ -280,7 +289,7 @@ function OpenGamesCount({ gameType, width: w }: { gameType: GameType; width: num
 }
 
 /**
- * « + Proposer un tournoi » : compact, fond vert très sombre, fine bordure et texte dorés.
+ * « + Proposer un tournoi » : compact, laque sombre, filet et texte de laiton.
  * Ouvre le parcours de proposition EXISTANT (aucune seconde logique de création).
  */
 function ProposeTournamentButton({ width: w }: { width: number }) {
@@ -327,9 +336,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     // Au-dessus des petites cartes qui débordent en haut des panneaux (Tournois).
     zIndex: 1,
-    color: '#FFFFFF',
+    color: salon.text,
     textAlign: 'center',
-    letterSpacing: 1.5,
+    letterSpacing: 2,
     ...titleShadow,
   },
   cards: {
@@ -340,20 +349,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Plaque de laque à filet de laiton, éclairée par le haut comme la table.
   mode: {
     alignItems: 'stretch',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderColor: 'rgba(214, 170, 70, 0.4)',
-    backgroundColor: '#0B2416',
-    experimental_backgroundImage: 'linear-gradient(180deg, #0F2C1B 0%, #0A2114 60%, #081A10 100%)',
-    boxShadow: '0 10px 24px rgba(0, 0, 0, 0.55)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage:
+      'linear-gradient(180deg, rgba(31, 52, 44, 0.97) 0%, rgba(13, 24, 20, 0.97) 46%, rgba(7, 13, 11, 0.98) 100%)',
+    boxShadow: `${gameTheme.shadow.panel}, inset 0 1px 0 rgba(246, 239, 223, 0.08)`,
   },
   modeTitle: {
-    color: '#FFFFFF',
+    color: salon.text,
     textAlign: 'center',
-    letterSpacing: 1,
+    letterSpacing: 1.4,
     ...titleShadow,
+  },
+  modeRule: {
+    height: 1,
+    marginHorizontal: '12%',
+    experimental_backgroundImage:
+      'linear-gradient(90deg, rgba(214, 178, 94, 0) 0%, rgba(214, 178, 94, 0.7) 50%, rgba(214, 178, 94, 0) 100%)',
   },
   illustration: {
     flex: 1,
@@ -369,18 +386,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     maxWidth: '100%',
     borderWidth: 1,
-    borderColor: tablePalette.gold,
-    backgroundColor: '#06170D',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(214, 178, 94, 0.08)',
   },
-  proposeText: { color: tablePalette.gold, fontWeight: '700' },
+  proposeText: { color: salon.brass.text, fontWeight: '700' },
   openGames: {
     alignSelf: 'center',
     maxWidth: '100%',
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
     // Fond sombre : lisible même si la carte T inclinée de l'illustration déborde dessous.
-    backgroundColor: 'rgba(6, 23, 13, 0.85)',
+    backgroundColor: 'rgba(4, 9, 7, 0.82)',
   },
-  openGamesText: { color: tablePalette.cream },
-  pressed: { opacity: 0.85, transform: [{ scale: 0.96 }] },
+  openGamesText: { color: salon.textSoft },
+  pressed: { opacity: 0.86, transform: [{ scale: 0.96 }] },
   // Zone BORNÉE entre « Proposer » et « Rejoindre » : son contenu ne la fait jamais grandir
   // (le résumé s'y ajuste), le bouton reste au bas du panneau.
   body: { flex: 1, minHeight: 0, alignItems: 'stretch' },

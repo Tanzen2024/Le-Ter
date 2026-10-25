@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen, within } from '@testing-library/react-native';
 
 import type { PublicUser } from '../../types/auth';
 import { useCurrentUser } from '../auth/hooks';
@@ -12,11 +12,14 @@ const mockChangePassword = jest.fn((_payload: unknown, options: { onSuccess: () 
 
 // Nouveau code de récupération (D-135) : réponse du serveur simulée.
 const mockRegenerate = jest.fn();
+const mockLogout = jest.fn();
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({ router: { push: (path: string) => mockPush(path) } }));
 let mockRegenerated: { recoveryCode: string } | undefined;
 
 jest.mock('../auth/hooks', () => ({
   useCurrentUser: jest.fn(),
-  useLogout: () => ({ isPending: false, mutate: jest.fn() }),
+  useLogout: () => ({ isPending: false, mutate: mockLogout }),
   useChangePassword: () => ({ isPending: false, mutate: mockChangePassword }),
   useRegenerateRecoveryCode: () => ({
     isPending: false,
@@ -28,6 +31,8 @@ jest.mock('../auth/hooks', () => ({
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => true) }));
 
 beforeEach(() => {
+  mockLogout.mockReset();
+  mockPush.mockReset();
   mockRegenerate.mockReset();
   mockRegenerated = undefined;
 });
@@ -175,5 +180,60 @@ describe('ProfilePanel : code de récupération (D-135)', () => {
     expect(screen.getByTestId('recovery-code')).toHaveTextContent('LT-7K4P-92XM-0A1B');
     await fireEvent.press(screen.getByText('Copier le code'));
     expect(await screen.findByText('Code copié.')).toBeTruthy();
+  });
+});
+
+describe('ProfilePanel : tenu sans défiler (le formulaire remplace les informations)', () => {
+  it('« Modifier » : les informations laissent la place au formulaire, puis reviennent', async () => {
+    serve(USER);
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    expect(screen.getByText('Hugues')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Modifier le mot de passe'));
+    expect(screen.getByLabelText('Mot de passe actuel')).toBeTruthy();
+    // Informations et code de récupération masqués ; carte du joueur conservée. La zone
+    // d'actions du panneau porte alors celles du formulaire (Annuler, Enregistrer).
+    expect(screen.queryByText('Hugues')).toBeNull();
+    expect(screen.queryByText('Code de récupération')).toBeNull();
+    expect(screen.getByText('roly')).toBeTruthy();
+    const actions = within(screen.getByTestId('panel-actions'));
+    expect(actions.getByText('Annuler')).toBeTruthy();
+    expect(actions.getByLabelText('Enregistrer le nouveau mot de passe')).toBeTruthy();
+    expect(screen.queryByText('Déconnexion')).toBeNull();
+    await fireEvent.press(screen.getByText('Annuler'));
+    expect(screen.getByText('Hugues')).toBeTruthy();
+    expect(screen.getByText('Code de récupération')).toBeTruthy();
+    // Retour au profil : ses actions reviennent dans la zone d'actions.
+    expect(within(screen.getByTestId('panel-actions')).getByText('Déconnexion')).toBeTruthy();
+  });
+
+  it('zone d’actions séparée des informations : « Aide et réclamations » et « Déconnexion »', async () => {
+    serve(USER);
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    const zone = screen.getByTestId('panel-actions');
+    const actions = within(zone);
+    expect(actions.getByRole('button', { name: 'Aide et réclamations' })).toBeTruthy();
+    expect(actions.getByRole('button', { name: 'Déconnexion' })).toBeTruthy();
+    // Les informations du compte ne sont pas dans la zone d'actions.
+    expect(actions.queryByText('Hugues')).toBeNull();
+    expect(actions.queryByLabelText('Modifier le mot de passe')).toBeNull();
+    // Ouvrir le profil ne déconnecte jamais.
+    expect(mockLogout).not.toHaveBeenCalled();
+    await fireEvent.press(actions.getByRole('button', { name: 'Aide et réclamations' }));
+    expect(mockPush).toHaveBeenCalledWith('/support');
+    await fireEvent.press(actions.getByRole('button', { name: 'Déconnexion' }));
+    expect(mockLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('code de récupération en cours : il prend la place, saisie conservée jusqu’à « Annuler »', async () => {
+    serve({ ...USER, hasRecoveryCode: true });
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    await fireEvent.press(screen.getByLabelText('Générer un nouveau code de récupération'));
+    expect(screen.queryByText('Hugues')).toBeNull();
+    expect(screen.queryByLabelText('Modifier le mot de passe')).toBeNull();
+    await fireEvent.changeText(screen.getByLabelText('Mot de passe actuel'), 'Secret123');
+    expect(screen.getByLabelText('Mot de passe actuel').props.value).toBe('Secret123');
+    await fireEvent.press(screen.getByText('Annuler'));
+    expect(screen.getByText('Hugues')).toBeTruthy();
+    expect(screen.getByLabelText('Modifier le mot de passe')).toBeTruthy();
   });
 });

@@ -8,12 +8,13 @@ import {
   useTableFonts,
 } from '../../components/table/TableDecor';
 import { useLandscapeViewport, type LandscapeViewport } from '../../hooks/use-landscape-viewport';
+import { gameTheme, salon } from '../../constants/theme';
 import { playSound } from '../../services/audio-service';
 import { LeterCards, LoginBackdropDecor } from './LoginDecor';
 
 /**
- * Écrans de connexion et d'inscription épurés : fond brun-rouge profond, un seul panneau sombre
- * centré aux fins filets dorés, marque « LE TER » puis le titre. Aucune décoration sans fonction
+ * Écrans de connexion et d'inscription épurés : la pièce vert nuit du salon, un seul panneau de
+ * laque centré à filet de laiton, marque « LE TER » puis le titre. Aucune décoration sans fonction
  * (ni cartes, ni feutre). Dimensionné depuis la surface paysage sûre : sur un téléphone en
  * paysage (~350 dp utiles), la connexion tient sans défiler ; le panneau défile si le clavier ou
  * l'inscription demandent plus de hauteur.
@@ -331,14 +332,13 @@ export function LoginSteps({ steps, current }: { steps: readonly string[]; curre
   );
 }
 
-const BUTTON_TEXT = '#2A1405';
+const BUTTON_TEXT = salon.ink;
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: palette.backdrop,
-    experimental_backgroundImage:
-      'radial-gradient(ellipse at 50% 35%, #5A1610 0%, #350A08 45%, #170403 100%)',
+    backgroundColor: salon.backdrop,
+    experimental_backgroundImage: salon.backdropLight,
   },
   fill: { flex: 1 },
   scrollContent: {
@@ -350,9 +350,11 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.28)',
-    backgroundColor: 'rgba(18, 6, 4, 0.72)',
-    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(10, 18, 16, 0.86)',
+    experimental_backgroundImage:
+      'linear-gradient(180deg, rgba(27, 41, 36, 0.9) 0%, rgba(8, 15, 13, 0.92) 100%)',
+    boxShadow: `${salon.surface.shadow}, inset 0 1px 0 rgba(246, 239, 223, 0.07)`,
   },
   brand: {
     color: palette.gold,
@@ -376,10 +378,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 10,
     paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: palette.gold,
-    experimental_backgroundImage: 'linear-gradient(180deg, #F7D57A 0%, #F2C451 45%, #D9961F 100%)',
-    boxShadow: '0 6px 14px rgba(0, 0, 0, 0.35)',
+    borderRadius: salon.radius.control,
+    borderWidth: 1,
+    borderColor: salon.brass.border,
+    backgroundColor: salon.brass.fill,
+    experimental_backgroundImage: salon.brass.gradient,
+    boxShadow: '0 6px 14px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 244, 205, 0.55)',
   },
   buttonPressed: { opacity: 0.88, transform: [{ scale: 0.99 }] },
   buttonDisabled: { opacity: 0.45 },
@@ -397,7 +401,7 @@ const styles = StyleSheet.create({
   },
   link: { minHeight: 24, justifyContent: 'center', borderRadius: 4 },
   linkPressed: { opacity: 0.6 },
-  linkText: { color: palette.gold, fontWeight: '700' },
+  linkText: { color: salon.brass.text, fontWeight: '700' },
   footer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -407,7 +411,7 @@ const styles = StyleSheet.create({
   },
   footerText: { color: palette.cream, opacity: 0.8 },
   message: { color: palette.error, textAlign: 'center', fontWeight: '600' },
-  success: { color: '#A8E6B8' },
+  success: { color: salon.status.positive.text },
   step: { color: palette.cream, opacity: 0.75, fontWeight: '600', marginBottom: 8 },
   stepName: { color: palette.gold },
   progress: { flexDirection: 'row', gap: 6 },
@@ -415,7 +419,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 3,
     borderRadius: 2,
-    backgroundColor: 'rgba(247, 241, 225, 0.15)',
+    backgroundColor: 'rgba(246, 239, 223, 0.14)',
   },
-  progressSegmentOn: { backgroundColor: palette.gold },
+  progressSegmentOn: { experimental_backgroundImage: salon.brass.gradient, backgroundColor: salon.brass.fill },
 });

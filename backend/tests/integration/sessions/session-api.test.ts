@@ -124,16 +124,18 @@ async function playUntilSecondWins(gameId: string, first: Player, second: Player
 
 /**
  * Session à 4 places : A, B, C, D aux sièges 0..3 ; partie 1 entre A et B, gagnée par B.
+ * C et D arrivent une fois la partie 1 démarrée : assis, ils attendent la suivante (D-153).
  * À la fin de la partie, la ronde Poursuivre/Quitter est ouverte pour A, B, C et D.
  */
 async function sessionWonByB() {
   const [A, B, C, D] = [await newPlayer(), await newPlayer(), await newPlayer(), await newPlayer()];
   const { sessionId, gameId } = await createSession(A, 4);
-  for (const p of [B, C, D]) {
+  await joinSession(B, sessionId); // Table en attente : B entre aussi dans la partie.
+  await expectStatus(start(A, gameId), 200);
+  for (const p of [C, D]) {
     await joinSession(p, sessionId);
   }
-  await expectStatus(joinGame(B, gameId), 200);
-  await playUntilSecondWins(gameId, A, B);
+  await playUntilSecondWins(gameId, A, B, true);
   return { A, B, C, D, sessionId, game1: gameId };
 }
 
@@ -281,9 +283,13 @@ describe('Session : création, capacité, vue', () => {
 
 describe('Une seule session active par joueur (D-034)', () => {
   it('présent dans S1 : ni créer, ni rejoindre une autre session', async () => {
-    const [A, B, C] = [await newPlayer(), await newPlayer(), await newPlayer()];
+    const [A, B, C, X] = [await newPlayer(), await newPlayer(), await newPlayer(), await newPlayer()];
     const s1 = await createSession(A);
     const s2 = await createSession(C);
+    // B arrive pendant la partie de S1 : assis, hors partie (D-153). Seule la règle de
+    // session s'applique à lui.
+    await joinSession(X, s1.sessionId);
+    await expectStatus(start(A, s1.gameId), 200);
     await joinSession(B, s1.sessionId);
 
     const create = await expectStatus(B.api.post('/api/sessions', { maxPlayers: 2 }), 409);
@@ -363,7 +369,7 @@ describe('Sièges fixes (D-034)', () => {
 });
 
 describe('Joueurs de session et joueurs de partie', () => {
-  it('rejoindre la session ne fait pas entrer dans la partie ; la partie exige la session', async () => {
+  it('table en attente : rejoindre la session fait entrer dans la partie (D-153) ; la partie exige la session', async () => {
     const [A, B, C] = [await newPlayer(), await newPlayer(), await newPlayer()];
     const { sessionId, gameId } = await createSession(A);
 
@@ -372,8 +378,14 @@ describe('Joueurs de session et joueurs de partie', () => {
 
     await joinSession(B, sessionId);
     const game = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
-    expect(game.body.game.players.map((p: { playerId: string }) => p.playerId)).toEqual([A.id]);
+    expect(game.body.game.players.map((p: { playerId: string }) => p.playerId)).toEqual([
+      A.id,
+      B.id,
+    ]);
+    // Second appel de l'application : sans effet (déjà joueur).
     await expectStatus(joinGame(B, gameId), 200);
+    const again = await expectStatus(A.api.get(`/api/games/${gameId}`), 200);
+    expect(again.body.game.players).toHaveLength(2);
   });
 
   it('arrivée pendant une partie EN COURS : joueur de session seulement, sans carte', async () => {
@@ -635,8 +647,17 @@ describe('Quitter une session (R-19, D-037)', () => {
 
   it('partie sans joueur mais session non vide : partie supprimée, la session continue (J1 = arrivée suivante)', async () => {
     const [A, B] = [await newPlayer(), await newPlayer()];
-    const { sessionId, gameId } = await createSession(A, 3);
-    await joinSession(B, sessionId); // B est dans la session, pas dans la partie
+    const first = await createSession(A, 3);
+    const { sessionId } = first;
+    // Partie 1 jouée (B gagne), puis partie suivante créée par A seul : B est dans la
+    // session, pas dans cette partie (D-153 : on n'entre dans une partie qu'en arrivant).
+    await joinSession(B, sessionId);
+    await playUntilSecondWins(first.gameId, A, B);
+    await answer(sessionId, [
+      [A, 'continue'],
+      [B, 'continue'],
+    ]);
+    const gameId = (await expectStatus(nextGame(A, sessionId), 201)).body.game.gameId as string;
 
     await expectStatus(leaveSession(A, sessionId), 200);
     expect(await gameRow(gameId)).toBeUndefined();
@@ -1013,10 +1034,13 @@ describe('Plusieurs parties et J1 (D-033, D-034)', () => {
   });
 
   it('une seule partie active par session : partie suivante refusée tant que la précédente dure', async () => {
-    const [A, B] = [await newPlayer(), await newPlayer()];
-    const { sessionId } = await createSession(A);
+    const [A, B, C] = [await newPlayer(), await newPlayer(), await newPlayer()];
+    const { sessionId, gameId } = await createSession(A);
     await joinSession(B, sessionId);
-    const res = await expectStatus(nextGame(B, sessionId), 409);
+    await expectStatus(start(A, gameId), 200);
+    // C, assis pendant la partie (hors partie, D-153), demande la suivante trop tôt.
+    await joinSession(C, sessionId);
+    const res = await expectStatus(nextGame(C, sessionId), 409);
     expect(res.body.code).toBe('SESSION_GAME_IN_PROGRESS');
   });
 

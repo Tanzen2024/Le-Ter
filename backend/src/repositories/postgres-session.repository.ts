@@ -6,6 +6,7 @@ import {
 } from '../database/sql-client';
 import type { GameStakeLedger } from './game-stake-ledger';
 import type { Game, GameType } from '../domain/game/game';
+import { ParticipationRefusedError } from '../domain/game/game-errors';
 import {
   TournamentTableAvailableError,
   TournamentTableRefusedError,
@@ -31,10 +32,12 @@ import {
   deleteWaitingGame,
   insertGameRows,
   lockGame,
+  ONE_ACTIVE_GAME_INDEX,
   translateGameInsertError,
   updateGameRows,
 } from './postgres-game.repository';
 import type {
+  JoinWrite,
   LeaveContext,
   LeaveWrite,
   OpenTableSummary,
@@ -267,30 +270,7 @@ export class PostgresSessionRepository implements SessionRepository {
   ): Promise<R> {
     try {
       return await this.db.transaction(async (tx) => {
-        // 1. La partie active d'abord : une écriture de partie verrouille sa ligne `games`
-        //    puis les joueurs de la session ; le départ prend les verrous dans le même ordre.
-        const active = await tx.query<{ id: GameId }>(
-          "SELECT id FROM games WHERE session_id = $1 AND status <> 'finished'",
-          [sessionId],
-        );
-        const activeId = active.rows[0]?.id;
-        let locked = activeId ? await lockGame(tx, activeId) : null;
-        // 2. Puis la session et ses joueurs.
-        const context = await lockContext(tx, sessionId);
-        const last = context.lastGame;
-        if (last?.status === 'waiting' && last.gameId !== locked?.id) {
-          // Partie créée entre les deux lectures (rare) : verrouillée à son tour.
-          locked = await lockGame(tx, last.gameId);
-        }
-        const history = await tx.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM games WHERE session_id = $1 AND status = 'finished'",
-          [sessionId],
-        );
-        const result = change({
-          ...context,
-          waitingGame: last?.status === 'waiting' ? locked : null,
-          hasFinishedGames: (history.rows[0]?.n ?? 0) > 0,
-        });
+        const result = change(await lockWithWaitingGame(tx, sessionId));
         if (result.events.length === 0) {
           return result;
         }
@@ -314,6 +294,35 @@ export class PostgresSessionRepository implements SessionRepository {
         return result;
       });
     } catch (err) {
+      throw translateSessionError(err, err);
+    }
+  }
+
+  async join<R extends JoinWrite>(
+    sessionId: SessionId,
+    change: (context: LeaveContext) => R,
+  ): Promise<R> {
+    let saved: Game | undefined;
+    try {
+      return await this.db.transaction(async (tx) => {
+        const result = change(await lockWithWaitingGame(tx, sessionId));
+        // Siège et place dans la partie dans la même transaction : un refus de l'un (siège
+        // pris, partie refusée par R-18) annule l'autre.
+        if (result.events.length > 0) {
+          await saveSession(tx, result.session);
+        }
+        if (result.savedGame) {
+          saved = result.savedGame.game;
+          await updateGameRows(tx, saved, result.savedGame.expectedVersion, this.options.stakeLedger);
+        }
+        return result;
+      });
+    } catch (err) {
+      if (saved && isPgError(err, PG_UNIQUE_VIOLATION) && constraintOf(err) === ONE_ACTIVE_GAME_INDEX) {
+        // R-18 : le nouveau joueur est déjà membre d'une autre partie active.
+        const newcomer = saved.players[saved.players.length - 1]?.playerId;
+        throw new ParticipationRefusedError(saved.id, newcomer ?? saved.creatorId);
+      }
       throw translateSessionError(err, err);
     }
   }
@@ -452,6 +461,35 @@ function translateSessionError(err: unknown, fallback: unknown): unknown {
 function constraintOf(err: unknown): string | undefined {
   const constraint = (err as { constraint?: unknown }).constraint;
   return typeof constraint === 'string' ? constraint : undefined;
+}
+
+/**
+ * Verrous d'un départ ou d'une arrivée : la partie active d'abord (une écriture de partie
+ * verrouille sa ligne `games` puis les joueurs de la session ; même ordre, sans
+ * interblocage), puis la session et ses joueurs.
+ */
+async function lockWithWaitingGame(tx: SqlExecutor, sessionId: SessionId): Promise<LeaveContext> {
+  const active = await tx.query<{ id: GameId }>(
+    "SELECT id FROM games WHERE session_id = $1 AND status <> 'finished'",
+    [sessionId],
+  );
+  const activeId = active.rows[0]?.id;
+  let locked = activeId ? await lockGame(tx, activeId) : null;
+  const context = await lockContext(tx, sessionId);
+  const last = context.lastGame;
+  if (last?.status === 'waiting' && last.gameId !== locked?.id) {
+    // Partie créée entre les deux lectures (rare) : verrouillée à son tour.
+    locked = await lockGame(tx, last.gameId);
+  }
+  const history = await tx.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM games WHERE session_id = $1 AND status = 'finished'",
+    [sessionId],
+  );
+  return {
+    ...context,
+    waitingGame: last?.status === 'waiting' ? locked : null,
+    hasFinishedGames: (history.rows[0]?.n ?? 0) > 0,
+  };
 }
 
 /** Verrouille la session et ses joueurs, puis lit le contexte complet de la mutation. */

@@ -3,6 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
+import { gameTheme, salon } from '../../constants/theme';
 import { useMessages } from '../../lib/i18n';
 import { TournamentGameMarker } from '../lobby/GameIdentity';
 import { useTournamentList } from './hooks';
@@ -213,8 +214,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(242, 196, 81, 0.45)',
-    backgroundColor: 'rgba(6, 23, 13, 0.96)',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: 'rgba(4, 9, 7, 0.9)',
+    boxShadow: 'inset 0 1px 0 rgba(246, 239, 223, 0.06)',
   },
   pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
   // Repère et pastille côte à côte si la place suffit ; sinon la pastille passe à la ligne
@@ -234,9 +236,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     maxWidth: '100%',
   },
-  headline: { color: '#FFFFFF', textAlign: 'center', ...shadow },
+  headline: { color: salon.text, textAlign: 'center', ...shadow },
   date: { color: tablePalette.gold, letterSpacing: 0.5 },
-  meta: { color: tablePalette.cream, textAlign: 'center', ...shadow },
+  meta: { color: salon.textSoft, textAlign: 'center', ...shadow },
   registered: { color: tablePalette.gold },
   notRegistered: { opacity: 0.85 },
 });

@@ -1558,9 +1558,13 @@ export class TournamentService {
     meta: CallMeta,
   ): Promise<TournamentSeat | undefined> {
     try {
+      // Table en attente : siège ET place dans la partie en une fois (D-153).
       await this.deps.sessions.joinSession(sessionId, playerId, meta);
     } catch (err) {
       if (err instanceof SessionFullError || err instanceof SessionClosedError) return undefined;
+      // Écriture de la partie perdue : rien n'a été enregistré (ni siège ni place), le
+      // joueur réessaie plus tard, comme pour un conflit persistant de `seatAt`.
+      if (err instanceof GameVersionConflictError) throw new TournamentBusyError(id);
       throw err;
     }
     try {

@@ -121,11 +121,11 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center' },
   center: { alignItems: 'center' },
   chipEdge: {
-    backgroundColor: '#1C9396',
+    backgroundColor: '#C9A452',
     borderWidth: 1,
-    borderColor: '#0E5C5E',
+    borderColor: '#6E5220',
     experimental_backgroundImage:
-      'linear-gradient(90deg, #17797F 0%, #2DB3B1 20%, #1C9396 40%, #E8F6F5 46%, #1C9396 52%, #2DB3B1 80%, #17797F 100%)',
+      'linear-gradient(90deg, #8C6A2A 0%, #D6B25E 20%, #B8923F 40%, #FBEFC4 46%, #B8923F 52%, #D6B25E 80%, #8C6A2A 100%)',
     boxShadow: '0 2px 3px rgba(0, 0, 0, 0.35)',
   },
   safeBody: {

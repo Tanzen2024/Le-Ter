@@ -13,10 +13,8 @@ import {
 /** Règles du retrait (D-075) : montant, opérateur, quota, numéros, statuts du fournisseur. */
 describe('parseWithdrawalInput', () => {
   it.each([1000, 5000, 1_500_000])('%p jetons : accepté', (tokens) => {
-    expect(parseWithdrawalInput({ tokens, operator: 'OM_CM' })).toEqual({
-      tokens,
-      operator: 'OM_CM',
-    });
+    // L'opérateur du client n'est ni lu ni renvoyé : le serveur le déduit du numéro.
+    expect(parseWithdrawalInput({ tokens, operator: 'OM_CM' })).toEqual({ tokens });
   });
 
   it.each([999, 0, -1, -1000, 1000.5, NaN, Infinity, -Infinity, 1_500_001, '1000', '', null, undefined, [], {}])(
@@ -26,12 +24,10 @@ describe('parseWithdrawalInput', () => {
     },
   );
 
-  it('corps absent ou tableau : refusé ; opérateur hors XAF : refusé', () => {
+  it('corps absent ou tableau : refusé ; opérateur du client (même hors XAF) : ignoré', () => {
     expect(() => parseWithdrawalInput(undefined)).toThrow(ValidationError);
     expect(() => parseWithdrawalInput([1000])).toThrow(ValidationError);
-    expect(() => parseWithdrawalInput({ tokens: 1000, operator: 'WAVE_SN' })).toThrow(
-      ValidationError,
-    );
+    expect(parseWithdrawalInput({ tokens: 1000, operator: 'WAVE_SN' })).toEqual({ tokens: 1000 });
   });
 });
 

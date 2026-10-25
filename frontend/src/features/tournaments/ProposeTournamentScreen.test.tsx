@@ -1,6 +1,14 @@
 /// <reference types="jest" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react-native';
 import type { ReactElement } from 'react';
 
 import { ApiError } from '../../lib/api-client';
@@ -8,7 +16,8 @@ import { addMonths, formatLongDate, todayOf } from '../../lib/date-time';
 import { tournamentsApi } from '../../services/tournaments-api';
 import { useAuthStore } from '../../stores/auth-store';
 import type { TournamentSummary } from '../../types/tournament';
-import { MyProposals, ProposalForm } from './ProposeTournamentScreen';
+import { LobbyPanel } from '../lobby/LobbyUi';
+import { MyProposals, ProposalForm, useProposalForm } from './ProposeTournamentScreen';
 import { tournamentView } from './tournament-fixtures.test-utils';
 
 jest.mock('../../services/tournaments-api', () => ({
@@ -253,6 +262,61 @@ describe('formulaire de proposition', () => {
     await fireEvent.press(screen.getByText('FAP-FAP'));
     await fireEvent.press(screen.getByText('Proposer'));
     expect(await screen.findByText(/déjà un tournoi en attente/)).toBeTruthy();
+  });
+});
+
+/** Le formulaire tel que l'écran le pose : champs dans le panneau, actions dans sa zone d'actions. */
+function PanelHost() {
+  const form = useProposalForm({ onSaved: jest.fn() });
+  return (
+    <LobbyPanel title="Proposer un tournoi" onClose={jest.fn()} width={600} footer={form.actions}>
+      {form.fields}
+    </LobbyPanel>
+  );
+}
+
+describe('zone d’actions « Enregistrer le brouillon » / « Proposer »', () => {
+  it('les deux actions sont dans la zone d’actions du panneau, hors des champs', async () => {
+    await renderWith(<PanelHost />);
+    const actions = within(screen.getByTestId('panel-actions'));
+    expect(actions.getByRole('button', { name: 'Enregistrer le brouillon' })).toBeTruthy();
+    expect(actions.getByRole('button', { name: 'Proposer' })).toBeTruthy();
+    // Aucun champ dans la zone d'actions ; tous les champs restent présents dans le panneau.
+    expect(actions.queryByLabelText('Date')).toBeNull();
+    for (const label of [
+      'Date',
+      'Heure de début',
+      'Durée (minutes)',
+      'Participation (FCFA)',
+      'Joueurs minimum',
+      'Joueurs maximum',
+      'Part du rang 1 (%)',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+    expect(screen.getByText('Jeu du tournoi *')).toBeTruthy();
+  });
+
+  it('envoi en cours : un seul appel, état visible sur « Proposer », deux boutons bloqués', async () => {
+    let resolve: (value: { tournament: TournamentSummary }) => void = () => undefined;
+    api.propose.mockImplementation(() => new Promise((r) => (resolve = r)));
+    api.submit.mockResolvedValue({ tournament: summary({ status: 'PENDING_APPROVAL' }) });
+    await renderWith(<PanelHost />);
+    await fireEvent.press(screen.getByText('FAP-FAP'));
+    await fireEvent.press(screen.getByText('Proposer'));
+    const propose = await screen.findByRole('button', { name: 'Proposer' });
+    await waitFor(() => expect(propose.props.accessibilityState.busy).toBe(true));
+    expect(
+      screen.getByRole('button', { name: 'Enregistrer le brouillon' }).props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    await fireEvent.press(screen.getByRole('button', { name: 'Proposer' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Enregistrer le brouillon' }));
+    expect(api.propose).toHaveBeenCalledTimes(1);
+    // Rien n'est annoncé comme enregistré avant la réponse du serveur.
+    expect(api.submit).not.toHaveBeenCalled();
+    await act(async () => resolve({ tournament: summary() }));
+    await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(1));
   });
 });
 

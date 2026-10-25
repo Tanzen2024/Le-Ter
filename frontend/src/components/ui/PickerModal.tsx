@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import {
   Modal,
   Pressable,
@@ -10,6 +10,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { gameTheme, salon } from '../../constants/theme';
 
 import { tablePalette } from '../table/TableDecor';
 import { ExclusiveOverlay } from './ExclusiveOverlay';
@@ -111,6 +112,8 @@ export function PickerTrigger({
   testID,
   lines = 1,
   shrinkToFit = false,
+  active = false,
+  ref,
 }: {
   label: string;
   hint: string;
@@ -126,17 +129,28 @@ export function PickerTrigger({
   lines?: number;
   /** Réduit la police (jusqu'à 65 %) pour que le texte tienne sans être tronqué. */
   shrinkToFit?: boolean;
+  /** Sélecteur ouvert et accroché à ce champ : filet doré. */
+  active?: boolean;
+  /** Champ mesuré pour y accrocher la fenêtre (`AnchoredPopover`). */
+  ref?: Ref<View>;
 }) {
   return (
     <Pressable
+      ref={ref}
       testID={testID}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityHint={hint}
       accessibilityValue={display ? { text: display } : undefined}
+      accessibilityState={{ expanded: active }}
       aria-invalid={invalid}
       onPress={onPress}
-      style={({ pressed }) => [styles.trigger, style, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.trigger,
+        style,
+        active && styles.triggerActive,
+        pressed && styles.pressed,
+      ]}
     >
       <Text
         numberOfLines={lines}
@@ -159,9 +173,9 @@ export function PickerTrigger({
 
 export const pickerColors = {
   text: tablePalette.cream,
-  muted: 'rgba(247, 241, 225, 0.45)',
+  muted: salon.textFaint,
   selected: tablePalette.gold,
-  selectedText: '#2A1A05',
+  selectedText: salon.ink,
   today: tablePalette.gold,
   line: tablePalette.panelBorder,
 };
@@ -176,10 +190,12 @@ const styles = StyleSheet.create({
   card: {
     maxWidth: '100%',
     maxHeight: '100%',
-    borderRadius: 14,
+    borderRadius: salon.radius.card,
     borderWidth: 1,
-    borderColor: tablePalette.panelBorder,
-    backgroundColor: '#1B0D09',
+    borderColor: gameTheme.brass.line,
+    backgroundColor: salon.surface.fill,
+    experimental_backgroundImage: salon.surface.gradient,
+    boxShadow: salon.surface.shadow,
     paddingHorizontal: 14,
     paddingVertical: 10,
     gap: 8,
@@ -204,12 +220,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionPrimary: {
-    backgroundColor: tablePalette.jade,
-    borderColor: tablePalette.jade,
+    backgroundColor: salon.brass.fill,
+    experimental_backgroundImage: salon.brass.gradient,
+    borderColor: salon.brass.border,
   },
   actionText: { color: tablePalette.cream, fontWeight: '700' },
-  actionTextPrimary: { color: tablePalette.gold },
+  actionTextPrimary: { color: salon.ink },
   trigger: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  triggerActive: {
+    borderColor: pickerColors.selected,
+    boxShadow: '0 0 0 3px rgba(245, 200, 66, 0.16)',
+  },
   triggerText: { flex: 1 },
   triggerIcon: { opacity: 0.9 },
   placeholder: { opacity: 0.6 },

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { salon } from '../../constants/theme';
 import { fontOf, useTableFonts } from '../../components/table/TableDecor';
 import { TextField } from '../../components/ui/TextField';
 import { ApiError } from '../../lib/api-client';
@@ -25,17 +26,34 @@ const EMPTY: ChangePasswordPayload = {
 };
 
 /**
+ * Changement du mot de passe, autonome : les champs puis leurs actions. Dans le Profil, les
+ * actions vont dans la zone d'actions du panneau (`usePasswordChangeForm`).
+ */
+export function PasswordChangeForm(props: { onCancel: () => void; onChanged: () => void }) {
+  const m = useLobbyMetrics();
+  const form = usePasswordChangeForm(props);
+  return (
+    <View style={{ gap: m.gap * 0.5 }}>
+      {form.fields}
+      {form.actions}
+    </View>
+  );
+}
+
+/**
  * Changement du mot de passe, dans le panneau Profil (POST /api/auth/password). Le serveur
  * reste juge : la validation locale n'évite qu'un aller-retour. Le succès n'est annoncé
- * qu'après la réponse du serveur ; en cas d'erreur, la saisie est conservée.
+ * qu'après la réponse du serveur ; en cas d'erreur, la saisie est conservée. Renvoie les
+ * champs et, séparément, les actions (Annuler, Enregistrer) pour qu'elles restent visibles
+ * dans la zone d'actions du panneau, même clavier ouvert. `reset` vide la saisie.
  */
-export function PasswordChangeForm({
+export function usePasswordChangeForm({
   onCancel,
   onChanged,
 }: {
   onCancel: () => void;
   onChanged: () => void;
-}) {
+}): { fields: ReactNode; actions: ReactNode; reset: () => void } {
   const m = useLobbyMetrics();
   const fonts = useTableFonts();
   const change = useChangePassword();
@@ -72,35 +90,44 @@ export function PasswordChangeForm({
     });
   };
 
-  const label = [styles.label, fontOf(fonts.button), { fontSize: m.bodySize }];
+  const label = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
   const message = { fontSize: m.smallSize };
-  return (
+  const field = ({ key, label: name }: (typeof FIELDS)[number], i: number) => (
+    <View key={key} style={[styles.field, { gap: 3 }]}>
+      <Text style={label} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        {name}
+      </Text>
+      <TextField
+        appearance="table"
+        label={name}
+        secret
+        controlHeight={m.controlHeight * 0.85}
+        value={values[key]}
+        onChangeText={edit(key)}
+        error={errors[key]}
+        editable={!change.isPending}
+        autoCapitalize="none"
+        autoComplete={key === 'currentPassword' ? 'current-password' : 'new-password'}
+        textContentType={key === 'currentPassword' ? 'password' : 'newPassword'}
+        returnKeyType={i === FIELDS.length - 1 ? 'done' : 'next'}
+        onSubmitEditing={i === FIELDS.length - 1 ? submit : undefined}
+      />
+      {errors[key] ? (
+        <Text style={[styles.error, message]} accessibilityLiveRegion="polite">
+          {errors[key]}
+        </Text>
+      ) : null}
+    </View>
+  );
+  // Compact pour tenir dans le profil sans défiler : mot de passe actuel sur une ligne, nouveau
+  // mot de passe et confirmation côte à côte.
+  const fields = (
     <View style={{ gap: m.gap * 0.5 }}>
-      {FIELDS.map(({ key, label: name }, i) => (
-        <View key={key} style={{ gap: 4 }}>
-          <Text style={label}>{name}</Text>
-          <TextField
-            appearance="table"
-            label={name}
-            secret
-            controlHeight={m.controlHeight * 0.9}
-            value={values[key]}
-            onChangeText={edit(key)}
-            error={errors[key]}
-            editable={!change.isPending}
-            autoCapitalize="none"
-            autoComplete={key === 'currentPassword' ? 'current-password' : 'new-password'}
-            textContentType={key === 'currentPassword' ? 'password' : 'newPassword'}
-            returnKeyType={i === FIELDS.length - 1 ? 'done' : 'next'}
-            onSubmitEditing={i === FIELDS.length - 1 ? submit : undefined}
-          />
-          {errors[key] ? (
-            <Text style={[styles.error, message]} accessibilityLiveRegion="polite">
-              {errors[key]}
-            </Text>
-          ) : null}
-        </View>
-      ))}
+      {field(FIELDS[0]!, 0)}
+      <View style={[styles.pair, { gap: m.gap * 0.6 }]}>
+        {field(FIELDS[1]!, 1)}
+        {field(FIELDS[2]!, 2)}
+      </View>
       {formError ? (
         <Text
           style={[styles.error, message]}
@@ -110,21 +137,33 @@ export function PasswordChangeForm({
           {formError}
         </Text>
       ) : null}
-      <View style={[styles.actions, { gap: m.gap, marginTop: m.gap * 0.4 }]}>
-        <PanelButton title="Annuler" tone="danger" disabled={change.isPending} onPress={onCancel} />
-        <PanelButton
-          title="Enregistrer"
-          accessibilityLabel="Enregistrer le nouveau mot de passe"
-          loading={change.isPending}
-          onPress={submit}
-        />
-      </View>
     </View>
   );
+  // Annuler : secondaire et discret ; Enregistrer : action principale (émeraude et laiton).
+  const actions = (
+    <View style={[styles.actions, { gap: m.gap }]}>
+      <PanelButton title="Annuler" tone="quiet" disabled={change.isPending} onPress={onCancel} />
+      <PanelButton
+        title="Enregistrer"
+        tone="primary"
+        accessibilityLabel="Enregistrer le nouveau mot de passe"
+        loading={change.isPending}
+        onPress={submit}
+      />
+    </View>
+  );
+  const reset = () => {
+    setValues(EMPTY);
+    setErrors({});
+    setFormError(null);
+  };
+  return { fields, actions, reset };
 }
 
 const styles = StyleSheet.create({
-  label: { color: '#FFFFFF' },
+  label: { color: salon.textSoft },
+  field: { flex: 1, minWidth: 0 },
+  pair: { flexDirection: 'row', alignItems: 'flex-start' },
   error: { color: '#FF8A7A', fontWeight: '600' },
   actions: {
     flexDirection: 'row',

@@ -9,7 +9,9 @@ import {
   type UserId,
   type UserRole,
 } from '../../domain/users/user';
+import { ReferralCodeRejectedError } from '../../domain/referrals/referral';
 import type { AuthSessionRepository } from '../../repositories/auth-session.repository';
+import type { ReferralRepository } from '../../repositories/referral.repository';
 import type {
   PasswordRecoveryRepository,
   RecoveryLockPolicy,
@@ -94,6 +96,11 @@ export interface AuthServiceDependencies {
   recoveryLock?: RecoveryLockPolicy;
   /** Durée de l'autorisation de réinitialisation (défaut : 10 min). */
   resetGrantTtlMs?: number;
+  /**
+   * Parrainage (D-161) : vérification du code et création du compte AVEC son attribution, dans
+   * une seule transaction. Absent : tout code fourni est refusé (jamais ignoré en silence).
+   */
+  referrals?: Pick<ReferralRepository, 'checkCode' | 'createAccountWithAttribution'>;
 }
 
 export const DEFAULT_RECOVERY_LOCK: RecoveryLockPolicy = { maxFailures: 5, lockMs: 15 * 60_000 };
@@ -136,6 +143,18 @@ export class AuthService {
       log.warn('register rejected', { reason: 'conflict', fields: taken });
       throw new RegistrationConflictError(taken);
     }
+    // Code de parrainage : vérifié AVANT tout calcul coûteux, puis revérifié sous verrou à la
+    // création. Refusé : aucune inscription, aucun rattachement à un autre parrain.
+    const referralCode = input.referralCode ?? null;
+    if (referralCode !== null) {
+      const check = this.deps.referrals
+        ? await this.deps.referrals.checkCode(referralCode)
+        : 'UNKNOWN_CODE';
+      if (check !== 'OK') {
+        log.warn('register rejected', { reason: 'referral_code', detail: check });
+        throw new ReferralCodeRejectedError(check);
+      }
+    }
 
     const now = this.clock();
     const recoveryCode = generateRecoveryCode();
@@ -160,8 +179,19 @@ export class AuthService {
     };
     let created: User;
     try {
-      created = await this.deps.users.insert(user);
+      created =
+        referralCode !== null && this.deps.referrals
+          ? await this.deps.referrals.createAccountWithAttribution(user, {
+              code: referralCode,
+              source: input.referralSource ?? 'MANUAL',
+              attributionId: randomUUID(),
+            })
+          : await this.deps.users.insert(user);
     } catch (err) {
+      if (err instanceof ReferralCodeRejectedError) {
+        log.warn('register rejected', { reason: 'referral_code', detail: err.reason });
+        throw err;
+      }
       // Inscription concurrente avec les mêmes informations.
       if (err instanceof DuplicateUserError) {
         log.warn('register rejected', { reason: 'conflict', fields: err.fields });
@@ -169,7 +199,11 @@ export class AuthService {
       }
       throw err;
     }
-    log.info('register succeeded', { userId: created.id, withEmail: created.email !== null });
+    log.info('register succeeded', {
+      userId: created.id,
+      withEmail: created.email !== null,
+      referred: referralCode !== null,
+    });
     return { user: toPublicUser(created), recoveryCode };
   }
 
