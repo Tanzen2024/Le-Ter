@@ -11,7 +11,7 @@
 - **Mises à jour** : 2026-10-26, création ; 2026-10-26, ajout du §10 (services et outils
   externes) ; 2026-10-26, D-169 (verrou du parrainage) et D-170 (`HOST`) versionnés dans le
   dépôt, **pas encore déployés** sur le VPS (§11) ; 2026-10-26, distribution de l'APK de test
-  depuis le VPS (§7.1). Tenir ce document à jour à chaque changement
+  depuis le VPS (§7.1) et espace de distribution PROD (§7.2). Tenir ce document à jour à chaque changement
   sur le serveur ou chez un prestataire.
 
 ## 1. Architecture
@@ -191,6 +191,22 @@ Toujours le TEST d'abord, la PROD ensuite, avec le même commit.
 - Le lien est public : l'APK ne contient aucun secret (seulement `https://api-beta.leter.cm`),
   mais il donne accès au TEST et aux paiements sandbox. À ne partager qu'avec les testeurs.
 - Utile quand un téléphone ne joint pas `expo.dev` (VPN, DNS privé, réseau filtrant).
+
+### 7.2 Distribution de l'APK de production (espace prêt, vide)
+
+- Lien prévu : **`https://api.leter.cm/downloads/le-ter.apk`**, servi par le bloc
+  `location /downloads/` du site `le-ter`, depuis `/var/www/le-ter-downloads/prod/` (root, 755).
+  Répond `404` tant qu'aucun APK n'y est déposé ; liste du dossier refusée (`403`).
+- Cloisonnement vérifié : l'APK de test n'est pas accessible par `api.leter.cm` (`404`), et
+  chaque domaine ne sert que son propre dossier.
+- **Ne jamais y déposer un APK de test** : il pointerait vers `api-beta.leter.cm` (serveur TEST,
+  paiements sandbox) tout en étant présenté comme la production.
+- Avant le premier dépôt : environnement EAS `production` → `https://api.leter.cm`, et un build
+  au format **APK** (le profil `production` de `frontend/eas.json` produit un AAB, réservé au
+  Play Store et non installable directement). Nommage :
+  `le-ter-v<version>-vc<versionCode>.apk` + `.sha256`, lien `le-ter.apk` vers la version
+  courante (même procédure qu'au §7.1).
+- Retour arrière : `/opt/le-ter/leter-prod/backups/nginx-le-ter.bak-avant-downloads-20261026`.
 
 Application mobile : `EXPO_PUBLIC_API_URL` est figée au build. Environnement EAS `preview` →
 `https://api-beta.leter.cm` (fait) ; environnement `production` → `https://api.leter.cm` (à
