@@ -1,7 +1,9 @@
 # Le Ter — Exploitation du VPS (environnements TEST et PROD)
 
-- **Date** : 2026-10-26 · **Commit déployé** : `f428637768b9896bfd8491f02c4245c6bf87dca3`
-  (TEST et PROD) · **Décision** : D-171.
+- **Date** : 2026-10-26 · **Décision** : D-171.
+- **Commits déployés** : TEST `f556bc11e9dcb38c818bf11fd7a0d5a8cd8a7dfb` (depuis le
+  26/10/2026 19:40 UTC) ; PROD `f428637768b9896bfd8491f02c4245c6bf87dca3`, en attente du
+  déploiement global (backend et application ensemble).
 - **Serveur** : VPS Contabo `vmi3697591`, Ubuntu 24.04.5 LTS, IPv4 `158.220.96.159`,
   IPv6 `2a02:c207:2369:7591::1`, 6 vCPU, 11 Go de RAM, 193 Go de disque.
 - **Accès** : SSH par clé uniquement, compte `lamat` (sudo avec mot de passe). Connexion root
@@ -11,8 +13,10 @@
 - **Mises à jour** : 2026-10-26, création ; 2026-10-26, ajout du §10 (services et outils
   externes) ; 2026-10-26, D-169 (verrou du parrainage) et D-170 (`HOST`) versionnés dans le
   dépôt, **pas encore déployés** sur le VPS (§11) ; 2026-10-26, distribution de l'APK de test
-  depuis le VPS (§7.1) et espace de distribution PROD (§7.2). Tenir ce document à jour à chaque changement
-  sur le serveur ou chez un prestataire.
+  depuis le VPS (§7.1) et espace de distribution PROD (§7.2) ; 2026-10-26, TEST déployé sur
+  `f556bc1` avec `HOST=127.0.0.1` et le verrou du parrainage actif, procédure du §7 corrigée
+  (`umask 027` aussi pour `git checkout`). Tenir ce document à jour à chaque changement sur le
+  serveur ou chez un prestataire.
 
 ## 1. Architecture
 
@@ -83,9 +87,9 @@ Particularités des deux backends :
   `/etc/systemd/system/le-ter-backend-test.service.d/ipv4.conf`. PROD : intégré à l'unité.
 - Durcissement : `ProtectSystem=strict`, `NoNewPrivileges`, `CapabilityBoundingSet=` vide,
   `PrivateTmp`, `PrivateDevices`, `MemoryMax` (1 Go TEST, 2 Go PROD).
-- Le code déployé écoute sur toutes les interfaces (`*:3000`, `*:3001`) : seul UFW empêche
-  l'accès direct. Correction : variable `HOST=127.0.0.1` (D-170), présente dans le dépôt, pas
-  encore déployée (§11).
+- Écoute : TEST sur **`127.0.0.1:3001`** seulement (`HOST=127.0.0.1`, D-170). PROD encore sur
+  toutes les interfaces (`*:3000`, commit `f428637` sans `HOST`) : seul UFW y empêche l'accès
+  direct, jusqu'au déploiement global (§11).
 
 ## 4. Réseau, DNS et TLS
 
@@ -128,7 +132,8 @@ Mêmes clés pour les deux environnements, valeurs différentes :
 | `CINETPAY_API_KEY` / `_PASSWORD` | sandbox (`sk_test_`) | **vides** |
 | `CINETPAY_NOTIFY_URL` / `_RETURN_URL` | `https://api-beta.leter.cm/api/payments/cinetpay/{notify,return}` | vides |
 | `CINETPAY_TRANSFERS_ENABLED`, `CINETPAY_TRANSFERS_LIVE_CONFIRMED`, `PLATFORM_PAYOUTS_ENABLED` | `false` | `false` |
-| `REFERRAL_REWARDS_ENABLED` | `false` (**ignorée** par `f428637`) | `false` (**ignorée** par `f428637`) |
+| `REFERRAL_REWARDS_ENABLED` | `false`, **lue** par `f556bc1` : crédit des paliers désactivé (journal : « Parrainage : crédit des paliers désactivé ») | `false`, **ignorée** par `f428637` jusqu'au déploiement global |
+| `HOST` | `127.0.0.1` | absente (à ajouter au déploiement global) |
 
 - Modifier une valeur : éditer le fichier en root (garder une copie `backend.env.bak-<date>`),
   puis `sudo systemctl restart le-ter-backend-<env>`. Ne jamais afficher le fichier.
@@ -163,10 +168,13 @@ Mêmes clés pour les deux environnements, valeurs différentes :
 Toujours le TEST d'abord, la PROD ensuite, avec le même commit.
 
 1. Sur le poste : commit, tests, push sur `main`.
-2. Sur le VPS (`lamat`), pour l'environnement visé :
-   `cd /opt/le-ter/leter-<env>/app && git fetch && git checkout --detach <commit>`, puis
-   `cd backend && (umask 027 && npm ci && npm run build)`.
-3. Sauvegarde : `sudo systemctl start le-ter-backup-<env>.service`.
+2. Sauvegarde : `sudo systemctl start le-ter-backup-<env>.service`.
+3. Sur le VPS (`lamat`), pour l'environnement visé, **tout sous `umask 027`**, `git checkout`
+   compris (sinon les fichiers modifiés par le commit deviennent modifiables par le groupe du
+   service) :
+   `cd /opt/le-ter/leter-<env>/app && (umask 027 && git fetch && git checkout --detach <commit> && cd backend && npm ci && npm run build)`.
+   Contrôle : `find . -not -type l \( -perm /g+w -o -perm /o+rwx \) | wc -l` doit valoir `0` ;
+   sinon `find . -not -type l \( -perm /g+w -o -perm /o+rwx \) -exec chmod g-w,o-rwx {} +`.
 4. Migrations, avec le rôle de l'environnement et depuis `/` (aucun `.env` chargé) :
    `runuser -u leter-<env> -w DATABASE_URL,NODE_ENV -- node …/dist/database/migrate.js`
    (`DATABASE_URL` construit en root à partir de `/opt/le-ter/secrets/pg_le_ter_<env>.password`,
@@ -310,8 +318,7 @@ Perdus ou piratés, ces comptes coupent ou compromettent tout le service :
 | Point | Bloque |
 |---|---|
 | Retraits et payouts : transfert à activer par CinetPay sur le compte sandbox ; barème annoncé (site CinetPay) MTN 2 %, Orange 2,2 %, sans part fixe → `PLATFORM_PAYOUT_FEE_BPS=200`, `PLATFORM_PAYOUT_FEE_FIXED=0`, à confirmer par écrit | tests de retrait |
-| Le commit déployé `f428637` ignore `REFERRAL_REWARDS_ENABLED` et la campagne de parrainage est `ACTIVE` dès la migration 0056. Le verrou (D-169) est dans le dépôt : à déployer sur le TEST puis la PROD (§7) | paiements PROD |
-| Écoute des backends sur `127.0.0.1` seulement : variable `HOST` (D-170) dans le dépôt, à déployer puis à ajouter aux deux `backend.env` | défense en profondeur (UFW protège déjà) |
+| **Déploiement global en PROD** (backend `f556bc1` ou suivant + APK de production) : la PROD (`f428637`) ignore encore `REFERRAL_REWARDS_ENABLED` alors que la campagne de parrainage est `ACTIVE` dès la migration 0056, et écoute sur `*:3000`. À faire : §7 sur la PROD, ajout de `HOST=127.0.0.1` à son `backend.env`, puis contrôle du journal (« crédit des paliers désactivé », « démarrée sur 127.0.0.1 »). Fait sur le TEST le 26/10/2026. | paiements PROD |
 | En sandbox, la relecture CinetPay ne renvoie ni montant ni devise (`amountReturned:false`) : à vérifier sur l'API live | paiements PROD |
 | Même identifiant Android (`com.anonymous.leter`) pour tous les profils | coexistence des APK |
 | Sauvegardes hors serveur, supervision et alertes | exploitation |
