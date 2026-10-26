@@ -322,13 +322,22 @@ async function main(): Promise<void> {
   }
 
   // Parrainage (D-161) : file d'évaluation relue dans PostgreSQL au démarrage, puis à intervalle.
-  const referrals = sql && auth ? createReferralService({ sql, logger, env: readReferralEnv() }) : undefined;
+  const referralEnv = readReferralEnv();
+  const referrals = sql && auth ? createReferralService({ sql, logger, env: referralEnv }) : undefined;
   if (referrals) {
     referrals.start();
     logger.info('Parrainage disponible');
+    if (!referralEnv.rewardsEnabled) {
+      logger.warn('Parrainage : crédit des paliers désactivé (REFERRAL_REWARDS_ENABLED, D-169)');
+    }
   }
 
-  const server = createApp({
+  const onListening = () => {
+    logger.info(
+      `API Le Ter démarrée sur ${env.host ?? 'toutes les interfaces'}, port ${env.port} (${env.nodeEnv})`,
+    );
+  };
+  const app = createApp({
     logger,
     // Pannes 5xx condensées pour le back-office (D-168).
     serverErrors: sql ? new PostgresServerErrorRepository(sql) : undefined,
@@ -367,9 +376,11 @@ async function main(): Promise<void> {
       ...(adminServices && { rateLimitStore: adminServices.rateLimitStore }),
       limits: { assistantMessagesPerHour: supportLimits.playerMessagesPerHour },
     },
-  }).listen(env.port, () => {
-    logger.info(`API Le Ter démarrée sur le port ${env.port} (${env.nodeEnv})`);
   });
+  // `HOST` absent : toutes les interfaces, comme avant (Expo Go par Tailscale ou le Wi-Fi).
+  const server = env.host
+    ? app.listen(env.port, env.host, onListening)
+    : app.listen(env.port, onListening);
   // Port déjà pris (souvent une 2e instance `npm run dev`) : arrêt immédiat et explicite. Sans
   // cela, l'instance restait vivante SANS servir l'API, avec ses minuteurs branchés sur la base.
   server.on('error', (err: NodeJS.ErrnoException) => {

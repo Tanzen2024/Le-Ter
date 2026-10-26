@@ -5350,3 +5350,108 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
   `TournamentDetailPanel.test.tsx`, `withdrawal-state.test.ts` ; serveur :
   `tests/unit/admin/server-errors.test.ts`, `tests/integration/admin/server-errors-repository.test.ts`,
   `admin-api.test.ts`, `migrator.test.ts`.
+
+## D-169 — Parrainage : crédit des paliers désactivé par défaut tant que R-42 et R-34 sont ouverts
+
+- **Date** : 2026-10-26 · **Statut** : protection technique conservatrice (audit de préparation
+  à la production, `docs/production-readiness.md`, PR-04). **Ne tranche PAS** R-42 ni R-34 et
+  ne change aucune règle de D-161 (seuils, paliers, montants, attribution, qualification).
+- **Constat** : téléphone jamais vérifié (`phone_verified` toujours faux, R-34) et jetons
+  `referral_reward` retirables comme les autres (R-42). Un parrain peut inscrire 10 comptes avec
+  des numéros quelconques, payer leurs achats de 1 000 jetons depuis son propre Mobile Money
+  (la page CinetPay accepte tout payeur), faire perdre ces jetons aux faux comptes contre lui en
+  partie privée (détection facultative, absente en GARAM, D-144), puis retirer les jetons
+  récupérés ET les 5 000 jetons du palier : ≈ +50 % par cycle, sans plafond de paliers. Le double
+  crédit, lui, est impossible (clé unique, `UNIQUE (campagne, parrain, palier)`, déclencheur
+  différé, verrou du parrain).
+- **Protection** : `REFERRAL_REWARDS_ENABLED` (`backend/.env`, `false` par défaut, `true` ou
+  `false` seulement, toute autre valeur bloque le démarrage). Désactivé : attributions,
+  qualifications et achats des filleuls inchangés ; les paliers dus sont **retenus** exactement
+  comme pour une campagne suspendue (`withheldTiers`, message « en attente de crédit » déjà
+  présent dans l'application), aucun jeton créé. Activé : au démarrage, les parrains ayant un
+  palier retenu sont remis en file (`enqueueWithheld`) puis crédités une seule fois. Avertissement
+  au démarrage tant que le crédit est désactivé.
+- **Activation** : seulement après décision écrite du porteur du projet sur R-42 et R-34 (et
+  R-43 pour la comptabilisation), puis redémarrage avec `REFERRAL_REWARDS_ENABLED=true`.
+- **Code** : `backend/src/config/referral-env.ts`,
+  `backend/src/repositories/postgres-referral.repository.ts` (`evaluate`, `enqueueWithheld`),
+  `backend/src/services/referrals/referral.service.ts` (`resumeWithheld`), `backend/src/server.ts`.
+- **Tests** : `tests/unit/referrals/referral-links.test.ts` (valeurs de la variable),
+  `tests/integration/referrals/referral-program.test.ts` (« crédit des paliers désactivé »).
+
+## D-170 — Environnement de test distant : tunnel local stable, loopback, clés live refusées hors production
+
+- **Date** : 2026-10-26 · **Statut** : choix techniques de l'audit de l'environnement de test
+  (`docs/production-readiness.md`, T-1 à T-6). Aucune règle de jeu ni règle financière modifiée ;
+  routes et méthodes inchangées.
+- **Constats** :
+  - le Quick Tunnel Cloudflare de `frontend/.env` n'existe plus (NXDOMAIN), parce que son URL
+    change à chaque lancement ;
+  - les URL CinetPay de `backend/.env` désignaient une adresse privée ;
+  - derrière le tunnel, tous les joueurs partageaient `127.0.0.1` pour les limites par IP ;
+  - une clé `sk_live_` était acceptée pour les achats hors production ;
+  - l'API écoutait toutes les interfaces.
+- **Clés de paiement** (`config/env.ts`) :
+  - une clé `sk_live_` est **refusée au démarrage** hors `NODE_ENV=production`, ce qui aligne
+    les achats sur les retraits (`LIVE_OUTSIDE_PRODUCTION`, D-077, conservé comme seconde
+    barrière) ;
+  - une clé et une API d'environnements opposés (`CINETPAY_BASE_URL`) sont refusées au
+    démarrage ;
+  - les messages ne recopient jamais la clé ;
+  - aucun paramètre client ne peut lever ces refus.
+- **`HOST`** (facultatif) : interface d'écoute. Absent, toutes les interfaces, comme avant
+  (nécessaire à Expo Go par Tailscale ou le Wi-Fi). `127.0.0.1` derrière un tunnel local.
+- **`TRUST_PROXY=loopback`** derrière un tunnel **local** (ngrok, tunnel Cloudflare nommé) :
+  - l'agent du tunnel se connecte depuis le loopback et ajoute l'adresse du client à la **fin**
+    de `X-Forwarded-For` (documentation ngrok) ;
+  - seul ce saut est de confiance, donc l'adresse retenue est celle ajoutée par le tunnel ;
+  - les valeurs envoyées par le client (à gauche) sont ignorées ;
+  - `1`, qui ferait confiance au premier saut quel qu'il soit, n'est pas utilisé ; `true` reste
+    refusé.
+- **Mode tunnel** :
+  - commande : `npm run dev:tunnel -- https://<domaine stable du tunnel>`, qui impose pour la
+    session `HOST=127.0.0.1`, `TRUST_PROXY=loopback` et les 3 URL CinetPay (notification,
+    retour, notification des transferts) sur l'URL publique, **sans modifier `backend/.env`**
+    (les variables du processus l'emportent sur le fichier, vérifié) ;
+  - refus des URL `http`, privées, de VPN, locales ou de *Quick Tunnel*, ainsi que des URL
+    CinetPay de plus de 120 caractères.
+- **Comptes de test** : `npm run test:accounts -- <URL de l'API> [n]`, qui crée par l'API des
+  comptes fictifs (`@example.com`, RFC 2606).
+- **Solution de tunnel retenue** : ngrok, déjà installé et associé à un compte sur le poste (domaine gratuit lié au compte selon la documentation ngrok ; identité à vérifier au 2ᵉ
+  lancement). Aucun certificat Cloudflare n'est présent
+  (pas de tunnel nommé possible), et Tailscale n'a ni certificats HTTPS ni Funnel activés.
+  **L'ouverture du tunnel reste une action du propriétaire du poste.**
+- **Code** : `backend/src/config/env.ts`, `backend/src/config/tunnel-env.ts`,
+  `backend/src/cli/dev-tunnel.ts`, `backend/src/cli/test-accounts.ts`, `backend/src/server.ts`,
+  `backend/.env.example`, `backend/package.json`.
+- **Tests** : `tests/unit/payments/cinetpay-env.test.ts`, `tests/unit/env.test.ts`,
+  `tests/unit/tunnel-env.test.ts`, `tests/unit/withdrawals/withdrawal-availability.test.ts`,
+  `tests/integration/trust-proxy.test.ts`.
+
+## D-171 — VPS : environnements TEST et PROD séparés sur le même serveur
+
+- **Date** : 2026-10-26 · **Statut** : en place sur le VPS (`docs/deploiement-vps.md`).
+  Ne change aucune règle de jeu ni aucune règle financière.
+- **Contexte** : un seul déploiement existait (`/opt/le-ter/app`, base `le_ter`, Redis 6379,
+  port 3000). Il fallait un TEST (CinetPay sandbox) et une PROD (finances verrouillées) sans
+  mélange de données, de secrets ni de rappels de paiement.
+- **Décision** :
+  - même commit pour les deux environnements ; l'isolation vient de la configuration : un
+    utilisateur système, un clone, une base et un rôle PostgreSQL, une instance Redis, un port,
+    un domaine et des secrets par environnement ;
+  - TEST : `api-beta.leter.cm` → 3001, `le_ter_test`, Redis 6380, `NODE_ENV=production`
+    (passage en `development` accepté pour tester les retraits sandbox, quand CinetPay aura
+    activé le transfert) ;
+  - PROD : `api.leter.cm` → 3000, `le_ter_prod` (base vide construite par les migrations, sans
+    donnée de test), Redis 6379 avec un nouveau mot de passe, CinetPay vide et tous les verrous
+    financiers à `false` ;
+  - deux instances Redis et non deux numéros de base : les canaux Pub/Sub sont globaux à une
+    instance (`le-ter:admin:events` est fixe) ;
+  - `CONNECT` retiré à `PUBLIC` sur chaque base ; `InaccessiblePaths=` dans chaque unité systemd ;
+  - connexions sortantes des backends en IPv4 (`NODE_OPTIONS`) : CinetPay n'autorise que
+    `158.220.96.159` ;
+  - l'ancien service et la base `le_ter` sont conservés, désactivés, jusqu'à décision de les
+    retirer.
+- **Conséquences** : toute modification se déploie d'abord sur le TEST, puis le même commit sur
+  la PROD. L'application mobile cible l'API par l'environnement EAS (`preview` →
+  `api-beta.leter.cm`, `production` → `api.leter.cm`).

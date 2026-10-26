@@ -3,7 +3,6 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -33,6 +32,7 @@ import { Body, Card, formatDateTime, StatusBadge } from './ComplaintUi';
 import { useComplaints } from './hooks';
 import { shortcutDraft } from './shortcut-draft';
 import { userErrorMessage } from '../../lib/api-client';
+import { keyboardAvoidingBehavior } from '../../lib/keyboard';
 
 type Tab = 'assistant' | 'complaints' | 'referral';
 
@@ -106,11 +106,11 @@ export function SupportScreen() {
           </View>
         </View>
         {/* Clavier ouvert (message à l'assistant, réclamation) : le contenu se réduit au-dessus
-            de lui, le champ de saisie reste visible (`padding` sur iOS ; Android redimensionne
-            déjà la fenêtre), comme les écrans de connexion. */}
+            de lui, le champ de saisie reste visible (`keyboardAvoidingBehavior`, D-132),
+            comme les écrans de connexion et les panneaux. */}
         <KeyboardAvoidingView
           style={styles.fill}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={keyboardAvoidingBehavior}
         >
           {form ? (
             <ComplaintForm

@@ -54,9 +54,10 @@ npx eas-cli@latest login
 npx eas-cli@latest init
 
 # 3. URL publique du backend pour l'environnement "preview" (sans / final).
-#    --force remplace la valeur si elle existe déjà.
-npx eas-cli@latest env:create --environment preview --name EXPO_PUBLIC_API_URL `
-  --value "https://VOTRE-URL-PUBLIQUE" --visibility plaintext --force
+#    env:set crée la variable ou remplace sa valeur (env:create est déprécié).
+#    Serveur de test du VPS : https://api-beta.leter.cm (docs/deploiement-vps.md).
+npx eas-cli@latest env:set --environment preview --name EXPO_PUBLIC_API_URL `
+  --value "https://VOTRE-URL-PUBLIQUE" --visibility plaintext
 
 #    Vérification
 npx eas-cli@latest env:list --environment preview
@@ -74,8 +75,8 @@ un QR code. Les builds sont aussi listés sur https://expo.dev (projet `le-ter` 
 
 ```powershell
 cd C:\xampp\htdocs\le-ter\frontend
-npx eas-cli@latest env:create --environment preview --name EXPO_PUBLIC_API_URL `
-  --value "https://NOUVELLE-URL" --visibility plaintext --force
+npx eas-cli@latest env:set --environment preview --name EXPO_PUBLIC_API_URL `
+  --value "https://NOUVELLE-URL" --visibility plaintext
 npx eas-cli@latest build --platform android --profile preview
 ```
 
@@ -134,6 +135,29 @@ l'URL HTTPS publique pendant toute la session de test.
 - CinetPay : `CINETPAY_NOTIFY_URL`, `CINETPAY_RETURN_URL` (et URL de transfert) contiennent la
   même URL publique ; à mettre à jour dans `backend/.env` puis redémarrer le backend quand
   l'URL change.
+
+## 5 bis. Mode tunnel stable (D-170, recommandé)
+
+Remplace le Quick Tunnel, dont l'URL change à chaque relance. Le domaine ngrok gratuit est lié au
+compte ngrok déjà configuré sur ce poste.
+
+1. Tunnel vers le loopback **seulement** : `ngrok http 127.0.0.1:3000`. Noter l'URL
+   `https://….ngrok-free.app`. Ce domaine est lié au compte ngrok : vérifier au 2ᵉ lancement
+   qu'il est identique avant de construire l'APK.
+2. Backend de test : `npm run dev:tunnel -- https://….ngrok-free.app` (dans `backend/`). La
+   commande impose `HOST=127.0.0.1`, `TRUST_PROXY=loopback` et les URL CinetPay sur l'URL
+   publique, puis vérifie `/api/health` en local et par l'URL publique. `backend/.env` n'est pas
+   modifié.
+3. CinetPay sandbox : l'IP publique ACTUELLE du poste doit figurer dans la liste blanche du
+   compte marchand. Sinon : `PROVIDER_IP_NOT_ALLOWED` (2011) au démarrage et achats refusés,
+   sans rien débiter (voir `docs/payments.md`).
+4. Application : `EXPO_PUBLIC_API_URL=https://….ngrok-free.app` dans l'environnement EAS
+   `preview`, puis **une** APK (section 3). Le WebSocket passe par la même URL (`wss://…/ws`).
+5. Comptes de test fictifs : `TEST_ACCOUNT_PASSWORD=… npm run test:accounts -- https://….ngrok-free.app 4`.
+
+Page d'avertissement du forfait gratuit ngrok : elle n'apparaît que pour une page HTML ouverte
+dans un navigateur, donc pas pour l'application. Elle peut apparaître une fois sur la page de
+retour après paiement : « Visit Site », puis elle reste masquée 7 jours sur ce téléphone.
 
 ## 6. Limites restantes
 

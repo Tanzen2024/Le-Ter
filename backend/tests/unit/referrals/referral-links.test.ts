@@ -39,3 +39,18 @@ describe('REFERRAL_DOWNLOAD_URL', () => {
     expect(() => readReferralEnv({ REFERRAL_DOWNLOAD_URL: 'pas une url' })).toThrow(/invalide/);
   });
 });
+
+describe('REFERRAL_REWARDS_ENABLED (D-169)', () => {
+  it('absente ou vide : crédit des paliers désactivé (défaut prudent)', () => {
+    expect(readReferralEnv({}).rewardsEnabled).toBe(false);
+    expect(readReferralEnv({ REFERRAL_REWARDS_ENABLED: ' ' }).rewardsEnabled).toBe(false);
+    expect(readReferralEnv({ REFERRAL_REWARDS_ENABLED: 'false' }).rewardsEnabled).toBe(false);
+  });
+
+  it('true active le crédit ; toute autre valeur bloque le démarrage', () => {
+    expect(readReferralEnv({ REFERRAL_REWARDS_ENABLED: 'true' }).rewardsEnabled).toBe(true);
+    for (const value of ['1', 'yes', 'TRUE', 'oui']) {
+      expect(() => readReferralEnv({ REFERRAL_REWARDS_ENABLED: value })).toThrow(/REFERRAL_REWARDS_ENABLED/);
+    }
+  });
+});

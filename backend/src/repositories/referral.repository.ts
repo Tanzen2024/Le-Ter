@@ -162,6 +162,11 @@ export interface ReferralRepository {
   queued(limit: number, retryBefore: Date): Promise<QueuedEvaluation[]>;
   recordFailure(referrerId: UserId, seq: string, error: string, now: Date): Promise<void>;
   isQueued(referrerId: UserId): Promise<boolean>;
+  /**
+   * Remet en file les parrains dont un palier atteint n'est pas crédité (activation du crédit,
+   * D-169) ; renvoie leur nombre. L'évaluation ne crédite que les paliers dus, une seule fois.
+   */
+  enqueueWithheld(now: Date): Promise<number>;
 
   overview(): Promise<ReferralOverview>;
   listReferrers(query: ReferrerListQuery): Promise<{ total: number; items: ReferrerListItem[] }>;

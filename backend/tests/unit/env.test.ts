@@ -94,3 +94,21 @@ describe('readEnv', () => {
     expect(() => readEnv({ NODE_ENV: 'staging' })).toThrow('NODE_ENV invalide');
   });
 });
+
+describe('readEnv — HOST (D-170)', () => {
+  it('absent ou vide : toutes les interfaces (comportement historique)', () => {
+    expect(readEnv({}).host).toBeUndefined();
+    expect(readEnv({ HOST: '  ' }).host).toBeUndefined();
+  });
+
+  it('adresse locale acceptée (tunnel local)', () => {
+    expect(readEnv({ HOST: '127.0.0.1' }).host).toBe('127.0.0.1');
+    expect(readEnv({ HOST: '::1' }).host).toBe('::1');
+    expect(readEnv({ HOST: 'localhost' }).host).toBe('localhost');
+  });
+
+  it('valeur douteuse refusée au démarrage', () => {
+    expect(() => readEnv({ HOST: 'evil.example.com' })).toThrow(/HOST invalide/);
+    expect(() => readEnv({ HOST: '127.0.0.1; rm' })).toThrow(/HOST invalide/);
+  });
+});

@@ -9,6 +9,11 @@
 export interface ReferralEnv {
   downloadUrl?: string;
   tickMs: number;
+  /**
+   * `REFERRAL_REWARDS_ENABLED=true` : crédit des paliers (D-169). Faux par défaut tant que R-42
+   * et R-34 ne sont pas tranchés : les paliers dus sont retenus, puis crédités à l'activation.
+   */
+  rewardsEnabled: boolean;
 }
 
 export const DEFAULT_REFERRAL_TICK_MS = 15_000;
@@ -33,5 +38,9 @@ export function readReferralEnv(source: NodeJS.ProcessEnv = process.env): Referr
   if (!Number.isInteger(tick) || tick < 1000 || tick > 3_600_000) {
     throw new Error('REFERRAL_TICK_MS invalide : entier entre 1000 et 3600000 attendu');
   }
-  return { ...(downloadUrl && { downloadUrl }), tickMs: tick };
+  const rawRewards = source.REFERRAL_REWARDS_ENABLED?.trim() ?? '';
+  if (rawRewards !== '' && rawRewards !== 'true' && rawRewards !== 'false') {
+    throw new Error('REFERRAL_REWARDS_ENABLED invalide : true ou false attendu');
+  }
+  return { ...(downloadUrl && { downloadUrl }), tickMs: tick, rewardsEnabled: rawRewards === 'true' };
 }

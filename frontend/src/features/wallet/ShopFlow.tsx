@@ -4,7 +4,6 @@ import {
   Animated,
   Easing,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,6 +14,7 @@ import {
 import { fontOf, useTableFonts } from '../../components/table/TableDecor';
 import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { gameTheme, motion, salon } from '../../constants/theme';
+import { keyboardAvoidingBehavior } from '../../lib/keyboard';
 import type { WalletOperation, WalletTransactionView } from '../../types/wallet';
 import { useBackToClose } from '../games/table/GameOverlays';
 import { useReducedMotion } from '../games/table/turn-signal';
@@ -103,7 +103,7 @@ export function ShopFlow({ onClose }: { onClose: () => void }) {
   return (
     <ExclusiveOverlay style={styles.backdrop}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={keyboardAvoidingBehavior}
         style={styles.center}
       >
         <View

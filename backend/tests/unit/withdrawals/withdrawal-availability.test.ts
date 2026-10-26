@@ -62,10 +62,18 @@ describe('resolveWithdrawalAvailability — indisponible', () => {
   });
 
   it('URL de base de l’environnement opposé à la clé', () => {
-    expect(resolve({ ...ENABLED, CINETPAY_BASE_URL: 'https://api.cinetpay.co' })).toMatchObject({
-      mode: 'unavailable',
-      reason: 'ENVIRONMENT_MISMATCH',
-    });
+    // Refusée dès le démarrage (D-170) ; le contrôle des retraits reste une seconde barrière.
+    expect(() => resolve({ ...ENABLED, CINETPAY_BASE_URL: 'https://api.cinetpay.co' })).toThrow(
+      /CINETPAY_BASE_URL refusée/,
+    );
+    const env = readEnv({ ...PRODUCTION_BASE, ...ENABLED, NODE_ENV: 'development' });
+    expect(
+      resolveWithdrawalAvailability({
+        nodeEnv: 'development',
+        cinetpay: { ...env.cinetpay!, baseUrl: 'https://api.cinetpay.co' },
+        schemaReady: true,
+      }),
+    ).toMatchObject({ mode: 'unavailable', reason: 'ENVIRONMENT_MISMATCH' });
   });
 });
 
@@ -102,10 +110,12 @@ describe('resolveWithdrawalAvailability — production', () => {
 
   it('clé live hors NODE_ENV=production : refusé même attesté', () => {
     const confirmed = { ...LIVE, CINETPAY_TRANSFERS_LIVE_CONFIRMED: 'true' };
-    expect(resolve(confirmed, 'development')).toMatchObject({
-      mode: 'unavailable',
-      reason: 'LIVE_OUTSIDE_PRODUCTION',
-    });
+    // Refusée dès le démarrage (D-170) ; le contrôle des retraits reste une seconde barrière.
+    expect(() => resolve(confirmed, 'development')).toThrow(/sk_live_/);
+    const env = readEnv({ ...PRODUCTION_BASE, ...confirmed, NODE_ENV: 'production' });
+    expect(
+      resolveWithdrawalAvailability({ nodeEnv: 'development', cinetpay: env.cinetpay, schemaReady: true }),
+    ).toMatchObject({ mode: 'unavailable', reason: 'LIVE_OUTSIDE_PRODUCTION' });
   });
 
   it('notification non publique : refusé même attesté', () => {

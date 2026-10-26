@@ -13,6 +13,12 @@ export type NodeEnv = 'development' | 'test' | 'production';
 export interface Env {
   nodeEnv: NodeEnv;
   port: number;
+  /**
+   * Interface d'écoute HTTP (`HOST`). Absente : toutes les interfaces (comportement historique,
+   * nécessaire à Expo Go par Tailscale ou le Wi-Fi). `127.0.0.1` derrière un tunnel local
+   * (ngrok, cloudflared) : l'API n'est plus joignable directement depuis le réseau local.
+   */
+  host?: string;
   /** URL PostgreSQL (source de vérité). Absente = démarrage sans base, refusé en production. */
   databaseUrl: string | undefined;
   /** URL Redis (temps réel, coordination). Absente = diffusion limitée à une instance. */
@@ -120,6 +126,11 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error(`PORT invalide : "${source.PORT}"`);
   }
 
+  const host = source.HOST?.trim() || undefined;
+  if (host !== undefined && !/^[0-9a-fA-F:.]+$/.test(host) && host !== 'localhost') {
+    throw new Error('HOST invalide : adresse IP (ex. 127.0.0.1) ou localhost attendue');
+  }
+
   const databaseUrl = optionalUrl(source.DATABASE_URL, 'DATABASE_URL', [
     'postgres:',
     'postgresql:',
@@ -158,6 +169,7 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return {
     nodeEnv,
     port,
+    ...(host && { host }),
     databaseUrl,
     redisUrl,
     auth,
@@ -216,9 +228,24 @@ function readCinetPayEnv(source: NodeJS.ProcessEnv, nodeEnv: NodeEnv): CinetPayE
   if (!environment) {
     throw new Error('CINETPAY_API_KEY invalide : préfixe sk_test_ ou sk_live_ attendu');
   }
+  // Fonds réels uniquement en production (D-170) : hors production, une clé live laisserait
+  // les achats débiter de l'argent réel alors que les retraits y sont bloqués (D-077).
+  if (environment === 'live' && nodeEnv !== 'production') {
+    throw new Error(
+      'CINETPAY_API_KEY refusée : clé de production (sk_live_) interdite hors NODE_ENV=production',
+    );
+  }
   const baseUrl =
     optionalUrl(source.CINETPAY_BASE_URL, 'CINETPAY_BASE_URL', ['https:']) ??
     CINETPAY_URLS[environment];
+  // Clé et API du même environnement : jamais une clé sandbox vers l'API de production, ni
+  // l'inverse (même contrôle que les retraits, `ENVIRONMENT_MISMATCH`).
+  const otherEnvironment: CinetPayEnvironment = environment === 'live' ? 'test' : 'live';
+  if (new URL(baseUrl).origin === new URL(CINETPAY_URLS[otherEnvironment]).origin) {
+    throw new Error(
+      `CINETPAY_BASE_URL refusée : API ${otherEnvironment === 'live' ? 'de production' : 'sandbox'} avec une clé ${environment === 'live' ? 'de production' : 'sandbox'}`,
+    );
+  }
   const publicProtocols = nodeEnv === 'production' ? ['https:'] : ['https:', 'http:'];
   const notifyUrl = optionalUrl(source.CINETPAY_NOTIFY_URL, 'CINETPAY_NOTIFY_URL', publicProtocols);
   const returnUrl = optionalUrl(source.CINETPAY_RETURN_URL, 'CINETPAY_RETURN_URL', publicProtocols);

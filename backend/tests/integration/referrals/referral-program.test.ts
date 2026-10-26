@@ -40,11 +40,11 @@ beforeAll(async () => {
 }, PGLITE_TIMEOUT_MS);
 afterAll(() => database.close());
 
-function makeService() {
+function makeService(rewardsEnabled = true) {
   return createReferralService({
     sql: database.sql,
     logger: createLogger({}, () => undefined),
-    env: { downloadUrl: DOWNLOAD_URL, tickMs: 60_000 },
+    env: { downloadUrl: DOWNLOAD_URL, tickMs: 60_000, rewardsEnabled },
     clock: () => ctx.now(),
   });
 }
@@ -424,6 +424,61 @@ describe('paliers progressifs', () => {
       { tier: 1, amount: 5000, version: 1 },
       { tier: 2, amount: 3000, version: 2 },
     ]);
+  });
+});
+
+// --- Crédit des paliers désactivé (D-169, REFERRAL_REWARDS_ENABLED) ----------------------------
+
+describe('crédit des paliers désactivé (défaut prudent, R-42 / R-34)', () => {
+  it('10 filleuls qualifiés : aucun jeton créé, palier retenu puis crédité une seule fois à l’activation', async () => {
+    const disabled = makeService(false);
+    ctx = createAdminTestApp(database.sql, { extra: { referrals: disabled } });
+    const j = await newReferrer();
+    await qualifiedReferees(j.code, 10);
+    await disabled.processQueue();
+    // Évaluations concurrentes et lecture du joueur : toujours aucun crédit.
+    const repository = new PostgresReferralRepository(database.sql, { rewardsEnabled: false });
+    await Promise.all([
+      repository.evaluate(j.userId as UserId, ctx.now()),
+      repository.evaluate(j.userId as UserId, ctx.now()),
+    ]);
+    const program = await myProgram(j.accessToken);
+    expect(program.summary.counted).toBe(10);
+    expect(program.withheldTiers).toBe(1);
+    expect(program.rewards).toEqual([]);
+    expect(await rewardsOf(j.userId)).toEqual([]);
+    expect(await referralCredits(j.userId)).toEqual({ total: 0, count: 0 });
+    expect(await balance(j.userId)).toBe(0);
+    disabled.stop();
+
+    // File vide : sans remise en file, le palier retenu ne serait jamais crédité.
+    expect(await repository.isQueued(j.userId as UserId)).toBe(false);
+
+    // Activation (décision R-42 / R-34 prise), au redémarrage : le palier dû est remis en file
+    // puis crédité, une seule fois malgré des évaluations concurrentes.
+    const enabled = makeService(true);
+    await enabled.resumeWithheld();
+    expect(await repository.isQueued(j.userId as UserId)).toBe(true);
+    await Promise.all([
+      enabled.processQueue(),
+      new PostgresReferralRepository(database.sql).evaluate(j.userId as UserId, ctx.now()),
+      new PostgresReferralRepository(database.sql).evaluate(j.userId as UserId, ctx.now()),
+    ]);
+    await enabled.resumeWithheld();
+    await enabled.processQueue();
+    expect(await referralCredits(j.userId)).toEqual({ total: 5000, count: 1 });
+    expect(await balance(j.userId)).toBe(5000);
+    enabled.stop();
+  });
+
+  it('les achats des filleuls restent crédités normalement (le verrou ne touche que la récompense)', async () => {
+    const disabled = makeService(false);
+    ctx = createAdminTestApp(database.sql, { extra: { referrals: disabled } });
+    const j = await newReferrer();
+    const [referee] = await qualifiedReferees(j.code, 1);
+    await disabled.processQueue();
+    expect(await balance(referee!)).toBe(1000);
+    disabled.stop();
   });
 });
 

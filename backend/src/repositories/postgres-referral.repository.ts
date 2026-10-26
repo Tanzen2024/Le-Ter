@@ -239,7 +239,15 @@ async function enqueue(tx: SqlExecutor, referrerIds: 'ALL' | readonly string[], 
 }
 
 export class PostgresReferralRepository implements ReferralRepository {
-  constructor(private readonly db: SqlClient) {}
+  /**
+   * `rewardsEnabled` (D-169, `REFERRAL_REWARDS_ENABLED`) : faux = paliers dus retenus comme pour
+   * une campagne suspendue, mais attributions et qualifications continuent ; crédités dès
+   * l'activation. Vrai par défaut ICI : le défaut prudent est posé par la configuration.
+   */
+  constructor(
+    private readonly db: SqlClient,
+    private readonly options: { rewardsEnabled?: boolean } = {},
+  ) {}
 
   getCampaign(): Promise<ReferralCampaign> {
     return readCampaign(this.db);
@@ -390,7 +398,8 @@ export class PostgresReferralRepository implements ReferralRepository {
         const counted = referees.filter(isCounted);
         const rewards = await readRewards(tx, campaign.id, referrerId);
         const due = dueTiers(rules, rewards, counted.length);
-        if (campaign.status !== 'ACTIVE' || owner.rows[0].status !== 'active') {
+        const rewardsEnabled = this.options.rewardsEnabled ?? true;
+        if (!rewardsEnabled || campaign.status !== 'ACTIVE' || owner.rows[0].status !== 'active') {
           result.withheld = due.length;
         } else {
           for (const tier of due) {
@@ -931,6 +940,15 @@ export class PostgresReferralRepository implements ReferralRepository {
       });
       await enqueue(tx, [row.referrer_id], command.now);
       return { reviewStatus: target, changed: true, referrerId: row.referrer_id };
+    });
+  }
+
+  enqueueWithheld(now: Date): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const campaign = await readCampaign(tx);
+      const withheld = await this.withheldReferrers(tx, campaign, 1_000_000);
+      if (withheld.length > 0) await enqueue(tx, withheld.map((r) => r.referrer_id), now);
+      return withheld.length;
     });
   }
 

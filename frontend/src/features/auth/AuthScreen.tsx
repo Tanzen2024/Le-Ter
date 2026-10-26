@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -22,6 +21,7 @@ import {
 } from '../../components/table/TableDecor';
 import { Button } from '../../components/ui/Button';
 import { colors, radius, spacing } from '../../constants/theme';
+import { keyboardAvoidingBehavior } from '../../lib/keyboard';
 
 interface AuthScreenProps {
   title: string;
@@ -89,7 +89,7 @@ export const authPalette = {
  * connexion (fond « table de jeu », or, police Cinzel, dos de cartes Le Ter) : marque, titre,
  * étapes et éventail de cartes à gauche (≈ 35 %), carte du formulaire à droite (≈ 65 %). La
  * hauteur étant rare, seul le formulaire défile et le clavier laisse visibles le champ actif et
- * le bouton (padding sur iOS ; Android redimensionne déjà la fenêtre).
+ * le bouton (`keyboardAvoidingBehavior`, D-132).
  */
 export function AuthScreen({
   title,
@@ -121,7 +121,7 @@ export function AuthScreen({
       <Screen style={styles.screen}>
         <KeyboardAvoidingView
           style={styles.row}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={keyboardAvoidingBehavior}
           onLayout={(e) => setRowWidth(e.nativeEvent.layout.width)}
         >
           <View style={[styles.side, formWidth !== undefined && styles.sideMeasured]}>

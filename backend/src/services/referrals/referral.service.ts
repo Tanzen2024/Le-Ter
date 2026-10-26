@@ -26,6 +26,11 @@ export interface ReferralServiceDependencies {
   /** Schéma de l'application (app.json `scheme`) : lien direct vers l'inscription. */
   appScheme?: string;
   tickMs?: number;
+  /**
+   * Crédit des paliers actif (D-169). Au démarrage, les paliers retenus pendant la
+   * désactivation sont remis en file pour être crédités.
+   */
+  rewardsEnabled?: boolean;
   /** Demandes traitées par tour de file. */
   batchSize?: number;
   /** Délai avant de retenter une évaluation en échec. */
@@ -130,10 +135,27 @@ export class ReferralService {
 
   start(): void {
     if (this.handle) return;
-    // Reprise immédiate après un redémarrage : la file est relue dans PostgreSQL.
-    void this.processQueue();
+    // Reprise immédiate après un redémarrage : la file est relue dans PostgreSQL, après la remise
+    // en file des paliers retenus pendant une désactivation du crédit (D-169).
+    void this.resumeWithheld().then(() => this.processQueue());
     this.handle = setInterval(() => void this.processQueue(), this.deps.tickMs ?? DEFAULT_TICK_MS);
     this.handle.unref();
+  }
+
+  /** Crédit actif : remet en file les parrains dont un palier dû n'a pas été crédité. */
+  async resumeWithheld(): Promise<void> {
+    if (!this.deps.rewardsEnabled) return;
+    try {
+      const count = await this.deps.repository.enqueueWithheld(this.clock());
+      if (count > 0) {
+        this.deps.logger.info('referral withheld tiers queued', { action: 'REFERRAL_REWARD', count });
+      }
+    } catch (err) {
+      this.deps.logger.error('referral withheld tiers not queued', {
+        action: 'REFERRAL_REWARD',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   stop(): void {

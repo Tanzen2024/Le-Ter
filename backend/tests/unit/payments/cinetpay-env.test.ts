@@ -1,6 +1,9 @@
 import { readDirectPayMethods, readEnv, readPagePreselectMethods } from '../../../src/config/env';
 
 /** Configuration CinetPay v1 (D-050) : jamais de valeur recopiée dans une erreur. */
+/** Exigés par readEnv en production ; valeurs fictives, jamais contactées. */
+const PRODUCTION = { NODE_ENV: 'production', DATABASE_URL: 'postgres://localhost/db', JWT_SECRET: 'x'.repeat(40) };
+
 const BASE = {
   CINETPAY_API_KEY: 'sk_test_FAKE_KEY',
   CINETPAY_API_PASSWORD: 'fake-password',
@@ -36,9 +39,9 @@ describe('readEnv — CinetPay', () => {
   });
 
   it('clé production : URL production', () => {
-    expect(readEnv({ ...BASE, CINETPAY_API_KEY: 'sk_live_FAKE' }).cinetpay?.baseUrl).toBe(
-      'https://api.cinetpay.co',
-    );
+    expect(
+      readEnv({ ...BASE, ...PRODUCTION, CINETPAY_API_KEY: 'sk_live_FAKE' }).cinetpay?.baseUrl,
+    ).toBe('https://api.cinetpay.co');
   });
 
   it.each([
@@ -102,7 +105,7 @@ describe('readEnv — transferts CinetPay (retraits, D-075)', () => {
 
   it('attestation de production : explicite, false par défaut, valeur stricte', () => {
     const enabled = { ...BASE, CINETPAY_TRANSFERS_ENABLED: 'true', CINETPAY_TRANSFER_NOTIFY_URL: NOTIFY };
-    expect(readEnv({ ...enabled, CINETPAY_API_KEY: 'sk_live_FAKE' }).cinetpay).toMatchObject({
+    expect(readEnv({ ...enabled, ...PRODUCTION, CINETPAY_API_KEY: 'sk_live_FAKE' }).cinetpay).toMatchObject({
       environment: 'live',
       transfers: { liveConfirmed: false },
     });
@@ -206,5 +209,48 @@ describe('readEnv — CINETPAY_PAGE_PRESELECT_METHODS (D-087)', () => {
   it('n’active jamais le paiement direct Orange Money', () => {
     const config = readEnv({ ...BASE, CINETPAY_PAGE_PRESELECT_METHODS: 'OM_CM' }).cinetpay;
     expect(config?.directPayMethods).toEqual([]);
+  });
+});
+
+describe('readEnv — clés de production hors production (D-170)', () => {
+  it.each(['development', 'test', undefined])(
+    'NODE_ENV=%s : clé sk_live_ refusée au démarrage, sans recopier le secret',
+    (nodeEnv) => {
+      const source = { ...BASE, CINETPAY_API_KEY: 'sk_live_FAKE_SECRET', ...(nodeEnv && { NODE_ENV: nodeEnv }) };
+      let error: unknown;
+      try {
+        readEnv(source);
+      } catch (err) {
+        error = err;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/sk_live_.*hors NODE_ENV=production/);
+      expect((error as Error).message).not.toMatch(/FAKE_SECRET|fake-password/);
+    },
+  );
+
+  it('production : clé sk_live_ acceptée (API de production)', () => {
+    expect(readEnv({ ...BASE, ...PRODUCTION, CINETPAY_API_KEY: 'sk_live_FAKE' }).cinetpay).toMatchObject({
+      environment: 'live',
+      baseUrl: 'https://api.cinetpay.co',
+    });
+  });
+
+  it('clé sandbox vers l’API de production : refusée (et l’inverse en production)', () => {
+    expect(() => readEnv({ ...BASE, CINETPAY_BASE_URL: 'https://api.cinetpay.co' })).toThrow(
+      /CINETPAY_BASE_URL refusée/,
+    );
+    expect(() =>
+      readEnv({
+        ...BASE,
+        ...PRODUCTION,
+        CINETPAY_API_KEY: 'sk_live_FAKE',
+        CINETPAY_BASE_URL: 'https://api.cinetpay.net',
+      }),
+    ).toThrow(/CINETPAY_BASE_URL refusée/);
+  });
+
+  it('sandbox en développement : inchangé (clé sk_test_, API sandbox)', () => {
+    expect(readEnv(BASE).cinetpay).toMatchObject({ environment: 'test', baseUrl: 'https://api.cinetpay.net' });
   });
 });

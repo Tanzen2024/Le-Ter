@@ -12,11 +12,14 @@ export function createReferralService(options: {
   clock?: () => Date;
 }): ReferralService {
   return new ReferralService({
-    repository: new PostgresReferralRepository(options.sql),
+    repository: new PostgresReferralRepository(options.sql, {
+      rewardsEnabled: options.env.rewardsEnabled,
+    }),
     logger: options.logger.child({ action: 'REFERRAL' }),
     downloadUrl: options.env.downloadUrl,
     appScheme: 'leter',
     tickMs: options.env.tickMs,
+    rewardsEnabled: options.env.rewardsEnabled,
     clock: options.clock,
   });
 }

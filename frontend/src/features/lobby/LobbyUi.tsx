@@ -4,7 +4,6 @@ import {
   Animated,
   BackHandler,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,6 +22,7 @@ import {
 import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import { gameTheme, salon } from '../../constants/theme';
 import { useMessages } from '../../lib/i18n';
+import { keyboardAvoidingBehavior } from '../../lib/keyboard';
 import { playSound, type SoundName } from '../../services/audio-service';
 import { useReducedMotion } from '../games/table/turn-signal';
 import { useWallet } from '../wallet/hooks';
@@ -355,10 +355,9 @@ export function LobbyPanel({
     >
       {/* Clavier ouvert (formulaires : proposer un tournoi, mot de passe…) : le panneau se
           réduit au-dessus du clavier et son contenu défile jusqu'au dernier champ, au lieu de
-          passer sous le clavier (Expo, gestion du clavier : `padding` sur iOS, la simple
-          présence du composant sur Android). */}
+          passer sous le clavier (`keyboardAvoidingBehavior`, D-132). */}
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={keyboardAvoidingBehavior}
         style={styles.keyboardArea}
       >
         <Animated.View
