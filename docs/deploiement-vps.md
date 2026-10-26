@@ -10,7 +10,8 @@
   seulement où se trouvent les secrets.
 - **Mises à jour** : 2026-10-26, création ; 2026-10-26, ajout du §10 (services et outils
   externes) ; 2026-10-26, D-169 (verrou du parrainage) et D-170 (`HOST`) versionnés dans le
-  dépôt, **pas encore déployés** sur le VPS (§11). Tenir ce document à jour à chaque changement
+  dépôt, **pas encore déployés** sur le VPS (§11) ; 2026-10-26, distribution de l'APK de test
+  depuis le VPS (§7.1). Tenir ce document à jour à chaque changement
   sur le serveur ou chez un prestataire.
 
 ## 1. Architecture
@@ -173,6 +174,24 @@ Toujours le TEST d'abord, la PROD ensuite, avec le même commit.
 5. `sudo systemctl restart le-ter-backend-<env>` puis
    `curl -s https://api[-beta].leter.cm/api/health` et lecture du journal.
 
+### 7.1 Distribution de l'APK de test depuis le VPS
+
+- Lien public, sans authentification ni limite de débit :
+  **`https://api-beta.leter.cm/downloads/le-ter-test.apk`** (toujours la dernière version).
+  Servi par Nginx (`location /downloads/` du site `le-ter-beta`), sans passer par le backend.
+  Liste du dossier refusée (`403`). N'existe pas sur `api.leter.cm`.
+- Fichiers : `/var/www/le-ter-downloads/test/` (root, 755/644) : `le-ter-test-v<version>-vc<versionCode>.apk`,
+  son `.sha256`, et le lien `le-ter-test.apk` vers la version courante.
+- Version en ligne au 26/10/2026 : `le-ter-test-v1.0.0-vc4.apk` (commit `f428637`, 118 Mo,
+  SHA-256 `07b841a1df5116372ec2f6e258ab86fdebc64e96fbacb18f776b999968439a7f`).
+- Publier un nouvel APK : sur le VPS, `sudo curl -fsSL -o le-ter-test-v<v>-vc<n>.apk "<lien EAS>"`
+  dans ce dossier, `chmod 644`, vérifier l'archive (`python3` + `zipfile.testzip()`), écrire le
+  `.sha256`, puis `sudo ln -sfn le-ter-test-v<v>-vc<n>.apk le-ter-test.apk`. Aucun rechargement de
+  Nginx n'est nécessaire. Garder la version précédente pour pouvoir revenir en arrière.
+- Le lien est public : l'APK ne contient aucun secret (seulement `https://api-beta.leter.cm`),
+  mais il donne accès au TEST et aux paiements sandbox. À ne partager qu'avec les testeurs.
+- Utile quand un téléphone ne joint pas `expo.dev` (VPN, DNS privé, réseau filtrant).
+
 Application mobile : `EXPO_PUBLIC_API_URL` est figée au build. Environnement EAS `preview` →
 `https://api-beta.leter.cm` (fait) ; environnement `production` → `https://api.leter.cm` (à
 définir avant le premier build de production). Construire depuis une copie propre du commit
@@ -202,6 +221,9 @@ de certificat) n'est encore en place.
   direct par `CONFIG SET requirepass`, et `/opt/le-ter/backups/redis.conf.bak-pre-bascule-20261026`
   → `/etc/redis/redis.conf`), puis `systemctl enable --now le-ter-backend`. Dump `le_ter` juste
   avant la bascule : `/opt/le-ter/backups/le_ter_20261026_175124.dump`.
+- **Distribution de l'APK** : retirer le bloc `location /downloads/` avec
+  `/opt/le-ter/leter-test/backups/nginx-le-ter-beta.bak-avant-downloads-20261026`, puis `nginx -t`
+  et `reload`.
 - **Nginx** : `/opt/le-ter/backups/nginx.conf.bak-20261026`,
   `/opt/le-ter/backups/nginx-le-ter.http.bak-20261026`,
   `/opt/le-ter/leter-test/backups/nginx-le-ter-beta.http.bak-20261026` ; réactiver `default` en
