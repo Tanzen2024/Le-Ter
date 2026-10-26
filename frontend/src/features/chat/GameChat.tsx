@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { ApiError } from '../../lib/api-client';
+import { userErrorMessage } from '../../lib/api-client';
 import { ChatPanel } from './ChatPanel';
 import { unreadCount } from './chat-state';
 import { useGameChat, useSendChatMessage } from './hooks';
@@ -43,8 +43,6 @@ export function GameChat({
   const sender = useSendChatMessage(gameId);
   const { history } = chat;
   const data = history.data;
-  const errorMessage = (err: unknown) =>
-    err instanceof ApiError ? err.message : 'Une erreur est survenue. Réessayez.';
   return (
     <ChatPanel
       top={top}
@@ -53,7 +51,7 @@ export function GameChat({
       myId={myId}
       messages={data?.messages ?? []}
       loading={history.isPending}
-      loadError={history.error ? errorMessage(history.error) : undefined}
+      loadError={userErrorMessage(history.error)}
       hasMore={data?.hasMore ?? false}
       loadingOlder={chat.loadingOlder}
       onLoadOlder={() => void chat.loadOlder()}
@@ -62,7 +60,7 @@ export function GameChat({
       maxLength={data?.maxMessageLength}
       connection={chat.status}
       sending={sender.isPending}
-      sendError={sender.error ? errorMessage(sender.error) : undefined}
+      sendError={userErrorMessage(sender.error)}
       onSend={sender.send}
       onDraftChange={() => {
         if (sender.error) sender.reset();

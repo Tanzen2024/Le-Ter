@@ -8,6 +8,7 @@ import { createPgSqlClient, type SqlClient } from '../../../src/database/sql-cli
 import type { CardId } from '../../../src/domain/cards/card';
 import type { GameEvent } from '../../../src/domain/game/game-events';
 import type { GameId, PlayerId } from '../../../src/domain/game/game-id';
+import { TURN_DURATION_MS } from '../../../src/domain/rules/rule-set';
 import type { SessionId } from '../../../src/domain/sessions/session';
 import { silentLogger } from '../../../src/utils/logger';
 import { gameEventChannel } from '../../../src/websocket/game-rooms';
@@ -144,7 +145,7 @@ describeWithInfra(
 
       // --- Tour 2 : B OUVRE et ne joue pas → timeout réel → plus petite carte : 4♥ ---------
       const deadlineB = Date.parse(afterManual.body.game.turnDeadlineAt as string);
-      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(15_000);
+      expect(deadlineB - Date.parse(afterManual.body.game.turnStartedAt as string)).toBe(TURN_DURATION_MS);
       await sleep(Math.max(0, deadlineB - Date.now()));
       const viewA = await until(
         () => expectStatus(A.api.get(`/api/games/${gameId}`), 200),

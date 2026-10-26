@@ -97,16 +97,13 @@ describe('table de tournoi en attente : « Annuler la recherche »', () => {
     expect(sessions.leave).toHaveBeenCalledWith('jeton', 'session-1');
   });
 
-  it('erreur réseau : message, la table reste affichée et l’on peut réessayer', async () => {
+  it('erreur réseau : aucun message (D-168), la table reste affichée et l’on peut réessayer', async () => {
     sessions.leave.mockRejectedValueOnce(new Error('réseau'));
     sessions.leave.mockResolvedValueOnce({ session: null } as never);
     await renderWaiting(waitingGame());
     await fireEvent.press(screen.getByText('Annuler la recherche'));
-    expect(
-      await screen.findByText(
-        'L’annulation n’a pas abouti. Vérifiez votre connexion et réessayez.',
-      ),
-    ).toBeTruthy();
+    await waitFor(() => expect(sessions.leave).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(dismissTo).not.toHaveBeenCalled();
     await fireEvent.press(screen.getByText('Annuler la recherche'));
     await waitFor(() => expect(dismissTo).toHaveBeenCalledTimes(1));

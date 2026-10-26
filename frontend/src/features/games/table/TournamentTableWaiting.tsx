@@ -7,7 +7,7 @@ import {
   useTableFonts,
 } from '../../../components/table/TableDecor';
 import { useServerCountdown } from '../../../hooks/use-server-countdown';
-import { ApiError } from '../../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../../lib/api-client';
 import type { GameView } from '../../../types/game';
 import { useLobbyMetrics } from '../../lobby/lobby-metrics';
 import { PanelButton } from '../../lobby/LobbyUi';
@@ -45,13 +45,10 @@ export function TournamentTableWaiting({
   const waiting = tournamentWaitingState(game);
   const startFailure = start.error instanceof ApiError ? start.error.message : undefined;
   const leave = useLeaveSession();
-  const cancelFailure = !leave.isError
-    ? undefined
-    : leave.error instanceof ApiError
-      ? leave.error.code === IN_ACTIVE_GAME
-        ? undefined
-        : leave.error.message
-      : 'L’annulation n’a pas abouti. Vérifiez votre connexion et réessayez.';
+  const cancelFailure =
+    leave.error instanceof ApiError && leave.error.code === IN_ACTIVE_GAME
+      ? undefined
+      : userErrorMessage(leave.error);
 
   const sessionId = game.sessionId;
   const cancel = sessionId ? (

@@ -1,4 +1,5 @@
 import { ApiError } from '../../lib/api-client';
+import { isSystemFailure } from '../../lib/user-facing-error';
 import type {
   WithdrawalMode,
   WithdrawalPolicy,
@@ -78,13 +79,13 @@ export function quotaText(limit: WithdrawalPolicy['limit']): string | undefined 
   return `${remaining} retrait${remaining > 1 ? 's' : ''} restant${remaining > 1 ? 's' : ''} sur ${limit.count} ${scope}.`;
 }
 
-/** Message d'un refus du serveur, d'après son `code` stable. */
-export function withdrawalErrorMessage(error: unknown): string {
-  if (!(error instanceof ApiError)) return 'Retrait impossible. Réessayez.';
-  if (error.status === 0) {
-    // La même clé est réutilisée au nouvel essai : le retrait ne sera jamais exécuté deux fois.
-    return 'Connexion impossible. Réessayez : la demande ne sera pas exécutée deux fois.';
-  }
+/**
+ * Message d'un refus du serveur, d'après son `code` stable ; `undefined` pour une erreur
+ * système (réseau, délai, 5xx : rien à l'écran, D-168). La même clé est réutilisée au nouvel
+ * essai : le retrait n'est jamais exécuté deux fois.
+ */
+export function withdrawalErrorMessage(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || isSystemFailure(error.status)) return undefined;
   switch (error.code) {
     case 'VALIDATION_ERROR':
       return error.fields.tokens ?? error.fields.operator ?? 'Demande invalide.';
@@ -92,8 +93,6 @@ export function withdrawalErrorMessage(error: unknown): string {
       return 'Solde disponible insuffisant. Aucun jeton n’a été débité.';
     case 'WITHDRAWAL_LIMIT_REACHED':
       return 'Vous avez atteint le nombre maximal de retraits pour la période en cours.';
-    case 'MOBILE_MONEY_UNAVAILABLE':
-      return 'Le service de retrait est indisponible pour le moment. Aucun jeton n’a été débité.';
     case 'IDEMPOTENCY_KEY_REUSED':
       return 'Cette demande a déjà été utilisée. Modifiez le montant puis recommencez.';
     case 'RATE_LIMITED':

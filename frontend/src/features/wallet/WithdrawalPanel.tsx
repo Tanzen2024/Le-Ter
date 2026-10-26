@@ -182,7 +182,7 @@ function FormStep({
 
   return (
     <View style={styles.block}>
-      {withdrawals.error ? (
+      {withdrawalErrorMessage(withdrawals.error) ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {withdrawalErrorMessage(withdrawals.error)}
         </Text>
@@ -297,7 +297,7 @@ function ConfirmStep({
       <Text style={[styles.summary, fontOf(fonts.button), { fontSize: m.bodySize }]}>
         {`${formatTokens(tokens)} vers ${operatorLabel} ${msisdn}`}
       </Text>
-      {request.error ? (
+      {withdrawalErrorMessage(request.error) ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {withdrawalErrorMessage(request.error)}
         </Text>
@@ -385,9 +385,11 @@ function HistoryStep({ onBack }: { onBack: () => void }) {
       {query.isPending ? (
         <ActivityIndicator color={palette.gold} />
       ) : query.error ? (
-        <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
-          {withdrawalErrorMessage(query.error)}
-        </Text>
+        withdrawalErrorMessage(query.error) ? (
+          <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
+            {withdrawalErrorMessage(query.error)}
+          </Text>
+        ) : null
       ) : items.length === 0 ? (
         <EmptyState
           glyph="🏦"

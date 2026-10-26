@@ -21,6 +21,8 @@
     "game:finish:prod": "node dist/cli/finish-game.js",
     "payments:diagnose": "tsx src/cli/payments-diagnose.ts",
     "payments:diagnose:prod": "node dist/cli/payments-diagnose.js",
+    "withdrawals:check-operators": "tsx src/cli/withdrawals-check-operators.ts",
+    "withdrawals:check-operators:prod": "node dist/cli/withdrawals-check-operators.js",
     "user:role": "tsx src/cli/set-user-role.ts",
     "user:role:prod": "node dist/cli/set-user-role.js",
     "tournament:create": "tsx src/cli/tournament-create.ts",

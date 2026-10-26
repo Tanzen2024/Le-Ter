@@ -9,6 +9,7 @@ import type { GameRateLimits } from './routes/game.routes';
 import type { AdminRouterDependencies } from './routes/admin.routes';
 import type { ComplaintRouterDependencies } from './routes/complaint.routes';
 import type { PaymentRouterOptions } from './routes/payment.routes';
+import type { ServerErrorRepository } from './repositories/server-error.repository';
 import type { AuthService } from './services/auth/auth.service';
 import type { ChatService } from './services/chat/chat.service';
 import type { DetectionAdminService } from './services/detection/detection-admin.service';
@@ -69,6 +70,8 @@ export interface AppDependencies {
   complaints?: ComplaintRouterDependencies;
   /** Parrainage (D-161) ; absent, /api/referrals et /api/admin/referrals : 503. */
   referrals?: ReferralService;
+  /** Pannes 5xx condensées pour le back-office (D-168) ; absentes, rien n'est enregistré. */
+  serverErrors?: ServerErrorRepository;
   /**
    * Proxys de confiance (`TRUST_PROXY`) : absent = aucun (req.ip = pair TCP). Ne jamais
    * l'activer sans connaître l'infrastructure réelle (X-Forwarded-For falsifiable).
@@ -103,6 +106,7 @@ export function createApp({
   admin,
   complaints,
   referrals,
+  serverErrors,
   trustProxy,
 }: AppDependencies = {}): Express {
   const app = express();
@@ -145,7 +149,7 @@ export function createApp({
   );
 
   app.use(notFoundHandler);
-  app.use(createErrorHandler(logger));
+  app.use(createErrorHandler(logger, serverErrors));
 
   return app;
 }

@@ -72,6 +72,12 @@ export function useTableFonts(): TableFonts {
   return fontsLoaded ? { title: 'Cinzel_700Bold', button: 'Rajdhani_700Bold' } : {};
 }
 
+/** Polices prêtes, ou définitivement en échec (la police de repli est alors gardée). */
+export function useTableFontsSettled(): boolean {
+  const [fontsLoaded, fontError] = useFonts(TABLE_FONT_FILES);
+  return fontsLoaded || fontError != null;
+}
+
 /** Police et graisse de repli : la graisse n'est forcée que sur la police système. */
 export function fontOf(family: string | undefined): TextStyle {
   return { fontFamily: family, fontWeight: family ? undefined : '800' };

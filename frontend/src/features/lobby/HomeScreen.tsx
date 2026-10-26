@@ -267,11 +267,15 @@ function OpenGamesCount({ gameType, width: w }: { gameType: GameType; width: num
   const fonts = useTableFonts();
   const t = useMessages();
   const { data: count } = useOpenTableCount(gameType);
-  if (count === undefined) return null;
   const fontSize = Math.round(clamp(w * 0.068, 11, 16));
+  const known = count !== undefined;
+  // Réponse attendue (ou en erreur) : rien n'est affiché, mais la place reste réservée,
+  // invisible ; sans elle, l'emblème rétrécissait d'un coup à l'arrivée du chiffre.
   return (
     <View
-      testID={`open-games-${gameType}`}
+      testID={known ? `open-games-${gameType}` : `open-games-${gameType}-reserved`}
+      accessibilityElementsHidden={!known}
+      importantForAccessibility={known ? 'auto' : 'no-hide-descendants'}
       style={[
         styles.openGames,
         {
@@ -279,10 +283,11 @@ function OpenGamesCount({ gameType, width: w }: { gameType: GameType; width: num
           paddingVertical: 2,
           borderRadius: fontSize,
         },
+        !known && styles.reserved,
       ]}
     >
       <Text numberOfLines={1} style={[styles.openGamesText, fontOf(fonts.button), { fontSize }]}>
-        {`🃏 ${t.home.openGames(count)}`}
+        {known ? `🃏 ${t.home.openGames(count)}` : ' '}
       </Text>
     </View>
   );
@@ -399,6 +404,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(4, 9, 7, 0.82)',
   },
   openGamesText: { color: salon.textSoft },
+  reserved: { opacity: 0 },
   pressed: { opacity: 0.86, transform: [{ scale: 0.96 }] },
   // Zone BORNÉE entre « Proposer » et « Rejoindre » : son contenu ne la fait jamais grandir
   // (le résumé s'y ajuste), le bouton reste au bas du panneau.

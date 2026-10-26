@@ -1,10 +1,6 @@
 /// <reference types="jest" />
 import { ApiError, userErrorMessage } from './api-client';
-import {
-  GENERIC_ERROR_MESSAGE,
-  looksTechnical,
-  SERVER_ERROR_MESSAGE,
-} from './user-facing-error';
+import { looksTechnical } from './user-facing-error';
 
 describe('aucun message d’erreur technique à l’écran', () => {
   it.each([
@@ -32,20 +28,17 @@ describe('aucun message d’erreur technique à l’écran', () => {
     'Vous devez disposer d’au moins 200 jetons pour jouer avec une mise de 100 jetons.',
     'Le paiement direct n’est pas disponible pour cet opérateur. Payez par la page CinetPay.',
     'Numéro d’inscription au format international attendu (ex. +237692130271).',
-    'Impossible de joindre le serveur. Vérifiez votre connexion.',
     'Trop de messages. Patientez quelques secondes.',
   ])('« %s » est lisible par le joueur : affiché tel quel', (text) => {
     expect(looksTechnical(text)).toBe(false);
     expect(new ApiError(409, 'ANY', text).message).toBe(text);
   });
 
-  it('message technique du serveur : remplacé par une phrase simple', () => {
-    expect(new ApiError(400, 'X', 'Expected string, received number').message).toBe(
-      GENERIC_ERROR_MESSAGE,
-    );
-    expect(new ApiError(500, 'INTERNAL', 'Internal Server Error').message).toBe(SERVER_ERROR_MESSAGE);
-    expect(new ApiError(502, 'HTTP_ERROR', 'Bad Gateway').message).toBe(SERVER_ERROR_MESSAGE);
-    expect(new ApiError(404, 'HTTP_ERROR', 'Cannot GET /api/x').message).toBe(GENERIC_ERROR_MESSAGE);
+  it('message technique du serveur : aucun texte (D-168)', () => {
+    expect(new ApiError(400, 'X', 'Expected string, received number').message).toBe('');
+    expect(new ApiError(500, 'INTERNAL', 'Internal Server Error').message).toBe('');
+    expect(new ApiError(502, 'HTTP_ERROR', 'Bad Gateway').message).toBe('');
+    expect(new ApiError(404, 'HTTP_ERROR', 'Cannot GET /api/x').message).toBe('');
   });
 
   it('codes au vocabulaire interne : reformulés pour le joueur', () => {
@@ -58,9 +51,11 @@ describe('aucun message d’erreur technique à l’écran', () => {
     );
   });
 
-  it('5xx rédigés pour le joueur (paiement, maintenance) : conservés', () => {
+  it('erreur système (réseau, délai, 5xx), même rédigée : aucun texte (D-168)', () => {
     const text = 'Service momentanément indisponible. Réessayez dans quelques instants.';
-    expect(new ApiError(503, 'SERVICE_TEMPORARILY_UNAVAILABLE', text).message).toBe(text);
+    expect(new ApiError(503, 'SERVICE_TEMPORARILY_UNAVAILABLE', text).message).toBe('');
+    expect(new ApiError(0, 'NETWORK_ERROR', 'Impossible de joindre le serveur.').message).toBe('');
+    expect(userErrorMessage(new ApiError(0, 'TIMEOUT', ''), 'Retrait impossible.')).toBeUndefined();
   });
 
   it('messages par champ : un texte technique devient « Valeur invalide. »', () => {
@@ -71,9 +66,9 @@ describe('aucun message d’erreur technique à l’écran', () => {
     expect(err.fields).toEqual({ phone: 'Numéro invalide.', stake: 'Valeur invalide.' });
   });
 
-  it('erreur JavaScript quelconque : jamais affichée, repli à la place', () => {
-    expect(userErrorMessage(new TypeError('x is undefined'))).toBe(GENERIC_ERROR_MESSAGE);
-    expect(userErrorMessage('boom', 'Paiement indisponible.')).toBe('Paiement indisponible.');
+  it('erreur JavaScript quelconque : rien à afficher, pas même un repli', () => {
+    expect(userErrorMessage(new TypeError('x is undefined'))).toBeUndefined();
+    expect(userErrorMessage('boom', 'Paiement indisponible.')).toBeUndefined();
     expect(userErrorMessage(new ApiError(409, 'SESSION_FULL', 'Cette partie est complète.'))).toBe(
       'Cette partie est complète.',
     );

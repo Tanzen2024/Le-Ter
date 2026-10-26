@@ -74,7 +74,7 @@ export function AssistantChat({
               <Bubble key={message.id} message={message} />
             ))}
             {send.isPending ? <Body muted>{t.assistant.thinking}</Body> : null}
-            {send.error ? (
+            {userErrorMessage(send.error) ? (
               <Text style={styles.error}>
                 {userErrorMessage(send.error)}
               </Text>

@@ -15,12 +15,11 @@ import {
   useLoginMetrics,
 } from '../../src/features/auth/LoginLayout';
 import { resolveLoginIdentifier } from '../../src/features/auth/validation';
-import { ApiError } from '../../src/lib/api-client';
+import { userErrorMessage } from '../../src/lib/api-client';
 import { DEFAULT_PHONE_COUNTRY } from '../../src/lib/phone-countries';
 
 type Field = 'identifier' | 'password';
 
-const UNEXPECTED_FAILURE = 'Connexion impossible pour le moment. Réessayez.';
 
 /**
  * Connexion (D-135, D-139) : UN champ « téléphone ou e-mail » (pays présélectionné : Cameroun,
@@ -64,12 +63,8 @@ export default function LoginScreen() {
   };
 
   // Message générique du serveur (« … ou mot de passe incorrect. ») : il ne révèle pas si le
-  // compte existe. Réseau coupé : message lisible d'`ApiError`. Jamais d'erreur technique brute.
-  const failure = login.isError
-    ? login.error instanceof ApiError
-      ? login.error.message
-      : UNEXPECTED_FAILURE
-    : undefined;
+  // compte existe. Réseau coupé, panne : rien à l'écran (D-168).
+  const failure = userErrorMessage(login.error);
 
   return (
     <LoginLayout title="CONNEXION" decorated>

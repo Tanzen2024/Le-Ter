@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '../../../components/ui/Button';
 import { colors, spacing } from '../../../constants/theme';
@@ -31,10 +32,30 @@ export function AdminGate({ children }: { children: ReactNode }) {
       </View>
     );
   }
-  return <>{children}</>;
+  return <AdminSafeArea>{children}</AdminSafeArea>;
+}
+
+/**
+ * Marges de sécurité des écrans d'administration (paysage, D-028) : encoche et coins arrondis
+ * sur les côtés, barre gestuelle en bas. Sans elles, le contenu passait sous l'encoche.
+ * Connues dès le premier rendu (fournisseur racine) : aucun décalage à l'arrivée.
+ */
+export function AdminSafeArea({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View
+      style={[
+        styles.safe,
+        { paddingLeft: insets.left, paddingRight: insets.right, paddingBottom: insets.bottom },
+      ]}
+    >
+      {children}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background },
   center: {
     flex: 1,
     alignItems: 'center',

@@ -47,9 +47,11 @@ export function PaymentProgress({
     return (
       <View style={[styles.column, { gap: m.gap * 0.7 }]} testID="payment-progress">
         {query.error ? (
-          <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.bodySize }]}>
-            {notFound ? 'Paiement introuvable.' : userErrorMessage(query.error)}
-          </Text>
+          notFound || userErrorMessage(query.error) ? (
+            <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.bodySize }]}>
+              {notFound ? 'Paiement introuvable.' : userErrorMessage(query.error)}
+            </Text>
+          ) : null
         ) : (
           <>
             <ActivityIndicator color={salon.status.info.text} />

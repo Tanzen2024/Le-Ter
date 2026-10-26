@@ -11,7 +11,7 @@ import {
 } from '../../../components/table/TableDecor';
 import { gameTheme } from '../../../constants/theme';
 import { displayedDeadline } from '../../../hooks/use-server-countdown';
-import { ApiError } from '../../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../../lib/api-client';
 import { useMessages } from '../../../lib/i18n';
 import { useGameUiStore } from '../../../stores/game-ui-store';
 import { garamVariantLabel, type GameView, type PlayerInGame } from '../../../types/game';
@@ -134,9 +134,7 @@ export function GameTableScreen() {
   } else if (view === 'message') {
     // Partie inaccessible (non membre, introuvable) : aucune navigation forcée.
     content = (
-      <CenteredMessage
-        message={game.error instanceof ApiError ? game.error.message : 'Partie indisponible.'}
-      />
+      <CenteredMessage message={userErrorMessage(game.error)} />
     );
   } else if (view === 'loading') {
     content = (
@@ -179,12 +177,13 @@ function openGame(gameId: string) {
   router.replace(`/game/${gameId}`);
 }
 
-function CenteredMessage({ message }: { message: string }) {
+/** Message centré et retour à l'accueil ; sans message (erreur système, D-168), le bouton seul. */
+function CenteredMessage({ message }: { message?: string }) {
   const m = useLobbyMetrics();
   return (
     <View style={styles.fill}>
       <GlassBox style={{ padding: m.gap * 1.5, gap: m.gap }}>
-        <Text style={[styles.centerText, { fontSize: m.bodySize }]}>{message}</Text>
+        {message ? <Text style={[styles.centerText, { fontSize: m.bodySize }]}>{message}</Text> : null}
         <PanelButton title="Accueil" onPress={goHome} />
       </GlassBox>
     </View>

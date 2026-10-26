@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { preloadTableFonts } from '../src/components/table/TableDecor';
 import { bootstrapSession } from '../src/features/auth/session';
 import { ActiveGameRestorer } from '../src/features/games/ActiveGameRestorer';
+import { FontCurtain } from '../src/features/navigation/FontCurtain';
 import { LaunchCurtain } from '../src/features/navigation/LaunchCurtain';
 import { beginNavigationRoot } from '../src/features/navigation/last-route';
 import {
@@ -91,6 +92,8 @@ export default function RootLayout() {
         {/* Relancement après destruction par Android : couvre la reconstruction de la pile
           jusqu'à la réouverture du dernier écran (jamais affiché au simple retour). */}
         <LaunchCurtain />
+        {/* Démarrage à froid : aucun texte en police système qui change de taille ensuite. */}
+        <FontCurtain />
       </ThemeProvider>
     </QueryClientProvider>
   );

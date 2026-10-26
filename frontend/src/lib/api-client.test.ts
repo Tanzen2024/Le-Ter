@@ -46,7 +46,7 @@ it('serveur injoignable : NETWORK_ERROR (statut 0), destination journalisée san
   );
 
   expect(error).toMatchObject({ status: 0, code: 'NETWORK_ERROR' });
-  expect(error.message).toMatch(/Impossible de joindre le serveur/);
+  expect(error.message).toBe(''); // aucun texte pour le joueur (D-168)
   expect(warn).toHaveBeenCalledWith('[réseau] NETWORK_ERROR', {
     method: 'GET',
     url: `${API_URL}/api/games/me/active`,
@@ -74,7 +74,7 @@ it('aucune réponse dans le délai : TIMEOUT (statut 0), requête abandonnée', 
   const error = await pending;
   expect(signal?.aborted).toBe(true);
   expect(error).toMatchObject({ status: 0, code: 'TIMEOUT' });
-  expect(error.message).toMatch(/ne répond pas/);
+  expect(error.message).toBe(''); // aucun texte pour le joueur (D-168)
 });
 
 it('réponse rapide : le délai est annulé (aucun abandon tardif)', async () => {
@@ -105,7 +105,7 @@ it('5xx sans corps JSON (proxy, panne) : erreur serveur dite comme telle et jour
   const error = await failureOf(apiRequest('/api/wallet'));
 
   expect(error).toMatchObject({ status: 502, code: 'HTTP_ERROR' });
-  expect(error.message).toMatch(/Le serveur a rencontré une erreur/);
+  expect(error.message).toBe(''); // aucun texte pour le joueur (D-168)
   expect(warn).toHaveBeenCalledWith('[réseau] SERVER_ERROR', {
     method: 'GET',
     url: `${API_URL}/api/wallet`,
@@ -114,13 +114,13 @@ it('5xx sans corps JSON (proxy, panne) : erreur serveur dite comme telle et jour
   });
 });
 
-it('5xx avec message de l’API : le message du serveur est conservé', async () => {
+it('5xx avec message de l’API : jamais montré au joueur (D-168)', async () => {
   fetchMock.mockResolvedValueOnce(
     json(503, { code: 'ADMIN_UNAVAILABLE', message: 'Administration indisponible.' }),
   );
   const error = await failureOf(apiRequest('/api/admin/x'));
   expect(error).toMatchObject({ status: 503, code: 'ADMIN_UNAVAILABLE' });
-  expect(error.message).toBe('Administration indisponible.');
+  expect(error.message).toBe('');
 });
 
 it('503 : service momentanément indisponible, journalisé comme tel (ni panne, ni réseau)', async () => {

@@ -53,16 +53,17 @@ export function placePopover(
 
 /**
  * Fenêtre légère accrochée à son champ (calendrier, horloge) : l'écran courant reste visible
- * autour d'elle (D-164, exception à D-126). Un appui hors d'elle la referme sans rien changer,
+ * autour d'elle (D-166, exception à D-126). Un appui hors d'elle la referme sans rien changer,
  * comme un sélecteur classique ; le bouton retour d'Android aussi.
  *
  * `anchor` : position du champ dans la fenêtre (`measureInWindow`). Inconnue, la fenêtre se
  * centre. Elle reste invisible jusqu'à connaître sa propre taille (jamais de saut visible).
+ * Le `Modal` isole déjà son contenu : la carte ne se déclare pas modale, sinon la zone
+ * extérieure « Fermer » serait cachée aux lecteurs d'écran.
  */
 export function AnchoredPopover({
   visible,
   anchor,
-  label,
   closeLabel,
   onClose,
   children,
@@ -70,8 +71,6 @@ export function AnchoredPopover({
 }: {
   visible: boolean;
   anchor: Rect | undefined;
-  /** Nom de la fenêtre pour les lecteurs d'écran. */
-  label: string;
   /** Libellé de la zone hors de la fenêtre (elle la referme). */
   closeLabel: string;
   onClose: () => void;
@@ -112,8 +111,6 @@ export function AnchoredPopover({
       />
       <View
         testID={testID}
-        accessibilityViewIsModal
-        accessibilityLabel={label}
         onLayout={onLayout}
         style={[
           styles.card,

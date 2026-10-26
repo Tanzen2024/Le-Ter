@@ -27,6 +27,15 @@ import { SettingsPanel } from './SettingsPanel';
 
 export type LobbyPanelName = 'profile' | 'settings' | 'private' | 'garam' | 'shop';
 
+/**
+ * Dernière emprise du HUD mesurée, commune à toutes les coquilles. Chaque écran connecté monte
+ * sa propre coquille : partir de {0, 0} faisait dessiner un panneau ouvert dès l'arrivée
+ * (« Proposer un tournoi ») sur toute la largeur, puis le resserrer entre les blocs du HUD
+ * après la mesure, un saut visible à chaque changement d'écran. Le HUD étant le même partout,
+ * la dernière mesure est reprise d'emblée ; `onLayout` ne corrige que si elle a changé.
+ */
+let lastHudInsets = { left: 0, right: 0 };
+
 const LobbyContext = createContext<{
   openPanel(panel: LobbyPanelName): void;
   /** Panneau ouvert au premier plan (null : aucun). */
@@ -75,12 +84,14 @@ export function LobbyShell({
   const openPanel = useCallback((next: LobbyPanelName) => setPanel(next), []);
   const closePanel = useCallback(() => setPanel(null), []);
   // Emprise du HUD, mesurée : les panneaux ouverts restent entre ses deux blocs (D-133).
-  const [hudInsets, setHudInsets] = useState({ left: 0, right: 0 });
+  const [hudInsets, setHudInsets] = useState(() => lastHudInsets);
   const onHudInsets = useCallback(
     (next: { left?: number; right?: number }) =>
       setHudInsets((current) => {
         const merged = { ...current, ...next };
-        return merged.left === current.left && merged.right === current.right ? current : merged;
+        if (merged.left === current.left && merged.right === current.right) return current;
+        lastHudInsets = merged;
+        return merged;
       }),
     [],
   );

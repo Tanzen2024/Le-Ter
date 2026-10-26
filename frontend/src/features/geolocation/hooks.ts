@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import { router, useIsFocused } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import { useAppState } from '../../lib/app-lifecycle';
 import { geolocationApi } from '../../services/geolocation-api';
 import { useGameUiStore } from '../../stores/game-ui-store';
@@ -335,11 +335,12 @@ export function useGameGeolocation({
   };
 }
 
-/** Message affiché quand le départ n'est pas confirmé ; jamais une fausse confirmation. */
+/**
+ * Départ non confirmé : jamais une fausse confirmation. Refus du serveur : son message ;
+ * erreur système : rien à l'écran (D-168).
+ */
 export function departureFailureMessage(error: unknown): string {
-  if (error instanceof ApiError && error.status !== 0) return error.message;
-  const cause = error instanceof ApiError ? ` ${error.message}` : '';
-  return `Votre départ n’est pas confirmé.${cause} Réessayez.`;
+  return userErrorMessage(error) ?? '';
 }
 
 /**

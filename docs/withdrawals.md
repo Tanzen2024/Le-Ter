@@ -45,6 +45,10 @@ chez CinetPay**. Un échec confirmé est remboursé **une seule fois**.
 8. Les retraits créés **avant** cette correction conservent l'opérateur enregistré à leur
    création ; ils n'ont pas été modifiés, et leurs envois différés ou relectures l'utilisent
    toujours.
+   Pour les repérer : `npm run withdrawals:check-operators` (`:prod` après build), en lecture
+   seule. Il liste les retraits `CREATED` / `PROCESSING` dont l'opérateur enregistré diffère de
+   celui déduit aujourd'hui du numéro (identifiant, statut, opérateurs ; jamais le numéro) ;
+   code de sortie 2 s'il en trouve. Un écart se traite par rapprochement administratif.
 
 ## Fournisseur : API de transfert CinetPay v1
 
@@ -287,5 +291,7 @@ mécanisme que les retraits et réservations existants).
    la notification, `GET /v1/transfer/{id}` et le règlement (statut, solde, `fee_amount`).
 4. Vérifier en particulier : la réponse réelle de création (code, statut), le comportement de
    `TRANSACTION_EXIST` sur une référence réutilisée, la forme de `NOT_FOUND`.
-5. Seulement après la validation sandbox : clé `sk_live_`, `NODE_ENV=production`,
+5. `npm run withdrawals:check-operators:prod` sur la base de production : aucun écart
+   d'opérateur parmi les retraits ouverts (voir « Opérateur », point 8).
+6. Seulement après la validation sandbox : clé `sk_live_`, `NODE_ENV=production`,
    `CINETPAY_TRANSFERS_LIVE_CONFIRMED=true` ; vérifier l'état `live` dans l'administration.

@@ -566,7 +566,7 @@ describe('tournoi complet (D-057)', () => {
     expect(screen.queryByText("S'inscrire")).toBeNull();
   });
 
-  it('erreur réseau : message de connexion inchangé, pas de message « complet »', async () => {
+  it('erreur réseau : aucun message (D-168), pas de message « complet »', async () => {
     serve(view());
     api.register.mockRejectedValue(
       new ApiError(
@@ -577,9 +577,8 @@ describe('tournoi complet (D-057)', () => {
     );
     await renderDetail();
     await registerViaDialog();
-    expect(
-      await screen.findByText(/Impossible de joindre le serveur. Vérifiez votre connexion./),
-    ).toBeTruthy();
+    await waitFor(() => expect(api.register).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Impossible de joindre le serveur/)).toBeNull();
     expect(screen.queryByText('Tournoi complet 🎉')).toBeNull();
   });
 });

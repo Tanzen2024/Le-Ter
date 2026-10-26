@@ -339,11 +339,11 @@ interface DisplayError {
   message: string;
 }
 
+/** Refus à montrer au joueur ; une erreur système (réseau, 5xx…) n'affiche rien (D-168). */
 function toDisplayError(error: Error | null | undefined): DisplayError | undefined {
-  if (!error) return undefined;
-  return error instanceof ApiError
-    ? { code: error.code, message: error.message }
-    : { message: userErrorMessage(error) };
+  const message = userErrorMessage(error);
+  if (!message) return undefined;
+  return { code: error instanceof ApiError ? error.code : undefined, message };
 }
 
 function errorText(error: DisplayError, t: TournamentMessages): string {

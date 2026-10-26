@@ -10,6 +10,7 @@ import {
   type AdminTestContext,
 } from '../../fixtures/admin';
 import { registerAndLogin } from '../../fixtures/auth';
+import { PostgresServerErrorRepository } from '../../../src/repositories/postgres-server-error.repository';
 import {
   createMigratedDatabase,
   PGLITE_TIMEOUT_MS,
@@ -632,6 +633,37 @@ describe('tableau de bord, finances, rapports, journal, système', () => {
       }),
     ]);
     await api.patch('/api/admin/audit-log', {}).expect(404);
+  });
+
+  it('pannes du serveur (D-168) : regroupées, la plus récente d’abord, en lecture seule', async () => {
+    const repo = new PostgresServerErrorRepository(database.sql);
+    const at = new Date('2026-10-25T10:00:00Z');
+    const base = {
+      method: 'GET',
+      route: '/api/wallet',
+      status: 503,
+      code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+      errorName: 'Error',
+      message: 'connect ECONNREFUSED',
+      requestId: 'req-1',
+      stack: null,
+      occurredAt: at,
+    };
+    await repo.record(base);
+    await repo.record({ ...base, requestId: 'req-2', occurredAt: new Date(at.getTime() + 60_000) });
+    const res = await api.get('/api/admin/server-errors?page=1&limit=20').expect(200);
+    expect(res.body).toMatchObject({ page: 1, limit: 20, total: 1 });
+    expect(res.body.items[0]).toMatchObject({
+      route: '/api/wallet',
+      status: 503,
+      code: 'SERVICE_TEMPORARILY_UNAVAILABLE',
+      occurrences: 2,
+      lastRequestId: 'req-2',
+      firstSeenAt: '2026-10-25T10:00:00.000Z',
+      lastSeenAt: '2026-10-25T10:01:00.000Z',
+    });
+    await api.patch('/api/admin/server-errors', {}).expect(404);
+    await database.sql.query('DELETE FROM server_errors');
   });
 
   it('système : état des services, sans aucun secret', async () => {

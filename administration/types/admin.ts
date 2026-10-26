@@ -100,6 +100,22 @@ export interface AuditEvent {
   createdAt: string;
 }
 
+/** Panne du serveur (réponse 5xx) condensée : une ligne par panne distincte (D-168). */
+export interface ServerErrorGroup {
+  fingerprint: string;
+  method: string;
+  route: string;
+  status: number;
+  code: string | null;
+  errorName: string;
+  message: string;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastRequestId: string | null;
+  lastStack: string | null;
+}
+
 // --- Tableau de bord -------------------------------------------------------------------------
 
 export interface StatusAmount {

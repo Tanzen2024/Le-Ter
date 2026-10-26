@@ -74,9 +74,13 @@ function Settings() {
   if (error || !data) {
     return (
       <AdminPage title="Paramètres des tournois" backTo="/admin/tournaments">
-        <Text style={adminStyles.error}>
-          {error ? userErrorMessage(error) : "Paramètres indisponibles."}
-        </Text>
+        {error ? (
+          userErrorMessage(error) ? (
+            <Text style={adminStyles.error}>{userErrorMessage(error)}</Text>
+          ) : null
+        ) : (
+          <Text style={adminStyles.error}>Paramètres indisponibles.</Text>
+        )}
       </AdminPage>
     );
   }
@@ -143,7 +147,7 @@ function SettingsForm({ initial }: { initial: TournamentSettings }) {
       {saved ? (
         <Text style={adminStyles.success}>Paramètres enregistrés.</Text>
       ) : null}
-      {update.error &&
+      {userErrorMessage(update.error) &&
       !(
         update.error instanceof ApiError &&
         Object.keys(update.error.fields).length

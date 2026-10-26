@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
 
 import RegisterScreen from '../../../app/(auth)/register';
@@ -244,7 +244,19 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     expect(screen.getByLabelText('Étape 1 sur 2 : Identité')).toBeTruthy();
   });
 
-  it('erreur générale : bandeau d’alerte avec le message du serveur', async () => {
+  it('refus général (4xx) : bandeau d’alerte avec le message du serveur', async () => {
+    api.register.mockRejectedValue(
+      new ApiError(409, 'REGISTRATION_CLOSED', 'Les inscriptions sont fermées pour le moment.'),
+    );
+    await renderScreen();
+    await fillIdentity();
+    await fillCredentials();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    expect(await screen.findByText('Les inscriptions sont fermées pour le moment.')).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
+  it('erreur système (réseau) : aucun message (D-168), formulaire conservé, nouvel essai possible', async () => {
     api.register.mockRejectedValue(
       new ApiError(0, 'NETWORK_ERROR', 'Impossible de joindre le serveur.'),
     );
@@ -252,8 +264,11 @@ describe('inscription (R-15) : champs, validation et parcours inchangés', () =>
     await fillIdentity();
     await fillCredentials();
     await fireEvent.press(screen.getByText('Créer mon compte'));
-    expect(await screen.findByText('Impossible de joindre le serveur.')).toBeTruthy();
-    expect(screen.getByRole('alert')).toBeTruthy();
+    await waitFor(() => expect(api.register).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Impossible de joindre le serveur.')).toBeNull();
+    await fireEvent.press(screen.getByText('Créer mon compte'));
+    await waitFor(() => expect(api.register).toHaveBeenCalledTimes(2));
   });
 
   it('petit écran (paysage, 360 dp) : formulaire resserré, toujours complet', async () => {

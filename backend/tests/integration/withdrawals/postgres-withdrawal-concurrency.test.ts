@@ -159,10 +159,14 @@ describeWithPostgres('Retraits sur PostgreSQL réel (concurrence, deux instances
     await pool?.end();
   });
 
-  /** Compte camerounais (+237) avec un solde de départ, comme après des achats. */
+  /**
+   * Compte camerounais (+237) avec un solde de départ, comme après des achats. Numéro MTN
+   * (préfixe 67x) : l'opérateur du retrait est déduit du numéro d'inscription (D-163), un
+   * numéro hors plan MTN / Orange serait refusé avant toute écriture.
+   */
   async function player(balance: number, role: 'user' | 'admin' = 'user') {
     const id = randomUUID() as UserId;
-    const phone = `+2376${String(randomInt(0, 99_999_999)).padStart(8, '0')}`;
+    const phone = `+23767${String(randomInt(0, 9_999_999)).padStart(7, '0')}`;
     await sql.query(
       `INSERT INTO users (id, first_name, last_name, email, username, phone, password_hash, role,
          created_at, updated_at)

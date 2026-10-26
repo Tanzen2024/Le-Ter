@@ -94,10 +94,11 @@ describeWithPostgres('migration 0043 sur des données existantes (PostgreSQL ré
     };
     const tournament = (id: string, status: string, day: string, started: boolean, extra = '') =>
       sql.query(
-        `INSERT INTO tournaments (game_type, id, status, starts_at, ends_at, entry_fee, minimum_players,
+        // Schéma d'avant 0043 : pas encore de `game_type` (0051 le pose à 'TER' sur l'existant).
+        `INSERT INTO tournaments (id, status, starts_at, ends_at, entry_fee, minimum_players,
            platform_fee_bps, published_at, blocked_until, registration_closes_at, started_at,
            created_at, updated_at ${extra ? ', cancellation_reason, cancelled_at' : ''})
-         VALUES ('TER', $1, $2, $3::timestamptz, $3::timestamptz + interval '1 hour', 500, 20, 1000,
+         VALUES ($1, $2, $3::timestamptz, $3::timestamptz + interval '1 hour', 500, 20, 1000,
            now(), $3::timestamptz + interval '1 hour', $3::timestamptz,
            CASE WHEN $4 THEN $3::timestamptz END, now(), now()
            ${extra ? ", 'INSUFFICIENT_PLAYERS', now()" : ''})`,

@@ -35,7 +35,9 @@ export function ReferralSection() {
   if (program.error || !program.data) {
     return (
       <Card>
-        <Text style={styles.error}>{userErrorMessage(program.error)}</Text>
+        {userErrorMessage(program.error) ? (
+          <Text style={styles.error}>{userErrorMessage(program.error)}</Text>
+        ) : null}
         <PanelButton title={t.retry} onPress={() => void program.refetch()} />
       </Card>
     );

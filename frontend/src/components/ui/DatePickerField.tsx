@@ -37,7 +37,7 @@ type Month = { year: number; month: number };
  * soit la langue ; l'affichage, les noms des mois et des jours suivent la langue de l'app.
  * `minDate` / `maxDate` : jours hors bornes grisés et non sélectionnables.
  * `presentation` : `modal` (fenêtre seule à l'écran, D-126) ou `popover` (calendrier accroché
- * au champ, l'écran courant reste visible, D-164).
+ * au champ, l'écran courant reste visible, D-166).
  */
 export function DatePickerField({
   label,
@@ -221,7 +221,6 @@ export function DatePickerField({
         <AnchoredPopover
           visible={open}
           anchor={anchor}
-          label={label}
           closeLabel={t.close}
           onClose={() => setOpen(false)}
           testID="date-picker-popover"

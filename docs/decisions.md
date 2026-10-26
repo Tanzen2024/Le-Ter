@@ -5279,3 +5279,74 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
   un seul joueur peut les avoir ; sans lui, l'égalité à 21 reste une manche nulle.
 - L'application affiche le gagnant renvoyé par le serveur ; elle ne recalcule rien.
 - **Tests** : `garam-engine.test.ts` (« égalité à 21 : trois 7 révélés gagnent »).
+
+## D-166 — « Proposer un tournoi » : calendrier et horloge accrochés à leur champ
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Exception à** :
+  D-126 (composant secondaire exclusif) et D-131 (pas de fermeture par un appui extérieur), pour
+  ces deux sélecteurs de cet écran seulement.
+- **Règle** : dans « Proposer un tournoi », les sélecteurs Date et Heure de début ne s'ouvrent
+  plus dans une fenêtre seule à l'écran. Ils s'ouvrent comme un sélecteur classique, en fenêtre
+  légère accrochée à leur champ (dessous, sinon dessus, sinon à droite, sinon à gauche ; toujours
+  entière dans l'écran), l'écran courant restant visible autour. Le champ ouvert reçoit un filet
+  doré.
+- **Fermeture** : Date : choix d'un jour. Heure : « Valider » applique, « Annuler » non. Un appui
+  hors de la fenêtre ou le bouton retour d'Android la referme SANS rien modifier (heure en cours
+  de réglage abandonnée).
+- **Mise en œuvre** : `frontend/src/components/ui/AnchoredPopover.tsx` (`placePopover`) ; prop
+  `presentation="popover"` de `DatePickerField` / `TimePickerField` (défaut `modal`, inchangé
+  ailleurs, dont le formulaire de tournoi de l'administration).
+- **Tests** : `AnchoredPopover.test.tsx`, `DateTimePickers.test.tsx` (bloc « présentation popover »).
+
+## D-167 — Profil : identifiant du joueur retiré, place rendue aux informations
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Modifie** :
+  D-162 (carte du joueur).
+- **Règle** : le panneau Profil (lecture et modification du mot de passe) n'affiche plus
+  l'identifiant technique du joueur. La carte de gauche ne garde que le jeton et le pseudo (et la
+  confirmation « Mot de passe modifié. ») ; elle est plus étroite (24 % du panneau, 30 % sur
+  tablette, au lieu de 34 % / 40 %) et la place libérée va à la colonne de droite : prénom, nom,
+  pays, téléphone, email, mot de passe et code de récupération.
+- **Ne change pas** : l'API (`/api/auth/me` renvoie toujours `id`), les données affichées et les
+  actions.
+- **Code** : `frontend/src/features/lobby/ProfilePanel.tsx`. **Test** : `ProfilePanel.test.tsx`
+  (« n'affiche plus l'identifiant technique du joueur »).
+
+## D-168 — Applications : plus aucun message d'erreur système, pannes condensées dans le back-office
+
+- **Date** : 2026-10-25 · **Statut** : demandée par le propriétaire du projet · **Complète** :
+  D-146 (aucun message technique).
+- **Côté joueur** (application mobile, y compris ses écrans d'administration) : seules restent les
+  indications qu'il peut corriger lui-même, c'est-à-dire les refus 4xx rédigés pour lui (saisie
+  invalide, solde insuffisant, partie complète, limite de retraits…). Réseau coupé, délai dépassé,
+  réponse 5xx (même rédigée), texte technique ou exception JavaScript : AUCUN message, ni phrase de
+  secours (« Une erreur est survenue », « Impossible de joindre le serveur », « Service
+  momentanément indisponible »…). L'action n'aboutit simplement pas ; « Réessayer » reste
+  possible là où il existait.
+  - Filtre central : `ApiError.message` est vide pour une erreur système (`isSystemFailure` :
+    statut 0 ou ≥ 500) ; `userErrorMessage(error, fallback?)` rend `undefined` pour toute erreur
+    système ou non API, et les écrans n'affichent rien dans ce cas.
+  - Écran de secours (un écran qui plante) : plus de « Oups… », seulement « Réessayer ».
+  - Restent affichés car ce sont des ÉTATS, pas des erreurs : « Vérification du paiement en cours,
+    ne relancez pas » (503 `PAYMENT_VERIFICATION_PENDING`, évite un double paiement) et
+    l'indicateur flottant de connexion (D-152).
+- **Back-office** : chaque réponse 5xx de l'API est condensée dans la table `server_errors`
+  (migration 0057), une ligne par panne distincte (méthode, route normalisée, statut, code, type
+  d'erreur) avec son nombre d'occurrences, la première et la dernière date, le dernier message, la
+  dernière référence de requête et la dernière trace. Page « Erreurs » (rubrique Contrôle),
+  `GET /api/admin/server-errors?page&limit`, lecture seule.
+  - Jamais de corps, d'en-tête, de jeton, de mot de passe ni de query string.
+  - L'écriture a lieu après la réponse, sans l'attendre : son échec est journalisé, jamais visible
+    du client ; la base reste la seule source de vérité (D-022), aucun Redis.
+  - 501 `RULE_NOT_DEFINED` n'est pas enregistré : réponse prévue d'une règle non tranchée.
+- **Hors champ** : les plantages côté application et les échecs réseau vus du téléphone ne sont
+  pas remontés (non demandés).
+- **Code** : `frontend/src/lib/user-facing-error.ts`, `frontend/src/lib/api-client.ts`,
+  `backend/src/middleware/error-handler.ts`, `backend/src/domain/admin/server-errors.ts`,
+  `backend/src/repositories/postgres-server-error.repository.ts`,
+  `administration/features/server-errors/server-errors-view.tsx`.
+- **Tests** : `user-facing-error.test.ts`, `api-client.test.ts`, `AppErrorScreen.test.tsx`,
+  `ShopFlow.test.tsx`, `WithdrawalPanel.test.tsx`, `GameGeolocation.test.tsx`,
+  `TournamentDetailPanel.test.tsx`, `withdrawal-state.test.ts` ; serveur :
+  `tests/unit/admin/server-errors.test.ts`, `tests/integration/admin/server-errors-repository.test.ts`,
+  `admin-api.test.ts`, `migrator.test.ts`.

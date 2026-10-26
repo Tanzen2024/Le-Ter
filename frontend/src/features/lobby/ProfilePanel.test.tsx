@@ -79,6 +79,13 @@ describe('ProfilePanel : informations en lecture seule, seul le mot de passe se 
     expect(screen.queryByText(/🇨🇲/)).toBeNull();
   });
 
+  it("n'affiche plus l'identifiant technique du joueur", async () => {
+    serve(USER);
+    await render(<ProfilePanel onClose={jest.fn()} />);
+    expect(screen.queryByText('ID')).toBeNull();
+    expect(screen.queryByText('u-1')).toBeNull();
+  });
+
   it('aucun champ de saisie ; un seul bouton « Modifier », celui du mot de passe', async () => {
     serve(USER);
     await render(<ProfilePanel onClose={jest.fn()} />);

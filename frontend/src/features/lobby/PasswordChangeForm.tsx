@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { salon } from '../../constants/theme';
 import { fontOf, useTableFonts } from '../../components/table/TableDecor';
 import { TextField } from '../../components/ui/TextField';
-import { ApiError } from '../../lib/api-client';
+import { ApiError, userErrorMessage } from '../../lib/api-client';
 import type { ChangePasswordPayload } from '../../types/auth';
 import { useChangePassword } from '../auth/hooks';
 import { validatePasswordChange, type FieldErrors } from '../auth/validation';
@@ -82,10 +82,9 @@ export function usePasswordChangeForm({
         const fields = err instanceof ApiError ? err.fields : {};
         const known = FIELDS.filter(({ key }) => fields[key]);
         setErrors(Object.fromEntries(known.map(({ key }) => [key, fields[key]])));
-        // Un message par champ suffit ; sinon, message général (réseau, limite, serveur).
-        if (known.length === 0) {
-          setFormError(err instanceof ApiError ? err.message : 'Une erreur est survenue.');
-        }
+        // Un message par champ suffit ; sinon, le refus général du serveur.
+        // Erreur système (réseau, panne) : rien à l'écran (D-168).
+        if (known.length === 0) setFormError(userErrorMessage(err) ?? null);
       },
     });
   };
@@ -100,6 +99,9 @@ export function usePasswordChangeForm({
       <TextField
         appearance="table"
         label={name}
+        // Libellé déjà affiché au-dessus, en entier : pas de copie dans le champ, où elle serait
+        // tronquée (deux champs côte à côte, icône œil).
+        placeholder=""
         secret
         controlHeight={m.controlHeight * 0.85}
         value={values[key]}

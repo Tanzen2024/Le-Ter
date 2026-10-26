@@ -492,11 +492,12 @@ describeWithPostgres(
         await seedAdmin(sql, 'ben'),
       ]);
       const paying = randomUUID();
+      // Schéma d'avant 0045 : pas encore de `game_type` (0051 le pose à 'TER' sur l'existant).
       await sql.query(
-        `INSERT INTO tournaments (game_type, id, status, starts_at, ends_at, entry_fee, minimum_players,
+        `INSERT INTO tournaments (id, status, starts_at, ends_at, entry_fee, minimum_players,
          platform_fee_bps, published_at, blocked_until, registration_closes_at, started_at,
          results_at, ranking_method, settlement_rule, created_at, updated_at)
-       VALUES ('TER', $1, 'DISTRIBUTING_PRIZES', '2026-10-11T17:00:00Z', '2026-10-11T18:00:00Z', 500, 20,
+       VALUES ($1, 'DISTRIBUTING_PRIZES', '2026-10-11T17:00:00Z', '2026-10-11T18:00:00Z', 500, 20,
          1000, now(), '2026-10-11T18:00:00Z', '2026-10-11T17:00:00Z', '2026-10-11T17:00:00Z',
          '2026-10-11T18:00:00Z', 'D106_CAPITAL_RATIO', 'D054_TAPIS', now(), now())`,
         [paying],

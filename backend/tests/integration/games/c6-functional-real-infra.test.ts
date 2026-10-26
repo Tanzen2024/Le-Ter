@@ -8,6 +8,7 @@ import { createPgSqlClient, type SqlClient } from '../../../src/database/sql-cli
 import type { CardId } from '../../../src/domain/cards/card';
 import type { GameEvent } from '../../../src/domain/game/game-events';
 import type { GameId, PlayerId } from '../../../src/domain/game/game-id';
+import { TURN_DURATION_MS } from '../../../src/domain/rules/rule-set';
 import type { SessionId } from '../../../src/domain/sessions/session';
 import { silentLogger } from '../../../src/utils/logger';
 import { gameEventChannel } from '../../../src/websocket/game-rooms';
@@ -190,7 +191,7 @@ describeWithInfra('C.6 — validation fonctionnelle (HTTP + PostgreSQL + Redis r
 
     // B ne joue pas : 15 s plus tard, le serveur joue 7♠ (plus petite ♠), B prend le contrôle.
     const deadline = Date.parse(bView.turnDeadlineAt as string);
-    expect(deadline - Date.parse(bView.turnStartedAt as string)).toBe(15_000);
+    expect(deadline - Date.parse(bView.turnStartedAt as string)).toBe(TURN_DURATION_MS);
     await sleep(Math.max(0, deadline - Date.now()));
     const after = await until(
       () => view(A!, gameId),

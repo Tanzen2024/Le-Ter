@@ -290,9 +290,9 @@ describe("Partie surveillée : consentement", () => {
     await renderScreen(watched());
     await waitFor(() => expect(screen.getByText(CONSENT_TITLE)).toBeTruthy());
     await fireEvent.press(screen.getByText("CONTINUER"));
-    await waitFor(() =>
-      expect(screen.getByText(/Votre choix n’est pas enregistré/)).toBeTruthy(),
-    );
+    // Erreur réseau : aucun message (D-168), le panneau reste affiché, jamais « accepté ».
+    await waitFor(() => expect(consent).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/pas enregistré|joindre le serveur|Réessayez/)).toBeNull();
     expect(screen.getByText(CONSENT_TITLE)).toBeTruthy();
     expect(location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
     expect(sendPosition).not.toHaveBeenCalled();
@@ -424,9 +424,9 @@ describe("« Non merci » : départ réel de la table", () => {
     view.client.setQueryData(["games", GAME], { gameId: GAME });
     await waitFor(() => expect(screen.getByText(CONSENT_TITLE)).toBeTruthy());
     await fireEvent.press(screen.getByText("NON MERCI"));
-    await waitFor(() =>
-      expect(screen.getByText(/Votre départ n’est pas confirmé/)).toBeTruthy(),
-    );
+    // Erreur réseau : aucun message (D-168), aucune fausse confirmation, panneau maintenu.
+    await waitFor(() => expect(leave).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/pas confirmé|joindre le serveur|Réessayez/)).toBeNull();
     expect(dismissTo).not.toHaveBeenCalled();
     expect(screen.getByText(CONSENT_TITLE)).toBeTruthy();
     expect(view.client.getQueryData(["games", GAME])).toEqual({ gameId: GAME });

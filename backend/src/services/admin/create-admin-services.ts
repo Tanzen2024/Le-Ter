@@ -12,6 +12,7 @@ import { PostgresAdminAuditRepository } from '../../repositories/postgres-admin-
 import { PostgresAdminQueryRepository } from '../../repositories/postgres-admin-query.repository';
 import { PostgresAdminSessionRepository } from '../../repositories/postgres-admin-session.repository';
 import { PostgresModerationRepository } from '../../repositories/postgres-moderation.repository';
+import { PostgresServerErrorRepository } from '../../repositories/postgres-server-error.repository';
 import type { Logger } from '../../utils/logger';
 import type { AuthService } from '../auth/auth.service';
 import type { PaymentService } from '../payments/payment.service';
@@ -62,6 +63,7 @@ export function createAdminServices(deps: {
       queries: new PostgresAdminQueryRepository(deps.sql),
       audit,
       payments: deps.payments,
+      serverErrors: new PostgresServerErrorRepository(deps.sql),
       logger: deps.logger,
       clock: deps.clock,
     }),

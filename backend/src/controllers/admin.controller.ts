@@ -165,6 +165,10 @@ export function createAdminController(deps: {
       res.send(String.fromCharCode(0xfeff) + csv);
     },
 
+    async serverErrors(req: Request, res: Response): Promise<void> {
+      res.json(await queries.serverErrors(parsePage(q(req))));
+    },
+
     async auditLog(req: Request, res: Response): Promise<void> {
       res.json(await queries.auditLog(parseAuditQuery(q(req))));
     },

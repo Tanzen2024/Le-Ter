@@ -38,7 +38,7 @@ const PERIODS: Period[] = ['AM', 'PM'];
  * (`20:00`), l'anglais 12 h (`08:00 PM`) ; la valeur transmise reste toujours `HH:MM` sur
  * 24 h. Le choix n'est appliqué qu'à la validation.
  * `presentation` : `modal` (fenêtre seule à l'écran, D-126) ou `popover` (horloge accrochée
- * au champ, l'écran courant reste visible, D-164).
+ * au champ, l'écran courant reste visible, D-166).
  */
 export function TimePickerField({
   label,
@@ -166,7 +166,6 @@ export function TimePickerField({
         <AnchoredPopover
           visible={open}
           anchor={anchor}
-          label={label}
           closeLabel={t.close}
           onClose={() => setOpen(false)}
           testID="time-picker-popover"

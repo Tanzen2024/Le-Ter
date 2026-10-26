@@ -449,6 +449,20 @@ describe('accueil : nombre de parties à rejoindre (Fap-Fap → TER, Garam Tia �
     expect(screen.queryByTestId('open-games-GARAM')).toBeNull();
     expect(screen.getAllByRole('button', { name: /^Rejoindre : / })).toHaveLength(3);
   });
+
+  it('réponse attendue : place du compteur réservée, invisible, sans aucun chiffre', async () => {
+    serve([]);
+    listOpen.mockReturnValue(new Promise(() => undefined));
+    await renderHome();
+    for (const gameType of ['TER', 'GARAM']) {
+      const reserved = screen.getByTestId(`open-games-${gameType}-reserved`, {
+        includeHiddenElements: true,
+      });
+      expect(reserved).toHaveStyle({ opacity: 0 });
+      expect(screen.queryByTestId(`open-games-${gameType}`)).toBeNull();
+    }
+    expect(screen.queryByText(/en cours/)).toBeNull();
+  });
 });
 
 describe('accueil : titre « À toi de jouer ! » et panneaux ouverts', () => {

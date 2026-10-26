@@ -164,3 +164,49 @@ describe('TimePickerField', () => {
     expect(onChange).toHaveBeenCalledWith('12:15');
   });
 });
+
+describe('présentation « popover » (D-166)', () => {
+  it('calendrier accroché au champ : jour choisi transmis, appui hors du calendrier sans effet sur la valeur', async () => {
+    const onChange = jest.fn();
+    await render(
+      <DatePickerField
+        label="Date"
+        value="10/10/2026"
+        onChange={onChange}
+        minDate={MIN}
+        presentation="popover"
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText('Date'));
+    expect(screen.getByTestId('date-picker-popover')).toBeTruthy();
+    expect(screen.queryByTestId('picker-scroll')).toBeNull();
+    expect(screen.getByLabelText('Date').props.accessibilityState).toMatchObject({ expanded: true });
+    await fireEvent.press(screen.getByTestId('date-picker-popover-outside'));
+    expect(onChange).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByLabelText('Date'));
+    await fireEvent.press(screen.getByLabelText('jeudi 15 octobre 2026'));
+    expect(onChange).toHaveBeenCalledWith('15/10/2026');
+  });
+
+  it('horloge accrochée au champ : appliquée seulement à la validation', async () => {
+    const onChange = jest.fn();
+    await render(
+      <TimePickerField
+        label="Heure de début"
+        value="18:00"
+        onChange={onChange}
+        presentation="popover"
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText('Heure de début'));
+    expect(screen.getByTestId('time-picker-popover')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Heures 20'));
+    await fireEvent.press(screen.getByLabelText('Minutes 30'));
+    await fireEvent.press(screen.getByTestId('time-picker-popover-outside'));
+    expect(onChange).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByLabelText('Heure de début'));
+    await fireEvent.press(screen.getByLabelText('Heures 20'));
+    await fireEvent.press(screen.getByLabelText('Valider'));
+    expect(onChange).toHaveBeenCalledWith('20:00');
+  });
+});

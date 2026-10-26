@@ -36,6 +36,7 @@ import type {
   UserListQuery,
   WalletTransactionQuery,
 } from '../../repositories/admin-query.repository';
+import type { ServerErrorRepository } from '../../repositories/server-error.repository';
 import type { Logger } from '../../utils/logger';
 import type { PaymentService } from '../payments/payment.service';
 import {
@@ -228,6 +229,8 @@ export class AdminQueryService {
       queries: AdminQueryRepository;
       audit: AdminAuditRepository;
       payments?: PaymentService;
+      /** Pannes du serveur condensées (D-168) ; absentes, la liste est vide. */
+      serverErrors?: ServerErrorRepository;
       logger: Logger;
       clock?: () => Date;
     },
@@ -671,6 +674,34 @@ export class AdminQueryService {
       createdAt: this.clock(),
     });
     return toCsv(report.columns, report.rows as Record<string, unknown>[]);
+  }
+
+  // --- Pannes du serveur (D-168) --------------------------------------------------------------
+
+  /** Pannes 5xx regroupées, la plus récente d'abord ; lecture seule. */
+  async serverErrors(page: { page: number; limit: number }) {
+    const { total, items } = this.deps.serverErrors
+      ? await this.deps.serverErrors.list(page)
+      : { total: 0, items: [] };
+    return {
+      page: page.page,
+      limit: page.limit,
+      total,
+      items: items.map((e) => ({
+        fingerprint: e.fingerprint,
+        method: e.method,
+        route: e.route,
+        status: e.status,
+        code: e.code,
+        errorName: e.errorName,
+        message: e.message,
+        occurrences: e.occurrences,
+        firstSeenAt: iso(e.firstSeenAt),
+        lastSeenAt: iso(e.lastSeenAt),
+        lastRequestId: e.lastRequestId,
+        lastStack: e.lastStack,
+      })),
+    };
   }
 
   // --- Journal d'audit ------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button';
 import { colors, spacing } from '../../constants/theme';
 import { useCurrentUser } from '../auth/hooks';
 import { DetectionSwitchPanel } from './DetectionSwitchPanel';
+import { AdminSafeArea } from './tournaments/AdminGate';
 
 const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
@@ -33,17 +34,19 @@ export function AdminScreen() {
     );
   }
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.heading}>Administration</Text>
-      <DetectionSwitchPanel />
-      {/* Tournois (D-054) : création, approbation, annulation, paramètres, résultats. */}
-      <Button
-        title="Tournois"
-        variant="secondary"
-        onPress={() => router.push('/admin/tournaments')}
-      />
-      <Button title="Retour" variant="link" onPress={back} />
-    </ScrollView>
+    <AdminSafeArea>
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <Text style={styles.heading}>Administration</Text>
+        <DetectionSwitchPanel />
+        {/* Tournois (D-054) : création, approbation, annulation, paramètres, résultats. */}
+        <Button
+          title="Tournois"
+          variant="secondary"
+          onPress={() => router.push('/admin/tournaments')}
+        />
+        <Button title="Retour" variant="link" onPress={back} />
+      </ScrollView>
+    </AdminSafeArea>
   );
 }
 

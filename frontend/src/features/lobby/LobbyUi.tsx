@@ -181,7 +181,13 @@ export function LobbyHud({
             </Text>
           </View>
         </Pressable>
-        <View accessible accessibilityLabel={balance.label} style={styles.balanceColumn}>
+        {/* Largeur minimale réservée : l'arrivée du solde (« — » → montant) ne déplace ni le
+            jeton ni l'emprise du HUD, donc ni les panneaux ouverts (D-133). */}
+        <View
+          accessible
+          accessibilityLabel={balance.label}
+          style={[styles.balanceColumn, { minWidth: Math.round(m.balanceSize * 2.2) }]}
+        >
           <Text style={[styles.balance, fontOf(fonts.title), { fontSize: m.balanceSize }]}>
             {balance.text}
           </Text>

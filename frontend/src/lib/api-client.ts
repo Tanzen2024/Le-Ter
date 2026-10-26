@@ -2,10 +2,9 @@ import Constants from 'expo-constants';
 import { LogBox } from 'react-native';
 
 import {
-  GENERIC_ERROR_MESSAGE,
+  isSystemFailure,
   playerFacingApiMessage,
   playerFacingFieldMessages,
-  SERVER_ERROR_MESSAGE,
 } from './user-facing-error';
 
 /** Port du backend en développement (`backend/.env`, `PORT`). */
@@ -85,15 +84,15 @@ export class ApiError extends Error {
 }
 
 /**
- * Texte d'erreur à afficher, quelle que soit l'erreur : le message (déjà filtré) d'une
- * `ApiError`, sinon `fallback`. Une erreur JavaScript (TypeError, JSON…) n'est jamais affichée.
+ * Texte d'erreur à montrer au joueur, ou `undefined` : rien à afficher (D-168).
+ * - refus 4xx de l'API : son message (déjà filtré), sinon `fallback` (phrase métier de l'écran) ;
+ * - erreur système (réseau, délai, 5xx) ou erreur JavaScript quelconque : `undefined`, jamais
+ *   de message ni de texte de secours.
  */
-export function userErrorMessage(error: unknown, fallback: string = GENERIC_ERROR_MESSAGE): string {
-  return error instanceof ApiError && error.message ? error.message : fallback;
+export function userErrorMessage(error: unknown, fallback?: string): string | undefined {
+  if (!(error instanceof ApiError) || isSystemFailure(error.status)) return undefined;
+  return error.message || fallback;
 }
-
-const NETWORK_ERROR_MESSAGE = 'Impossible de joindre le serveur. Vérifiez votre connexion.';
-const TIMEOUT_MESSAGE = 'Le serveur ne répond pas. Vérifiez votre connexion et réessayez.';
 
 /**
  * `fetch` vers l'API avec délai maximal. Sans réponse HTTP, une `ApiError` de statut 0 :
@@ -114,8 +113,8 @@ export async function apiFetch(url: string, init: RequestInit = {}): Promise<Res
       cause: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
     });
     throw timedOut
-      ? new ApiError(0, 'TIMEOUT', TIMEOUT_MESSAGE)
-      : new ApiError(0, 'NETWORK_ERROR', NETWORK_ERROR_MESSAGE);
+      ? new ApiError(0, 'TIMEOUT', '')
+      : new ApiError(0, 'NETWORK_ERROR', '');
   } finally {
     clearTimeout(timer);
   }
@@ -191,10 +190,7 @@ export async function apiRequest<T>(
     throw new ApiError(
       response.status,
       body.code ?? 'HTTP_ERROR',
-      PLAYER_FACING_MESSAGES[body.code ?? ''] ??
-        body.message ??
-        // Réponse 5xx sans message de l'API (proxy, panne) : dite comme telle.
-        (response.status >= 500 ? SERVER_ERROR_MESSAGE : GENERIC_ERROR_MESSAGE),
+      PLAYER_FACING_MESSAGES[body.code ?? ''] ?? body.message ?? '',
       body.fields,
     );
   }

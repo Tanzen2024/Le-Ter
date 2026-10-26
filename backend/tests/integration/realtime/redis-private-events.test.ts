@@ -122,9 +122,10 @@ describeWithInfra('Confidentialité de game:hand_dealt — Redis réel, trois in
     const J2 = testPlayerId(j2!) as PlayerId;
     const J3 = testPlayerId(j3!) as PlayerId;
 
-    const { session, game } = await instanceC.sessions.createSession(J1, { maxPlayers: 3 });
+    const { game } = await instanceC.sessions.createSession(J1, { maxPlayers: 3 });
     await instanceC.joinGame(game.id, J2);
-    await instanceC.sessions.joinSession(session.id, J3); // dans la session, pas dans la partie
+    // J3 reste hors de la table : rejoindre la session pendant que la partie attend ferait de
+    // lui un joueur de cette partie (D-033), il pourrait alors légitimement s'y abonner.
 
     // Abonnements des joueurs, chacun sur SON instance (seul chemin d'abonnement autorisé).
     const receivedByJ1: GameEvent[] = [];

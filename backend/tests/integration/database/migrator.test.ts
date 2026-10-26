@@ -65,6 +65,8 @@ describe('runMigrations', () => {
       'referral_rule_versions',
       'refresh_tokens',
       'schema_migrations',
+      // Pannes du serveur pour le back-office (D-168, migration 0057).
+      'server_errors',
       'session_decision_rounds',
       'session_decisions',
       'session_players',

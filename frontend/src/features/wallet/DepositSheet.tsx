@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { fontOf, tablePalette as palette, useTableFonts } from '../../components/table/TableDecor';
 import { gameTheme, salon } from '../../constants/theme';
 import { ApiError } from '../../lib/api-client';
+import { isSystemFailure } from '../../lib/user-facing-error';
 import type { DirectPayOperator, PaymentView, WalletTransactionView } from '../../types/wallet';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
 import { openPaymentPage, useWallet, useWalletOperation } from './hooks';
@@ -59,39 +60,26 @@ type Notice = { tone: 'error' | 'pending'; text: string };
  * affirmé QUE pour un refus certain du fournisseur ; une issue inconnue est annoncée comme une
  * vérification en cours, sans inviter à relancer.
  */
-function noticeOf(error: unknown): Notice {
+function noticeOf(error: unknown): Notice | undefined {
   if (error instanceof ApiError) {
-    if (error.status === 0) {
-      return { tone: 'error', text: 'Impossible de contacter le service de paiement. Réessayez.' };
+    // Vérification en cours (503) : un ÉTAT à connaître (ne pas relancer), pas une erreur.
+    if (error.code === 'PAYMENT_VERIFICATION_PENDING') {
+      return {
+        tone: 'pending',
+        text: 'Vérification du paiement en cours. Ne relancez pas tout de suite : votre solde sera mis à jour automatiquement si le paiement aboutit.',
+      };
     }
+    // Erreur système (réseau, délai, 5xx) : rien à l'écran (D-168).
+    if (isSystemFailure(error.status)) return undefined;
     if (error.fields.tokens) return { tone: 'error', text: error.fields.tokens };
     switch (error.code) {
-      case 'PAYMENT_VERIFICATION_PENDING':
-        return {
-          tone: 'pending',
-          text: 'Vérification du paiement en cours. Ne relancez pas tout de suite : votre solde sera mis à jour automatiquement si le paiement aboutit.',
-        };
-      case 'SERVICE_TEMPORARILY_UNAVAILABLE':
-        return {
-          tone: 'error',
-          text: 'Service momentanément indisponible. Réessayez dans quelques instants.',
-        };
-      case 'MOBILE_MONEY_UNAVAILABLE':
-        // Message du serveur, propre à la cause (D-100) : accès au fournisseur suspendu,
-        // CinetPay injoignable, incident ou refus. Rien n'a été débité dans tous les cas.
-        return {
-          tone: 'error',
-          text:
-            error.message ||
-            'Service de paiement momentanément indisponible. Aucun montant n’a été débité.',
-        };
       case 'PAYMENT_OPERATOR_UNSUPPORTED':
-        return { tone: 'error', text: error.message };
+        return error.message ? { tone: 'error', text: error.message } : undefined;
       default:
-        return { tone: 'error', text: `Paiement refusé. ${error.message}` };
+        return error.message ? { tone: 'error', text: `Paiement refusé. ${error.message}` } : undefined;
     }
   }
-  return { tone: 'error', text: 'Paiement impossible. Réessayez.' };
+  return undefined;
 }
 
 /**

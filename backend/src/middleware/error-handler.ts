@@ -2,6 +2,8 @@ import { STATUS_CODES } from 'node:http';
 
 import type { ErrorRequestHandler, Request, Response } from 'express';
 
+import { routeOf } from '../domain/admin/server-errors';
+import type { ServerErrorRepository } from '../repositories/server-error.repository';
 import type { Logger } from '../utils/logger';
 import { toApiError } from './api-errors';
 import { getRequestDurationMs, getRequestId } from './request-id';
@@ -29,8 +31,43 @@ export function notFoundHandler(_req: Request, res: Response): void {
  *
  * Les erreurs du domaine de jeu (partie introuvable, accès refusé, conflit de version…)
  * seront traduites avec les routes de partie (multi-game-architecture.md §7).
+ *
+ * Toute réponse 5xx est aussi condensée pour le back-office (`serverErrors`, D-168) : les
+ * applications n'affichent plus aucun message d'erreur système. Écriture APRÈS la réponse et
+ * sans l'attendre : son échec est seulement journalisé, jamais visible du client.
  */
-export function createErrorHandler(logger: Logger): ErrorRequestHandler {
+export function createErrorHandler(
+  logger: Logger,
+  serverErrors?: ServerErrorRepository,
+): ErrorRequestHandler {
+  const record = (
+    req: Request,
+    res: Response,
+    status: number,
+    code: string | null,
+    err: unknown,
+  ): void => {
+    if (!serverErrors) return;
+    const error = err instanceof Error ? err : undefined;
+    serverErrors
+      .record({
+        method: req.method,
+        route: routeOf(req),
+        status,
+        code,
+        errorName: error?.name ?? typeof err,
+        message: error?.message ?? String(err),
+        requestId: getRequestId(res) ?? null,
+        stack: error?.stack ?? null,
+        occurredAt: new Date(),
+      })
+      .catch((failure: unknown) =>
+        logger.warn('server error not recorded', {
+          error: failure instanceof Error ? failure.message : String(failure),
+        }),
+      );
+  };
+
   return (err: unknown, req, res, next) => {
     if (res.headersSent) {
       next(err);
@@ -56,6 +93,10 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
         res.setHeader('WWW-Authenticate', 'Bearer');
       }
       res.status(known.status).json(known.body);
+      // 501 (règle non tranchée) est une réponse prévue, pas une panne.
+      if (known.status >= 500 && known.status !== 501) {
+        record(req, res, known.status, known.body.code ?? null, err);
+      }
       return;
     }
 
@@ -72,6 +113,7 @@ export function createErrorHandler(logger: Logger): ErrorRequestHandler {
       stack: err instanceof Error ? err.stack : undefined,
     });
     res.status(500).json({ error: 'Internal Server Error', requestId: context.requestId });
+    record(req, res, 500, null, err);
   };
 }
 

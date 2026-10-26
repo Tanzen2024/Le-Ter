@@ -5,7 +5,7 @@ import { ExclusiveOverlay } from '../../components/ui/ExclusiveOverlay';
 import type { GameView } from '../../types/game';
 import { useAppear, useBackToClose } from '../games/table/GameOverlays';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
-import { ApiError } from '../../lib/api-client';
+import { userErrorMessage } from '../../lib/api-client';
 import { useDeclineAndLeave, useGameGeolocation, useScreenActive } from './hooks';
 
 /**
@@ -36,11 +36,12 @@ export function GameGeolocation({ game }: { game: GameView }) {
   );
 }
 
-/** Consentement non confirmé par le serveur : jamais présenté comme accepté. */
+/**
+ * Consentement non confirmé par le serveur : jamais présenté comme accepté (le panneau reste
+ * affiché). Refus du serveur : son message ; erreur système : rien à l'écran (D-168).
+ */
 export function consentFailureMessage(error: unknown): string {
-  if (error instanceof ApiError && error.status !== 0) return error.message;
-  const cause = error instanceof ApiError ? ` ${error.message}` : '';
-  return `Votre choix n’est pas enregistré.${cause} Réessayez.`;
+  return userErrorMessage(error) ?? '';
 }
 
 export const CONSENT_TITLE = 'Localisation de la partie protégée';

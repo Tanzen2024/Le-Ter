@@ -365,23 +365,30 @@ describe('Recharger mon portefeuille', () => {
     else expect(balanceIn(queryClient)).toBe(0);
   });
 
+  it('refus du fournisseur (4xx) : message au joueur, aucune page, aucun second appel', async () => {
+    mtn();
+    api.deposit.mockRejectedValue(
+      new ApiError(409, 'DIRECT_PAYMENT_UNAVAILABLE', 'CinetPay a refusé le paiement direct.'),
+    );
+    await openShopDeposit();
+    await payWith('MTN Mobile Money');
+    expect(await screen.findByText('Paiement refusé. CinetPay a refusé le paiement direct.')).toBeTruthy();
+    expect(api.deposit).toHaveBeenCalledTimes(1);
+    expect(openAuthSession).not.toHaveBeenCalled();
+  });
+
   it.each([
-    // Cause classée par le serveur (D-100) : son message est affiché tel quel.
-    [
-      new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', 'Le service de paiement CinetPay est injoignable pour le moment. Aucun montant n’a été débité. Réessayez dans quelques minutes.'),
-      'Le service de paiement CinetPay est injoignable pour le moment. Aucun montant n’a été débité. Réessayez dans quelques minutes.',
-    ],
-    // Ancien serveur sans message : texte de secours.
-    [new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', ''), 'Service de paiement momentanément indisponible. Aucun montant n’a été débité.'],
-    [new ApiError(0, 'NETWORK_ERROR', 'Réseau.'), 'Impossible de contacter le service de paiement. Réessayez.'],
-    [new ApiError(409, 'DIRECT_PAYMENT_UNAVAILABLE', 'CinetPay a refusé le paiement direct.'), 'Paiement refusé. CinetPay a refusé le paiement direct.'],
-  ])('erreur %# : message distinct, aucune page, aucun second appel', async (error, message) => {
+    new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', 'Le service de paiement CinetPay est injoignable pour le moment.'),
+    new ApiError(503, 'SERVICE_TEMPORARILY_UNAVAILABLE', 'Service momentanément indisponible.'),
+    new ApiError(0, 'NETWORK_ERROR', 'Réseau.'),
+  ])('erreur système %# : aucun message (D-168), aucune page, aucun second appel', async (error) => {
     mtn();
     api.deposit.mockRejectedValue(error);
     await openShopDeposit();
     await payWith('MTN Mobile Money');
-    expect(await screen.findByText(message)).toBeTruthy();
-    expect(api.deposit).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.deposit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText('Initialisation du paiement…')).toBeNull());
+    expect(screen.queryByText(/indisponible|injoignable|Impossible de contacter|Réessayez/)).toBeNull();
     expect(openAuthSession).not.toHaveBeenCalled();
   });
 
@@ -401,19 +408,6 @@ describe('Recharger mon portefeuille', () => {
       screen.getByLabelText('Payer 1000 francs CFA avec MTN Mobile Money').props.accessibilityState
         .disabled,
     ).toBe(true);
-  });
-
-  it('base momentanément indisponible (503 SERVICE_TEMPORARILY_UNAVAILABLE) : message dédié', async () => {
-    mtn();
-    api.deposit.mockRejectedValue(
-      new ApiError(503, 'SERVICE_TEMPORARILY_UNAVAILABLE', 'Service momentanément indisponible.'),
-    );
-    await openShopDeposit();
-    await payWith('MTN Mobile Money');
-    expect(
-      await screen.findByText('Service momentanément indisponible. Réessayez dans quelques instants.'),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Aucun montant/)).toBeNull();
   });
 
   it('initialisation en cours : bouton et saisie bloqués, double appui sans effet', async () => {
@@ -449,9 +443,13 @@ describe('Recharger mon portefeuille', () => {
     api.payment.mockResolvedValue({ payment: payment('PENDING') });
     await openShopDeposit();
     await payWith('MTN Mobile Money');
-    expect(
-      await screen.findByText('Impossible de contacter le service de paiement. Réessayez.'),
-    ).toBeTruthy();
+    await waitFor(() => expect(api.deposit).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText('Payer 1000 francs CFA avec MTN Mobile Money').props.accessibilityState
+          ?.disabled,
+      ).toBeFalsy(),
+    );
     fireEvent.press(screen.getByLabelText('Payer 1000 francs CFA avec MTN Mobile Money'));
     await waitFor(() => expect(api.deposit).toHaveBeenCalledTimes(2));
     expect(api.deposit.mock.calls.map((c) => c[2])).toEqual(['idem-key-0001', 'idem-key-0001']);

@@ -1,14 +1,17 @@
 /**
- * Aucun message d'erreur technique n'est montré au joueur. Les textes d'erreur affichés passent
- * par ce filtre : un message du serveur reste affiché s'il est rédigé pour le joueur, sinon il
- * est remplacé par une phrase simple. Les détails techniques (code, statut, cause) restent dans
- * les journaux de développement, jamais à l'écran.
+ * Aucun message d'erreur système n'est montré au joueur (D-146, D-168). Seules restent les
+ * indications qu'il peut corriger lui-même : refus 4xx rédigés pour lui (saisie invalide,
+ * solde insuffisant, partie complète…). Réseau coupé, délai dépassé, panne 5xx ou texte
+ * technique : AUCUN texte (chaîne vide), l'écran n'affiche rien. Les pannes du serveur sont
+ * regroupées dans le back-office (page Erreurs) ; les détails restent dans les journaux.
  */
 
-/** Repli commun : rien de technique, une action possible. */
-export const GENERIC_ERROR_MESSAGE = 'Une erreur est survenue. Réessayez.';
-export const SERVER_ERROR_MESSAGE = 'Le serveur a rencontré une erreur. Réessayez dans un instant.';
 const INVALID_VALUE_MESSAGE = 'Valeur invalide.';
+
+/** Erreur système (réseau, délai, panne 5xx) : jamais montrée au joueur. */
+export function isSystemFailure(status: number): boolean {
+  return status === 0 || status >= 500;
+}
 
 /**
  * Refus dont le message du serveur décrit un mécanisme interne (version, idempotence,
@@ -19,7 +22,7 @@ const TECHNICAL_CODE_MESSAGES: Record<string, string> = {
   IDEMPOTENCY_KEY_REUSED: 'Cette demande a déjà été envoyée. Réessayez.',
   INVALID_STATUS_TRANSITION: 'Action impossible pour le moment.',
   INVALID_CARD: 'Cette carte ne peut pas être jouée.',
-  NOTIFICATION_REJECTED: GENERIC_ERROR_MESSAGE,
+  NOTIFICATION_REJECTED: '',
   RULE_NOT_DEFINED: 'Cette action n’est pas disponible.',
 };
 
@@ -50,15 +53,15 @@ export function looksTechnical(text: string): boolean {
   return TECHNICAL_PATTERNS.some((p) => p.test(t));
 }
 
-/** Message d'une réponse refusée par l'API, tel qu'il peut être montré au joueur. */
+/**
+ * Message d'une réponse refusée par l'API, tel qu'il peut être montré au joueur : vide pour une
+ * erreur système (réseau, délai, 5xx, même rédigée) ou un texte technique.
+ */
 export function playerFacingApiMessage(status: number, code: string, message: string): string {
+  if (isSystemFailure(status)) return '';
   const reworded = TECHNICAL_CODE_MESSAGES[code];
-  if (reworded) return reworded;
-  // Message absent : laissé vide, l'écran affiche alors son propre texte de secours.
-  if (!message.trim()) return '';
-  // Les messages du serveur, même en 5xx (paiement, maintenance), sont rédigés pour le joueur ;
-  // seul un texte technique (proxy, panne, exception) est remplacé.
-  if (looksTechnical(message)) return status >= 500 ? SERVER_ERROR_MESSAGE : GENERIC_ERROR_MESSAGE;
+  if (reworded !== undefined) return reworded;
+  if (!message.trim() || looksTechnical(message)) return '';
   return message;
 }
 

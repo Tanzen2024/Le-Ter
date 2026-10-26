@@ -5,7 +5,7 @@ import { salon } from '../../constants/theme';
 import { TextField } from '../../components/ui/TextField';
 import { useRegenerateRecoveryCode } from '../auth/hooks';
 import { RecoveryCodeCard } from '../auth/RecoveryCodeCard';
-import { ApiError } from '../../lib/api-client';
+import { userErrorMessage } from '../../lib/api-client';
 import { useLobbyMetrics } from './lobby-metrics';
 import { PanelButton } from './LobbyUi';
 
@@ -61,7 +61,7 @@ export function RecoveryCodeSection({
       return;
     }
     regenerate.mutate(password, {
-      onError: (err) => setError(err instanceof ApiError ? err.message : 'Erreur, réessayez.'),
+      onError: (err) => setError(userErrorMessage(err)),
     });
   };
 

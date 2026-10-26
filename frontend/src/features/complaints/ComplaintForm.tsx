@@ -123,7 +123,7 @@ export function ComplaintForm({
           </View>
         ) : null}
         {linkRejected ? <Text style={styles.error}>{t.form.linkInvalid}</Text> : null}
-        {error && !linkRejected && !fields.title && !fields.description ? (
+        {userErrorMessage(error) && !linkRejected && !fields.title && !fields.description ? (
           <Text style={styles.error}>{userErrorMessage(error)}</Text>
         ) : null}
         <View style={[styles.row, { gap: m.gap * 0.5 }]}>

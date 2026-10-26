@@ -48,6 +48,7 @@ import {
 import type { WithdrawalReconciler } from './services/withdrawals/withdrawal-reconciler';
 import type { WithdrawalService } from './services/withdrawals/withdrawal.service';
 import { PostgresAdminAuditRepository } from './repositories/postgres-admin-audit.repository';
+import { PostgresServerErrorRepository } from './repositories/postgres-server-error.repository';
 import type { WalletService } from './services/wallet/wallet.service';
 import { createLogger } from './utils/logger';
 import { attachRealtimeGateway, type RealtimeGateway } from './websocket/realtime-gateway';
@@ -329,6 +330,8 @@ async function main(): Promise<void> {
 
   const server = createApp({
     logger,
+    // Pannes 5xx condensées pour le back-office (D-168).
+    serverErrors: sql ? new PostgresServerErrorRepository(sql) : undefined,
     auth,
     referrals,
     admin,

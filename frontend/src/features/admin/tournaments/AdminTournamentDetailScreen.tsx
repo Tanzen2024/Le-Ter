@@ -46,7 +46,13 @@ function Detail({ id }: { id: string }) {
   if (error || !t) {
     return (
       <AdminPage title="Tournoi" backTo="/admin/tournaments">
-        <Text style={adminStyles.error}>{error ? userErrorMessage(error) : 'Tournoi introuvable.'}</Text>
+        {error ? (
+          userErrorMessage(error) ? (
+            <Text style={adminStyles.error}>{userErrorMessage(error)}</Text>
+          ) : null
+        ) : (
+          <Text style={adminStyles.error}>Tournoi introuvable.</Text>
+        )}
       </AdminPage>
     );
   }
@@ -152,7 +158,7 @@ function Actions({ tournament: t }: { tournament: TournamentSummary }) {
           />
         )
       ) : null}
-      {action.error ? (
+      {userErrorMessage(action.error) ? (
         <Text accessibilityRole="alert" style={adminStyles.error}>
           {userErrorMessage(action.error)}
         </Text>
@@ -169,7 +175,7 @@ function Registrations({ id }: { id: string }) {
         style={adminStyles.sectionTitle}
       >{`Inscriptions${data ? ` (${data.length})` : ''}`}</Text>
       {isPending ? <ActivityIndicator color={colors.feltLight} /> : null}
-      {error ? <Text style={adminStyles.error}>{userErrorMessage(error)}</Text> : null}
+      {userErrorMessage(error) ? <Text style={adminStyles.error}>{userErrorMessage(error)}</Text> : null}
       {data?.length === 0 ? <Text style={adminStyles.muted}>Aucune inscription.</Text> : null}
       {data?.map((r, index) => (
         <Text key={`${r.username}-${index}`} style={adminStyles.line}>
@@ -200,7 +206,7 @@ function Results({ tournament: t }: { tournament: TournamentSummary }) {
     <View style={adminStyles.section}>
       <Text style={adminStyles.sectionTitle}>Classement</Text>
       {isPending ? <ActivityIndicator color={colors.feltLight} /> : null}
-      {error ? <Text style={adminStyles.error}>{userErrorMessage(error)}</Text> : null}
+      {userErrorMessage(error) ? <Text style={adminStyles.error}>{userErrorMessage(error)}</Text> : null}
       {data?.map((r) => (
         <Text key={r.rank} testID={`admin-result-${r.rank}`} style={adminStyles.line}>
           {`${r.rank}. ${r.username} · jetons ${r.initialTokens} → ${r.remainingTokens}` +
@@ -215,7 +221,7 @@ function Results({ tournament: t }: { tournament: TournamentSummary }) {
         loading={exporter.isPending}
         onPress={() => exporter.mutate()}
       />
-      {exporter.error ? (
+      {userErrorMessage(exporter.error) ? (
         <Text accessibilityRole="alert" style={adminStyles.error}>
           {userErrorMessage(exporter.error)}
         </Text>

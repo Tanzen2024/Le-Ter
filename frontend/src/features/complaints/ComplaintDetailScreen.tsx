@@ -104,7 +104,7 @@ export function ComplaintDetailScreen({ complaintId }: { complaintId: string }) 
           </Text>
         </View>
         {detail.isPending ? <ActivityIndicator color={palette.gold} /> : null}
-        {detail.error ? <Text style={styles.error}>{userErrorMessage(detail.error)}</Text> : null}
+        {userErrorMessage(detail.error) ? <Text style={styles.error}>{userErrorMessage(detail.error)}</Text> : null}
         {complaint && data ? (
           <ScrollView contentContainerStyle={{ gap: m.gap * 0.7 }}>
             <View style={[styles.row, styles.top, { gap: m.gap * 0.7 }]}>
@@ -259,7 +259,7 @@ export function ComplaintDetailScreen({ complaintId }: { complaintId: string }) 
                 </Body>
               ))}
             </Card>
-            {error ? <Text style={styles.error}>{userErrorMessage(error)}</Text> : null}
+            {userErrorMessage(error) ? <Text style={styles.error}>{userErrorMessage(error)}</Text> : null}
           </ScrollView>
         ) : null}
       </View>

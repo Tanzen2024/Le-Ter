@@ -16,7 +16,8 @@ import { RecoveryCodeSection } from './RecoveryCodeSection';
 /**
  * Profil : données du compte renvoyées par /api/auth/me, et déconnexion. Tenu sans défiler en
  * paysage, dans cet ordre :
- * 1. à gauche, la carte du joueur (jeton de la table, pseudo, ID) ;
+ * 1. à gauche, la carte du joueur (jeton de la table, pseudo), étroite : l'identifiant
+ *    technique n'est plus affiché, sa place revient aux informations et à la sécurité ;
  * 2. à droite, les informations en tuiles, puis la sécurité (mot de passe, code de
  *    récupération). « Modifier » ou un code en cours : le formulaire PREND LA PLACE des
  *    informations au lieu de s'ajouter dessous ; elles reviennent à l'annulation ;
@@ -68,9 +69,9 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
     [['Email', user ? (user.email ?? '—') : undefined]],
   ];
   const busy = editingPassword || recoveryOpen;
-  // Carte du joueur : un tiers du panneau, un peu plus sur tablette où les libellés des
-  // boutons (« Aide et réclamations ») sont plus grands.
-  const cardWidth = m.height >= 600 ? '40%' : '34%';
+  // Carte du joueur : jeton et pseudo seulement, donc étroite ; le reste du panneau va aux
+  // informations, au mot de passe et au code de récupération.
+  const cardWidth = m.height >= 600 ? '30%' : '24%';
   const tile = [styles.tile, { paddingHorizontal: m.gap * 0.8, paddingVertical: m.gap * 0.45 }];
 
   return (
@@ -123,17 +124,6 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
           >
             {user?.username ?? ' '}
           </Text>
-          <View style={[styles.idRow, { gap: m.gap * 0.4 }]}>
-            <Text style={label}>ID</Text>
-            <Text
-              style={[styles.value, styles.shrink, { fontSize: m.smallSize }]}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.6}
-            >
-              {user?.id ?? ''}
-            </Text>
-          </View>
           {passwordChanged ? (
             <Text
               style={[styles.success, { fontSize: m.smallSize }]}
@@ -213,8 +203,10 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
 const styles = StyleSheet.create({
   columns: { flexDirection: 'row', alignItems: 'stretch' },
   // Carte du joueur : creux du panneau, filet de laiton fin.
+  // Jeton et pseudo centrés dans la carte, horizontalement ET verticalement.
   card: {
     alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: salon.radius.card,
     borderWidth: 1,
     borderColor: salon.surface.border,
@@ -236,16 +228,9 @@ const styles = StyleSheet.create({
     textShadowRadius: 1,
   },
   username: { alignSelf: 'stretch', textAlign: 'center', color: salon.text, letterSpacing: 0.6 },
-  idRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    alignSelf: 'stretch',
-    justifyContent: 'center',
-  },
-  shrink: { flexShrink: 1 },
-  // Zone d'actions : deux boutons de même largeur, confortables au toucher.
-  actions: { flexDirection: 'row', justifyContent: 'flex-end' },
-  action: { flexBasis: 0, flexGrow: 1, maxWidth: 260 },
+  // Zone d'actions : deux boutons de même largeur qui se partagent toute la largeur du panneau.
+  actions: { flexDirection: 'row' },
+  action: { flexBasis: 0, flexGrow: 1 },
   details: { flex: 1, minWidth: 0 },
   pair: { flexDirection: 'row', alignItems: 'stretch' },
   // Tuile d'information : creux discret, libellé au-dessus de la valeur.

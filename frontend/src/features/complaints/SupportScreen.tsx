@@ -1,6 +1,15 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import {
   fontOf,
@@ -96,7 +105,13 @@ export function SupportScreen() {
             ))}
           </View>
         </View>
-        <View style={styles.fill}>
+        {/* Clavier ouvert (message à l'assistant, réclamation) : le contenu se réduit au-dessus
+            de lui, le champ de saisie reste visible (`padding` sur iOS ; Android redimensionne
+            déjà la fenêtre), comme les écrans de connexion. */}
+        <KeyboardAvoidingView
+          style={styles.fill}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           {form ? (
             <ComplaintForm
               draft={form.draft}
@@ -121,7 +136,7 @@ export function SupportScreen() {
               onNew={() => setForm({ draft: null, conversationId: null })}
             />
           )}
-        </View>
+        </KeyboardAvoidingView>
       </View>
     </TableBackdrop>
   );
@@ -140,7 +155,7 @@ function ComplaintList({ created, onNew }: { created: string | null; onNew: () =
       </View>
       {created ? <Body>{t.form.created(created)}</Body> : null}
       {complaints.isPending ? <ActivityIndicator color={palette.gold} /> : null}
-      {complaints.error ? <Text style={styles.error}>{userErrorMessage(complaints.error)}</Text> : null}
+      {userErrorMessage(complaints.error) ? <Text style={styles.error}>{userErrorMessage(complaints.error)}</Text> : null}
       <ScrollView contentContainerStyle={{ gap: m.gap * 0.5 }}>
         {complaints.data?.length === 0 ? (
           <EmptyState glyph="🛟" title={t.list.empty} size={m.bodySize} fontFamily={fonts.button} />

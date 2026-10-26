@@ -225,7 +225,9 @@ describe('Confirmation et envoi', () => {
     await fill('2000');
     await fireEvent.press(continueButton());
     await fireEvent.press(await screen.findByLabelText('Confirmer le retrait de 2000 jetons'));
-    expect(await screen.findByText(/Connexion impossible/)).toBeTruthy();
+    // Erreur réseau : aucun message (D-168) ; « Réessayer » reprend la MÊME clé.
+    expect(await screen.findByText('Réessayer')).toBeTruthy();
+    expect(screen.queryByText(/Connexion impossible/)).toBeNull();
     await fireEvent.press(screen.getByLabelText('Confirmer le retrait de 2000 jetons'));
     expect(await screen.findByText('Transfert en cours')).toBeTruthy();
     expect(api.withdraw.mock.calls.map((c) => c[2])).toEqual(['withdrawal-key-1', 'withdrawal-key-1']);
@@ -234,7 +236,6 @@ describe('Confirmation et envoi', () => {
   it.each([
     ['WITHDRAWAL_LIMIT_REACHED', 429, /nombre maximal de retraits/],
     ['INSUFFICIENT_BALANCE', 409, /Solde disponible insuffisant/],
-    ['MOBILE_MONEY_UNAVAILABLE', 503, /service de retrait est indisponible/],
   ])('refus %s : message compréhensible, rien n’est affiché comme réussi', async (code, status, text) => {
     api.withdraw.mockRejectedValue(new ApiError(status, code, 'refus'));
     await open();

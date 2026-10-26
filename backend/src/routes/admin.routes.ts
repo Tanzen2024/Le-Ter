@@ -75,6 +75,7 @@ export interface AdminRouterDependencies {
  *   GET  /platform-account  /platform-account/entries
  *   GET  /reports/:report?from&to  /reports/:report/csv (audité)
  *   GET  /audit-log                           lecture seule
+ *   GET  /server-errors?page&limit            pannes 5xx regroupées (D-168), lecture seule
  *   GET  /system                              état des services, informations non sensibles
  */
 export function createAdminRouter(deps: AdminRouterDependencies): Router {
@@ -168,6 +169,7 @@ export function createAdminRouter(deps: AdminRouterDependencies): Router {
   router.get('/reports/:report', controller.report);
   router.get('/reports/:report/csv', controller.exportReport);
   router.get('/audit-log', controller.auditLog);
+  router.get('/server-errors', controller.serverErrors);
   router.get('/system', controller.system);
   return router;
 }

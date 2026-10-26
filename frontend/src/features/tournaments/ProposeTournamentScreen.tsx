@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState, type ReactNode } from 'react';
-import { StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native';
 
 import { fontOf, tablePalette, useTableFonts } from '../../components/table/TableDecor';
 import { EmptyState } from '../../components/ui/SalonParts';
@@ -8,6 +8,7 @@ import { gameTheme, salon, type SalonTone } from '../../constants/theme';
 import { DatePickerField } from '../../components/ui/DatePickerField';
 import { TimePickerField } from '../../components/ui/TimePickerField';
 import { ApiError, userErrorMessage } from '../../lib/api-client';
+import { playSound } from '../../services/audio-service';
 import { todayOf } from '../../lib/date-time';
 import type { TournamentCreationRules, TournamentSummary } from '../../types/tournament';
 import { useLobbyMetrics } from '../lobby/lobby-metrics';
@@ -216,7 +217,7 @@ export function useProposalForm({ onSaved }: { onSaved: () => void }): {
   );
 
   // Sélecteurs Date et Heure : même apparence que les champs texte du panneau ; calendrier et
-  // horloge s'ouvrent accrochés à leur champ, sur l'écran courant (D-164).
+  // horloge s'ouvrent accrochés à leur champ, sur l'écran courant (D-166).
   const pickerStyle = (key: 'date' | 'startTime') => [
     styles.input,
     { height: inputHeight },
@@ -314,28 +315,42 @@ export function useProposalForm({ onSaved }: { onSaved: () => void }): {
         })}
       </View>
 
-      {/* Rangs récompensés : réglage et parts sur une même ligne (elle passe à la ligne si
-          les rangs sont nombreux), total à la fin. */}
-      <View style={{ gap: 2 }}>
-        <View style={[styles.row, styles.wrap, { gap: m.gap * 0.5 }]}>
-          <Text style={label}>{`Rangs récompensés : ${values.shares.length}`}</Text>
-          <PanelButton
-            compact
-            title="−"
+      {/* Rangs récompensés : libellé seul sur sa ligne, puis les boutons − / + et le total
+          juste en dessous, puis les parts (%). */}
+      <View style={[styles.ranks, { gap: m.gap * 0.5, padding: m.gap * 0.7 }]}>
+        <Text style={label}>{`Rangs récompensés : ${values.shares.length}`}</Text>
+        <View style={[styles.row, { gap: m.gap * 0.5 }]}>
+          <StepButton
+            symbol="−"
             accessibilityLabel="Un rang récompensé de moins"
             disabled={values.shares.length <= 1}
             onPress={() => setRanks(values.shares.length - 1)}
           />
-          <PanelButton
-            compact
-            title="+"
+          <StepButton
+            symbol="+"
             accessibilityLabel="Un rang récompensé de plus"
             disabled={values.shares.length >= MAX_RANKS}
             onPress={() => setRanks(values.shares.length + 1)}
           />
+          {/* Repère visuel : la somme attendue est 100 % (vérifiée par le serveur). */}
+          <Text
+            style={[
+              styles.totalBadge,
+              toneOf(sharesTotal(values.shares) === 100 ? 'positive' : 'attention'),
+              fontOf(fonts.button),
+              { fontSize: m.smallSize },
+            ]}
+          >
+            {`Total : ${sharesTotal(values.shares)} %`}
+          </Text>
+        </View>
+        <View style={[styles.row, styles.wrap, { gap: m.gap * 0.5 }]}>
           {values.shares.map((share, index) => (
-            <View key={index} style={[styles.inline, styles.share, { gap: 4 }]}>
-              <Text style={label}>{`${index + 1}${index === 0 ? 'er' : 'e'} (%)`}</Text>
+            <View
+              key={index}
+              style={[styles.inline, styles.share, styles.shareChip, rankChip(index), { gap: 4 }]}
+            >
+              <Text style={label}>{`${index + 1}${index === 0 ? 'er' : 'e'}`}</Text>
               <PanelInput
                 accessibilityLabel={`Part du rang ${index + 1} (%)`}
                 value={share}
@@ -345,9 +360,9 @@ export function useProposalForm({ onSaved }: { onSaved: () => void }): {
                 height={inputHeight}
                 style={styles.shareInput}
               />
+              <Text style={label}>%</Text>
             </View>
           ))}
-          <Text style={label}>{`Total : ${sharesTotal(values.shares)} %`}</Text>
         </View>
         {fieldError(errors.shares)}
       </View>
@@ -397,7 +412,10 @@ export function MyProposals() {
   const text = [styles.label, fontOf(fonts.button), { fontSize: m.smallSize }];
 
   if (isPending) return <Text style={text}>Chargement…</Text>;
-  if (error) return <Text style={[styles.error, { fontSize: m.smallSize }]}>{userErrorMessage(error)}</Text>;
+  if (error) {
+    const message = userErrorMessage(error);
+    return message ? <Text style={[styles.error, { fontSize: m.smallSize }]}>{message}</Text> : null;
+  }
   if (!data?.length) {
     return (
       <EmptyState
@@ -410,7 +428,7 @@ export function MyProposals() {
   }
   return (
     <View style={{ gap: m.gap * 0.6 }}>
-      {action.error ? (
+      {userErrorMessage(action.error) ? (
         <Text accessibilityRole="alert" style={[styles.error, { fontSize: m.smallSize }]}>
           {userErrorMessage(action.error)}
         </Text>
@@ -514,6 +532,65 @@ function PanelInput({
   );
 }
 
+/**
+ * Fond de la pastille d'un rang récompensé : or (1er), argent (2e), bronze (3e), puis deux
+ * teintes douces qui alternent (jade, bleu nuit) pour distinguer les rangs voisins.
+ * Présentation seulement.
+ */
+const RANK_CHIPS = [
+  { backgroundColor: 'rgba(245, 200, 66, 0.2)', borderColor: 'rgba(245, 200, 66, 0.6)' },
+  { backgroundColor: 'rgba(205, 214, 224, 0.16)', borderColor: 'rgba(205, 214, 224, 0.55)' },
+  { backgroundColor: 'rgba(205, 127, 50, 0.2)', borderColor: 'rgba(205, 127, 50, 0.6)' },
+] as const;
+const RANK_CHIPS_ALTERNATE = [
+  { backgroundColor: 'rgba(67, 196, 158, 0.12)', borderColor: 'rgba(67, 196, 158, 0.38)' },
+  { backgroundColor: 'rgba(110, 150, 215, 0.13)', borderColor: 'rgba(110, 150, 215, 0.4)' },
+] as const;
+const rankChip = (index: number) =>
+  RANK_CHIPS[index] ?? RANK_CHIPS_ALTERNATE[(index - RANK_CHIPS.length) % 2]!;
+
+/** Pastille ronde et légère « − » / « + » du nombre de rangs récompensés. */
+function StepButton({
+  symbol,
+  accessibilityLabel,
+  disabled,
+  onPress,
+}: {
+  symbol: string;
+  accessibilityLabel: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const m = useLobbyMetrics();
+  const size = Math.max(32, Math.round(m.controlHeight * 0.75));
+  return (
+    <Pressable
+      onPress={() => {
+        onPress();
+        playSound('uiClick');
+      }}
+      disabled={disabled}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
+      style={({ pressed }) => [
+        styles.step,
+        { width: size, height: size, borderRadius: size / 2 },
+        pressed && styles.stepPressed,
+        disabled && styles.stepDisabled,
+      ]}
+    >
+      <Text
+        allowFontScaling={false}
+        style={[styles.stepSymbol, { fontSize: Math.round(size * 0.55) }]}
+      >
+        {symbol}
+      </Text>
+    </Pressable>
+  );
+}
+
 /** Ton du statut RÉEL d'une proposition (présentation seule), mêmes couleurs que les badges. */
 const toneOf = (tone: SalonTone) => ({
   color: salon.status[tone].text,
@@ -538,6 +615,39 @@ const styles = StyleSheet.create({
   field: { flex: 1, minWidth: 0, gap: 2 },
   share: { flexShrink: 0 },
   shareInput: { width: 52, paddingHorizontal: 6, textAlign: 'center' },
+  // Rangs récompensés : encart doux, sans cadre de laiton.
+  ranks: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: salon.surface.wellBorder,
+    backgroundColor: salon.surface.well,
+  },
+  step: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(246, 239, 223, 0.18)',
+    backgroundColor: 'rgba(246, 239, 223, 0.08)',
+  },
+  stepPressed: { backgroundColor: 'rgba(246, 239, 223, 0.18)', transform: [{ scale: 0.94 }] },
+  stepDisabled: { opacity: 0.35 },
+  stepSymbol: { color: salon.text, fontWeight: '600', includeFontPadding: false },
+  totalBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  shareChip: {
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(246, 239, 223, 0.12)',
+    backgroundColor: 'rgba(246, 239, 223, 0.05)',
+  },
   label: { color: salon.textSoft },
   hint: { color: salon.textFaint },
   name: { color: salon.text, flexShrink: 1 },

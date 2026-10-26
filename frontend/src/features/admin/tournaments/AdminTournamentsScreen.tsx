@@ -72,9 +72,11 @@ function AdminTournamentList() {
       {isPending ? (
         <ActivityIndicator color={colors.feltLight} />
       ) : error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {userErrorMessage(error)}
-        </Text>
+        userErrorMessage(error) ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {userErrorMessage(error)}
+          </Text>
+        ) : null
       ) : !data?.length ? (
         <Text style={styles.muted}>Aucun tournoi.</Text>
       ) : (

@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   Banknote,
+  Bug,
   BarChart3,
   CreditCard,
   FileText,
@@ -65,6 +66,7 @@ export const NAV: NavGroup[] = [
     label: 'Contrôle',
     items: [
       { href: '/audit', label: 'Journal d’audit', icon: ScrollText },
+      { href: '/erreurs', label: 'Erreurs', icon: Bug },
       { href: '/parametres', label: 'Paramètres', icon: Settings },
     ],
   },

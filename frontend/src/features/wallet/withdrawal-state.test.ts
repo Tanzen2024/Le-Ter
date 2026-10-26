@@ -76,7 +76,10 @@ describe('affichage', () => {
     expect(withdrawalErrorMessage(new ApiError(422, 'WITHDRAWAL_PHONE_UNSUPPORTED', 'Numéro non pris en charge.'))).toBe(
       'Numéro non pris en charge.',
     );
-    expect(withdrawalErrorMessage(new Error('x'))).toBe('Retrait impossible. Réessayez.');
+    // Erreur système (JavaScript, réseau, 5xx) : rien à l'écran (D-168).
+    expect(withdrawalErrorMessage(new Error('x'))).toBeUndefined();
+    expect(withdrawalErrorMessage(new ApiError(0, 'NETWORK_ERROR', ''))).toBeUndefined();
+    expect(withdrawalErrorMessage(new ApiError(503, 'MOBILE_MONEY_UNAVAILABLE', 'x'))).toBeUndefined();
   });
 });
 
