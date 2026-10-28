@@ -15,7 +15,7 @@ export function privacyEn(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '1. Introduction',
         paragraphs: [
-          `This policy explains which personal data the Le Ter application processes, why and how, and what your rights are. The data controller is ${info.publisherName}, ${info.address} (the "Publisher").`,
+          `This policy explains which personal data the LeTer application processes, why and how, and what your rights are. The data controller is ${info.publisherName}, ${info.address} (the "Publisher").`,
         ],
       },
       {
@@ -28,7 +28,7 @@ export function privacyEn(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '3. Account data',
         paragraphs: [
-          '• first name, last name, email address, username and phone number, provided when you register;',
+          '• first name, last name, username and phone number, provided when you register, and your email address if you choose to provide it;',
           '• password: never stored in plain text, only a secure hash is recorded;',
           '• creation date, account status and whether your phone number has been verified.',
           'Your username is visible to other players. Your name, email and phone number are never shown to them.',

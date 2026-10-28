@@ -32,11 +32,39 @@ describe('documents légaux', () => {
     }
   });
 
+  const UNKNOWN = {
+    publisherName: null,
+    address: null,
+    email: null,
+    lastUpdated: null,
+    jurisdiction: null,
+    minimumAge: null,
+  };
+
   it("affiche des repères au lieu d'informations légales inconnues", () => {
-    const fr = JSON.stringify(getLegalDocument('terms', 'fr'));
+    const fr = JSON.stringify(getLegalDocument('terms', 'fr', UNKNOWN));
     expect(fr).toContain("[Nom légal de l'éditeur]");
     expect(fr).toContain('[Pays / juridiction]');
-    expect(JSON.stringify(getLegalDocument('privacy', 'en'))).toContain('[Publisher legal name]');
+    expect(JSON.stringify(getLegalDocument('privacy', 'en', UNKNOWN))).toContain('[Publisher legal name]');
+  });
+
+  it('documents publiés : identité de LeTer, aucun repère restant, valeurs traduites', () => {
+    for (const id of ['terms', 'privacy'] as const) {
+      const fr = JSON.stringify(getLegalDocument(id, 'fr'));
+      const en = JSON.stringify(getLegalDocument(id, 'en'));
+      for (const text of [fr, en]) {
+        expect(text).toContain('LAMAT');
+        expect(text).toContain('hugueslamat16@gmail.com');
+        // Repère « [Texte] » ; les crochets des tableaux JSON (« [{ », « [" ») ne comptent pas.
+        expect(text).not.toMatch(/\[[A-Za-zÀ-ÿ][^\]]*\]/);
+      }
+      expect(fr).toContain('Douala, Cameroun');
+      expect(en).toContain('Douala, Cameroon');
+    }
+    expect(JSON.stringify(getLegalDocument('terms', 'fr'))).toContain('soumises au droit de la République du Cameroun');
+    expect(JSON.stringify(getLegalDocument('terms', 'en'))).toContain('governed by the law of the Republic of Cameroon');
+    expect(getLegalDocument('terms', 'fr')?.lastUpdated).toBe('26 octobre 2026');
+    expect(getLegalDocument('terms', 'en')?.lastUpdated).toBe('26 October 2026');
   });
 
   it('reprend les informations légales une fois renseignées', () => {

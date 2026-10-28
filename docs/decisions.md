@@ -5455,3 +5455,22 @@ ou un chat), un joueur resté immobile sur l'accueil voit le message à la proch
 - **Conséquences** : toute modification se déploie d'abord sur le TEST, puis le même commit sur
   la PROD. L'application mobile cible l'API par l'environnement EAS (`preview` →
   `api-beta.leter.cm`, `production` → `api.leter.cm`).
+
+## D-172 — Site vitrine LeTer : confirmations du propriétaire et cible multi-pays
+
+- **Date** : 2026-10-27 · **Statut** : décision du propriétaire du projet, après l'audit de mise
+  à niveau (`docs/mise-a-niveau/`). Ne change aucun code du backend ni de l'application.
+- **Confirmé (le code fait déjà foi)** :
+  - GARAM TIA : **n + 1** cartes au centre (`GARAM_TERRE_SIZE` : 2 → 3, 3 → 4, 4 → 5) ; la
+    mention « n − 1 » du brief du 26/10/2026 est une erreur ;
+  - commission des parties ordinaires : **D-074 / D-080** inchangées (prélevée sur les mises des
+    perdants, taux de la tranche de la mise, le gagnant récupère sa mise et reçoit le reste) ;
+  - Kora : chaque perdant perd 2 × la mise (D-080), d'où le solde minimal de 2 × la mise (D-073).
+- **Nouvelle cible, NON implémentée** : achats et retraits dans **tous les pays où MTN Mobile
+  Money ou Orange Money existent**. Le code reste limité au Cameroun (XAF, `MTN_CM` / `OM_CM`,
+  numéros `+237`, contraintes SQL des migrations 0017, 0021, 0031, 0033) ; l'ouverture d'autres
+  pays est un chantier séparé (`docs/mise-a-niveau/ETUDE_MULTI_PAYS.md`) qui demande, par pays :
+  la couverture CinetPay, la devise et sa conversion, et la validation juridique. Aucun pays n'est
+  présumé autorisé.
+- **Site vitrine** : annonce « ouverts aujourd'hui aux numéros du Cameroun, d'autres pays où ces
+  services existent sont prévus » ; aucun barème de commission publié.

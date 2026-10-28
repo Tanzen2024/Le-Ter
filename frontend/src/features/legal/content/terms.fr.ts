@@ -15,14 +15,14 @@ export function termsFr(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '1. Objet',
         paragraphs: [
-          `Les présentes conditions d'utilisation (les « Conditions ») encadrent l'accès et l'utilisation de l'application mobile Le Ter (le « Service »), éditée par ${info.publisherName}, ${info.address} (l'« Éditeur »).`,
+          `Les présentes conditions d'utilisation (les « Conditions ») encadrent l'accès et l'utilisation de l'application mobile LeTer (le « Service »), éditée par ${info.publisherName}, ${info.address} (l'« Éditeur »).`,
           "En créant un compte ou en utilisant le Service, vous acceptez les présentes Conditions. Si vous ne les acceptez pas, vous ne devez pas utiliser le Service.",
         ],
       },
       {
         heading: '2. Présentation du jeu',
         paragraphs: [
-          'Le Ter est un jeu de cartes en ligne qui se joue de 2 à 4 joueurs autour d\'une table virtuelle. Les règles de jeu sont appliquées par les serveurs de l\'Éditeur, qui font foi pour le déroulement et le résultat de chaque partie.',
+          'LeTer est un jeu de cartes en ligne qui se joue de 2 à 4 joueurs autour d\'une table virtuelle. Les règles de jeu sont appliquées par les serveurs de l\'Éditeur, qui font foi pour le déroulement et le résultat de chaque partie.',
           'Le Service peut proposer des tables privées, des tournois et d\'autres modes de jeu. Certaines fonctionnalités peuvent être ajoutées, modifiées ou retirées au fil des mises à jour.',
         ],
       },
@@ -37,7 +37,7 @@ export function termsFr(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '4. Création et utilisation du compte',
         paragraphs: [
-          "La création d'un compte demande votre prénom, votre nom, une adresse email, un pseudo, un numéro de téléphone et un mot de passe. Vous vous engagez à fournir des informations exactes et à les tenir à jour.",
+          "La création d'un compte demande votre prénom, votre nom, un pseudo, un numéro de téléphone et un mot de passe ; l'adresse email est facultative. Vous vous engagez à fournir des informations exactes et à les tenir à jour.",
           'Votre pseudo est visible des autres joueurs. Il ne doit pas porter atteinte aux droits d\'autrui ni être injurieux, trompeur ou contraire aux présentes Conditions.',
           "Votre compte est personnel. Vous êtes responsable de la confidentialité de votre mot de passe et de toute activité réalisée depuis votre compte. Une seule session active est autorisée par compte : une nouvelle connexion met fin à la précédente.",
           "Si vous pensez que votre compte a été utilisé sans votre autorisation, contactez l'Éditeur sans délai.",

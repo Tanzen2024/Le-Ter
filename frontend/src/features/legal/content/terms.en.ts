@@ -15,14 +15,14 @@ export function termsEn(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '1. Purpose',
         paragraphs: [
-          `These terms of use (the "Terms") govern access to and use of the Le Ter mobile application (the "Service"), published by ${info.publisherName}, ${info.address} (the "Publisher").`,
+          `These terms of use (the "Terms") govern access to and use of the LeTer mobile application (the "Service"), published by ${info.publisherName}, ${info.address} (the "Publisher").`,
           'By creating an account or using the Service, you accept these Terms. If you do not accept them, you must not use the Service.',
         ],
       },
       {
         heading: '2. About the game',
         paragraphs: [
-          "Le Ter is an online card game for 2 to 4 players around a virtual table. The game rules are applied by the Publisher's servers, which are authoritative for the course and outcome of every game.",
+          "LeTer is an online card game for 2 to 4 players around a virtual table. The game rules are applied by the Publisher's servers, which are authoritative for the course and outcome of every game.",
           'The Service may offer private tables, tournaments and other game modes. Some features may be added, changed or removed through updates.',
         ],
       },
@@ -37,7 +37,7 @@ export function termsEn(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '4. Creating and using an account',
         paragraphs: [
-          'Creating an account requires your first name, last name, an email address, a username, a phone number and a password. You agree to provide accurate information and to keep it up to date.',
+          'Creating an account requires your first name, last name, a username, a phone number and a password; an email address is optional. You agree to provide accurate information and to keep it up to date.',
           "Your username is visible to other players. It must not infringe anyone's rights or be offensive, misleading or contrary to these Terms.",
           'Your account is personal. You are responsible for keeping your password confidential and for all activity carried out from your account. Only one active session is allowed per account: a new sign-in ends the previous one.',
           'If you believe your account has been used without your permission, contact the Publisher without delay.',

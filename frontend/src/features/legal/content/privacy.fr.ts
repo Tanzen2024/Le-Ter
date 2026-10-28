@@ -21,7 +21,7 @@ export function privacyFr(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '1. Introduction',
         paragraphs: [
-          `La présente politique explique quelles données personnelles l'application Le Ter traite, pourquoi et comment, ainsi que vos droits. Le responsable du traitement est ${info.publisherName}, ${info.address} (l'« Éditeur »).`,
+          `La présente politique explique quelles données personnelles l'application LeTer traite, pourquoi et comment, ainsi que vos droits. Le responsable du traitement est ${info.publisherName}, ${info.address} (l'« Éditeur »).`,
         ],
       },
       {
@@ -34,7 +34,7 @@ export function privacyFr(info: ResolvedLegalInfo): LegalDocument {
       {
         heading: '3. Données du compte',
         paragraphs: [
-          "• prénom, nom, adresse email, pseudo et numéro de téléphone, fournis lors de l'inscription ;",
+          "• prénom, nom, pseudo et numéro de téléphone, fournis lors de l'inscription, ainsi que votre adresse email si vous choisissez de la renseigner ;",
           '• mot de passe : il n\'est jamais conservé en clair, seule une empreinte chiffrée (hachage) est enregistrée ;',
           '• date de création, statut du compte et indication de vérification du numéro de téléphone.',
           "Votre pseudo est visible des autres joueurs. Vos nom, prénom, email et numéro de téléphone ne leur sont jamais montrés.",

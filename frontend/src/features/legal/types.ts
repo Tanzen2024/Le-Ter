@@ -1,4 +1,4 @@
-import type { LegalInfo } from '../../constants/app-config';
+import type { LegalInfo, LegalText } from '../../constants/app-config';
 import type { Language } from '../../stores/preferences-store';
 
 export type LegalDocumentId = 'terms' | 'privacy';
@@ -46,7 +46,10 @@ const PLACEHOLDERS: Record<Language, ResolvedLegalInfo> = {
 
 export function resolveLegalInfo(info: LegalInfo, language: Language): ResolvedLegalInfo {
   const placeholder = PLACEHOLDERS[language];
-  const text = (value: string | null) => (value && value.trim() ? value.trim() : null);
+  const text = (value: LegalText | null) => {
+    const localized = value === null || typeof value === 'string' ? value : value[language];
+    return localized && localized.trim() ? localized.trim() : null;
+  };
   return {
     publisherName: text(info.publisherName) ?? placeholder.publisherName,
     address: text(info.address) ?? placeholder.address,
