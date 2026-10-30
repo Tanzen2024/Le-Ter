@@ -1,0 +1,19 @@
+{
+  "name": "le-ter-marketing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Site vitrine statique de Le-Ter (HTML, CSS, JavaScript, sans dépendance).",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "lint": "node scripts/check.mjs",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"tests/*.test.mjs\"",
+    "generate": "node scripts/generate.mjs",
+    "legal:sync": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/sync-legal.mjs",
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs public",
+    "preview": "node scripts/build.mjs && node scripts/serve.mjs dist"
+  }
+}

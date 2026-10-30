@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://www.leter.cm/fr/</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/en/</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/fr/legal/conditions-utilisation.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/conditions-utilisation.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/terms-of-use.html"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/en/legal/terms-of-use.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/conditions-utilisation.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/terms-of-use.html"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/fr/legal/politique-confidentialite.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/politique-confidentialite.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/privacy-policy.html"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/en/legal/privacy-policy.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/politique-confidentialite.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/privacy-policy.html"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/fr/legal/mentions-legales.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/mentions-legales.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/legal-notice.html"/>
+  </url>
+  <url>
+    <loc>https://www.leter.cm/en/legal/legal-notice.html</loc>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.leter.cm/fr/legal/mentions-legales.html"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.leter.cm/en/legal/legal-notice.html"/>
+  </url>
+</urlset>

@@ -1,0 +1,4 @@
+# Pages générées comparées octet pour octet par les tests : fins de ligne LF partout.
+* text=auto eol=lf
+*.png binary
+*.ttf binary

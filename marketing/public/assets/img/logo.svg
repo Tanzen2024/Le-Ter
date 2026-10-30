@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 136" role="img" aria-label="LeTer">
+  <!-- Dos de carte LeTer (laque ébène, cadre et médaillon L en laiton), d'après TatamiCard de l'application. -->
+  <defs>
+    <linearGradient id="lacquer" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#1D2C27"/>
+      <stop offset="0.5" stop-color="#0E1815"/>
+      <stop offset="1" stop-color="#060B09"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="96" height="132" rx="9" fill="url(#lacquer)" stroke="#8C6A2A" stroke-width="3"/>
+  <rect x="9" y="9" width="82" height="118" rx="5" fill="none" stroke="#D6B25E" stroke-opacity="0.55" stroke-width="1.4"/>
+  <g fill="#D6B25E">
+    <rect x="46" y="5" width="8" height="8" transform="rotate(45 50 9)"/>
+    <rect x="46" y="123" width="8" height="8" transform="rotate(45 50 127)"/>
+    <rect x="5" y="64" width="8" height="8" transform="rotate(45 9 68)"/>
+    <rect x="87" y="64" width="8" height="8" transform="rotate(45 91 68)"/>
+  </g>
+  <circle cx="50" cy="68" r="31" fill="#0A1210" stroke="#D6B25E" stroke-width="2.6"/>
+  <path d="M37 50H53V53.5H48.5V79.5H61V73H65V86H35V82.5H40V53.5H37Z" fill="#F2D27A"/>
+</svg>
